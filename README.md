@@ -203,10 +203,11 @@ cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace
   run.
 * `cfrs warp proxy` listens on `tcp://127.0.0.1:40000` by default. Use
   `--listen unix:/path` on a host that refuses `AF_INET` binds. Names are
-  resolved through the tunnel.
+  resolved through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
 * `cfrs warp run` starts the proxy on a unix socket and runs the program with
   `cfrs pod`. The TCP connections and the DNS queries of the program go
-  through WARP, also for static binaries. Other UDP traffic is not carried.
+  through WARP, also for static binaries. With the `seccomp` backend, other
+  UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE).
 * The registration API calls and the MASQUE connection use `HTTPS_PROXY` when
   it is set. A proxy that terminates TLS cannot carry the MASQUE connection,
   because the connection uses a client certificate.

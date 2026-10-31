@@ -47,7 +47,8 @@ backend can run.
   the fake-IP pool. The answer comes from the address that the program sent
   the query to.
 
-Needs: unprivileged user namespaces and `/dev/net/tun`.
+Needs: unprivileged user namespaces and `/dev/net/tun`. This backend carries
+TCP and DNS. It does not carry other UDP.
 
 ### seccomp
 

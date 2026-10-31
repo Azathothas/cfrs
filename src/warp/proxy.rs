@@ -55,8 +55,9 @@ pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpPro
                 while let Ok((stream, _)) = listener.accept().await {
                     let stack = stack.clone();
                     tokio::spawn(async move {
+                        let udp = Some(stack.clone());
                         let dial = move |host, port| dial(stack.clone(), host, port);
-                        if let Err(err) = handle_client(stream, dial).await {
+                        if let Err(err) = handle_client(stream, dial, udp).await {
                             debug!(error = %err, "WARP proxy client failed");
                         }
                     });
@@ -71,8 +72,9 @@ pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpPro
                 while let Ok((stream, _)) = listener.accept().await {
                     let stack = stack.clone();
                     tokio::spawn(async move {
+                        let udp = Some(stack.clone());
                         let dial = move |host, port| dial(stack.clone(), host, port);
-                        if let Err(err) = handle_client(stream, dial).await {
+                        if let Err(err) = handle_client(stream, dial, udp).await {
                             debug!(error = %err, "WARP proxy client failed");
                         }
                     });
@@ -86,18 +88,36 @@ pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpPro
 
 /// Read one SOCKS5 or HTTP `CONNECT` request, connect with `dial`, answer
 /// the client, and copy bytes in the two directions until both ends close.
-pub async fn handle_client<S, D, F>(mut stream: S, dial: D) -> Result<()>
+///
+/// With `udp`, a SOCKS5 `UDP ASSOCIATE` request is also served: the datagrams
+/// go through UDP sockets of that stack.
+pub async fn handle_client<S, D, F>(stream: S, dial: D, udp: Option<Arc<WarpStack>>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     D: FnOnce(ProxyHost, u16) -> F,
     F: std::future::Future<Output = Result<DuplexStream>>,
 {
+    let mut stream = stream;
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await?;
     let is_socks = socks::looks_like_socks5(first[0]);
     let mut stream = Prefixed::new(first[0], stream);
     let request: ProxyRequest = if is_socks {
-        socks::socks5_read_request(&mut stream).await?
+        let (command, request) = socks::socks5_read_command(&mut stream).await?;
+        match command {
+            0x01 => request,
+            0x03 => match udp {
+                Some(stack) => return udp_associate(stream, stack).await,
+                None => {
+                    socks::socks5_reply(&mut stream, 0x07, None).await?;
+                    bail!("UDP ASSOCIATE is not available");
+                }
+            },
+            other => {
+                socks::socks5_reply(&mut stream, 0x07, None).await?;
+                bail!("SOCKS5 command {other} is not supported");
+            }
+        }
     } else {
         socks::http_read_connect(&mut stream).await?
     };
@@ -122,6 +142,83 @@ where
         socks::http_connect_ok(&mut stream).await?;
     }
     let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+    Ok(())
+}
+
+/// Serve one SOCKS5 UDP association (RFC 1928 section 7).
+///
+/// A local UDP socket on the loopback address receives the datagrams of the
+/// client. Each datagram goes through a UDP socket of the stack. Each answer
+/// gets a SOCKS5 UDP header and goes back to the client. The association ends
+/// when the control connection closes.
+async fn udp_associate<S>(mut control: S, stack: Arc<WarpStack>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let local = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
+    let tunnel = stack.udp_bind().await?;
+    socks::socks5_reply(&mut control, 0x00, Some(local.local_addr()?)).await?;
+    let client: Arc<std::sync::Mutex<Option<SocketAddr>>> = Arc::default();
+
+    let to_tunnel = {
+        let local = local.clone();
+        let tunnel = tunnel.clone();
+        let stack = stack.clone();
+        let client = client.clone();
+        async move {
+            let mut buf = vec![0u8; 65_536];
+            loop {
+                let Ok((n, from)) = local.recv_from(&mut buf).await else {
+                    return;
+                };
+                *client.lock().unwrap() = Some(from);
+                let Some((host, port, payload)) = socks::socks5_udp_unwrap(&buf[..n]) else {
+                    continue;
+                };
+                let ip = match host {
+                    ProxyHost::Ip(ip) => ip,
+                    ProxyHost::Domain(name) => match resolve(&stack, &name).await {
+                        Ok(ip) => ip,
+                        Err(err) => {
+                            debug!(%name, error = %err, "UDP name not resolved");
+                            continue;
+                        }
+                    },
+                };
+                let _ = tunnel
+                    .send_to(payload.to_vec(), SocketAddr::new(ip, port))
+                    .await;
+            }
+        }
+    };
+    let from_tunnel = {
+        let local = local.clone();
+        async move {
+            loop {
+                let Ok((data, from)) = tunnel.recv_from(65_536).await else {
+                    return;
+                };
+                let target = *client.lock().unwrap();
+                if let Some(target) = target {
+                    let framed = pod_netns::upstream::wrap_udp(&data, from.ip(), from.port());
+                    let _ = local.send_to(&framed, target).await;
+                }
+            }
+        }
+    };
+    let control_closed = async move {
+        let mut buf = [0u8; 256];
+        while let Ok(n) = control.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = to_tunnel => {}
+        _ = from_tunnel => {}
+        _ = control_closed => {}
+    }
     Ok(())
 }
 
@@ -284,7 +381,7 @@ mod tests {
     async fn a_socks5_client_reaches_the_dialed_target() {
         let seen = Arc::new(std::sync::Mutex::new(None));
         let (mut client, server) = tokio::io::duplex(1024);
-        let task = tokio::spawn(handle_client(server, echo_dial(seen.clone())));
+        let task = tokio::spawn(handle_client(server, echo_dial(seen.clone()), None));
         // Greeting, then CONNECT example.com:443 by name.
         client.write_all(&[5, 1, 0]).await.unwrap();
         let mut reply = [0u8; 2];
@@ -310,7 +407,7 @@ mod tests {
     async fn an_http_connect_client_reaches_the_dialed_target() {
         let seen = Arc::new(std::sync::Mutex::new(None));
         let (mut client, server) = tokio::io::duplex(1024);
-        let task = tokio::spawn(handle_client(server, echo_dial(seen.clone())));
+        let task = tokio::spawn(handle_client(server, echo_dial(seen.clone()), None));
         client
             .write_all(b"CONNECT 10.1.2.3:22 HTTP/1.1\r\nHost: 10.1.2.3:22\r\n\r\n")
             .await

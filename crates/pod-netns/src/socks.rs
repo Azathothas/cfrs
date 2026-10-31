@@ -281,10 +281,118 @@ pub fn looks_like_socks5(first: u8) -> bool {
     first == SOCKS_VERSION
 }
 
+/// Read the SOCKS5 greeting (no authentication) and one request. Return the
+/// command (1 CONNECT, 2 BIND, 3 UDP ASSOCIATE) and the destination.
+pub async fn socks5_read_command<S>(
+    stream: &mut S,
+) -> Result<(u8, ProxyRequest)>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut intro = [0u8; 2];
+    stream
+        .read_exact(&mut intro)
+        .await
+        .context("SOCKS5 greeting")?;
+    if intro[0] != 0x05 {
+        bail!("SOCKS5 version {} is not 5", intro[0]);
+    }
+    let mut methods = vec![0u8; intro[1] as usize];
+    stream.read_exact(&mut methods).await?;
+    stream.write_all(&[0x05, 0x00]).await?;
+    let mut header = [0u8; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .context("SOCKS5 request")?;
+    if header[0] != 0x05 {
+        bail!("SOCKS5 request version {} is not 5", header[0]);
+    }
+    let host = match header[3] {
+        0x01 => {
+            let mut a = [0u8; 4];
+            stream.read_exact(&mut a).await?;
+            ProxyHost::Ip(IpAddr::V4(Ipv4Addr::from(a)))
+        }
+        0x03 => {
+            let mut l = [0u8; 1];
+            stream.read_exact(&mut l).await?;
+            let mut h = vec![0u8; l[0] as usize];
+            stream.read_exact(&mut h).await?;
+            ProxyHost::Domain(String::from_utf8_lossy(&h).to_string())
+        }
+        0x04 => {
+            let mut a = [0u8; 16];
+            stream.read_exact(&mut a).await?;
+            ProxyHost::Ip(IpAddr::V6(std::net::Ipv6Addr::from(a)))
+        }
+        other => bail!("SOCKS5 address type {other} is not supported"),
+    };
+    let mut p = [0u8; 2];
+    stream.read_exact(&mut p).await?;
+    Ok((
+        header[1],
+        ProxyRequest {
+            host,
+            port: u16::from_be_bytes(p),
+        },
+    ))
+}
+
+/// Parse a SOCKS5 UDP request header (RFC 1928 section 7). Return the
+/// destination and the payload. A fragment (`FRAG` not zero) gives `None`.
+pub fn socks5_udp_unwrap(datagram: &[u8]) -> Option<(ProxyHost, u16, &[u8])> {
+    if datagram.len() < 4 || datagram[2] != 0 {
+        return None;
+    }
+    let (host, rest) = match datagram[3] {
+        0x01 if datagram.len() >= 10 => {
+            let ip: [u8; 4] = datagram[4..8].try_into().ok()?;
+            (ProxyHost::Ip(IpAddr::from(ip)), &datagram[8..])
+        }
+        0x04 if datagram.len() >= 22 => {
+            let ip: [u8; 16] = datagram[4..20].try_into().ok()?;
+            (ProxyHost::Ip(IpAddr::from(ip)), &datagram[20..])
+        }
+        0x03 => {
+            let len = usize::from(*datagram.get(4)?);
+            let name = datagram.get(5..5 + len)?;
+            (
+                ProxyHost::Domain(String::from_utf8_lossy(name).to_string()),
+                &datagram[5 + len..],
+            )
+        }
+        _ => return None,
+    };
+    if rest.len() < 2 {
+        return None;
+    }
+    let port = u16::from_be_bytes([rest[0], rest[1]]);
+    Some((host, port, &rest[2..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::duplex;
+
+    #[test]
+    fn unwraps_socks5_udp_headers() {
+        let mut v4 = vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 53];
+        v4.extend_from_slice(b"query");
+        let (host, port, data) = socks5_udp_unwrap(&v4).unwrap();
+        assert_eq!(host, ProxyHost::Ip("1.1.1.1".parse().unwrap()));
+        assert_eq!((port, data), (53, &b"query"[..]));
+        let mut name = vec![0, 0, 0, 3, 3];
+        name.extend_from_slice(b"a.b");
+        name.extend_from_slice(&[0x01, 0xbb]);
+        name.extend_from_slice(b"x");
+        let (host, port, data) = socks5_udp_unwrap(&name).unwrap();
+        assert_eq!(host, ProxyHost::Domain("a.b".into()));
+        assert_eq!((port, data), (443, &b"x"[..]));
+        assert!(socks5_udp_unwrap(&[0, 0, 1, 1, 1, 1, 1, 1, 0, 53]).is_none());
+        assert!(socks5_udp_unwrap(&[0, 0, 0, 9]).is_none());
+    }
 
     #[tokio::test]
     async fn socks5_ipv4_connect() {

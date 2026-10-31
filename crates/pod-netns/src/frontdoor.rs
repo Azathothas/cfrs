@@ -140,56 +140,7 @@ pub(crate) async fn read_socks5_command<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use crate::socks::ProxyHost;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut intro = [0u8; 2];
-    stream
-        .read_exact(&mut intro)
-        .await
-        .context("SOCKS5 greeting")?;
-    if intro[0] != 0x05 {
-        bail!("SOCKS5 version {} is not 5", intro[0]);
-    }
-    let mut methods = vec![0u8; intro[1] as usize];
-    stream.read_exact(&mut methods).await?;
-    stream.write_all(&[0x05, 0x00]).await?;
-    let mut header = [0u8; 4];
-    stream
-        .read_exact(&mut header)
-        .await
-        .context("SOCKS5 request")?;
-    if header[0] != 0x05 {
-        bail!("SOCKS5 request version {} is not 5", header[0]);
-    }
-    let host = match header[3] {
-        0x01 => {
-            let mut a = [0u8; 4];
-            stream.read_exact(&mut a).await?;
-            ProxyHost::Ip(IpAddr::V4(Ipv4Addr::from(a)))
-        }
-        0x03 => {
-            let mut l = [0u8; 1];
-            stream.read_exact(&mut l).await?;
-            let mut h = vec![0u8; l[0] as usize];
-            stream.read_exact(&mut h).await?;
-            ProxyHost::Domain(String::from_utf8_lossy(&h).to_string())
-        }
-        0x04 => {
-            let mut a = [0u8; 16];
-            stream.read_exact(&mut a).await?;
-            ProxyHost::Ip(IpAddr::V6(std::net::Ipv6Addr::from(a)))
-        }
-        other => bail!("SOCKS5 address type {other} is not supported"),
-    };
-    let mut p = [0u8; 2];
-    stream.read_exact(&mut p).await?;
-    Ok((
-        header[1],
-        crate::socks::ProxyRequest {
-            host,
-            port: u16::from_be_bytes(p),
-        },
-    ))
+    crate::socks::socks5_read_command(stream).await
 }
 
 /// Answer `UDP ASSOCIATE` by relaying through the first upstream proxy's own

@@ -179,5 +179,6 @@ goes inside the MASQUE session. The host opens only TCP 443.
   cannot carry the MASQUE session, because the session needs the client
   certificate and the pinned server key. The registration calls still work
   through such a proxy.
-* The WARP proxy of `cfrs` (`cfrs warp proxy`) carries TCP. It resolves names
-  through the tunnel. It does not do SOCKS5 UDP ASSOCIATE.
+* The WARP proxy of `cfrs` (`cfrs warp proxy`) carries TCP (SOCKS5 and HTTP
+  `CONNECT`) and UDP (SOCKS5 UDP ASSOCIATE). It resolves names through the
+  tunnel. The UDP relay socket of an association is on `127.0.0.1`.
