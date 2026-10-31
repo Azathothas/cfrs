@@ -10,9 +10,8 @@
 //! The obvious instrument is `getsockname` on the bound fd, and it cannot be
 //! used. The shim **interposes `getsockname`** and answers with the logical
 //! address it recorded, so a probe built that way measures the shim's own
-//! bookkeeping rather than the kernel, and passes by construction whatever the
-//! kernel did. That was tried first here, and it answered `inet`, which is the
-//! shim's record rather than the kernel's truth.
+//! bookkeeping rather than the kernel. Such a probe passes whatever the kernel
+//! did: it answers `inet` from the record of the shim.
 //!
 //! The instrument is the socket inode instead. `/proc/self/fd/N` is a symlink to
 //! `socket:[INODE]`, and the kernel lists each socket in its own protocol table:

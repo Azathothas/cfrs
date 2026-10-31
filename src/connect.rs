@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn connect_response_reports_the_allowlist_refusal() {
-        // This is the exact refusal the sandbox proxy returns.
+        // This is the refusal of an egress proxy that denies the host.
         let mut raw: &[u8] = b"HTTP/1.1 403 not on the egress allowlist\r\n\r\n";
         let (status, _) = read_connect_response(&mut raw).expect("parse");
         assert!(status.contains(" 403 "), "status line was {status:?}");

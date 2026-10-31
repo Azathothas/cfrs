@@ -1,7 +1,6 @@
 //! Measure what the host actually permits.
 //!
-//! The design in the *Userspace virtual networking* section of `README.md` rests
-//! on a measured claim: `AF_INET`
+//! The design in `docs/virtual-network.md` starts from these facts: `AF_INET`
 //! bind/connect is denied, `AF_UNIX` (including the abstract namespace) is
 //! allowed, namespaces are unprivileged-denied, and `LD_PRELOAD` works. This
 //! module re-runs those probes on the running host and prints the results, so

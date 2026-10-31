@@ -35,7 +35,7 @@ enum Command {
     Tunnel(TunnelArgs),
     /// Serve a directory over a tunnel.
     Serve(ServeArgs),
-    /// Upload / download / proxy session (quickbridge-style).
+    /// Share files or a local port in a session with a PIN.
     Share(ShareArgs),
     /// Bridge a local socket to a remote WebSocket forward endpoint.
     Connect(ConnectArgs),
@@ -43,11 +43,11 @@ enum Command {
     Ports,
     /// Print a QR code for a URL.
     Qr(QrArgs),
-    /// Self-contained proof: built-in origin, tunnel, then fetch the URL.
+    /// Test the full path: a built-in origin, a tunnel, a fetch of the URL.
     Demo(DemoArgs),
     /// Userspace virtual networking (no kernel interfaces).
     Net(NetArgs),
-    /// Cloudflare WARP: anonymous registration and a MASQUE tunnel on 443.
+    /// Cloudflare WARP client: registration, account, proxy, run.
     Warp(WarpArgs),
     /// Run a program with all its traffic sent through a proxy (pod-netns).
     ///
@@ -940,7 +940,7 @@ fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>)
 enum NetCommand {
     /// Prove the userspace TCP handshake + transfer in-process.
     Demo,
-    /// Probe what this host permits (the measured constraint table).
+    /// Probe what this host permits.
     Doctor,
     /// Build (or locate) the LD_PRELOAD shim and print how to use it.
     Shim(ShimArgs),

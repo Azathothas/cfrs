@@ -1245,12 +1245,9 @@ impl Core {
                 } else {
                     let _ = conn.to_app.try_send(AppEvent::Eof);
                 }
-                // Free the smoltcp socket. A SocketSet only grows: `add` reuses
-                // a vacant slot, but nothing reclaims one on its own, so
-                // dropping the Conn without removing the handle leaves the
-                // socket resident with both of its buffers attached for the life
-                // of the process. The reference implementation never called
-                // `remove`, so every connection ever made leaked.
+                // Free the smoltcp socket. A SocketSet does not free a slot
+                // itself: without `remove`, each closed connection keeps its two
+                // buffers for the life of the process.
                 self.sockets.remove(conn.handle);
                 self.socket_count.remove();
                 self.emit(StackEvent::Closed { id });

@@ -5,12 +5,9 @@
 //! `cloudflared tunnel --url ...` calls `POST https://api.trycloudflare.com/tunnel`
 //! with an empty body and **no credentials of any kind**. The response carries a
 //! tunnel id, an account tag, a 32-byte secret (base64 in JSON) and the public
-//! hostname. That is the whole anonymous-provisioning step, and it is the only
-//! part of the Cloudflare flow that runs from a network-restricted sandbox,
-//! because it is ordinary HTTPS on port 443 to a host that is commonly
-//! allow-listed.
+//! hostname. The request is plain HTTPS on port 443.
 //!
-//! References, read from the `cloudflared` source rather than from docs:
+//! References in the `cloudflared` source:
 //!
 //! * `cmd/cloudflared/tunnel/quick_tunnel.go` - `RunQuickTunnel` performs the
 //!   POST; `QuickTunnelResponse` is the response shape.
@@ -22,9 +19,8 @@
 //!
 //! # What this does NOT do
 //!
-//! It does not open the tunnel edge connection. That requires reaching
-//! `region*.v2.argotunnel.com:7844` (QUIC/UDP or HTTP/2/TCP), which the sandbox
-//! used for development blocks on both counts. See `README.md`.
+//! It does not open the tunnel edge connection. See [`crate::tunnel`] and
+//! `docs/protocol.md`.
 
 use serde::{Deserialize, Serialize};
 

@@ -5,10 +5,8 @@
 //! population: ordinary programs that close a descriptor, duplicate one, or ask
 //! for a socket name, before they ever open a socket.
 //!
-//! Every test here was written against a failure that was reproduced first.
-//! The reference implementation of this shim had three defects that a
-//! socket-first test cannot see, all in the same shape: state read or written
-//! before the lazy resolver had run.
+//! Each test pins a defect that a test which opens a socket first cannot see:
+//! state that is read or written before the lazy symbol resolver runs.
 //!
 //! | test | the defect it pins | how it failed |
 //! | --- | --- | --- |

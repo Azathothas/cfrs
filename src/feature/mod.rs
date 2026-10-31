@@ -6,7 +6,7 @@
 //! and package all of that into something worth pasting into a chat.
 //!
 //! They live in one module because they share one constraint that shapes every
-//! design decision in it: **the sandbox can refuse to bind a TCP port**, so
+//! design decision in it: **the host can refuse to bind a TCP port**, so
 //! nothing here may assume a listening socket exists, and nothing here may
 //! assume an unauthenticated stranger is not on the other end of the URL.
 //!

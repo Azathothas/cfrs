@@ -38,8 +38,8 @@ scratch=""
 for candidate in "${CF_ORACLE_TMP:-}" "$CARGO_TARGET_DIR" "$root/target" /workspace /tmp; do
     [ -n "$candidate" ] || continue
     probe="$candidate/.cfrs-exec-probe.$$"
-    # A noexec mount refuses execution regardless of the file mode, so the
-    # only honest probe is to run something.
+    # A noexec mount refuses execution whatever the file mode is. Thus run a
+    # file to test the directory.
     printf '#!/bin/sh\nexit 0\n' >"$probe" 2>/dev/null && chmod +x "$probe" 2>/dev/null
     if [ -x "$probe" ] && "$probe" 2>/dev/null; then
         scratch="$candidate"

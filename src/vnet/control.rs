@@ -473,13 +473,10 @@ impl ControlDecoder {
 
     /// Feed more bytes and take every complete message out of the buffer.
     ///
-    /// A frame with an unknown opcode is dropped rather than wedging the stream.
-    /// The reference implementation returned the error with the offending byte
-    /// still at the head of the buffer, so every later `push` re-read the same
-    /// byte, failed identically, and never drained: the connection was
-    /// permanently desynchronised and the buffer grew with everything the peer
-    /// kept sending. Dropping the bad frame keeps the decoder usable, and
-    /// reporting the drop lets the caller log it.
+    /// A frame with an unknown opcode is dropped. If the bad byte stays at the
+    /// head of the buffer, each later `push` fails on the same byte, and the
+    /// buffer grows without limit. [`ControlDecoder::dropped`] counts the
+    /// dropped bytes.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<ControlMessage>> {
         self.buffer.extend_from_slice(bytes);
         let mut messages = Vec::new();

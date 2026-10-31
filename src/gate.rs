@@ -1,6 +1,6 @@
-//! A PIN gate for public sessions, ported from quickbridge's idea: a 6-digit
-//! code shown only on the machine that owns the tunnel, exchanged for a
-//! session cookie. The PIN never appears in the URL.
+//! A PIN gate for public sessions: a 6-digit code that only the machine of the
+//! tunnel shows. A correct PIN gets a session cookie. The PIN is never in the
+//! URL.
 
 use axum::http::HeaderMap;
 use uuid::Uuid;

@@ -1,6 +1,6 @@
 //! End-to-end check of the documented `cfrs net proxy --forward` path.
 //!
-//! The README and `VIRTUAL-NETWORK.md` §6.4 describe a SOCKS5 front door on a
+//! `docs/virtual-network.md` section 5.2 describes a SOCKS5 front door on a
 //! unix socket that forwards a virtual endpoint to a real one. The unit test in
 //! `src/vnet/proxy.rs` covers the same shape with an in-process echo; this one
 //! uses a real `AF_UNIX` client so the whole documented path is exercised:

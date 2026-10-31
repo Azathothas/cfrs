@@ -1,10 +1,5 @@
-//! Tests for defects found in the userspace stack, each written after the
-//! failure was reproduced.
-//!
-//! Three of these pin bugs that existed in the reference implementation this
-//! module was ported from, and were invisible to its own tests. Each test's
-//! doc comment names the failure it was written from and what would make it
-//! vacuous.
+//! Regression tests for defects in the userspace stack. The doc comment of
+//! each test names the failure and the condition that makes the test vacuous.
 //!
 //! | test | defect | how it failed |
 //! | --- | --- | --- |
@@ -40,9 +35,7 @@ fn a_multibyte_error_message_at_the_length_limit_does_not_panic() {
     let budget = MAX_CONTROL_PAYLOAD.saturating_sub(7);
     let message = format!("{}{}", "a".repeat(budget - 1), "é");
 
-    // The reference implementation panicked here. A panic in an encoder is a
-    // crash of whatever was reporting an error, which is the least useful place
-    // in a program to die.
+    // An encoder that cuts a UTF-8 character panics here.
     let encoded = ControlMessage::Error {
         id: 1,
         code: ErrorCode::Refused,

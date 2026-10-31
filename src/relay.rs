@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn default_config_targets_port_443() {
-        // 443, not 22: the sandbox's egress proxy only allows 443.
+        // 443, not 22: some egress proxies permit only 443.
         let cfg = RelayConfig::default();
         assert!(
             cfg.address.ends_with(":443"),
