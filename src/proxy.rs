@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
 use cfrs_edge::stream as cqstream;
 use cfrs_edge::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
-use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tower::ServiceExt;
 
 use crate::gate::UNLOCK_PATH;
@@ -24,8 +24,11 @@ use crate::util::path_and_query;
 
 const MAX_HEAD_BYTES: usize = 32 * 1024;
 
-pub(crate) type EdgeReader = Compat<quinn::RecvStream>;
-pub(crate) type EdgeWriter = Compat<quinn::SendStream>;
+/// The visitor side of one edge stream: the request body (after the
+/// `ConnectRequest`) for reading, the `ConnectResponse` and body for writing.
+/// A QUIC stream gives these directly. The HTTP/2 transport gives adapters.
+pub type EdgeReader = std::pin::Pin<Box<dyn futures::io::AsyncRead + Send>>;
+pub type EdgeWriter = std::pin::Pin<Box<dyn futures::io::AsyncWrite + Send>>;
 
 /// Handle one inbound stream. Errors are logged, never propagated to the edge.
 pub async fn serve_stream(
@@ -49,8 +52,38 @@ async fn serve_inner(
     send: quinn::SendStream,
     recv: quinn::RecvStream,
 ) -> Result<()> {
-    let (mut reader, writer) = cqstream::split(send, recv);
+    let (reader, writer) = cqstream::split(send, recv);
+    let mut reader: EdgeReader = Box::pin(reader);
+    let writer: EdgeWriter = Box::pin(writer);
     let request = cqstream::read_connect_request(&mut reader).await?;
+    serve_request(runtime, ingress, request, reader, writer).await
+}
+
+/// Handle one request that is already decoded. The HTTP/2 transport calls
+/// this with adapters for the stream.
+pub async fn serve_decoded(
+    runtime: std::sync::Arc<ServiceRuntime>,
+    ingress: std::sync::Arc<Ingress>,
+    request: cqstream::ConnectRequest,
+    reader: EdgeReader,
+    writer: EdgeWriter,
+) {
+    let metrics = runtime.metrics().clone();
+    metrics.stream_started();
+    if let Err(err) = serve_request(&runtime, &ingress, request, reader, writer).await {
+        metrics.error();
+        tracing::warn!(error = %err, "stream failed");
+    }
+    metrics.stream_finished();
+}
+
+async fn serve_request(
+    runtime: &ServiceRuntime,
+    ingress: &Ingress,
+    request: cqstream::ConnectRequest,
+    reader: EdgeReader,
+    writer: EdgeWriter,
+) -> Result<()> {
     let host = request
         .meta(HTTP_HOST_KEY)
         .map(str::to_string)

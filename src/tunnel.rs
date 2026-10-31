@@ -159,9 +159,6 @@ impl Tunnel {
             verify,
         } = self.config;
 
-        if protocol.resolved() == Protocol::Http2 {
-            bail!("the http2 edge transport is not implemented yet; use quic or auto");
-        }
 
         let (auth, tunnel_id, public_url) =
             resolve_credentials(&credentials, &service_url, &user_agent).await?;
@@ -171,125 +168,205 @@ impl Tunnel {
         let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
         let ingress = Arc::new(ingress);
 
-        // Where the QUIC handshake goes. Direct mode dials the edge on 7844
-        // with a kernel UDP socket. WARP mode dials the real edge address with
-        // a UDP socket inside the MASQUE session, so the only host connection
-        // is TCP 443.
+        // The edge legs to try, in order. QUIC on UDP 7844 is the fastest.
+        // HTTP/2 on TCP 7844 works where UDP is blocked. WARP carries QUIC
+        // inside a MASQUE tunnel on TCP 443, for hosts that reach only 443.
         //
-        // Auto is the default. It tries the direct path for a limited time and
-        // then uses WARP. Do not probe TCP 7844 first: a firewall can close TCP
-        // 7844 and keep UDP 7844 (the QUIC path) open.
-        let mut attempt = match transport {
-            Transport::Auto => Transport::Direct,
-            chosen => chosen,
-        };
-        let (edges, endpoint, warp_keepalive, conn, control, location) = loop {
-            let outcome = match attempt {
-                Transport::Warp => match warp_targets(warp_identity.as_deref()).await {
+        // Do not probe TCP 7844 to choose: a firewall can close TCP 7844 and
+        // keep UDP 7844 open. Each direct attempt is real and has a time limit.
+        let plan = leg_plan(protocol, transport)?;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut tasks = Vec::new();
+        let mut warp_keepalive = None;
+        let mut chosen = None;
+        let mut failures = Vec::new();
+        for kind in &plan {
+            let attempt = match kind {
+                LegKind::QuicDirect => match direct_targets().await {
+                    Ok(edges) => {
+                        let endpoint = quic_dial::build_endpoint()?;
+                        bounded(
+                            plan.len() > 1,
+                            connect_once(&endpoint, &auth, tunnel_id, 0, false, &edges),
+                        )
+                        .await
+                        .map(|(conn, control, location)| {
+                            First::Quic(edges, endpoint, conn, control, location)
+                        })
+                    }
+                    Err(err) => Err(err),
+                },
+                LegKind::H2Direct => match direct_targets().await {
+                    Ok(edges) => {
+                        let options =
+                            rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
+                        bounded(
+                            plan.len() > 1,
+                            crate::edge_h2::connect(
+                                &edges,
+                                &auth,
+                                tunnel_id,
+                                0,
+                                &options,
+                                runtime.clone(),
+                                ingress.clone(),
+                            ),
+                        )
+                        .await
+                        .map(|leg| First::H2(edges, leg))
+                    }
+                    Err(err) => Err(err),
+                },
+                LegKind::QuicWarp => match warp_targets(warp_identity.as_deref()).await {
                     Ok((edges, stack, endpoint)) => {
                         connect_once(&endpoint, &auth, tunnel_id, 0, false, &edges)
                             .await
                             .map(|(conn, control, location)| {
-                                let keep = Some((stack, endpoint.clone()));
-                                (edges, endpoint, keep, conn, control, location)
+                                warp_keepalive = Some((stack, endpoint.clone()));
+                                First::Quic(edges, endpoint, conn, control, location)
                             })
                     }
                     Err(err) => Err(err),
                 },
-                _ => match direct_targets().await {
-                    Ok(edges) => {
-                        let endpoint = quic_dial::build_endpoint()?;
-                        match tokio::time::timeout(
-                            DIRECT_ATTEMPT_TIMEOUT,
-                            connect_once(&endpoint, &auth, tunnel_id, 0, false, &edges),
-                        )
-                        .await
-                        {
-                            Ok(result) => result.map(|(conn, control, location)| {
-                                (edges, endpoint, None, conn, control, location)
-                            }),
-                            Err(_) => Err(anyhow::anyhow!(
-                                "the direct edge attempt did not complete in {}s",
-                                DIRECT_ATTEMPT_TIMEOUT.as_secs()
-                            )),
-                        }
-                    }
-                    Err(err) => Err(err),
-                },
             };
-            match outcome {
-                Ok(ready) => break ready,
-                Err(err) if transport == Transport::Auto && attempt == Transport::Direct => {
-                    warn!(
-                        error = %err,
-                        "the edge is not reachable on 7844; using WARP on TCP 443"
-                    );
-                    attempt = Transport::Warp;
+            match attempt {
+                Ok(first) => {
+                    chosen = Some((*kind, first));
+                    break;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    warn!(leg = %kind, error = %err, "edge leg failed; trying the next one");
+                    failures.push(format!("{kind}: {err:#}"));
+                }
             }
+        }
+        let Some((kind, first)) = chosen else {
+            bail!("no edge leg worked: {}", failures.join("; "));
         };
-        info!(transport = %attempt, %location, "registered with the edge");
-        let edges = Arc::new(edges);
         metrics.connection_opened();
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let mut tasks = Vec::new();
-        let locations = vec![location.clone()];
-
-        // First reactor (conn_index 0) is already connected.
-        tasks.push(tokio::spawn(reactor(
-            runtime.clone(),
-            ingress.clone(),
-            auth.clone(),
-            tunnel_id,
-            endpoint.clone(),
-            conn,
-            control,
-            metrics.clone(),
-            shutdown_rx.clone(),
-            reconnect.clone(),
-            0,
-            edges.clone(),
-        )));
-
-        // Remaining HA legs register in the background.
-        for index in 1..ha_connections {
-            let runtime = runtime.clone();
-            let ingress = ingress.clone();
-            let auth = auth.clone();
-            let endpoint = endpoint.clone();
-            let metrics = metrics.clone();
-            let shutdown_rx = shutdown_rx.clone();
-            let reconnect = reconnect.clone();
-            let edges = edges.clone();
-            tasks.push(tokio::spawn(async move {
-                match connect_once(&endpoint, &auth, tunnel_id, index, false, &edges).await {
-                    Ok((conn, control, location)) => {
-                        metrics.connection_opened();
-                        info!(conn_index = index, %location, "HA leg registered");
-                        reactor(
-                            runtime,
-                            ingress,
+        let location = match first {
+            First::Quic(edges, endpoint, conn, control, location) => {
+                info!(leg = %kind, %location, "registered with the edge");
+                let edges = Arc::new(edges);
+                tasks.push(tokio::spawn(reactor(
+                    runtime.clone(),
+                    ingress.clone(),
+                    auth.clone(),
+                    tunnel_id,
+                    endpoint.clone(),
+                    conn,
+                    control,
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                    reconnect.clone(),
+                    0,
+                    edges.clone(),
+                )));
+                // The other HA legs register in the background.
+                for index in 1..ha_connections {
+                    let runtime = runtime.clone();
+                    let ingress = ingress.clone();
+                    let auth = auth.clone();
+                    let endpoint = endpoint.clone();
+                    let metrics = metrics.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    let reconnect = reconnect.clone();
+                    let edges = edges.clone();
+                    tasks.push(tokio::spawn(async move {
+                        match connect_once(&endpoint, &auth, tunnel_id, index, false, &edges).await
+                        {
+                            Ok((conn, control, location)) => {
+                                metrics.connection_opened();
+                                info!(conn_index = index, %location, "HA leg registered");
+                                reactor(
+                                    runtime,
+                                    ingress,
+                                    auth,
+                                    tunnel_id,
+                                    endpoint,
+                                    conn,
+                                    control,
+                                    metrics,
+                                    shutdown_rx,
+                                    reconnect,
+                                    index,
+                                    edges,
+                                )
+                                .await;
+                            }
+                            Err(err) => {
+                                warn!(conn_index = index, error = %err, "HA leg failed to register");
+                            }
+                        }
+                    }));
+                }
+                location
+            }
+            First::H2(edges, leg) => {
+                info!(leg = %kind, location = %leg.location, "registered with the edge");
+                let location = leg.location.clone();
+                let edges = Arc::new(edges);
+                let mut first_leg = Some(leg);
+                for index in 0..ha_connections {
+                    let runtime = runtime.clone();
+                    let ingress = ingress.clone();
+                    let auth = auth.clone();
+                    let metrics = metrics.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    let reconnect = reconnect.clone();
+                    let edges = edges.clone();
+                    let leg = first_leg.take();
+                    tasks.push(tokio::spawn(async move {
+                        let leg = match leg {
+                            Some(leg) => Some(leg),
+                            None => {
+                                let options = rpc::ConnectionOptions::default_for_quick_tunnel(
+                                    CLIENT_VERSION,
+                                );
+                                match crate::edge_h2::connect(
+                                    &edges,
+                                    &auth,
+                                    tunnel_id,
+                                    index,
+                                    &options,
+                                    runtime.clone(),
+                                    ingress.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(leg) => {
+                                        metrics.connection_opened();
+                                        info!(conn_index = index, location = %leg.location, "HA leg registered");
+                                        Some(leg)
+                                    }
+                                    Err(err) => {
+                                        warn!(conn_index = index, error = %err, "HA leg failed to register");
+                                        return;
+                                    }
+                                }
+                            }
+                        };
+                        crate::edge_h2::reactor(
+                            leg,
+                            edges,
                             auth,
                             tunnel_id,
-                            endpoint,
-                            conn,
-                            control,
+                            index,
+                            runtime,
+                            ingress,
                             metrics,
                             shutdown_rx,
                             reconnect,
-                            index,
-                            edges,
+                            SHUTDOWN_GRACE,
                         )
                         .await;
-                    }
-                    Err(err) => {
-                        warn!(conn_index = index, error = %err, "HA leg failed to register");
-                    }
+                    }));
                 }
-            }));
-        }
+                location
+            }
+        };
+        let locations = vec![location];
 
         Ok(TunnelHandle {
             url: public_url,
@@ -374,6 +451,74 @@ fn split_explicit(credentials: Credentials) -> Result<(rpc::TunnelAuth, Uuid)> {
 /// and it is also the only way to test the `auto` fallback deliberately: point
 /// it at an address nothing answers on and direct must fail where discovery
 /// would have succeeded.
+/// One way to reach the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegKind {
+    /// QUIC on UDP 7844.
+    QuicDirect,
+    /// HTTP/2 on TCP 7844.
+    H2Direct,
+    /// QUIC inside a WARP MASQUE tunnel on TCP 443.
+    QuicWarp,
+}
+
+impl std::fmt::Display for LegKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LegKind::QuicDirect => "quic",
+            LegKind::H2Direct => "http2",
+            LegKind::QuicWarp => "quic+warp",
+        })
+    }
+}
+
+/// The edge legs to try, in order, for a protocol and a transport.
+pub fn leg_plan(protocol: Protocol, transport: Transport) -> Result<Vec<LegKind>> {
+    use LegKind::*;
+    Ok(match (transport, protocol) {
+        (Transport::Direct, Protocol::Quic) => vec![QuicDirect],
+        (Transport::Direct, Protocol::Http2) => vec![H2Direct],
+        (Transport::Direct, Protocol::Auto) => vec![QuicDirect, H2Direct],
+        (Transport::Warp, Protocol::Http2) => {
+            bail!("the WARP transport carries QUIC only; use --protocol quic or auto")
+        }
+        (Transport::Warp, _) => vec![QuicWarp],
+        (Transport::Auto, Protocol::Quic) => vec![QuicDirect, QuicWarp],
+        (Transport::Auto, Protocol::Http2) => vec![H2Direct],
+        (Transport::Auto, Protocol::Auto) => vec![QuicDirect, H2Direct, QuicWarp],
+    })
+}
+
+/// The first registered leg.
+enum First {
+    Quic(
+        Vec<edge::EdgeAddr>,
+        quinn::Endpoint,
+        quinn::Connection,
+        rpc::ControlSession,
+        String,
+    ),
+    H2(Vec<edge::EdgeAddr>, crate::edge_h2::H2Leg),
+}
+
+/// Give `attempt` a time limit when another leg can follow it. A filtered
+/// port does not answer, so do not wait for the transport's own timeout.
+async fn bounded<T>(
+    limited: bool,
+    attempt: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    if !limited {
+        return attempt.await;
+    }
+    match tokio::time::timeout(DIRECT_ATTEMPT_TIMEOUT, attempt).await {
+        Ok(result) => result,
+        Err(_) => bail!(
+            "the attempt did not complete in {}s",
+            DIRECT_ATTEMPT_TIMEOUT.as_secs()
+        ),
+    }
+}
+
 /// Read `CFRS_EDGE`, a comma-separated `host:port` list that replaces edge
 /// discovery (as `cloudflared --edge` does).
 fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
@@ -655,5 +800,25 @@ impl TunnelHandle {
 impl Drop for TunnelHandle {
     fn drop(&mut self) {
         let _ = self.shutdown.send(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_leg_plan_tries_quic_then_http2_then_warp() {
+        use LegKind::*;
+        let plan = |p, t| leg_plan(p, t).unwrap();
+        assert_eq!(
+            plan(Protocol::Auto, Transport::Auto),
+            vec![QuicDirect, H2Direct, QuicWarp]
+        );
+        assert_eq!(plan(Protocol::Quic, Transport::Auto), vec![QuicDirect, QuicWarp]);
+        assert_eq!(plan(Protocol::Http2, Transport::Auto), vec![H2Direct]);
+        assert_eq!(plan(Protocol::Auto, Transport::Direct), vec![QuicDirect, H2Direct]);
+        assert_eq!(plan(Protocol::Quic, Transport::Warp), vec![QuicWarp]);
+        assert!(leg_plan(Protocol::Http2, Transport::Warp).is_err());
     }
 }

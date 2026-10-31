@@ -195,6 +195,26 @@ pub async fn register_connection(
         .open_bi()
         .await
         .map_err(|e| TunnelError::Register(format!("open_bi on control stream: {e}")))?;
+    register_connection_on(recv, send, auth, tunnel_id, conn_index, options).await
+}
+
+/// Register a connection over a control stream that is already open.
+///
+/// `reader` and `writer` are the two directions of the control stream: a
+/// QUIC bidirectional stream, or the body of the HTTP/2 control-stream
+/// request and its response.
+pub async fn register_connection_on<R, W>(
+    recv: R,
+    send: W,
+    auth: &TunnelAuth,
+    tunnel_id: Uuid,
+    conn_index: u8,
+    options: &ConnectionOptions,
+) -> Result<(RegistrationDetails, ControlSession), TunnelError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // capnp-rpc's `RpcSystem` is `!Send` (internal Rc<RefCell<_>>),
     // so we can't drive it from a tokio task. Spawn a dedicated OS
     // thread with its own current-thread tokio runtime + LocalSet

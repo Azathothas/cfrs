@@ -155,6 +155,61 @@ where
 /// Borrowed key/value pair for write_connect_response.
 pub type MetaPair<'a> = (&'a str, &'a str);
 
+/// Read a `ConnectResponse` that [`write_connect_response`] wrote: the
+/// signature, the version and the capnp message. Return the error text and
+/// the metadata pairs.
+pub async fn read_connect_response<R>(
+    reader: &mut R,
+) -> Result<(String, Vec<(String, String)>), TunnelError>
+where
+    R: futures::io::AsyncRead + Unpin,
+{
+    let mut sig = [0u8; 6];
+    reader
+        .read_exact(&mut sig)
+        .await
+        .map_err(|e| TunnelError::Internal(format!("read signature: {e}")))?;
+    if sig != DATA_STREAM_SIGNATURE {
+        return Err(TunnelError::Internal(format!(
+            "unexpected stream signature: {sig:02x?}"
+        )));
+    }
+    let mut ver = [0u8; 2];
+    reader
+        .read_exact(&mut ver)
+        .await
+        .map_err(|e| TunnelError::Internal(format!("read version: {e}")))?;
+    let msg = serialize::read_message(reader, ReaderOptions::new())
+        .await
+        .map_err(|e| TunnelError::Internal(format!("read capnp message: {e}")))?;
+    let root: quic_metadata_protocol_capnp::connect_response::Reader = msg
+        .get_root()
+        .map_err(|e| TunnelError::Internal(format!("capnp root: {e}")))?;
+    let error = root
+        .get_error()
+        .ok()
+        .and_then(|t| t.to_string().ok())
+        .unwrap_or_default();
+    let mut metadata = Vec::new();
+    if let Ok(list) = root.get_metadata() {
+        for i in 0..list.len() {
+            let m = list.get(i);
+            let k = m
+                .get_key()
+                .ok()
+                .and_then(|t| t.to_string().ok())
+                .unwrap_or_default();
+            let v = m
+                .get_val()
+                .ok()
+                .and_then(|t| t.to_string().ok())
+                .unwrap_or_default();
+            metadata.push((k, v));
+        }
+    }
+    Ok((error, metadata))
+}
+
 /// Write a `ConnectResponse` preceded by the data-stream preamble.
 ///
 /// `error` is set when the local upstream refused / errored before
@@ -235,6 +290,27 @@ mod tests {
         assert_eq!(&buf[0..6], &DATA_STREAM_SIGNATURE);
         assert_eq!(&buf[6..8], &PROTOCOL_V1);
         assert!(buf.len() > 8 + 8, "capnp body present");
+    }
+
+    #[tokio::test]
+    async fn response_round_trip() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut cursor = Cursor::new(&mut buf);
+            write_connect_response(&mut cursor, "", &[("HttpStatus", "204")])
+                .await
+                .unwrap();
+        }
+        buf.extend_from_slice(b"BODY");
+        let mut reader = Cursor::new(buf);
+        let (error, meta) = read_connect_response(&mut reader).await.unwrap();
+        assert_eq!(error, "");
+        assert_eq!(meta, vec![("HttpStatus".to_string(), "204".to_string())]);
+        let mut rest = Vec::new();
+        futures::io::AsyncReadExt::read_to_end(&mut reader, &mut rest)
+            .await
+            .unwrap();
+        assert_eq!(rest, b"BODY");
     }
 
     #[tokio::test]

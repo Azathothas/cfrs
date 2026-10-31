@@ -54,8 +54,8 @@ pub const PROXY_SRC_HEADER: &str = "Cf-Cloudflared-Proxy-Src";
 /// visitor request as ordinary HTTP/2 headers; only an origin response has to
 /// be serialized, so that HTTP/2 header validation is not applied to values
 /// that came from an HTTP/1 origin.
-const RESPONSE_HEADERS_HEADER: &str = "cf-cloudflared-response-headers";
-const RESPONSE_META_HEADER: &str = "cf-cloudflared-response-meta";
+pub const RESPONSE_HEADERS_HEADER: &str = "cf-cloudflared-response-headers";
+pub const RESPONSE_META_HEADER: &str = "cf-cloudflared-response-meta";
 
 /// Base64 alphabet, standard encoding.
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

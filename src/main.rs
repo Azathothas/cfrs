@@ -71,7 +71,7 @@ struct TunnelOpts {
     /// Parallel edge connections (1-8).
     #[arg(long, default_value_t = 2, global = true)]
     ha_connections: u8,
-    /// Edge transport: auto, quic or http2.
+    /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then http2).
     #[arg(long, default_value = "auto", global = true)]
     protocol: String,
     /// How to reach the edge: auto (try 7844, fall back to WARP on 443),

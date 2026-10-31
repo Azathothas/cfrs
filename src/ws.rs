@@ -10,6 +10,7 @@
 //! One WebSocket message maps to one write, so binary framing is preserved and
 //! interactive protocols (SSH, RDP, databases, raw sockets) work unchanged.
 
+use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use cfrs_edge::stream as cqstream;
@@ -69,7 +70,7 @@ pub async fn serve_websocket(
     // The edge stream is a QUIC bidi pair; join it into one socket for the
     // WebSocket codec. `into_inner` recovers the quinn halves from the
     // futures-io wrappers used by the request framing.
-    let socket = tokio::io::join(reader.into_inner(), writer.into_inner());
+    let socket = tokio::io::join(reader.compat(), writer.compat_write());
     let ws = WebSocketStream::from_raw_socket(socket, Role::Server, None).await;
     bridge(ws, io, metrics).await
 }
