@@ -13,8 +13,8 @@ name: release
 #
 # The Linux binaries are static musl. x86-64 and ARM64 are built in the
 # pinned image of images/build on a native runner; ARMv7 with Alpine's rust
-# in a linux/arm/v7 container on an ARM64 runner; RISC-V 64 with
-# cargo-zigbuild. Each binary is checked for dynamic dependencies, and runs
+# in a linux/arm/v7 container on an ARM64 runner; RISC-V 64, i686, ARMv6
+# (arm-musleabihf), LoongArch64 and POWER little-endian with cargo-zigbuild. Each binary is checked for dynamic dependencies, and runs
 # scripts/release-short.sh on its own architecture before it is published.
 
 on:
@@ -197,17 +197,37 @@ jobs:
 
   # RISC-V 64, cross-compiled with cargo-zigbuild in the pinned image; the
   # binary then runs on the runner under QEMU.
-  linux-riscv64:
+  # The other Linux architectures, built with cargo-zigbuild (zig cc) in the
+  # pinned build image. Each binary runs scripts/release-short.sh: i686 on
+  # the runner itself, the others under QEMU (scripts/binfmt.sh).
+  linux-zig:
     if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
-    name: linux riscv64gc-unknown-linux-musl
+    name: linux ${{ matrix.target }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: riscv64gc-unknown-linux-musl
+            qemu: riscv64
+          - target: i686-unknown-linux-musl
+            qemu: ""
+          - target: arm-unknown-linux-musleabihf
+            qemu: arm
+          - target: loongarch64-unknown-linux-musl
+            qemu: loongarch64
+          - target: powerpc64le-unknown-linux-musl
+            qemu: ppc64le
     env:
+      TARGET: ${{ matrix.target }}
       ZIG_VERSION: 0.16.0
       ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
       ZIGBUILD_VERSION: 0.23.4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: the build image
         run: |
           set -eu
@@ -220,7 +240,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static -e CFRS_BUILD_COMMIT \
-            -e ZIG_VERSION -e ZIG_SHA256 -e ZIGBUILD_VERSION \
+            -e ZIG_VERSION -e ZIG_SHA256 -e ZIGBUILD_VERSION -e TARGET \
             "$BUILD_IMAGE" sh -c '
               set -eu
               z="zig-x86_64-linux-$ZIG_VERSION"
@@ -230,26 +250,32 @@ jobs:
               export PATH="/tmp/$z:$PATH"
               RUSTFLAGS= cargo install --quiet --locked --root /tmp/zigbuild cargo-zigbuild --version "$ZIGBUILD_VERSION"
               export PATH="/tmp/zigbuild/bin:$PATH"
-              rustup target add riscv64gc-unknown-linux-musl
-              cargo zigbuild --locked --release --target riscv64gc-unknown-linux-musl
+              rustup target add "$TARGET"
+              cargo zigbuild --locked --release --target "$TARGET"
               mkdir -p dist
-              for b in cfrs pod-netns; do cp "target/riscv64gc-unknown-linux-musl/release/$b" "dist/$b-riscv64gc-unknown-linux-musl"; done'
+              for b in cfrs pod-netns; do cp "target/$TARGET/release/$b" "dist/$b-$TARGET"; done'
       - name: the binaries are static
         run: |
           set -eu
+          for b in cfrs pod-netns; do file "dist/$b-$TARGET"; done
+          sh scripts/check-static.sh "dist/cfrs-$TARGET" "dist/pod-netns-$TARGET"
+      - name: QEMU for ${{ matrix.qemu }}
+        if: matrix.qemu != ''
+        run: sh scripts/binfmt.sh "${{ matrix.qemu }}"
+      - name: the version of the binaries
+        run: |
+          set -eu
+          want=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
           for b in cfrs pod-netns; do
-            B=dist/$b-riscv64gc-unknown-linux-musl
-            file "$B"
-            if readelf -d "$B" | grep -q NEEDED; then echo "$b: dynamic dependencies"; readelf -d "$B"; exit 1; fi
-            if readelf -l "$B" | grep -q INTERP; then echo "$b: asks for a program interpreter"; exit 1; fi
+            got=$("dist/$b-$TARGET" --version)
+            test "$got" = "$b $want ($CFRS_BUILD_COMMIT)" ||
+              { echo "$b prints \"$got\", not \"$b $want ($CFRS_BUILD_COMMIT)\""; exit 1; }
           done
-      - name: QEMU for riscv64
-        run: sh scripts/binfmt.sh riscv64
-      - name: the binary runs (under QEMU)
-        run: sh scripts/release-short.sh dist/cfrs-riscv64gc-unknown-linux-musl --net
+      - name: the binary runs
+        run: sh scripts/release-short.sh "dist/cfrs-$TARGET" --net
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cfrs-riscv64gc-unknown-linux-musl
+          name: cfrs-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
@@ -295,7 +321,7 @@ jobs:
   # and Sigstore's cosign installer, each pinned by its commit, and no other
   # tool.
   publish:
-    needs: [linux, linux-armv7, linux-riscv64, notes]
+    needs: [linux, linux-armv7, linux-zig, notes]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

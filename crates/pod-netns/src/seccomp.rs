@@ -70,7 +70,7 @@ pub(crate) fn intercepted_syscalls() -> [libc::c_long; 17] {
         libc::SYS_io_uring_setup,
         libc::SYS_close,
         libc::SYS_listen,
-        libc::SYS_accept,
+        SYS_ACCEPT,
         libc::SYS_accept4,
         libc::SYS_io_uring_enter,
         libc::SYS_io_uring_register,
@@ -105,6 +105,13 @@ pub(crate) fn resolve_program(name: &str) -> Result<std::path::PathBuf> {
     bail!("the program {name:?} is not in PATH")
 }
 
+/// accept(2). i386 has no direct accept system call (only accept4, and
+/// accept through socketcall), so the entry is accept4 there.
+#[cfg(not(target_arch = "x86"))]
+const SYS_ACCEPT: libc::c_long = libc::SYS_accept;
+#[cfg(target_arch = "x86")]
+const SYS_ACCEPT: libc::c_long = libc::SYS_accept4;
+
 /// The audit arch value of this build target.
 #[cfg(target_arch = "x86_64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
@@ -114,11 +121,20 @@ pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0x4000_0028;
 #[cfg(target_arch = "riscv64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00F3;
+#[cfg(target_arch = "x86")]
+pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0x4000_0003;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_0102;
+#[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
+pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_0015;
 #[cfg(not(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "arm",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "x86",
+    target_arch = "loongarch64",
+    all(target_arch = "powerpc64", target_endian = "little")
 )))]
 compile_error!("pod-netns: add the AUDIT_ARCH value for this target");
 
@@ -171,6 +187,20 @@ pub(crate) fn install_notif_filter() -> Result<RawFd> {
             jt: 0,
             jf: 1,
             k: X32_SYSCALL_BIT,
+        });
+        filter.push(stmt(BPF_RET_K, RET_ERRNO | libc::ENOSYS as u32));
+    }
+    // socketcall(2) multiplexes the socket calls on i386 and powerpc64. The
+    // list below names the direct calls only, so socketcall fails: a program
+    // then cannot pass around the proxy (the C libraries use the direct
+    // calls on the kernels that have them).
+    #[cfg(any(target_arch = "x86", target_arch = "powerpc64"))]
+    {
+        filter.push(libc::sock_filter {
+            code: BPF_JEQ_K,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_socketcall as u32,
         });
         filter.push(stmt(BPF_RET_K, RET_ERRNO | libc::ENOSYS as u32));
     }
@@ -582,7 +612,7 @@ pub(crate) async fn supervise_seccomp(
             handle_bind(lfd, id, a, mem, &mut map)
         } else if nr == libc::SYS_listen as i32 {
             handle_listen(lfd, id, a, &mut map, &inbound_dir).await
-        } else if nr == libc::SYS_accept as i32 || nr == libc::SYS_accept4 as i32 {
+        } else if nr == SYS_ACCEPT as i32 || nr == libc::SYS_accept4 as i32 {
             handle_accept(lfd, id, a, &mut map, nr == libc::SYS_accept4 as i32).await
         } else if nr == libc::SYS_getsockname as i32 || nr == libc::SYS_getpeername as i32 {
             handle_sockname(lfd, id, a, mem, mem_writable, &mut map)

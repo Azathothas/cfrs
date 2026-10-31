@@ -21,4 +21,8 @@ targets = [
   "aarch64-unknown-linux-musl",
   "armv7-unknown-linux-musleabihf",
   "riscv64gc-unknown-linux-musl",
+  "i686-unknown-linux-musl",
+  "arm-unknown-linux-musleabihf",
+  "loongarch64-unknown-linux-musl",
+  "powerpc64le-unknown-linux-musl",
 ]

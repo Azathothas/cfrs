@@ -55,8 +55,9 @@ The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
 ## Release binaries
 
 Each [release](https://github.com/Azathothas/cfrs/releases) has static
-Linux binaries of `cfrs` and `pod-netns` for `x86_64`, `aarch64`, `armv7` and
-`riscv64gc`, and these files:
+Linux binaries of `cfrs` and `pod-netns` for `x86_64`, `aarch64`, `armv7`,
+`riscv64gc`, `i686`, `arm` (ARMv6, hard float), `loongarch64` and
+`powerpc64le`. cfrs is for Linux only. Each release also has these files:
 
 | File | Contents |
 | --- | --- |
