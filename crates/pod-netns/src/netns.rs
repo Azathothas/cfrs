@@ -236,8 +236,11 @@ pub(crate) fn recv_fd(sock: RawFd) -> Result<RawFd> {
     msg.msg_control = cmsg.0.as_mut_ptr() as *mut libc::c_void;
     msg.msg_controllen = cmsg.0.len() as _;
     let n = unsafe { libc::recvmsg(sock, &mut msg, libc::MSG_CMSG_CLOEXEC) };
-    if n <= 0 {
+    if n < 0 {
         bail!("recvmsg(SCM_RIGHTS): {}", std::io::Error::last_os_error());
+    }
+    if n == 0 {
+        bail!("the peer closed the socket before it sent a descriptor");
     }
     let hdr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
     if hdr.is_null() {

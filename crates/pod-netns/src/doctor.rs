@@ -12,13 +12,22 @@ pub(crate) struct Probe {
 pub(crate) fn probe_unshare(flags: libc::c_int) -> Probe {
     // Probe in a forked child: a successful unshare would otherwise take the
     // probe process out of the host's network namespace permanently.
+    //
+    // A successful unshare is not sufficient. A security module (for example
+    // the AppArmor setting `apparmor_restrict_unprivileged_userns`) can remove
+    // the capabilities in the new user namespace. Thus the child also does
+    // what the backend does: bring up `lo` and make a TUN device.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         let r = unsafe { libc::unshare(flags) };
-        let code = if r == 0 {
-            0
-        } else {
+        let code = if r != 0 {
             std::io::Error::last_os_error().raw_os_error().unwrap_or(1)
+        } else if bringup_loopback().is_err() {
+            PROBE_NO_LOOPBACK
+        } else if create_tun("pnprobe0").is_err() {
+            PROBE_NO_TUN
+        } else {
+            0
         };
         unsafe { libc::_exit(code) };
     }
@@ -41,14 +50,22 @@ pub(crate) fn probe_unshare(flags: libc::c_int) -> Probe {
             detail: "ok".into(),
         }
     } else {
-        let errno = std::io::Error::from_raw_os_error(code);
+        let detail = match code {
+            PROBE_NO_LOOPBACK => "unshare ok, but lo cannot be set up (no capability)".to_string(),
+            PROBE_NO_TUN => "unshare ok, but no TUN device in the namespace".to_string(),
+            code => format!("{}", std::io::Error::from_raw_os_error(code)),
+        };
         Probe {
             name,
             ok: false,
-            detail: format!("{errno}"),
+            detail,
         }
     }
 }
+
+/// Child exit codes of [`probe_unshare`] after a successful `unshare`.
+const PROBE_NO_LOOPBACK: i32 = 200;
+const PROBE_NO_TUN: i32 = 201;
 
 pub(crate) fn probe_tun() -> Probe {
     let path = c"/dev/net/tun";
