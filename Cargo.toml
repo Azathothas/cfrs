@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["cloudflare", "tunnel", "trycloudflare", "quic", "reverse-proxy"]
 categories = ["network-programming", "command-line-utilities"]
 
+[workspace]
+members = [".", "crates/pod-netns"]
+
 [lib]
 name = "cfrs"
 path = "src/lib.rs"
@@ -19,6 +22,7 @@ name = "cfrs"
 path = "src/main.rs"
 
 [dependencies]
+pod-netns = { path = "crates/pod-netns", version = "0.1.0" }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"

@@ -1,0 +1,234 @@
+//! pod-netns: run a program with all its network traffic sent through a
+//! SOCKS5 or HTTP proxy. No `LD_PRELOAD` is necessary.
+//!
+//! The kernel enforces the redirection, so static binaries, Go binaries and
+//! programs that do not use libc `connect(3)` get the same treatment.
+//!
+//! Two backends are available:
+//!
+//! * `netns`: the child gets a new user and network namespace. A TUN device is
+//!   its only interface. A `smoltcp` stack on the host side of the TUN sends
+//!   each flow to the upstream proxy. This backend needs unprivileged user
+//!   namespaces and `/dev/net/tun`.
+//! * `seccomp`: a `SECCOMP_RET_USER_NOTIF` filter stops the socket system
+//!   calls of the child. The supervisor answers them and gives the child
+//!   connected descriptors with `SECCOMP_IOCTL_NOTIF_ADDFD`. This backend needs
+//!   only seccomp.
+//!
+//! ```text
+//!   pod-netns [OPTIONS] -- PROGRAM
+//!     |
+//!     +- child:  namespace or seccomp filter, then exec PROGRAM
+//!     |
+//!     +- parent: fake-IP DNS, routing rules, SOCKS5/HTTP/tailnet upstream
+//! ```
+//!
+//! The library also gives the parts that other programs use: the upstream
+//! client ([`upstream`]), the proxy server codec ([`socks`]), the DNS codec
+//! ([`dns`]), listen addresses ([`listen`]) and the tailnet dialer
+//! ([`tailscale`]).
+//!
+//! Use [`main_with_args`] to run the full command line from another program.
+
+pub mod dns;
+pub mod listen;
+pub mod socks;
+pub mod tailscale;
+pub mod upstream;
+
+mod cli;
+mod doctor;
+mod fakedns;
+mod frontdoor;
+mod netns;
+mod seccomp;
+
+pub use cli::usage;
+pub use listen::ProxyListen;
+pub use upstream::{Proxy, ProxyKind, Rule, RuleMatch, Upstream};
+
+/// The common imports of the internal modules.
+#[allow(unused_imports)]
+mod prelude {
+    pub(crate) use std::collections::{HashMap, VecDeque};
+    pub(crate) use std::ffi::CString;
+    pub(crate) use std::io::Write;
+    pub(crate) use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    pub(crate) use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    pub(crate) use std::sync::Arc;
+    pub(crate) use std::time::Duration;
+
+    pub(crate) use anyhow::{bail, Context, Result};
+    pub(crate) use smoltcp::iface::{Config as IfaceConfig, Interface, SocketHandle, SocketSet};
+    pub(crate) use smoltcp::phy::{
+        ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken,
+    };
+    pub(crate) use smoltcp::socket::tcp;
+    pub(crate) use smoltcp::socket::udp;
+    pub(crate) use smoltcp::time::Instant as SmolInstant;
+    pub(crate) use smoltcp::wire::{
+        HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv4Address,
+    };
+
+    pub(crate) use crate::upstream::{
+        connect_upstream, connect_upstream_async, dial_proxy, select_chain,
+        socks5_udp_associate, within_timeout, wrap_udp, Proxy, ProxyKind, Rule, RuleMatch,
+        Upstream,
+    };
+
+    pub(crate) use crate::cli::*;
+    pub(crate) use crate::doctor::*;
+    pub(crate) use crate::fakedns::*;
+    pub(crate) use crate::frontdoor::*;
+    pub(crate) use crate::netns::*;
+    pub(crate) use crate::seccomp::*;
+}
+
+#[allow(unused_imports)]
+use prelude::*;
+
+/// Run the `pod-netns` command line with `argv` (without the program name).
+/// Return the exit status.
+pub fn main_with_args(argv: &[String]) -> i32 {
+    let args = match parse_args(argv) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("pod-netns: {e:#}");
+            return 2;
+        }
+    };
+    if args.doctor {
+        return doctor(args.doctor_json);
+    }
+    if args.serve.is_some() {
+        if args.proxies.is_empty() {
+            eprintln!("pod-netns: --serve needs at least one -x upstream");
+            return 2;
+        }
+        let listen = args.serve.clone().unwrap();
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("pod-netns: {e:#}");
+                return EXIT_NO_BACKEND;
+            }
+        };
+        let outcome = runtime.block_on(serve_front_door(
+            listen,
+            args.proxies.clone(),
+            args.rules.clone(),
+            args.verbose,
+        ));
+        match outcome {
+            Ok(()) => return 0,
+            Err(e) => {
+                eprintln!("pod-netns: {e:#}");
+                return EXIT_NO_BACKEND;
+            }
+        }
+    }
+    let result = match args.backend {
+        BackendKind::Netns => run(args),
+        BackendKind::Seccomp => run_seccomp(args),
+        BackendKind::Auto => {
+            // The netns backend needs unshare and a TUN; without them the
+            // seccomp backend is the only thing that can work.
+            if probe_unshare(libc::CLONE_NEWNET).ok
+                || probe_unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET).ok
+            {
+                run(args)
+            } else {
+                run_seccomp(args)
+            }
+        }
+    };
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("pod-netns: {e:#}");
+            EXIT_NO_BACKEND
+        }
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use crate::prelude::*;
+
+
+    #[test]
+    fn fake_dns_is_stable_and_reversible() {
+        let mut dns = FakeDns::new();
+        let a = dns.address_for("example.com");
+        let b = dns.address_for("example.com");
+        assert_eq!(a, b, "the same name must map to the same fake ip");
+        assert_eq!(dns.name_for(a), Some("example.com"));
+        let other = dns.address_for("example.org");
+        assert_ne!(a, other);
+        assert!(a.octets()[0] == 198 && a.octets()[1] == 18);
+    }
+
+
+
+    #[test]
+    fn the_filter_covers_the_bypass_surfaces() {
+        let syscalls = intercepted_syscalls();
+        for required in [
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_sendto,
+            libc::SYS_sendmsg,
+            libc::SYS_sendmmsg,
+            libc::SYS_setsockopt,
+            libc::SYS_listen,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+            libc::SYS_io_uring_setup,
+            libc::SYS_io_uring_enter,
+            libc::SYS_io_uring_register,
+        ] {
+            assert!(
+                syscalls.contains(&required),
+                "syscall {required} is not intercepted"
+            );
+        }
+    }
+
+
+
+    #[test]
+    fn parses_a_tcp_syn() {
+        let mut pkt = vec![0u8; 40];
+        pkt[0] = 0x45; // IPv4, IHL 5
+        pkt[9] = 6; // TCP
+        pkt[12..16].copy_from_slice(&[10, 0, 0, 2]);
+        pkt[16..20].copy_from_slice(&[93, 184, 216, 34]);
+        pkt[20..22].copy_from_slice(&40000u16.to_be_bytes());
+        pkt[22..24].copy_from_slice(&443u16.to_be_bytes());
+        pkt[33] = 0x02; // SYN
+        assert_eq!(
+            parse_tcp_syn(&pkt),
+            Some((
+                Ipv4Addr::new(10, 0, 0, 2),
+                40000,
+                Ipv4Addr::new(93, 184, 216, 34),
+                443
+            ))
+        );
+
+        // An ACK is not a SYN.
+        pkt[33] = 0x10;
+        assert_eq!(parse_tcp_syn(&pkt), None);
+        // UDP is not TCP.
+        pkt[9] = 17;
+        pkt[33] = 0x02;
+        assert_eq!(parse_tcp_syn(&pkt), None);
+        // Too short.
+        assert_eq!(parse_tcp_syn(&pkt[..20]), None);
+    }
+}

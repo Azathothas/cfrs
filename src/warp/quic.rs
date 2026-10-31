@@ -43,10 +43,13 @@ const SEND_QUEUE: usize = 1024;
 /// Largest datagram read from the userspace socket.
 const MAX_DATAGRAM: usize = 65_535;
 
+/// Datagrams waiting for `poll_recv`, with the peer each came from.
+type Inbound = Arc<Mutex<VecDeque<(Vec<u8>, SocketAddr)>>>;
+
 /// A quinn-compatible UDP socket over the WARP stack.
 pub struct WarpUdpSocket {
     out: mpsc::Sender<(SocketAddr, Vec<u8>)>,
-    inbound: Arc<Mutex<VecDeque<(Vec<u8>, SocketAddr)>>>,
+    inbound: Inbound,
     recv_waker: Arc<AtomicWaker>,
     send_ready: Arc<Notify>,
     local: SocketAddr,
@@ -69,8 +72,7 @@ impl std::fmt::Debug for WarpUdpSocket {
 impl WarpUdpSocket {
     fn new(udp: UdpConn, local: SocketAddr) -> Arc<Self> {
         let (out, mut out_rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(SEND_QUEUE);
-        let inbound: Arc<Mutex<VecDeque<(Vec<u8>, SocketAddr)>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let inbound: Inbound = Arc::new(Mutex::new(VecDeque::new()));
         let recv_waker = Arc::new(AtomicWaker::new());
         let send_ready = Arc::new(Notify::new());
         let closed = Arc::new(AtomicBool::new(false));

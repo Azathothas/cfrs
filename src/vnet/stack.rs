@@ -1091,7 +1091,6 @@ impl Core {
             };
             let mut reset_reason: Option<String> = None;
             let mut closed = false;
-            let mut close_requested = false;
 
             // Control commands.
             loop {
@@ -1108,7 +1107,6 @@ impl Core {
                     // stays open after the application goes.
                     Ok(ConnCmd::Close) => {
                         conn.closing = true;
-                        close_requested = true;
                     }
                     Ok(ConnCmd::Abort) => {
                         self.sockets.get_mut::<tcp::Socket>(conn.handle).abort();
@@ -1185,7 +1183,13 @@ impl Core {
             // discard the reply that is on its way. This is the decision
             // `TcpStream::drop` cannot make for itself: it does not know whether
             // the reactor is holding data it still owes.
-            if close_requested && send_queue == 0 && recv_queue == 0 {
+            //
+            // The flag is persistent, not per-poll: a close that arrives while
+            // the send queue still holds the reply is deferred, and the check
+            // runs again on the next pass. A per-poll local forgets the request
+            // after one pass, no FIN is ever sent, and a peer reading until EOF
+            // waits forever.
+            if conn.closing && send_queue == 0 && recv_queue == 0 {
                 self.sockets.get_mut::<tcp::Socket>(conn.handle).close();
             }
             // A socket in TIME_WAIT is finished for this stack's purposes: it

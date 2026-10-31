@@ -400,7 +400,7 @@ mod tests {
 
     /// A tiny blocking executor so the test can await without pulling tokio's
     /// test macros into a non-test build.
-    fn futures_block<F: std::future::Future>(mut fut: F) -> F::Output {
+    fn futures_block<F: std::future::Future>(fut: F) -> F::Output {
         use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
         fn noop(_: *const ()) {}
         fn clone(_: *const ()) -> RawWaker {

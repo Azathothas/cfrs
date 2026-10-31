@@ -46,8 +46,10 @@ pub mod policy;
 pub mod proxy;
 pub mod record;
 pub mod shim;
-pub mod socks;
 pub mod stack;
+pub mod tailscale_ssh;
+
+pub use pod_netns::{socks, tailscale, upstream};
 
 pub use addr::{Family, VirtAddr, VirtualSubnet};
 pub use control::{ControlMessage, ControlOp};
@@ -55,4 +57,7 @@ pub use device::{DeviceStats, LinkDevice, TunnelDevice};
 pub use policy::{Acl, AclAction, AclRule};
 pub use proxy::{handle_connection, ProxyListen};
 pub use record::{PcapFile, RecordedPacket, Recorder, Replayer};
+pub use pod_netns::tailscale::{Dialer, TailscaleProxy};
+pub use pod_netns::upstream::{Proxy as UpstreamProxy, ProxyKind, Rule, Upstream};
+pub use tailscale_ssh::{LocalUser, Shims};
 pub use stack::{Clock, NetStack, StackConfig, StackEvent, TcpStream, UdpSocket};

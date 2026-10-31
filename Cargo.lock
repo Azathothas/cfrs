@@ -447,6 +447,7 @@ dependencies = [
  "http-body-util",
  "httparse",
  "libc",
+ "pod-netns",
  "qrcode",
  "quinn",
  "rcgen",
@@ -2208,6 +2209,18 @@ dependencies = [
  "pkcs5",
  "rand_core 0.10.1",
  "spki",
+]
+
+[[package]]
+name = "pod-netns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde_json",
+ "smoltcp",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

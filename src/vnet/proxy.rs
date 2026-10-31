@@ -17,11 +17,10 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::task::JoinHandle;
 
@@ -29,38 +28,7 @@ use crate::vnet::addr::VirtAddr;
 use crate::vnet::socks::{self, ProxyHost};
 use crate::vnet::stack::NetStack;
 
-/// Where the proxy accepts clients.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProxyListen {
-    /// An `AF_UNIX` socket, usually an abstract-free filesystem path.
-    Unix(PathBuf),
-    /// A real TCP listener, for a host that permits `AF_INET` binds.
-    Tcp(SocketAddr),
-}
-
-impl ProxyListen {
-    /// Parse `unix:/path` or `tcp://host:port`.
-    pub fn parse(value: &str) -> Result<Self> {
-        if let Some(path) = value.strip_prefix("unix:") {
-            if path.is_empty() {
-                bail!("unix: listen address has no path");
-            }
-            return Ok(Self::Unix(PathBuf::from(path)));
-        }
-        for prefix in ["tcp://", "tcp:"] {
-            if let Some(rest) = value.strip_prefix(prefix) {
-                return Ok(Self::Tcp(
-                    rest.parse()
-                        .with_context(|| format!("bad TCP listen address {rest:?}"))?,
-                ));
-            }
-        }
-        if let Ok(addr) = value.parse::<SocketAddr>() {
-            return Ok(Self::Tcp(addr));
-        }
-        bail!("listen address {value:?} is not unix:/path or tcp://host:port")
-    }
-}
+pub use pod_netns::listen::ProxyListen;
 
 /// A destination table for names the virtual network cannot resolve.
 pub type Resolver = HashMap<String, IpAddr>;
@@ -78,10 +46,19 @@ pub fn resolve_target(
     };
     match &request.host {
         ProxyHost::Ip(ip) => Ok(VirtAddr::new(*ip, port)),
-        ProxyHost::Domain(name) => resolver
-            .get(&name.to_ascii_lowercase())
-            .map(|ip| VirtAddr::new(*ip, port))
-            .ok_or_else(|| anyhow::anyhow!("no virtual address for {name:?}")),
+        ProxyHost::Domain(name) => {
+            let key = name.to_ascii_lowercase();
+            if let Some(ip) = resolver.get(&key) {
+                return Ok(VirtAddr::new(*ip, port));
+            }
+            // SOCKS5' domain form is also how some clients send an address
+            // literal, so a name that parses as one is used directly rather
+            // than reported as unresolvable.
+            if let Ok(ip) = key.trim_start_matches('[').trim_end_matches(']').parse() {
+                return Ok(VirtAddr::new(ip, port));
+            }
+            Err(anyhow::anyhow!("no virtual address for {name:?}"))
+        }
     }
 }
 
@@ -337,21 +314,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_listen_addresses() {
-        assert_eq!(
-            ProxyListen::parse("unix:/tmp/x.sock").unwrap(),
-            ProxyListen::Unix(PathBuf::from("/tmp/x.sock"))
-        );
-        assert_eq!(
-            ProxyListen::parse("tcp://127.0.0.1:1080").unwrap(),
-            ProxyListen::Tcp("127.0.0.1:1080".parse().unwrap())
-        );
-        assert_eq!(
-            ProxyListen::parse("127.0.0.1:1080").unwrap(),
-            ProxyListen::Tcp("127.0.0.1:1080".parse().unwrap())
-        );
-        assert!(ProxyListen::parse("nonsense").is_err());
-        assert!(ProxyListen::parse("unix:").is_err());
+    fn a_domain_form_literal_resolves_to_itself() {
+        // Some SOCKS5 clients send an address literal as a domain name. A name
+        // that parses as an address is used directly instead of being reported
+        // as unresolvable, which is what a `socks5h` client can produce.
+        let request = socks::ProxyRequest {
+            host: ProxyHost::Domain("10.66.0.2".into()),
+            port: 8080,
+        };
+        let target = resolve_target(&request, &Resolver::new(), 80).unwrap();
+        assert_eq!(target, VirtAddr::new("10.66.0.2".parse().unwrap(), 8080));
+
+        let named = socks::ProxyRequest {
+            host: ProxyHost::Domain("web".into()),
+            port: 0,
+        };
+        let mut resolver = Resolver::new();
+        resolver.insert("web".into(), "10.66.0.9".parse().unwrap());
+        let target = resolve_target(&named, &resolver, 80).unwrap();
+        assert_eq!(target, VirtAddr::new("10.66.0.9".parse().unwrap(), 80));
+
+        let unknown = socks::ProxyRequest {
+            host: ProxyHost::Domain("nowhere".into()),
+            port: 80,
+        };
+        assert!(resolve_target(&unknown, &Resolver::new(), 80).is_err());
     }
 
     #[tokio::test]
