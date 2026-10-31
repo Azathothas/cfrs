@@ -1,49 +1,111 @@
 name: ci
 
+# The checks of each push to main and each pull request:
+#
+# * test: format, clippy, the tests, the man page.
+# * msrv: the workspace builds with the rust-version of Cargo.toml.
+# * live: each edge leg against the real Cloudflare edge, and WARP.
+# * static: static musl binaries for x86_64 and aarch64, with their sizes.
+# * workflows: the rules of scripts/check-workflows.py.
+# * plant: each check above must fail on a planted fault.
+# * all: the one status to require. It fails when a job failed or was
+#   skipped.
+#
+# Each action is pinned by its commit. No job may write to the repository.
+
 on:
   push:
     branches: [main]
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # The toolchain of each job but msrv. Change it here only.
+  RUST_TOOLCHAIN: "1.97.0"
+  CARGO_TERM_COLOR: never
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: clippy, rustfmt
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy,rustfmt
+          rustup default "$RUST_TOOLCHAIN"
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: The man page renders with groff and mandoc
         run: |
           set -eu
-          sudo apt-get install -y -qq groff mandoc > /dev/null
-          cargo run -q --bin cfrs -- man --roff > cfrs.1
+          sh scripts/retry.sh sudo apt-get install -y -qq groff mandoc > /dev/null
+          cargo run --locked -q --bin cfrs -- man --roff > cfrs.1
           groff -man -Tutf8 -ww -z cfrs.1 2> groff.log || true
           if [ -s groff.log ]; then cat groff.log; exit 1; fi
           mandoc -T lint -W error cfrs.1
           mandoc -T utf8 cfrs.1 | head -20
 
+  # The rust-version of Cargo.toml builds the workspace. Then a planted call
+  # of an API that is newer than that version must fail to build.
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain of rust-version
+        run: |
+          set -eu
+          msrv=$(sed -n '/^\[workspace.package\]/,/^\[/s/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$msrv" || { echo "Cargo.toml has no rust-version in [workspace.package]"; exit 1; }
+          sh scripts/retry.sh rustup toolchain install "$msrv" --profile minimal
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+      - name: Check with rust-version
+        run: cargo +"$MSRV" check --locked --workspace
+      - name: A newer API fails with rust-version
+        run: |
+          set -u
+          # Ipv4Addr::from_octets is stable from Rust 1.91.
+          printf '\n#[doc(hidden)]\npub fn planted_msrv() -> std::net::Ipv4Addr {\n    std::net::Ipv4Addr::from_octets([1, 2, 3, 4])\n}\n' >> src/lib.rs
+          if cargo +"$MSRV" check --locked -p cfrs --lib > msrv.log 2>&1; then
+            echo "the planted API built with Rust $MSRV"
+            exit 1
+          fi
+          grep -E 'E0658|unstable' msrv.log || { cat msrv.log; echo "the build failed for another cause"; exit 1; }
+          git checkout -- src/lib.rs
+
   # Run each edge leg against the real Cloudflare edge, and fetch the public
-  # URL. Also run the WARP client.
+  # URL. Also run the WARP client. One run at a time, so that the
+  # quick-tunnel service does not refuse a burst.
   live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: test
+    concurrency:
+      group: live
+      cancel-in-progress: false
     env:
       RUST_LOG: cfrs=info
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
       - name: Build
-        run: cargo build --release --bin cfrs
+        run: cargo build --locked --release --bin cfrs
       - name: Quick tunnel, QUIC (UDP 7844)
         run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
       - name: Quick tunnel, HTTP/2 (TCP 7844)
@@ -79,34 +141,132 @@ jobs:
         run: target/release/cfrs warp delete || true
 
   static:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     needs: test
     strategy:
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          targets: ${{ matrix.target }}
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -t ${{ matrix.target }}
+          rustup default "$RUST_TOOLCHAIN"
       - name: Install the C cross compilers
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld musl-tools gcc-aarch64-linux-gnu
+          sh scripts/retry.sh sudo apt-get update -qq
+          sh scripts/retry.sh sudo apt-get install -y -qq clang lld musl-tools gcc-aarch64-linux-gnu > /dev/null
       - name: Build
         env:
           CC_x86_64_unknown_linux_musl: clang
           CC_aarch64_unknown_linux_musl: clang
           CFLAGS_aarch64_unknown_linux_musl: --target=aarch64-linux-musl
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: The binaries are static, and their sizes
+        run: |
+          set -eu
+          sh scripts/check-static.sh target/${{ matrix.target }}/release/cfrs target/${{ matrix.target }}/release/pod-netns
+          {
+            echo "| ${{ matrix.target }} | bytes |"
+            echo "| --- | ---: |"
+            for b in cfrs pod-netns; do
+              echo "| $b | $(wc -c < target/${{ matrix.target }}/release/$b) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Package
         run: |
           mkdir dist
           for bin in cfrs pod-netns; do
             cp target/${{ matrix.target }}/release/$bin dist/$bin-${{ matrix.target }}
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cfrs-${{ matrix.target }}
           path: dist/*
+
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The rules of the workflows
+        run: python3 scripts/check-workflows.py
+
+  # Each check must be able to fail. A planted fault, in a scratch copy, must
+  # make its check fail; the job fails when a check passes on its plant.
+  plant:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: The checks fail on their plants
+        run: |
+          set -u
+          fail=0
+          must_fail() {
+            what=$1
+            shift
+            if "$@" > "$RUNNER_TEMP/plant.log" 2>&1; then
+              echo "FAIL $what: the check passed"
+              cat "$RUNNER_TEMP/plant.log"
+              fail=1
+            else
+              echo "ok   $what: $(tail -1 "$RUNNER_TEMP/plant.log")"
+            fi
+          }
+          w="$RUNNER_TEMP/workflows"
+
+          # --locked with a Cargo.lock that is out of date.
+          sed -i '0,/^version = "/s/^version = "\(.*\)"/version = "\1-planted"/' Cargo.toml
+          must_fail "cargo --locked, Cargo.lock out of date" cargo metadata --locked --format-version 1
+          git checkout -- Cargo.toml
+
+          # A binary with dynamic dependencies.
+          must_fail "check-static.sh, a dynamic binary" sh scripts/check-static.sh /bin/ls
+
+          # A job with no timeout-minutes.
+          rm -rf "$w"; cp -r .github/workflows "$w"
+          sed -i '0,/^    timeout-minutes:/{/^    timeout-minutes:/d}' "$w/ci.yml"
+          must_fail "check-workflows.py, a job with no timeout-minutes" python3 scripts/check-workflows.py "$w"
+
+          # An action pinned to a tag.
+          rm -rf "$w"; cp -r .github/workflows "$w"
+          sed -i '0,/actions\/checkout@[0-9a-f]\{40\}/s//actions\/checkout@v7/' "$w/ci.yml"
+          must_fail "check-workflows.py, an action on a tag" python3 scripts/check-workflows.py "$w"
+
+          # The test job with a right to write.
+          rm -rf "$w"; cp -r .github/workflows "$w"
+          sed -i 's/^  test:$/  test:\n    permissions:\n      contents: write/' "$w/ci.yml"
+          must_fail "check-workflows.py, the test job may write" python3 scripts/check-workflows.py "$w"
+
+          # A workflow that may write at the top level.
+          rm -rf "$w"; cp -r .github/workflows "$w"
+          sed -i '0,/^  contents: read$/s//  contents: write/' "$w/ci.yml"
+          must_fail "check-workflows.py, write at the top level" python3 scripts/check-workflows.py "$w"
+
+          exit "$fail"
+
+  all:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [test, msrv, live, static, workflows, plant]
+    if: always()
+    steps:
+      - name: Each job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key) \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null

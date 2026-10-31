@@ -2,7 +2,7 @@
 name = "cfrs"
 version.workspace = true
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.89"
 license = "0BSD"
 build = "build.rs"
 description = "Cloudflare quick and named tunnels, and the Cloudflare WARP client, in one Rust binary for hosts with strong network limits."

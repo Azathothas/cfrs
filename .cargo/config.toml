@@ -3,3 +3,8 @@
 # IFACE_MAX_ADDR_COUNT to 2, which cannot hold all four, so raise it.
 [env]
 SMOLTCP_IFACE_MAX_ADDR_COUNT = "4"
+
+# A new entry of Cargo.lock takes the newest version of a crate that builds
+# with the rust-version of the workspace.
+[resolver]
+incompatible-rust-versions = "fallback"

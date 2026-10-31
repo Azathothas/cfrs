@@ -1,0 +1,33 @@
+# Dependabot: each week, the crates of Cargo.lock, the actions of the
+# workflows and the pinned images. Each pull request runs the whole CI.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Minor and patch updates in one pull request; each major update alone.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directories:
+      - /images/build
+      - /images/armv7
+      - /images/binfmt
+      - /images/trufflehog
+    schedule:
+      interval: weekly

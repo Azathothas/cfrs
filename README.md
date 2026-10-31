@@ -39,7 +39,7 @@ cargo build --release
 ```
 
 The binaries are `target/release/cfrs` and `target/release/pod-netns`. Rust
-1.86 or newer is necessary.
+1.89 or newer is necessary.
 
 A static binary has no run-time dependency on the C library of the host:
 
