@@ -45,6 +45,7 @@ pub mod report;
 pub mod resolve;
 pub mod service;
 pub mod share;
+pub mod state;
 pub mod status;
 pub mod transport;
 pub mod trust;

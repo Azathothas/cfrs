@@ -939,7 +939,8 @@ struct NetArgs {
 #[derive(Args, Debug)]
 struct WarpArgs {
     /// The file that keeps the device and its MASQUE key, so that each run
-    /// uses the same device. Default: $XDG_STATE_HOME/cfrs/warp.json.
+    /// uses the same device. Default: warp.json in the state directory
+    /// (see CFRS_STATE_DIR in cfrs man environment).
     #[arg(long, value_name = "PATH", global = true)]
     identity: Option<PathBuf>,
     /// Register a new device for this run only, and do not save it.
@@ -1012,10 +1013,19 @@ async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<
             None,
         ));
     }
-    let path = args
-        .identity
-        .clone()
-        .unwrap_or_else(WarpClient::default_identity_path);
+    let path = match args.identity.clone() {
+        Some(path) => path,
+        None => match WarpClient::default_identity_path().fault(Fault::Config)? {
+            Some(path) => path,
+            None => {
+                eprintln!("cfrs: CFRS_STATE_DIR=none: the WARP device is not saved");
+                return Ok((
+                    WarpClient::register().await.fault(Fault::Unavailable)?,
+                    None,
+                ));
+            }
+        },
+    };
     Ok((
         WarpClient::register_or_load(&path)
             .await
@@ -1202,7 +1212,7 @@ fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>)
     println!("protocol    {}", device.policy.tunnel_protocol);
     match path {
         Some(path) => println!("saved       {}", path.display()),
-        None => println!("saved       no (--ephemeral)"),
+        None => println!("saved       no (--ephemeral or CFRS_STATE_DIR=none)"),
     }
 }
 
@@ -1420,7 +1430,8 @@ fn net_shim(args: ShimArgs) -> Result<()> {
     let directory = args
         .out
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("cfrsnet"));
+        .map(Ok)
+        .unwrap_or_else(|| cfrs::state::exec_dir("cfrsnet"))?;
     let shim = match cfrs::vnet::shim::locate() {
         Some(shim) if args.out.is_none() => shim,
         _ => cfrs::vnet::shim::build(&directory)?,
@@ -1634,7 +1645,8 @@ fn net_socksify(args: SocksifyArgs) -> Result<()> {
     let directory = args
         .out
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("cfrssocks"));
+        .map(Ok)
+        .unwrap_or_else(|| cfrs::state::exec_dir("cfrssocks"))?;
     let shim = match cfrs::vnet::shim::locate_socks() {
         Some(shim) if args.out.is_none() => shim,
         _ => cfrs::vnet::shim::build_socks(&directory)?,

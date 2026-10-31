@@ -49,7 +49,11 @@ fn edge_override() -> Value {
 }
 
 fn warp_identity() -> Value {
-    let path = crate::warp::WarpClient::default_identity_path();
+    let path = match crate::warp::WarpClient::default_identity_path() {
+        Ok(Some(path)) => path,
+        Ok(None) => return json!({ "path": null, "reason": "CFRS_STATE_DIR=none" }),
+        Err(err) => return json!({ "path": null, "error": format!("{err:#}") }),
+    };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return json!({ "path": path, "exists": path.exists() });
     };

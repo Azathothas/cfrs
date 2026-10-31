@@ -273,3 +273,54 @@ fn the_listen_defaults_agree_with_the_manual() {
     assert!(manual.len() >= 4, "{manual:?}");
     assert_eq!(table, manual, "SECURITY.md and cfrs man --json differ");
 }
+
+/// With an empty environment (no HOME, no XDG variables, no user name),
+/// the commands that need no network run, and the state directory is in
+/// the temporary directory, never in the current directory.
+#[test]
+fn an_empty_environment_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env_clear()
+            .env("TMPDIR", dir.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    for args in [
+        &["--version"][..],
+        &["man", "--no-pager", "files"],
+        &["ports"],
+        &["net", "addresses"],
+    ] {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "cfrs {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = run(&["status"]);
+    assert_eq!(out.status.code(), Some(0));
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let path = status["warp_identity"]["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(path.starts_with(dir.path().to_str().unwrap()), "{path}");
+    assert!(path.contains("/cfrs-"), "{path}");
+    assert!(!dir.path().join("cfrs-warp.json").exists());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .arg("status")
+        .env_clear()
+        .env("CFRS_STATE_DIR", "none")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status["warp_identity"]["reason"], "CFRS_STATE_DIR=none");
+}

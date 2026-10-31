@@ -185,26 +185,17 @@ impl WarpClient {
         } else {
             tracing::debug!(path = %path.display(), "no stored WARP identity; registering a new device");
         }
+        // A failed save after the registration spends a device: check first.
+        crate::state::check_file_writable(path)?;
         let client = Self::register().await?;
         client.save(path)?;
         Ok(client)
     }
 
-    /// The default place for the saved identity:
-    /// `$XDG_STATE_HOME/cfrs/warp.json`, else `~/.local/state/cfrs/warp.json`,
-    /// else `./cfrs-warp.json`.
-    pub fn default_identity_path() -> std::path::PathBuf {
-        if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-            return std::path::PathBuf::from(state)
-                .join("cfrs")
-                .join("warp.json");
-        }
-        if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
-            return std::path::PathBuf::from(home)
-                .join(".local/state/cfrs")
-                .join("warp.json");
-        }
-        std::path::PathBuf::from("cfrs-warp.json")
+    /// The default place for the saved identity: `warp.json` in the state
+    /// directory of [`crate::state`], or `None` with `CFRS_STATE_DIR=none`.
+    pub fn default_identity_path() -> Result<Option<std::path::PathBuf>> {
+        Ok(crate::state::state_dir()?.map(|dir| dir.join("warp.json")))
     }
 
     /// Read the device record from the API again. Keep the token, which only

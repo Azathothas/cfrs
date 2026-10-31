@@ -133,8 +133,6 @@ ESC, BEL, CR and C1 controls through the error path.
   issue #5 are not done yet.
 * cfrs does not read the certificate stores of Windows or macOS: no release
   is built for them yet (issue #1).
-* With no `XDG_STATE_HOME` and no `HOME`, the WARP identity file is
-  `cfrs-warp.json` in the current directory.
 * The `/tmp` paths of the Unix sockets are known to each user. Another user
   can make the path first. Then the bind fails; cfrs does not use the file of
   the other user. Use `--listen unix:` with a path in a private directory.

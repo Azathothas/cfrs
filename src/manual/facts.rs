@@ -48,6 +48,16 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The only file of TLS roots (PEM), when --ca-file is not given. Without both, cfrs trusts cfrs-ca.pem beside the binary, the first system bundle that it can read, and the roots compiled into cfrs.",
     },
     EnvVar {
+        names: &["CFRS_STATE_DIR"],
+        used_by: "warp, tunnel --transport warp",
+        meaning: "The state directory (the WARP identity). The value none keeps no file. Without it, cfrs takes the first directory that it can write of $XDG_STATE_HOME/cfrs, $HOME/.local/state/cfrs, $XDG_RUNTIME_DIR/cfrs and cfrs-<uid> in the temporary directory.",
+    },
+    EnvVar {
+        names: &["XDG_STATE_HOME", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"],
+        used_by: "warp, net shim, net socksify",
+        meaning: "The candidates of the state directory, and of the directory of a shim (a directory that is not noexec). cfrs reads the home from HOME only, not from the user database.",
+    },
+    EnvVar {
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
@@ -66,11 +76,6 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         names: &["CFRS_DEBUG"],
         used_by: "serve (SSH relay)",
         meaning: "When set, log each visitor channel of the SSH relay transport.",
-    },
-    EnvVar {
-        names: &["XDG_STATE_HOME", "HOME"],
-        used_by: "warp",
-        meaning: "The directory of the saved WARP identity: $XDG_STATE_HOME/cfrs/warp.json, else $HOME/.local/state/cfrs/warp.json, else ./cfrs-warp.json.",
     },
     EnvVar {
         names: &["PAGER", "TERM", "LESS", "LINES"],
@@ -134,8 +139,8 @@ pub struct FileEntry {
 /// Each file that cfrs reads or writes.
 pub const FILES: &[FileEntry] = &[
     FileEntry {
-        path: "$XDG_STATE_HOME/cfrs/warp.json",
-        meaning: "The WARP device, its token and its MASQUE key (mode 0600). cfrs warp writes it; cfrs warp delete removes it. --identity names another file.",
+        path: "<state directory>/warp.json",
+        meaning: "The WARP device, its token and its MASQUE key (mode 0600, directory mode 0700). The state directory is the first that cfrs can write of CFRS_STATE_DIR, $XDG_STATE_HOME/cfrs, $HOME/.local/state/cfrs, $XDG_RUNTIME_DIR/cfrs and cfrs-<uid> in the temporary directory; never the current directory. cfrs warp writes it; cfrs warp delete removes it. --identity names another file.",
     },
     FileEntry {
         path: "cfrs-ca.pem (beside the binary)",
