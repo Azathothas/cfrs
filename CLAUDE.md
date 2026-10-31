@@ -51,3 +51,19 @@ These rules apply to each session. Obey them before any other default.
   disk is full.
 - Documents: `README.md`, `docs/protocol.md`, `docs/virtual-network.md`,
   `crates/pod-netns/README.md`.
+
+## Decisions
+
+- Dependabot pull requests: apply each judged update as an own commit on
+  `main` (checks green), then close the pull request with a link to the
+  commit. Do not merge the Dependabot branch.
+- Platforms: Linux only. No Windows or macOS builds. Build static Linux
+  binaries for all major architectures with cargo-zigbuild (zig cc).
+- Releases: cut the next prerelease (`v0.3.0-beta.N`) unattended when a
+  batch of fixes is green: dry run, then `publish=vX`, then check
+  `release-proofs.yml`.
+- `cfrs update`: check SHA256SUMS, and the certificate identity and the
+  signature of the cosign bundle over SHA256SUMS, with own code. The Rekor
+  inclusion proof is not checked.
+- Issues: a watcher polls for new issues. A Sonnet agent triages each new
+  issue. Close each issue with evidence (commits, CI runs, test output).

@@ -49,6 +49,16 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest time for the edge to open the control stream and for the
 /// registration to complete.
 pub const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+/// The time between two HTTP/2 PINGs to the edge.
+pub const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// The longest wait for the answer of a PING. No answer is a lost
+/// connection: a NAT or a proxy can drop it without a close.
+pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest time that a write to the edge or to an origin may make no
+/// progress. Then the stream fails, and its task and buffers are freed.
+pub const WRITE_STALL: Duration = Duration::from_secs(60);
+/// The longest time that a closing connection may keep its open streams.
+pub const DRAIN_LIMIT: Duration = Duration::from_secs(90);
 /// The size of the pipe buffers between HTTP/2 and the service layer.
 const PIPE_BUFFER: usize = 64 * 1024;
 /// The header value that marks a WebSocket stream.
@@ -190,6 +200,131 @@ pub struct H2Leg {
     pub control: rpc::ControlSession,
     /// The task that accepts streams. It ends when the connection ends.
     pub serve: JoinHandle<()>,
+    /// Ready when the connection takes no new stream: the edge sent GOAWAY
+    /// or closed it, or a PING got no answer. The open streams go on in
+    /// `serve` until they end.
+    pub draining: tokio::sync::oneshot::Receiver<String>,
+    /// When the leg registered.
+    pub started: std::time::Instant,
+}
+
+/// The keepalive of a connection.
+#[derive(Clone, Copy, Debug)]
+pub struct Keepalive {
+    pub interval: Duration,
+    pub timeout: Duration,
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self {
+            interval: PING_INTERVAL,
+            timeout: PING_TIMEOUT,
+        }
+    }
+}
+
+/// The edge streams of one HTTP/2 connection.
+pub struct Served {
+    /// The control stream, when the edge opens it.
+    pub control: tokio::sync::oneshot::Receiver<(
+        http::Request<h2::RecvStream>,
+        h2::server::SendResponse<Bytes>,
+    )>,
+    pub serve: JoinHandle<()>,
+    pub draining: tokio::sync::oneshot::Receiver<String>,
+}
+
+/// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
+/// One task accepts the streams, gives the control stream to the caller,
+/// and sends a PING each `keepalive.interval`.
+pub async fn serve_connection<T>(
+    io: T,
+    runtime: Arc<ServiceRuntime>,
+    ingress: Arc<Ingress>,
+    keepalive: Keepalive,
+) -> Result<Served>
+where
+    T: AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let mut conn = h2::server::Builder::new()
+        .max_concurrent_streams(u32::MAX)
+        .initial_window_size(1 << 20)
+        .initial_connection_window_size(1 << 24)
+        .handshake::<_, Bytes>(io)
+        .await
+        .context("HTTP/2 handshake with the edge")?;
+    let ping = conn.ping_pong();
+    let (control_tx, control_rx) = tokio::sync::oneshot::channel();
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<String>();
+    let (lost_tx, mut lost_rx) = tokio::sync::oneshot::channel::<String>();
+    if let Some(mut ping) = ping {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(keepalive.interval).await;
+                match tokio::time::timeout(keepalive.timeout, ping.ping(h2::Ping::opaque())).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(err)) => {
+                        let _ = lost_tx.send(format!("the PING failed: {err}"));
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = lost_tx.send(format!(
+                            "the edge did not answer a PING in {} s",
+                            keepalive.timeout.as_secs()
+                        ));
+                        return;
+                    }
+                }
+            }
+        });
+    }
+    let serve = tokio::spawn(async move {
+        let mut control_tx = Some(control_tx);
+        let reason = loop {
+            let next = tokio::select! {
+                next = conn.accept() => next,
+                lost = &mut lost_rx => {
+                    // A lost connection has no streams to finish.
+                    let reason = lost.unwrap_or_else(|_| "the keepalive ended".into());
+                    let _ = drain_tx.send(reason);
+                    return;
+                }
+            };
+            let (request, respond) = match next {
+                Some(Ok(stream)) => stream,
+                Some(Err(err)) => break format!("the HTTP/2 connection failed: {err}"),
+                None => break "the edge ended the HTTP/2 connection (GOAWAY)".to_string(),
+            };
+            let kind = stream_type(request.headers());
+            if kind == StreamType::Control {
+                match control_tx.take() {
+                    Some(tx) => {
+                        let _ = tx.send((request, respond));
+                    }
+                    None => warn!("the edge opened a second control stream"),
+                }
+                continue;
+            }
+            let runtime = runtime.clone();
+            let ingress = ingress.clone();
+            tokio::spawn(async move {
+                if let Err(err) = serve_stream(kind, request, respond, runtime, ingress).await {
+                    debug!(error = %err, "HTTP/2 stream failed");
+                }
+            });
+        };
+        debug!(%reason, "the HTTP/2 edge connection takes no new stream");
+        let _ = drain_tx.send(reason);
+        // The open streams go on while the connection is polled.
+        let closed = std::future::poll_fn(|cx| conn.poll_closed(cx));
+        let _ = tokio::time::timeout(DRAIN_LIMIT, closed).await;
+    });
+    Ok(Served {
+        control: control_rx,
+        serve,
+        draining: drain_rx,
+    })
 }
 
 /// Dial the first edge address that answers, register, and serve streams.
@@ -263,46 +398,13 @@ async fn connect_one(
     .map_err(|_| anyhow::anyhow!("TLS with the edge at {addr} timed out"))?
     .with_context(|| format!("TLS with the edge at {addr}"))?;
 
-    let mut conn = h2::server::Builder::new()
-        .max_concurrent_streams(u32::MAX)
-        .initial_window_size(1 << 20)
-        .initial_connection_window_size(1 << 24)
-        .handshake::<_, Bytes>(tls)
+    let Served {
+        control: control_rx,
+        serve,
+        draining,
+    } = serve_connection(tls, runtime, ingress, Keepalive::default())
         .await
-        .with_context(|| format!("HTTP/2 handshake with the edge at {addr}"))?;
-
-    // The connection makes progress only while `accept` is polled, so one
-    // task accepts all streams. It gives the control stream to this task.
-    let (control_tx, control_rx) = tokio::sync::oneshot::channel();
-    let serve = tokio::spawn(async move {
-        let mut control_tx = Some(control_tx);
-        while let Some(next) = conn.accept().await {
-            let (request, respond) = match next {
-                Ok(stream) => stream,
-                Err(err) => {
-                    debug!(error = %err, "the HTTP/2 edge connection ended");
-                    break;
-                }
-            };
-            let kind = stream_type(request.headers());
-            if kind == StreamType::Control {
-                match control_tx.take() {
-                    Some(tx) => {
-                        let _ = tx.send((request, respond));
-                    }
-                    None => warn!("the edge opened a second control stream"),
-                }
-                continue;
-            }
-            let runtime = runtime.clone();
-            let ingress = ingress.clone();
-            tokio::spawn(async move {
-                if let Err(err) = serve_stream(kind, request, respond, runtime, ingress).await {
-                    debug!(error = %err, "HTTP/2 stream failed");
-                }
-            });
-        }
-    });
+        .with_context(|| format!("the edge at {addr}"))?;
 
     let (request, mut respond) = tokio::time::timeout(REGISTER_TIMEOUT, control_rx)
         .await
@@ -324,6 +426,8 @@ async fn connect_one(
         location: details.location,
         control,
         serve,
+        draining,
+        started: std::time::Instant::now(),
     })
 }
 
@@ -426,8 +530,16 @@ pub fn body_reader(mut body: h2::RecvStream) -> tokio::io::DuplexStream {
                 break;
             };
             let len = data.len();
-            if writer.write_all(&data).await.is_err() {
-                break;
+            match tokio::time::timeout(WRITE_STALL, writer.write_all(&data)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    debug!(
+                        "the origin read nothing for {} s; the stream fails",
+                        WRITE_STALL.as_secs()
+                    );
+                    break;
+                }
             }
             let _ = body.flow_control().release_capacity(len);
         }
@@ -463,9 +575,18 @@ where
         let mut offset = 0;
         while offset < n {
             send.reserve_capacity(n - offset);
-            let granted = std::future::poll_fn(|cx| send.poll_capacity(cx))
-                .await
-                .context("the edge closed the stream")??;
+            let granted = match tokio::time::timeout(
+                WRITE_STALL,
+                std::future::poll_fn(|cx| send.poll_capacity(cx)),
+            )
+            .await
+            {
+                Ok(granted) => granted.context("the edge closed the stream")??,
+                Err(_) => {
+                    send.send_reset(h2::Reason::CANCEL);
+                    bail!("the edge read nothing for {} s", WRITE_STALL.as_secs());
+                }
+            };
             let take = granted.min(n - offset);
             if take == 0 {
                 continue;
@@ -476,8 +597,10 @@ where
     }
 }
 
-/// Keep one HTTP/2 leg registered: serve until the connection ends, then
-/// connect again with back-off, until `shutdown` changes.
+/// Keep one HTTP/2 leg registered: serve until the connection takes no new
+/// stream, then connect a replacement at once (the old connection finishes
+/// its open streams), and after a failure try again as `policy` says. Gives
+/// the reason when the leg stops for a cause other than `shutdown`.
 #[allow(clippy::too_many_arguments)]
 pub async fn reactor(
     mut leg: Option<H2Leg>,
@@ -491,41 +614,48 @@ pub async fn reactor(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     policy: crate::config::ReconnectPolicy,
     grace: Duration,
-) {
+) -> Option<String> {
+    use crate::config::Next;
     let mut attempt = 0u32;
+    let mut delay = Duration::ZERO;
     loop {
         if let Some(current) = leg.take() {
-            attempt = 0;
             let H2Leg {
-                control, mut serve, ..
+                control,
+                serve,
+                mut draining,
+                started,
+                ..
             } = current;
             tokio::select! {
                 _ = shutdown.changed() => {
                     control.shutdown_graceful(grace).await;
                     serve.abort();
-                    return;
+                    return None;
                 }
-                _ = &mut serve => {
-                    warn!(conn_index, "the edge closed the HTTP/2 connection");
+                reason = &mut draining => {
+                    let reason = reason.unwrap_or_else(|_| "the connection task ended".into());
+                    warn!(conn_index, %reason, "the HTTP/2 edge connection ends; connecting a replacement now");
                     drop(control);
+                    // The old connection finishes its open streams on its own.
+                    drop(serve);
                 }
             }
+            if started.elapsed() >= policy.stable {
+                attempt = 0;
+            }
+            delay = Duration::ZERO;
         }
         if *shutdown.borrow() {
-            return;
+            return None;
+        }
+        if !delay.is_zero() {
+            tokio::select! {
+                _ = shutdown.changed() => return None,
+                _ = tokio::time::sleep(delay) => {}
+            }
         }
         attempt += 1;
-        if attempt > policy.max_attempts {
-            warn!(
-                conn_index,
-                "giving up after {} reconnect attempts", policy.max_attempts
-            );
-            return;
-        }
-        tokio::select! {
-            _ = shutdown.changed() => return,
-            _ = tokio::time::sleep(policy.backoff(attempt)) => {}
-        }
         let mut options =
             rpc::ConnectionOptions::default_for_quick_tunnel(crate::tunnel::CLIENT_VERSION);
         options.replace_existing = true;
@@ -547,8 +677,17 @@ pub async fn reactor(
                 leg = Some(next);
             }
             Err(err) => {
-                warn!(conn_index, attempt, error = %err, "HTTP/2 reconnect failed");
                 metrics.error();
+                match policy.next(attempt, &err) {
+                    Next::Retry(wait) => {
+                        warn!(conn_index, attempt, error = %format!("{err:#}"), retry_in = ?wait, "HTTP/2 reconnect failed");
+                        delay = wait;
+                    }
+                    Next::Stop(reason) => {
+                        tracing::error!(conn_index, %reason, "the HTTP/2 leg stops");
+                        return Some(reason);
+                    }
+                }
             }
         }
     }
@@ -648,6 +787,80 @@ mod tests {
         assert!(decoded.contains(&("X-Thing".to_string(), "v".to_string())));
         let (status, _) = edge_response("origin down", &[]);
         assert_eq!(status, 502);
+    }
+
+    fn service() -> (Arc<ServiceRuntime>, Arc<Ingress>) {
+        let ingress = Arc::new(Ingress::new().catch_all(crate::ingress::Service::HelloWorld));
+        let runtime =
+            Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
+        (runtime, ingress)
+    }
+
+    /// An edge that stops answering (its HTTP/2 connection is not polled
+    /// any more) is found by the PING, not by the OS.
+    #[tokio::test]
+    async fn a_ping_with_no_answer_ends_the_connection() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let keepalive = Keepalive {
+            interval: Duration::from_millis(100),
+            timeout: Duration::from_millis(200),
+        };
+        let client = tokio::spawn(h2::client::handshake(edge_side));
+        let served = serve_connection(cfrs_side, runtime, ingress, keepalive)
+            .await
+            .unwrap();
+        // The edge side keeps its connection but never polls it again.
+        let _edge = client.await.unwrap().unwrap();
+        let reason = tokio::time::timeout(Duration::from_secs(5), served.draining)
+            .await
+            .expect("the lost connection is found")
+            .unwrap();
+        assert!(reason.contains("did not answer a PING"), "{reason}");
+    }
+
+    /// When the edge ends the connection, the draining signal comes, and a
+    /// stream that is open goes on to its end.
+    #[tokio::test]
+    async fn goaway_drains_and_open_streams_finish() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let client = tokio::spawn(h2::client::handshake(edge_side));
+        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+            .await
+            .unwrap();
+        let (mut send, connection) = client.await.unwrap().unwrap();
+        let driver = tokio::spawn(connection);
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("https://x.trycloudflare.com/")
+            .body(())
+            .unwrap();
+        let (response, _) = send.send_request(request, true).unwrap();
+        // No more requests from this edge connection: it sends GOAWAY when
+        // its streams end.
+        drop(send);
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), 200);
+        let mut body = response.into_body();
+        let mut text = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            let _ = body.flow_control().release_capacity(chunk.len());
+            text.extend_from_slice(&chunk);
+        }
+        assert_eq!(text, b"Hello, world! (cfrs)\n");
+        drop(body);
+        let reason = tokio::time::timeout(Duration::from_secs(5), served.draining)
+            .await
+            .expect("the drain signal")
+            .unwrap();
+        assert!(
+            reason.contains("GOAWAY") || reason.contains("failed"),
+            "{reason}"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(5), served.serve).await;
+        driver.abort();
     }
 
     /// Run a real HTTP/2 connection in memory: the test is the edge (the

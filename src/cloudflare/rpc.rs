@@ -27,6 +27,29 @@ use super::schema::{
     read_register_results, write_register_params, METHOD_REGISTER_CONNECTION,
     METHOD_UNREGISTER_CONNECTION, REGISTRATION_SERVER_ID,
 };
+
+/// A refusal of the registration by the edge, with its retry flags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub cause: String,
+    pub should_retry: bool,
+    pub retry_after: Duration,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the edge refused the registration: {} (retry: {}, after {} s)",
+            self.cause,
+            if self.should_retry { "yes" } else { "no" },
+            self.retry_after.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for Refused {}
+
 pub use super::schema::{ConnectionError, ConnectionOptions, RegistrationDetails, TunnelAuth};
 
 /// The longest time for the registration.
@@ -386,12 +409,11 @@ impl<W: AsyncWrite + Unpin> Session<W> {
                 let results = results_struct(&message)?;
                 match read_register_results(&results)? {
                     Ok(details) => Ok(details),
-                    Err(err) => bail!(
-                        "the edge refused the registration: {} (retry: {}, after {} s)",
-                        err.cause,
-                        err.should_retry,
-                        err.retry_after / 1_000_000_000
-                    ),
+                    Err(err) => Err(anyhow::Error::new(Refused {
+                        cause: err.cause.clone(),
+                        should_retry: err.should_retry,
+                        retry_after: Duration::from_nanos(err.retry_after.max(0) as u64),
+                    })),
                 }
             }
             Answer::Exception(reason) => bail!("registerConnection failed: {reason}"),

@@ -727,7 +727,7 @@ async fn run_tunnel(
             verified(show, url);
         }
     }
-    wait(run_for, controls).await;
+    serve_until(&handle, wait(run_for, controls)).await?;
     handle.shutdown().await;
     Ok(())
 }
@@ -775,7 +775,7 @@ async fn run_share(
         verified(show, &public);
     }
     let controls = handle.share_controls();
-    wait_with_idle(run_for, controls, idle_secs).await;
+    serve_until(&handle, wait_with_idle(run_for, controls, idle_secs)).await?;
     handle.shutdown().await;
     Ok(())
 }
@@ -802,9 +802,24 @@ async fn run_demo(
         return Ok(());
     }
     handle.verify(Some("Hello, world! (cfrs)")).await?;
-    wait(run_for, vec![]).await;
+    serve_until(&handle, wait(run_for, vec![])).await?;
     handle.shutdown().await;
     Ok(())
+}
+
+/// Serve until `done`, or until each edge leg has stopped for a cause: then
+/// the command fails with the cause (exit 69).
+async fn serve_until(
+    handle: &cfrs::TunnelHandle,
+    done: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    tokio::select! {
+        _ = done => Ok(()),
+        reason = handle.stopped() => Err(cfrs::exit::fault(
+            Fault::Unavailable,
+            anyhow::anyhow!("each edge connection stopped: {reason}"),
+        )),
+    }
 }
 
 /// After a fetch of the public URL: one JSON line with --json.

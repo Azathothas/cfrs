@@ -170,28 +170,86 @@ impl std::fmt::Display for Transport {
 }
 
 /// Reconnect behaviour when the edge drops a connection.
+///
+/// A leg tries again after each network error, with no limit by default:
+/// after a network loss of any length, the tunnel serves again. The delay
+/// doubles from `initial` to `max`, plus 0 to 25 % at random, so that the
+/// legs do not reconnect at the same time. A refusal of the edge with
+/// `should_retry = false` stops the leg; its `retry_after` replaces the
+/// delay. The count of attempts starts again when a connection stays up
+/// for `stable`.
 #[derive(Clone, Debug)]
 pub struct ReconnectPolicy {
     pub max_attempts: u32,
     pub initial: Duration,
     pub max: Duration,
+    pub stable: Duration,
 }
 
 impl Default for ReconnectPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: 10,
+            max_attempts: u32::MAX,
             initial: Duration::from_secs(1),
             max: Duration::from_secs(30),
+            stable: Duration::from_secs(60),
         }
     }
 }
 
+/// What a leg does after a failed attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// Try again after this delay.
+    Retry(Duration),
+    /// Stop the leg, for this reason.
+    Stop(String),
+}
+
+/// The longest `retry_after` that cfrs obeys.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
+
 impl ReconnectPolicy {
+    /// The delay before attempt `attempt` (from 1), with no jitter.
     pub fn backoff(&self, attempt: u32) -> Duration {
         let shift = attempt.saturating_sub(1).min(20);
         let secs = self.initial.as_secs().saturating_mul(1u64 << shift);
         Duration::from_secs(secs.min(self.max.as_secs()))
+    }
+
+    /// The delay before attempt `attempt`, plus 0 to 25 % at random.
+    pub fn backoff_with_jitter(&self, attempt: u32) -> Duration {
+        let base = self.backoff(attempt);
+        let mut byte = [0u8; 2];
+        let _ = getrandom::fill(&mut byte);
+        let fraction = u16::from_le_bytes(byte) as u32 % 2501; // 0..=25.00 %
+        base + base * fraction / 10_000
+    }
+
+    /// What to do after attempt `attempt` failed with `err`.
+    pub fn next(&self, attempt: u32, err: &anyhow::Error) -> Next {
+        if let Some(refused) = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<crate::cloudflare::rpc::Refused>())
+        {
+            if !refused.should_retry {
+                return Next::Stop(format!(
+                    "the edge refused the registration and asks for no retry: {}",
+                    refused.cause
+                ));
+            }
+            if !refused.retry_after.is_zero() {
+                return Next::Retry(
+                    refused
+                        .retry_after
+                        .clamp(Duration::from_secs(1), MAX_RETRY_AFTER),
+                );
+            }
+        }
+        if attempt >= self.max_attempts {
+            return Next::Stop(format!("{} attempts failed; the last: {err:#}", attempt));
+        }
+        Next::Retry(self.backoff_with_jitter(attempt + 1))
     }
 }
 
@@ -286,6 +344,47 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_next_step_follows_the_flags_of_the_edge() {
+        use crate::cloudflare::rpc::Refused;
+        let policy = ReconnectPolicy::default();
+        let refused = |should_retry, secs| {
+            anyhow::Error::new(Refused {
+                cause: "Unauthorized: tunnel not found".into(),
+                should_retry,
+                retry_after: Duration::from_secs(secs),
+            })
+            .context("registering")
+        };
+        match policy.next(1, &refused(false, 0)) {
+            Next::Stop(reason) => assert!(reason.contains("tunnel not found"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            policy.next(1, &refused(true, 5)),
+            Next::Retry(Duration::from_secs(5))
+        );
+        assert_eq!(
+            policy.next(1, &refused(true, 9999)),
+            Next::Retry(MAX_RETRY_AFTER)
+        );
+        // A network error is retried with no limit, with 0-25 % jitter.
+        let net = anyhow::anyhow!("connection refused");
+        for attempt in [1, 5, 1000, u32::MAX - 1] {
+            let Next::Retry(d) = policy.next(attempt, &net) else {
+                panic!("attempt {attempt} stopped");
+            };
+            let base = policy.backoff(attempt.saturating_add(1));
+            assert!(d >= base && d <= base + base / 4, "{d:?} for {base:?}");
+        }
+        assert_eq!(policy.backoff(1000), Duration::from_secs(30));
+        let capped = ReconnectPolicy {
+            max_attempts: 3,
+            ..policy
+        };
+        assert!(matches!(capped.next(3, &net), Next::Stop(_)));
+    }
 
     #[test]
     fn load_file_reads_a_cloudflared_config() {

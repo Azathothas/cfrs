@@ -184,6 +184,7 @@ impl Tunnel {
             info!("{note}");
         }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (legs, stopped) = Legs::new();
         let mut tasks = Vec::new();
         let mut warp_keepalive = None;
         let mut chosen = None;
@@ -260,20 +261,23 @@ impl Tunnel {
             First::Quic(edges, endpoint, conn, control, location) => {
                 info!(leg = %kind, %location, "registered with the edge");
                 let edges = Arc::new(edges);
-                tasks.push(tokio::spawn(reactor(
-                    runtime.clone(),
-                    ingress.clone(),
-                    auth.clone(),
-                    tunnel_id,
-                    endpoint.clone(),
-                    conn,
-                    control,
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                    reconnect.clone(),
-                    0,
-                    edges.clone(),
-                )));
+                tasks.push(spawn_leg(
+                    &legs,
+                    reactor(
+                        runtime.clone(),
+                        ingress.clone(),
+                        auth.clone(),
+                        tunnel_id,
+                        endpoint.clone(),
+                        conn,
+                        control,
+                        metrics.clone(),
+                        shutdown_rx.clone(),
+                        reconnect.clone(),
+                        0,
+                        edges.clone(),
+                    ),
+                ));
                 // The other HA legs register in the background.
                 for index in 1..ha_connections {
                     let runtime = runtime.clone();
@@ -284,7 +288,7 @@ impl Tunnel {
                     let shutdown_rx = shutdown_rx.clone();
                     let reconnect = reconnect.clone();
                     let edges = edges.clone();
-                    tasks.push(tokio::spawn(async move {
+                    tasks.push(spawn_leg(&legs, async move {
                         match connect_once(&endpoint, &auth, tunnel_id, index, false, &edges).await
                         {
                             Ok((conn, control, location)) => {
@@ -304,10 +308,11 @@ impl Tunnel {
                                     index,
                                     edges,
                                 )
-                                .await;
+                                .await
                             }
                             Err(err) => {
                                 warn!(conn_index = index, error = %err, "HA leg failed to register");
+                                None
                             }
                         }
                     }));
@@ -328,7 +333,7 @@ impl Tunnel {
                     let reconnect = reconnect.clone();
                     let edges = edges.clone();
                     let leg = first_leg.take();
-                    tasks.push(tokio::spawn(async move {
+                    tasks.push(spawn_leg(&legs, async move {
                         let leg = match leg {
                             Some(leg) => Some(leg),
                             None => {
@@ -353,7 +358,7 @@ impl Tunnel {
                                     }
                                     Err(err) => {
                                         warn!(conn_index = index, error = %err, "HA leg failed to register");
-                                        return;
+                                        return None;
                                     }
                                 }
                             }
@@ -371,7 +376,7 @@ impl Tunnel {
                             reconnect,
                             SHUTDOWN_GRACE,
                         )
-                        .await;
+                        .await
                     }));
                 }
                 location
@@ -388,6 +393,7 @@ impl Tunnel {
             runtime,
             shutdown: shutdown_tx,
             tasks,
+            stopped,
             verify,
             _warp: warp_keepalive,
         })
@@ -685,17 +691,20 @@ async fn reactor(
     policy: ReconnectPolicy,
     conn_index: u8,
     edges: Arc<Vec<edge::EdgeAddr>>,
-) {
+) -> Option<String> {
+    use crate::config::Next;
+    let mut attempt = 0u32;
+    let mut started = std::time::Instant::now();
     loop {
         if *shutdown.borrow() {
             control.shutdown_graceful(SHUTDOWN_GRACE).await;
-            return;
+            return None;
         }
         let lost = tokio::select! {
             biased;
             _ = shutdown.changed() => {
                 control.shutdown_graceful(SHUTDOWN_GRACE).await;
-                return;
+                return None;
             }
             accepted = conn.accept_bi() => {
                 match accepted {
@@ -719,25 +728,22 @@ async fn reactor(
         }
 
         drop(control);
-        let mut attempt = 0u32;
+        if started.elapsed() >= policy.stable {
+            attempt = 0;
+        }
+        // The first attempt goes at once: the edge may only have moved the
+        // connection.
+        let mut delay = Duration::ZERO;
         loop {
-            attempt += 1;
-            if attempt > policy.max_attempts {
-                warn!(
-                    conn_index,
-                    "giving up after {} reconnect attempts", policy.max_attempts
-                );
-                return;
-            }
-            let delay = policy.backoff(attempt);
-            let mut wait = shutdown.clone();
-            tokio::select! {
-                biased;
-                _ = wait.changed() => {
-                    return;
+            if !delay.is_zero() {
+                let mut wait = shutdown.clone();
+                tokio::select! {
+                    biased;
+                    _ = wait.changed() => return None,
+                    _ = tokio::time::sleep(delay) => {}
                 }
-                _ = tokio::time::sleep(delay) => {}
             }
+            attempt += 1;
             match connect_once(&endpoint, &auth, tunnel_id, conn_index, true, &edges).await {
                 Ok((new_conn, new_control, location)) => {
                     info!(conn_index, attempt, %location, "reconnected");
@@ -745,15 +751,72 @@ async fn reactor(
                     metrics.connection_opened();
                     conn = new_conn;
                     control = new_control;
+                    started = std::time::Instant::now();
                     break;
                 }
                 Err(err) => {
-                    warn!(conn_index, attempt, error = %err, "reconnect failed");
                     metrics.error();
+                    match policy.next(attempt, &err) {
+                        Next::Retry(wait) => {
+                            warn!(conn_index, attempt, error = %format!("{err:#}"), retry_in = ?wait, "reconnect failed");
+                            delay = wait;
+                        }
+                        Next::Stop(reason) => {
+                            tracing::error!(conn_index, %reason, "the QUIC leg stops");
+                            return Some(reason);
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/// The legs that run. When the last one stops for a cause (not a
+/// shutdown), [`TunnelHandle::stopped`] gives the cause.
+#[derive(Clone)]
+struct Legs(Arc<LegsInner>);
+
+struct LegsInner {
+    live: std::sync::atomic::AtomicUsize,
+    last: std::sync::Mutex<Option<String>>,
+    tx: watch::Sender<Option<String>>,
+}
+
+impl Legs {
+    fn new() -> (Self, watch::Receiver<Option<String>>) {
+        let (tx, rx) = watch::channel(None);
+        (
+            Self(Arc::new(LegsInner {
+                live: Default::default(),
+                last: Default::default(),
+                tx,
+            })),
+            rx,
+        )
+    }
+}
+
+/// Run one leg as a task. Its result is the reason that it stopped, or
+/// `None` for a shutdown.
+fn spawn_leg(
+    legs: &Legs,
+    leg: impl std::future::Future<Output = Option<String>> + Send + 'static,
+) -> JoinHandle<()> {
+    use std::sync::atomic::Ordering;
+    let legs = legs.clone();
+    legs.0.live.fetch_add(1, Ordering::SeqCst);
+    tokio::spawn(async move {
+        let reason = leg.await;
+        if let Some(reason) = reason {
+            *legs.0.last.lock().unwrap() = Some(reason);
+        }
+        if legs.0.live.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if let Some(reason) = legs.0.last.lock().unwrap().clone() {
+                let _ = legs.0.tx.send(Some(reason));
+            }
+        }
+    })
 }
 
 /// A running tunnel.
@@ -766,6 +829,7 @@ pub struct TunnelHandle {
     runtime: Arc<ServiceRuntime>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
+    stopped: watch::Receiver<Option<String>>,
     verify: bool,
     /// Kept alive for the tunnel's lifetime: dropping either tears down the
     /// WARP session and the QUIC endpoint the edge connection rides on.
@@ -773,6 +837,21 @@ pub struct TunnelHandle {
 }
 
 impl TunnelHandle {
+    /// Ready when each leg has stopped for a cause, for example a refusal of
+    /// the edge with no retry. Gives the cause. It is not ready after a
+    /// shutdown.
+    pub async fn stopped(&self) -> String {
+        let mut rx = self.stopped.clone();
+        loop {
+            if let Some(reason) = rx.borrow().clone() {
+                return reason;
+            }
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
     /// Public URL for a quick tunnel; `None` for a named tunnel (the hostname
     /// is configured in the Cloudflare dashboard).
     pub fn url(&self) -> Option<&str> {

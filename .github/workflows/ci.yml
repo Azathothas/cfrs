@@ -137,12 +137,12 @@ jobs:
           if timeout 10 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
           RUST_LOG=cfrs=debug timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns.log ||
             { tail -40 dns.log; exit 1; }
-          grep -m3 'step="doh"' dns.log
+          grep -m3 'step=doh' dns.log
           sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
           sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
           RUST_LOG=cfrs=debug timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns2.log ||
             { tail -40 dns2.log; exit 1; }
-          grep -m3 'server="https://8\.8\.' dns2.log
+          grep -m3 'server=https://8\.8\.' dns2.log
       - name: A wrong --resolve pin fails at the TLS name check
         run: |
           set -u
