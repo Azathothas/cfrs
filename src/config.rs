@@ -195,7 +195,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            service_url: cloudflare_quick_tunnel::api::DEFAULT_SERVICE_URL.to_string(),
+            service_url: cfrs_edge::api::DEFAULT_SERVICE_URL.to_string(),
             user_agent: format!("cfrs/{}", env!("CARGO_PKG_VERSION")),
             credentials: Credentials::Quick,
             protocol: Protocol::Auto,

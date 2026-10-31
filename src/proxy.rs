@@ -9,8 +9,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
-use cloudflare_quick_tunnel::stream as cqstream;
-use cloudflare_quick_tunnel::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
+use cfrs_edge::stream as cqstream;
+use cfrs_edge::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 use tower::ServiceExt;
 
@@ -848,7 +848,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cloudflare_quick_tunnel::stream::ConnectionType;
+    use cfrs_edge::stream::ConnectionType;
 
     fn req(dest: &str, metadata: Vec<(&str, &str)>) -> cqstream::ConnectRequest {
         cqstream::ConnectRequest {

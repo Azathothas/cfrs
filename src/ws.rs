@@ -12,7 +12,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use cloudflare_quick_tunnel::stream as cqstream;
+use cfrs_edge::stream as cqstream;
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_tungstenite::tungstenite::protocol::Role;

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use cloudflare_quick_tunnel::edge::IpVersionFilter;
-use cloudflare_quick_tunnel::{api, edge, quic_dial, rpc};
+use cfrs_edge::edge::IpVersionFilter;
+use cfrs_edge::{api, edge, quic_dial, rpc};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};

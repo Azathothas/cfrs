@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use cloudflare_quick_tunnel::edge::IpVersionFilter;
-use cloudflare_quick_tunnel::{api, pool, quic_dial, rpc, supervisor};
+use cfrs_edge::edge::IpVersionFilter;
+use cfrs_edge::{api, pool, quic_dial, rpc, supervisor};
 use tokio::sync::oneshot;
 
 use super::ip::WarpStack;
@@ -108,7 +108,7 @@ pub async fn start_quick_tunnel(stack: WarpStack, local_port: u16) -> Result<Qui
         tunnel_secret: tunnel.secret.clone(),
     };
     let options = rpc::ConnectionOptions::default_for_quick_tunnel(
-        cloudflare_quick_tunnel::manager::CLIENT_VERSION,
+        cfrs_edge::manager::CLIENT_VERSION,
     );
     let (details, control) = rpc::register_connection(&conn, &auth, tunnel_id, 0, &options)
         .await

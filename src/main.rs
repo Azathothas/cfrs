@@ -250,7 +250,7 @@ async fn async_main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("cfrs=info,cloudflare_quick_tunnel=warn")),
+                .unwrap_or_else(|_| EnvFilter::new("cfrs=info,cfrs_edge=warn")),
         )
         .init();
     match Cli::parse().command {

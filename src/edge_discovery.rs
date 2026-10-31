@@ -22,7 +22,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use cloudflare_quick_tunnel::edge::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
+use cfrs_edge::edge::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
 use serde::Deserialize;
 
 use crate::egress::Proxy;
@@ -75,7 +75,7 @@ pub async fn discover(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
         Err(err) => failures.push(format!("DoH: {err:#}")),
     }
 
-    match cloudflare_quick_tunnel::edge::discover(filter).await {
+    match cfrs_edge::edge::discover(filter).await {
         Ok(edges) if !edges.is_empty() => return Ok(edges),
         Ok(_) => failures.push("system/DoT resolver returned no addresses".to_string()),
         Err(err) => failures.push(format!("system/DoT resolver: {err}")),

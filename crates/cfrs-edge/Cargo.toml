@@ -1,0 +1,42 @@
+[package]
+name = "cfrs-edge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+description = "Cloudflare tunnel edge client: provisioning, edge discovery, QUIC and capnp RPC registration, stream framing. Derived from cloudflare-quick-tunnel 0.3.1."
+repository = "https://github.com/Azathothas/cfrs"
+keywords = ["cloudflare", "tunnel", "quic", "trycloudflare"]
+categories = ["network-programming"]
+
+[lib]
+name = "cfrs_edge"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "sync"] }
+tracing = "0.1"
+thiserror = "1"
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4", "serde"] }
+httparse = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "charset", "rustls-tls"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+rustls-native-certs = "0.7"
+hickory-resolver = { version = "0.24", default-features = false, features = ["dns-over-rustls", "tokio-runtime"] }
+capnp = "0.20"
+capnp-rpc = "0.20"
+capnp-futures = "0.20"
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
