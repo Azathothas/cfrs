@@ -41,7 +41,7 @@ enum Command {
     /// Bridge a local socket to a remote WebSocket forward endpoint.
     Connect(ConnectArgs),
     /// List local TCP ports that are listening.
-    Ports,
+    Ports(PortsArgs),
     /// Print a QR code for a URL.
     Qr(QrArgs),
     /// Test the full path: a built-in origin, a tunnel, a fetch of the URL.
@@ -83,6 +83,13 @@ struct ManArgs {
 }
 
 #[derive(Args, Clone, Debug)]
+struct PortsArgs {
+    /// Print one JSON object: {"ports": [PORT, ...]}.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
 struct TunnelOpts {
     /// Quick-tunnel provisioning endpoint.
     #[arg(long, default_value = "https://api.trycloudflare.com", global = true)]
@@ -110,12 +117,32 @@ struct TunnelOpts {
     /// Print a QR code for the public URL.
     #[arg(long, global = true)]
     qr: bool,
+    /// Print the state of the tunnel as JSON lines on stdout, in place of
+    /// the text lines. Each line is one object with the key "event":
+    /// "ready" (url, tunnel_id, locations, and pin for share) or "verified"
+    /// (url).
+    #[arg(long, global = true)]
+    json: bool,
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long, global = true)]
     run_for: Option<u64>,
 }
 
+/// How a tunnel command prints its state.
+#[derive(Clone, Copy, Debug, Default)]
+struct Show {
+    qr: bool,
+    json: bool,
+}
+
 impl TunnelOpts {
+    fn show(&self) -> Show {
+        Show {
+            qr: self.qr,
+            json: self.json,
+        }
+    }
+
     fn apply(&self, mut config: Config) -> Result<Config> {
         config.service_url = self.service_url.clone();
         if let Some(user_agent) = &self.user_agent {
@@ -323,9 +350,14 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Share(args) => share(args).await,
         Command::Connect(args) => connect(args).await,
-        Command::Ports => {
-            for port in cfrs::ports::listening_ports() {
-                println!("{port}");
+        Command::Ports(args) => {
+            let ports = cfrs::ports::listening_ports();
+            if args.json {
+                println!("{}", serde_json::json!({ "ports": ports }));
+            } else {
+                for port in ports {
+                    println!("{port}");
+                }
             }
             Ok(())
         }
@@ -414,7 +446,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
         config.verify = false;
     }
 
-    run_tunnel(config, args.common.qr, args.common.run_for, vec![]).await
+    run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
 }
 
 fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
@@ -558,7 +590,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         spa: args.spa,
     });
     config = args.common.apply(config)?;
-    run_tunnel(config, args.common.qr, args.common.run_for, vec![]).await
+    run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
 }
 
 async fn share(args: ShareArgs) -> Result<()> {
@@ -595,7 +627,7 @@ async fn share(args: ShareArgs) -> Result<()> {
     let controls_hint = args.idle_secs;
     run_share(
         config,
-        args.common.qr,
+        args.common.show(),
         args.common.run_for,
         pin,
         path,
@@ -613,7 +645,13 @@ async fn demo(args: DemoArgs) -> Result<()> {
     config.ingress = Ingress::new().catch_all(Service::HelloWorld);
     config = args.common.apply(config)?;
     let exit_on_verify = args.exit_on_verify;
-    run_demo(config, args.common.qr, args.common.run_for, exit_on_verify).await
+    run_demo(
+        config,
+        args.common.show(),
+        args.common.run_for,
+        exit_on_verify,
+    )
+    .await
 }
 
 fn default_upload_dir() -> PathBuf {
@@ -630,15 +668,18 @@ fn default_upload_dir() -> PathBuf {
 
 async fn run_tunnel(
     config: Config,
-    qr: bool,
+    show: Show,
     run_for: Option<u64>,
     controls: Vec<Arc<ShareControl>>,
 ) -> Result<()> {
     let verify = config.verify;
     let handle = Tunnel::builder().config(config).build()?.start().await?;
-    announce(&handle, qr)?;
+    announce(&handle, show)?;
     if verify {
         handle.verify(None).await?;
+        if let Some(url) = handle.url() {
+            verified(show, url);
+        }
     }
     wait(run_for, controls).await;
     handle.shutdown().await;
@@ -647,7 +688,7 @@ async fn run_tunnel(
 
 async fn run_share(
     config: Config,
-    qr: bool,
+    show: Show,
     run_for: Option<u64>,
     pin: Option<String>,
     path: String,
@@ -660,18 +701,32 @@ async fn run_share(
         .unwrap_or("https://<your-named-tunnel-hostname>")
         .to_string();
     let public = format!("{}{}", base.trim_end_matches('/'), path);
-    println!();
-    println!("  cfrs: session  {public}");
-    if let Some(pin) = &pin {
-        println!("  cfrs: PIN      {pin}");
+    if show.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "ready",
+                "url": public,
+                "tunnel_id": handle.tunnel_id().to_string(),
+                "locations": handle.locations(),
+                "pin": pin,
+            })
+        );
+    } else {
+        println!();
+        println!("  cfrs: session  {public}");
+        if let Some(pin) = &pin {
+            println!("  cfrs: PIN      {pin}");
+        }
+        println!("  cfrs: edge     {}", handle.locations().join(", "));
+        println!();
     }
-    println!("  cfrs: edge     {}", handle.locations().join(", "));
-    println!();
-    if qr {
+    if show.qr {
         print!("{}", cfrs::qr::render_terminal(&public)?);
     }
     if verify && handle.url().is_some() {
         handle.verify_url(&public, None).await?;
+        verified(show, &public);
     }
     let controls = handle.share_controls();
     wait_with_idle(run_for, controls, idle_secs).await;
@@ -681,18 +736,22 @@ async fn run_share(
 
 async fn run_demo(
     config: Config,
-    qr: bool,
+    show: Show,
     run_for: Option<u64>,
     exit_on_verify: bool,
 ) -> Result<()> {
     let handle = Tunnel::builder().config(config).build()?.start().await?;
-    announce(&handle, qr)?;
+    announce(&handle, show)?;
     if exit_on_verify {
         handle.verify(Some("Hello, world! (cfrs)")).await?;
-        println!(
-            "  cfrs: PROOF   {} -> HTTP 200 (built-in hello world)",
-            handle.url().unwrap_or("")
-        );
+        if show.json {
+            verified(show, handle.url().unwrap_or(""));
+        } else {
+            println!(
+                "  cfrs: PROOF   {} -> HTTP 200 (built-in hello world)",
+                handle.url().unwrap_or("")
+            );
+        }
         handle.shutdown().await;
         return Ok(());
     }
@@ -702,7 +761,36 @@ async fn run_demo(
     Ok(())
 }
 
-fn announce(handle: &cfrs::TunnelHandle, qr: bool) -> Result<()> {
+/// After a fetch of the public URL: one JSON line with --json.
+fn verified(show: Show, url: &str) {
+    if show.json {
+        println!("{}", serde_json::json!({"event": "verified", "url": url}));
+    }
+}
+
+fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
+    if show.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "ready",
+                "url": handle.url(),
+                "tunnel_id": handle.tunnel_id().to_string(),
+                "locations": handle.locations(),
+            })
+        );
+    } else {
+        announce_text(handle);
+    }
+    if show.qr {
+        if let Some(url) = handle.url() {
+            print!("{}", cfrs::qr::render_terminal(url)?);
+        }
+    }
+    Ok(())
+}
+
+fn announce_text(handle: &cfrs::TunnelHandle) {
     println!();
     match handle.url() {
         Some(url) => println!("  cfrs: public   {url}"),
@@ -713,12 +801,6 @@ fn announce(handle: &cfrs::TunnelHandle, qr: bool) -> Result<()> {
     }
     println!("  cfrs: edge     {}", handle.locations().join(", "));
     println!();
-    if qr {
-        if let Some(url) = handle.url() {
-            print!("{}", cfrs::qr::render_terminal(url)?);
-        }
-    }
-    Ok(())
 }
 
 async fn wait(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>) -> () {

@@ -348,7 +348,13 @@ cfrs man exit-status          # one topic: environment, files, exit-status, exam
 cfrs man --roff > cfrs.1      # a man(7) page (also a release asset)
 cfrs man --json               # the tables, for a program
 cfrs status                   # one JSON line about this host; no network
+cfrs ports --json             # the listening TCP ports, as one JSON object
 ```
+
+With `--json`, `cfrs tunnel`, `serve`, `share` and `demo` write JSON lines on
+stdout in place of the text lines. A line with `"event": "ready"` gives
+`url`, `tunnel_id` and `locations` (and `pin` for `share`). A line with
+`"event": "verified"` comes after the fetch of the public URL.
 
 The exit codes follow sysexits.h: 64 for a bad command line, 69 when a
 service or a network path is not available (no edge leg worked), 78 for a

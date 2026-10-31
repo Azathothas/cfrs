@@ -48,6 +48,13 @@ jobs:
         run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
       - name: Quick tunnel, HTTP/2 (TCP 7844)
         run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 --transport direct
+      - name: Quick tunnel, JSON lines (--json)
+        run: |
+          set -eu
+          timeout 180 target/release/cfrs demo --exit-on-verify --json > demo.jsonl
+          cat demo.jsonl
+          jq -e 'select(.event == "ready") | .url | test("^https://.*\\.trycloudflare\\.com$")' demo.jsonl
+          jq -e 'select(.event == "verified") | .url | test("trycloudflare")' demo.jsonl
       - name: Quick tunnel, QUIC through WARP (TCP 443)
         run: timeout 240 target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
       - name: WARP account and probe
