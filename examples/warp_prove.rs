@@ -1,16 +1,13 @@
-//! A proof of the WARP/MASQUE path that cannot pass by accident.
+//! Test the WARP/MASQUE path.
 //!
-//! Three kinds of measurement, in the order that makes them meaningful:
-//!
-//! 1. **Controls.** A connect to a port nothing listens on and a connect to an
-//!    address that is not routable must both fail. If either "succeeds", the
-//!    stack is reporting optimism rather than the network and every later line
-//!    is worthless.
-//! 2. **A real payload.** A DNS query for `example.com` is built by hand, sent
-//!    through the tunnel to `1.1.1.1:53`, and the answer is parsed back out. A
-//!    reply with an A record proves bytes crossed in both directions.
-//! 3. **The destination the host refuses.** A TCP connection to the Cloudflare
-//!    tunnel edge on port 7844, which this host cannot dial directly.
+//! 1. **Controls.** A connect to a closed port and a connect to an address
+//!    that is not routable must fail. If one succeeds, the stack does not
+//!    report the network correctly.
+//! 2. **A payload.** Send a DNS query for `example.com` through the tunnel to
+//!    `1.1.1.1:53` and parse the answer. An A record shows that bytes went in
+//!    the two directions.
+//! 3. **The edge.** Open a TCP connection to the tunnel edge on port 7844
+//!    through the tunnel.
 //!
 //! ```sh
 //! cargo run --example warp_prove

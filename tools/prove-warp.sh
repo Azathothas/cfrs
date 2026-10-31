@@ -1,14 +1,13 @@
 #!/bin/sh
-# Proof: a Cloudflare quick tunnel whose edge connection never touches port 7844.
+# Test a quick tunnel whose edge connection does not use port 7844 on the host.
 #
-# The claim is narrow and checkable, so this checks it in that order:
-#   1. this host cannot dial the tunnel edge on 7844 (the control — if this
-#      passes, everything after it is meaningless);
-#   2. a quick tunnel comes up with `--transport warp` and the edge is reached
-#      through a WARP MASQUE tunnel on TCP 443;
-#   3. the public URL answers, which is the only thing that proves a visitor
-#      reached the origin;
-#   4. the direct transport on the same host fails, so step 2 was not luck.
+# The steps:
+#   1. Check that this host cannot dial the tunnel edge on 7844. If it can,
+#      the other steps prove nothing.
+#   2. Start a quick tunnel with `--transport warp`. The edge connection goes
+#      through a WARP MASQUE tunnel on TCP 443.
+#   3. Fetch the public URL.
+#   4. Check that the direct transport fails on this host.
 #
 #   sh tools/prove-warp.sh [run-seconds]
 #
@@ -16,8 +15,7 @@
 set -u
 
 SECS=${1:-60}
-# The build tree may be redirected off the project (CARGO_TARGET_DIR), which is
-# common on a sandbox whose work tree cannot run a file.
+# The build tree can be in CARGO_TARGET_DIR.
 if [ -z "${CFRS_BIN:-}" ]; then
     for candidate in ./target/debug/cfrs "${CARGO_TARGET_DIR:-}/debug/cfrs"; do
         if [ -n "$candidate" ] && [ -x "$candidate" ]; then
