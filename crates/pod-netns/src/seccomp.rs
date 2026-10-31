@@ -77,6 +77,15 @@ pub(crate) fn intercepted_syscalls() -> [libc::c_long; 17] {
     ]
 }
 
+/// Read a pointer-sized word (a pointer or a `size_t`) of the child at
+/// `offset` of `bytes`.
+pub(crate) fn read_word(bytes: &[u8], offset: usize) -> u64 {
+    const WORD: usize = std::mem::size_of::<usize>();
+    let mut buf = [0u8; WORD];
+    buf.copy_from_slice(&bytes[offset..offset + WORD]);
+    usize::from_ne_bytes(buf) as u64
+}
+
 /// Find `name` as `execvp` does: a name with a `/` is used as it is; another
 /// name is looked up in the directories of `PATH`.
 pub(crate) fn resolve_program(name: &str) -> Result<std::path::PathBuf> {
@@ -101,11 +110,14 @@ pub(crate) fn resolve_program(name: &str) -> Result<std::path::PathBuf> {
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
 #[cfg(target_arch = "aarch64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
+#[cfg(target_arch = "arm")]
+pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0x4000_0028;
 #[cfg(target_arch = "riscv64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00F3;
 #[cfg(not(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
+    target_arch = "arm",
     target_arch = "riscv64"
 )))]
 compile_error!("pod-netns: add the AUDIT_ARCH value for this target");
@@ -848,8 +860,9 @@ pub(crate) async fn handle_sendmmsg(
     proxies: &[Proxy],
 ) -> Result<()> {
     // struct mmsghdr is a struct msghdr (56 bytes), a u32 msg_len and padding.
-    const MMSGHDR_SIZE: u64 = 64;
-    const MSG_LEN_OFFSET: u64 = 56;
+    // The layouts of the child are those of this target: same ABI.
+    const MMSGHDR_SIZE: u64 = std::mem::size_of::<libc::mmsghdr>() as u64;
+    const MSG_LEN_OFFSET: u64 = std::mem::offset_of!(libc::mmsghdr, msg_len) as u64;
     let fd = a[0] as i32;
     let msgvec = a[1];
     let vlen = (a[2] as usize).min(64);
@@ -916,11 +929,16 @@ pub(crate) async fn send_msghdr(
         _ => return Ok(None),
     };
     // struct msghdr on x86_64: name, namelen, iov, iovlen, control, controllen, flags.
-    let hdr = read_mem(mem, msg_ptr, 56)?;
-    let name_ptr = u64::from_ne_bytes(hdr[0..8].try_into().unwrap());
-    let name_len = u32::from_ne_bytes(hdr[8..12].try_into().unwrap()) as usize;
-    let iov_ptr = u64::from_ne_bytes(hdr[16..24].try_into().unwrap());
-    let iov_len = u64::from_ne_bytes(hdr[24..32].try_into().unwrap()) as usize;
+    // struct msghdr of this target (the child has the same ABI).
+    let hdr = read_mem(mem, msg_ptr, std::mem::size_of::<libc::msghdr>())?;
+    let name_ptr = read_word(&hdr, std::mem::offset_of!(libc::msghdr, msg_name));
+    let name_len = u32::from_ne_bytes(
+        hdr[std::mem::offset_of!(libc::msghdr, msg_namelen)..][..4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let iov_ptr = read_word(&hdr, std::mem::offset_of!(libc::msghdr, msg_iov));
+    let iov_len = read_word(&hdr, std::mem::offset_of!(libc::msghdr, msg_iovlen)) as usize;
     let target = if name_ptr != 0 && name_len >= 4 {
         parse_sockaddr(&read_mem(mem, name_ptr, name_len.min(128))?)
             .map(|(_, ip, port)| (ip, port))
@@ -933,9 +951,10 @@ pub(crate) async fn send_msghdr(
     };
     let mut payload = Vec::new();
     for i in 0..iov_len.min(8) {
-        let iov = read_mem(mem, iov_ptr + (i as u64) * 16, 16)?;
-        let base = u64::from_ne_bytes(iov[0..8].try_into().unwrap());
-        let len = u64::from_ne_bytes(iov[8..16].try_into().unwrap()) as usize;
+        let size = std::mem::size_of::<libc::iovec>();
+        let iov = read_mem(mem, iov_ptr + (i * size) as u64, size)?;
+        let base = read_word(&iov, std::mem::offset_of!(libc::iovec, iov_base));
+        let len = read_word(&iov, std::mem::offset_of!(libc::iovec, iov_len)) as usize;
         if len == 0 {
             continue;
         }
