@@ -193,7 +193,7 @@ pub async fn serve(listen: ProxyListen) -> Result<Switch> {
         }
         ProxyListen::Unix(path) => {
             let _ = std::fs::remove_file(path);
-            let listener = tokio::net::UnixListener::bind(path)
+            let listener = pod_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {

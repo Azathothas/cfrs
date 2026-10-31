@@ -1086,7 +1086,7 @@ pub(crate) async fn handle_listen(
     std::fs::create_dir_all(inbound_dir)?;
     let path = inbound_dir.join(format!("{port}.sock"));
     let _ = std::fs::remove_file(&path);
-    let listener = tokio::net::UnixListener::bind(&path)
+    let listener = crate::listen::bind_private(&path)
         .with_context(|| format!("bind inbound listener {}", path.display()))?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {

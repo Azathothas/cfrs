@@ -47,8 +47,8 @@ pub const CONNECT_URI: &str = "https://cloudflareaccess.com";
 ///
 /// `Serialize` is not for the wire (the API only takes the two bodies below);
 /// it exists so a caller can persist a registered device and resume it without
-/// registering a second one.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// registering a second one. `Debug` hides the token.
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Device {
     pub id: String,
     #[serde(default)]
@@ -72,13 +72,42 @@ pub struct Device {
     pub policy: Policy,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("key", &self.key)
+            .field("key_type", &self.key_type)
+            .field("tunnel_type", &self.tunnel_type)
+            .field("account", &self.account)
+            .field("config", &self.config)
+            .field("token", &"<hidden>")
+            .field("warp_enabled", &self.warp_enabled)
+            .field("waitlist_enabled", &self.waitlist_enabled)
+            .field("policy", &self.policy)
+            .finish()
+    }
+}
+
+/// `Debug` hides the license key.
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Account {
     pub id: String,
     #[serde(default)]
     pub account_type: String,
     #[serde(default)]
     pub license: String,
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account")
+            .field("id", &self.id)
+            .field("account_type", &self.account_type)
+            .field("license", &"<hidden>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

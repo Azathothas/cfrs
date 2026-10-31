@@ -125,3 +125,151 @@ fn ports_json_is_one_object() {
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     assert!(json["ports"].is_array(), "{json}");
 }
+
+/// Run cfrs with the log at its highest level, and give stderr and stdout.
+fn trace(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    cmd.args(args)
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .env_remove("CFRS_EDGE")
+        .env("RUST_LOG", "trace")
+        .env("NO_PROXY", "");
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        cmd.env_remove(key);
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.code(), text)
+}
+
+/// The log at the highest level holds no tunnel secret, no WARP token and no
+/// proxy password.
+#[test]
+fn the_log_holds_no_secret() {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let secret = b64.encode(b"tunnel-secret-0123456789abcdef!!");
+    let token = b64.encode(format!(
+        r#"{{"a":"0123456789abcdef0123456789abcdef","t":"6ff42ae2-765d-4adf-8112-31c55c1551ef","s":"{secret}"}}"#
+    ));
+    let (code, text) = trace(
+        &["tunnel", "--token", &token, "--hello-world"],
+        &[("CFRS_EDGE", "not-an-address")],
+    );
+    assert_eq!(code, Some(78), "{text}");
+    assert!(!text.contains(&token), "the token is in the log:\n{text}");
+    assert!(!text.contains(&secret), "the secret is in the log:\n{text}");
+
+    // A quick tunnel through a proxy with a password; the proxy is closed.
+    let password = "Pr0xyPassw0rdValue";
+    let proxy = format!("http://alice:{password}@127.0.0.1:9");
+    let (code, text) = trace(
+        &["tunnel", "--hello-world"],
+        &[("HTTPS_PROXY", &proxy), ("ALL_PROXY", &proxy)],
+    );
+    assert_ne!(code, Some(0), "{text}");
+    assert!(
+        text.contains("127.0.0.1:9"),
+        "the run used the proxy:\n{text}"
+    );
+    assert!(
+        !text.contains(password),
+        "the proxy password is in the log:\n{text}"
+    );
+
+    // A WARP identity with a bearer token, refreshed through the closed proxy.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("warp.json");
+    let warp_token = "warp-bearer-token-0123456789abcdef";
+    let device: cfrs::warp::register::Device = serde_json::from_value(serde_json::json!({
+        "id": "t.0123456789",
+        "account": {"id": "acct", "license": "LICENSE-KEY-0123"},
+        "config": {},
+        "token": warp_token,
+        "tunnel_type": "masque",
+    }))
+    .unwrap();
+    let identity = cfrs::warp::identity::Identity::generate().unwrap();
+    cfrs::warp::WarpClient::from_parts(device, identity)
+        .save(&path)
+        .unwrap();
+    let (code, text) = trace(
+        &["warp", "--identity", path.to_str().unwrap(), "status"],
+        &[("HTTPS_PROXY", &proxy), ("ALL_PROXY", &proxy)],
+    );
+    assert_ne!(code, Some(0), "{text}");
+    assert!(
+        !text.contains(warp_token),
+        "the WARP token is in the log:\n{text}"
+    );
+    assert!(
+        !text.contains("LICENSE-KEY-0123"),
+        "the license is in the log:\n{text}"
+    );
+    assert!(
+        !text.contains(password),
+        "the proxy password is in the log:\n{text}"
+    );
+}
+
+/// Each default address in the table "What listens" of SECURITY.md is the
+/// default of the --listen flag of that command, and each command with a
+/// --listen default has a row.
+#[test]
+fn the_listen_defaults_agree_with_the_manual() {
+    let security =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/SECURITY.md")).unwrap();
+    let mut table = std::collections::BTreeMap::new();
+    for line in security.lines() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 4 {
+            continue;
+        }
+        let (command, address) = (cells[1], cells[2]);
+        let (Some(command), Some(address)) = (
+            command
+                .strip_prefix("`cfrs ")
+                .and_then(|c| c.strip_suffix('`')),
+            address.strip_prefix('`').and_then(|a| a.strip_suffix('`')),
+        ) else {
+            continue;
+        };
+        if address.starts_with("tcp://") || address.starts_with("unix:") {
+            table.insert(command.to_string(), address.to_string());
+        }
+    }
+    let json = cfrs(&["man", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let mut manual = std::collections::BTreeMap::new();
+    for command in json["commands"].as_array().unwrap() {
+        for arg in command["args"].as_array().unwrap() {
+            if arg["id"] == "listen" {
+                if let Some(default) = arg["default"].as_str() {
+                    let path: Vec<&str> = command["path"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|w| w.as_str().unwrap())
+                        .collect();
+                    manual.insert(path.join(" "), default.to_string());
+                }
+            }
+        }
+    }
+    assert!(manual.len() >= 4, "{manual:?}");
+    assert_eq!(table, manual, "SECURITY.md and cfrs man --json differ");
+}

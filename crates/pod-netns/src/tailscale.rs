@@ -274,7 +274,7 @@ pub async fn serve(
 #[cfg(unix)]
 fn bind_unix(path: &Path) -> Result<tokio::net::UnixListener> {
     let _ = std::fs::remove_file(path);
-    tokio::net::UnixListener::bind(path).with_context(|| format!("binding unix:{}", path.display()))
+    crate::listen::bind_private(path).with_context(|| format!("binding unix:{}", path.display()))
 }
 
 async fn handle_client<S>(stream: S, dialer: Dialer, default_port: u16)

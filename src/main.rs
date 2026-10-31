@@ -182,8 +182,9 @@ struct TunnelArgs {
     /// cloudflared-style YAML config with ingress rules.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Named-tunnel token.
-    #[arg(long)]
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
+    /// the host can read a command line.
+    #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// cloudflared credentials JSON file.
     #[arg(long)]
@@ -209,8 +210,9 @@ struct ServeArgs {
     /// Single-page-app fallback to index.html.
     #[arg(long)]
     spa: bool,
-    /// Named-tunnel token.
-    #[arg(long)]
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
+    /// the host can read a command line.
+    #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
 }
 
@@ -246,8 +248,9 @@ struct ShareArgs {
     /// Stop after this many idle seconds (0 disables).
     #[arg(long, default_value_t = 900)]
     idle_secs: u64,
-    /// Named-tunnel token.
-    #[arg(long)]
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
+    /// the host can read a command line.
+    #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
 }
 
@@ -276,8 +279,9 @@ struct DemoArgs {
     /// Exit as soon as the public URL has been fetched.
     #[arg(long)]
     exit_on_verify: bool,
-    /// Named-tunnel token.
-    #[arg(long)]
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
+    /// the host can read a command line.
+    #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
 }
 
@@ -316,7 +320,7 @@ fn main() {
         .and_then(|runtime| runtime.block_on(async_main(cli)));
     if let Err(err) = result {
         let code = cfrs::exit::code_of(&err);
-        let line = format!("cfrs: {}", cfrs::report::mask(&format!("{err:#}")));
+        let line = cfrs::report::error_line(&err);
         cfrs::report::record(&line);
         eprintln!("{line}");
         cfrs::report::send(command.as_deref(), code, Some(&err));
@@ -555,7 +559,8 @@ async fn accept_loop(listener: tokio::net::TcpListener, remote: String) {
 #[cfg(unix)]
 fn unix_listener(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
     let _ = std::fs::remove_file(path);
-    tokio::net::UnixListener::bind(path).with_context(|| format!("binding unix:{}", path.display()))
+    pod_netns::listen::bind_private(path)
+        .with_context(|| format!("binding unix:{}", path.display()))
 }
 
 #[cfg(unix)]

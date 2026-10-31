@@ -143,17 +143,8 @@ impl WarpClient {
             key_pem,
         })
         .context("serialising the WARP identity")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(path, text)
-            .with_context(|| format!("writing the WARP identity to {}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
-        }
-        Ok(())
+        write_private(path, text.as_bytes())
+            .with_context(|| format!("writing the WARP identity to {}", path.display()))
     }
 
     /// Read a client written by [`WarpClient::save`].
@@ -164,6 +155,7 @@ impl WarpClient {
             cert_pem: String,
             key_pem: String,
         }
+        check_private(path)?;
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading the WARP identity from {}", path.display()))?;
         let stored: Stored = serde_json::from_str(&text)
@@ -177,20 +169,21 @@ impl WarpClient {
     ///
     /// This is the call a daemon wants: one device per installation, not one
     /// per start.
+    ///
+    /// A file that cannot be read, or that other users can read, is an
+    /// error: cfrs does not write over it.
     pub async fn register_or_load(path: &std::path::Path) -> Result<Self> {
-        match Self::load(path) {
-            Ok(client) => {
-                if client.device.tunnel_type == "masque" {
-                    return Ok(client);
-                }
-                tracing::debug!(
-                    tunnel_type = %client.device.tunnel_type,
-                    "the stored device is not enrolled for MASQUE; registering again"
-                );
+        if path.exists() {
+            let client = Self::load(path)?;
+            if client.device.tunnel_type == "masque" {
+                return Ok(client);
             }
-            Err(err) => {
-                tracing::debug!(%err, "no stored WARP identity; registering a new device");
-            }
+            tracing::debug!(
+                tunnel_type = %client.device.tunnel_type,
+                "the stored device is not enrolled for MASQUE; registering again"
+            );
+        } else {
+            tracing::debug!(path = %path.display(), "no stored WARP identity; registering a new device");
         }
         let client = Self::register().await?;
         client.save(path)?;
@@ -318,5 +311,103 @@ impl WarpClient {
             .transpose()
             .context("parsing the pinned peer key")?;
         MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await
+    }
+}
+
+/// Write `bytes` to `path` with mode 0600: to a new file beside it, then a
+/// rename. No other user can read the file at any time, and a reader never
+/// sees half a file.
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("the path has no file name"))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Refuse `path` when its owner is another user, or when its group or other
+/// users may read or write it.
+pub(crate) fn check_private(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("reading the WARP identity from {}", path.display()))?;
+    let uid = unsafe { libc::geteuid() };
+    if meta.uid() != uid {
+        anyhow::bail!(
+            "{} belongs to user {}, not to this user ({uid}); cfrs does not use it",
+            path.display(),
+            meta.uid()
+        );
+    }
+    let mode = meta.mode() & 0o777;
+    if mode & 0o077 != 0 {
+        anyhow::bail!(
+            "{} has mode {mode:04o}: other users may read the WARP key. Run: chmod 600 {}",
+            path.display(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod private_file_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_private_file_has_mode_0600_and_a_loose_one_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/cfrs/warp.json");
+        write_private(&path, b"{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let parent = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent, 0o700);
+        check_private(&path).unwrap();
+        // A second write replaces the file and leaves no temporary file.
+        write_private(&path, b"{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"a\":1}");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = check_private(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("mode 0644") && err.contains("chmod 600"),
+            "{err}"
+        );
+        let err = WarpClient::load(&path).err().unwrap().to_string();
+        assert!(err.contains("mode 0644"), "{err}");
     }
 }

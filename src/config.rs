@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::ingress::{Ingress, Service};
 
-/// How to authenticate the tunnel with the edge.
-#[derive(Clone, Debug)]
+/// How to authenticate the tunnel with the edge. `Debug` hides the token and
+/// the secret.
+#[derive(Clone)]
 pub enum Credentials {
     /// Anonymous `trycloudflare.com` quick tunnel (provisioned on start).
     Quick,
@@ -25,6 +26,26 @@ pub enum Credentials {
         tunnel_id: Uuid,
         secret: Vec<u8>,
     },
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credentials::Quick => f.write_str("Quick"),
+            Credentials::Token(_) => f.write_str("Token(<hidden>)"),
+            Credentials::File(path) => f.debug_tuple("File").field(path).finish(),
+            Credentials::Explicit {
+                account_tag,
+                tunnel_id,
+                ..
+            } => f
+                .debug_struct("Explicit")
+                .field("account_tag", account_tag)
+                .field("tunnel_id", tunnel_id)
+                .field("secret", &"<hidden>")
+                .finish(),
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -171,9 +171,12 @@ and gives the line number. cfrs ignores keys that it does not use.
 A named tunnel uses a Cloudflare account and a hostname from the dashboard.
 
 ```sh
-cfrs tunnel --token <token> --url http://127.0.0.1:8080
+TUNNEL_TOKEN=<token> cfrs tunnel --url http://127.0.0.1:8080
 cfrs tunnel --credentials-file ~/.cloudflared/<id>.json --url http://127.0.0.1:8080
 ```
+
+`--token <token>` also works. Other users of the host can read a command
+line, so `TUNNEL_TOKEN` is safer.
 
 ### Edge protocol and transport
 
@@ -402,6 +405,8 @@ handle.shutdown().await;
 * [`docs/protocol.md`](docs/protocol.md): the edge protocol and the WARP protocol.
 * [`docs/virtual-network.md`](docs/virtual-network.md): the shim, the stack and switch mode.
 * [`crates/pod-netns/README.md`](crates/pod-netns/README.md): pod-netns.
+* [`SECURITY.md`](SECURITY.md): how to report a vulnerability, what
+  Cloudflare can see, what listens, where secrets are kept.
 
 ## License
 

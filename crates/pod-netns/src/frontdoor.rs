@@ -30,7 +30,7 @@ pub(crate) async fn serve_front_door(
     let listener = match &listen {
         ProxyListen::Unix(path) => {
             let _ = std::fs::remove_file(path);
-            FrontListener::Unix(tokio::net::UnixListener::bind(path)?)
+            FrontListener::Unix(crate::listen::bind_private(path)?)
         }
         ProxyListen::Tcp(addr) => FrontListener::Tcp(tokio::net::TcpListener::bind(addr).await?),
     };

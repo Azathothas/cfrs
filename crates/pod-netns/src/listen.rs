@@ -38,6 +38,18 @@ impl ProxyListen {
     }
 }
 
+/// Bind a Unix socket at `path` that only its owner can use: mode 0600. A
+/// client must have write permission on the socket to connect.
+pub fn bind_private(
+    path: impl AsRef<std::path::Path>,
+) -> std::io::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = path.as_ref();
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

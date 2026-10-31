@@ -28,6 +28,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The default upstream of pod-netns when HTTPS_PROXY and ALL_PROXY are not set.",
     },
     EnvVar {
+        names: &["TUNNEL_TOKEN"],
+        used_by: "tunnel, serve, share, demo",
+        meaning: "The named-tunnel token, in place of --token. Other users of the host can read a command line, but not the environment of a process of another user.",
+    },
+    EnvVar {
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
@@ -260,6 +265,7 @@ mod tests {
                 "getenv(\"",
                 "var(\"",
                 "var_os(\"",
+                "env = \"",
             ] {
                 for (i, _) in text.match_indices(marker) {
                     let rest = &text[i + marker.len()..];

@@ -72,6 +72,59 @@ fn strip_ansi(text: &str) -> String {
     out
 }
 
+/// Remove the control characters of `text` that a terminal acts on: each
+/// escape sequence (ESC and what follows it), BEL, CR, the other C0 and C1
+/// controls and DEL. Tab and line feed stay. Text from a peer (an edge
+/// error, an HTTP body, a proxy reply) goes through this function before it
+/// reaches a terminal.
+pub fn clean(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                // CSI: ESC [ parameters final-byte.
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: ESC ] text, ended by BEL or ESC \.
+                Some(']') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Another escape: ESC and one character.
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if c == '\t' || c == '\n' || !(c.is_control()) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The line that cfrs prints for the error `err`: masked and clean.
+pub fn error_line(err: &anyhow::Error) -> String {
+    format!("cfrs: {}", clean(&mask(&format!("{err:#}"))))
+}
+
 /// Hide the credentials in `line`: `user:pass@` of each URL, the value of
 /// each proxy variable, and each value given to [`hide`].
 pub fn mask(line: &str) -> String {
@@ -172,7 +225,7 @@ pub fn document(
     error: Option<&anyhow::Error>,
 ) -> serde_json::Value {
     let error: Vec<String> = error
-        .map(|e| e.chain().map(|c| mask(&c.to_string())).collect())
+        .map(|e| e.chain().map(|c| clean(&mask(&c.to_string()))).collect())
         .unwrap_or_default();
     serde_json::json!({
         "schema": 1,
@@ -253,6 +306,23 @@ mod tests {
             "dial http://<hidden>@proxy:3128 with token <hidden>"
         );
         assert_eq!(mask("http://host:80/path"), "http://host:80/path");
+    }
+
+    #[test]
+    fn the_error_line_has_no_control_characters() {
+        let peer = "bad gateway\u{1b}[2J\u{1b}]0;owned\u{7}\u{7} from\rthe edge\u{9b}31m\u{7f}";
+        let err = anyhow::anyhow!("{peer}").context("registering with the edge");
+        let line = error_line(&err);
+        assert_eq!(
+            line,
+            "cfrs: registering with the edge: bad gateway fromthe edge31m"
+        );
+        for c in ['\u{1b}', '\u{7}', '\r', '\u{9b}', '\u{7f}'] {
+            assert!(!line.contains(c), "{c:?} in {line:?}");
+        }
+        let doc = document(None, 1, Some(&err));
+        assert!(!doc.to_string().contains("\\u001b"), "{doc}");
+        assert_eq!(clean("a\tb\nc"), "a\tb\nc");
     }
 
     #[test]

@@ -93,17 +93,19 @@ pub struct Faulted {
     inner: anyhow::Error,
 }
 
+/// The text is the outermost message of the error; the causes come through
+/// `source`, so that `{:#}` and the report give the whole chain.
 impl std::fmt::Display for Faulted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            write!(f, "{:#}", self.inner)
-        } else {
-            write!(f, "{}", self.inner)
-        }
+        write!(f, "{}", self.inner)
     }
 }
 
-impl std::error::Error for Faulted {}
+impl std::error::Error for Faulted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
+    }
+}
 
 /// Give `err` the class `fault`.
 pub fn fault(fault: Fault, err: anyhow::Error) -> anyhow::Error {
@@ -144,6 +146,21 @@ mod tests {
         assert_eq!(code_of(&err), CONFIG);
         assert_eq!(format!("{err:#}"), "starting the tunnel: bad CFRS_EDGE");
         assert_eq!(code_of(&anyhow::anyhow!("plain")), FAILURE);
+    }
+
+    #[test]
+    fn a_class_keeps_the_causes() {
+        let cause = Err::<(), _>(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+            .context("connecting to 127.0.0.1:9")
+            .context("provisioning quick tunnel")
+            .unwrap_err();
+        let err = fault(Fault::Unavailable, cause);
+        assert_eq!(
+            format!("{err:#}"),
+            "provisioning quick tunnel: connecting to 127.0.0.1:9: connection refused"
+        );
+        assert_eq!(err.chain().count(), 3);
+        assert_eq!(code_of(&err), UNAVAILABLE);
     }
 
     #[test]

@@ -734,7 +734,7 @@ impl MetricsEndpoint {
             Err(e) => return Err(FeatureError::io(format!("stat {}", path.display()), e)),
         }
 
-        let listener = tokio::net::UnixListener::bind(path)
+        let listener = pod_netns::listen::bind_private(path)
             .map_err(|e| FeatureError::io(format!("bind {}", path.display()), e))?;
         Ok(Self {
             listener,

@@ -298,7 +298,8 @@ pub async fn serve(
 #[cfg(unix)]
 fn bind_unix(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
     let _ = std::fs::remove_file(path);
-    tokio::net::UnixListener::bind(path).with_context(|| format!("binding unix:{}", path.display()))
+    pod_netns::listen::bind_private(path)
+        .with_context(|| format!("binding unix:{}", path.display()))
 }
 
 #[cfg(test)]
