@@ -138,7 +138,7 @@ where
                     }
                     out_metrics.add_out(n as u64);
                     if sink
-                        .send(Message::Binary(buf[..n].to_vec()))
+                        .send(Message::Binary(bytes::Bytes::copy_from_slice(&buf[..n])))
                         .await
                         .is_err()
                     {
@@ -264,7 +264,9 @@ mod tests {
         let mut ws = WebSocketStream::from_raw_socket(edge_client, Role::Client, None).await;
 
         // client -> target
-        ws.send(Message::Binary(b"hello".to_vec())).await.unwrap();
+        ws.send(Message::Binary(bytes::Bytes::from_static(b"hello")))
+            .await
+            .unwrap();
         let mut buf = [0u8; 5];
         target_b.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello");
@@ -272,7 +274,10 @@ mod tests {
         // target -> client
         target_b.write_all(b"world").await.unwrap();
         let message = ws.next().await.unwrap().unwrap();
-        assert_eq!(message, Message::Binary(b"world".to_vec()));
+        assert_eq!(
+            message,
+            Message::Binary(bytes::Bytes::from_static(b"world"))
+        );
 
         drop(ws);
         let _ = server.await.unwrap();
