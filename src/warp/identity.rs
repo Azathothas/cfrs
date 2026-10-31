@@ -94,8 +94,8 @@ impl Identity {
     /// Rebuild an identity from [`Identity::to_pem`] output.
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
         let key_pair = KeyPair::from_pem(key_pem).context("parsing the MASQUE private key")?;
-        let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
-        let cert_der = rustls_pemfile::certs(&mut reader)
+        use rustls::pki_types::pem::PemObject;
+        let cert_der = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
             .next()
             .context("the certificate PEM is empty")?
             .context("parsing the certificate PEM")?;

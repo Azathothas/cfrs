@@ -476,8 +476,7 @@ pub(crate) async fn supervise_seccomp(
     // NOTIF_RECV is non-blocking so the shutdown flag is observed; the fd is
     // also pollable, so the loop sleeps on readiness rather than spinning.
     unsafe { libc::fcntl(lfd, libc::F_SETFL, libc::O_NONBLOCK) };
-    let dup = unsafe { OwnedFd::from_raw_fd(libc::dup(lfd)) };
-    let async_fd = tokio::io::unix::AsyncFd::with_interest(dup, tokio::io::Interest::READABLE)?;
+    let async_fd = crate::readable_copy(lfd)?;
 
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {

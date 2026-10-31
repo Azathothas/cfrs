@@ -1,0 +1,53 @@
+name: deny
+
+# cargo-deny over the dependencies of Cargo.lock: advisories, licenses,
+# duplicate versions and sources (deny.toml). On each push, each pull
+# request and each day: an advisory can come while the tree does not change.
+# Then a denied license, planted in a copy of deny.toml, must fail.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DENY_VERSION: "0.20.2"
+  DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+
+jobs:
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: cargo-deny, from its release, checked by its SHA-256
+        run: |
+          set -eu
+          name="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          sh scripts/retry.sh curl -qfsSL -o "$RUNNER_TEMP/deny.tgz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$name.tar.gz"
+          echo "$DENY_SHA256  $RUNNER_TEMP/deny.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/$name/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+          cargo deny --version
+      - name: Advisories, licenses, bans and sources
+        run: cargo deny --locked check advisories licenses bans sources
+      - name: Licenses and sources with all features
+        run: cargo deny --locked --all-features check licenses sources
+      - name: A denied license fails
+        run: |
+          set -u
+          sed '/"Unicode-3.0",/d' deny.toml > "$RUNNER_TEMP/deny.toml"
+          if cargo deny --locked --config "$RUNNER_TEMP/deny.toml" check licenses > "$RUNNER_TEMP/plant.log" 2>&1; then
+            echo "the check passed with Unicode-3.0 denied"
+            exit 1
+          fi
+          grep -m1 'failed to satisfy license requirements' "$RUNNER_TEMP/plant.log"

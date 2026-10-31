@@ -240,8 +240,9 @@ struct RawConfig {
 pub fn load_file(path: &std::path::Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let raw: RawConfig =
-        serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let raw: RawConfig = crate::yaml::parse(&text)
+        .and_then(|value| Ok(serde_json::from_value(value)?))
+        .with_context(|| format!("parsing {}", path.display()))?;
 
     let mut config = Config::default();
     if !raw.ingress.is_empty() {
@@ -264,6 +265,33 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_file_reads_a_cloudflared_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        std::fs::write(
+            &path,
+            "protocol: http2\nha-connections: 3\nloglevel: info # not read\ningress:\n  - hostname: a.example.com\n    service: http://127.0.0.1:8000\n    originRequest:\n      noTLSVerify: true\n  - service: http_status:404\n",
+        )
+        .unwrap();
+        let config = load_file(&path).unwrap();
+        assert_eq!(config.ha_connections, 3);
+        assert!(matches!(config.protocol, Protocol::Http2));
+        assert_eq!(config.ingress.rules.len(), 2);
+        assert_eq!(
+            config.ingress.rules[0].hostname.as_deref(),
+            Some("a.example.com")
+        );
+        assert!(config.ingress.rules[0].origin.no_tls_verify);
+
+        std::fs::write(&path, "ingress:\n  - service: a\n    service: b\n").unwrap();
+        let err = format!("{:#}", load_file(&path).unwrap_err());
+        assert!(
+            err.contains("line 3: the key \"service\" is given two times"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn transport_names_round_trip() {

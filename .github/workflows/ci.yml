@@ -66,8 +66,8 @@ jobs:
       - name: Toolchain of rust-version
         run: |
           set -eu
-          msrv=$(sed -n '/^\[workspace.package\]/,/^\[/s/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
-          test -n "$msrv" || { echo "Cargo.toml has no rust-version in [workspace.package]"; exit 1; }
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          test -n "$msrv" || { echo "Cargo.toml has no rust-version"; exit 1; }
           sh scripts/retry.sh rustup toolchain install "$msrv" --profile minimal
           echo "MSRV=$msrv" >> "$GITHUB_ENV"
       - name: Check with rust-version

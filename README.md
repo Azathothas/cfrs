@@ -160,6 +160,12 @@ ingress:
 
 The last rule must match all requests.
 
+cfrs reads the YAML with its own reader (`src/yaml.rs`). The reader accepts
+block mappings, block sequences, plain and quoted scalars on one line, and
+comments. It refuses anchors, aliases, tags, block scalars (`|`, `>`), flow
+collections that are not empty, tabs in the indentation and duplicate keys,
+and gives the line number. cfrs ignores keys that it does not use.
+
 ### Named tunnels
 
 A named tunnel uses a Cloudflare account and a hostname from the dashboard.

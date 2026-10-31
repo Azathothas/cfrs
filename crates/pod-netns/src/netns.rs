@@ -805,10 +805,7 @@ pub(crate) fn run(args: Args) -> Result<i32> {
     let result = runtime.block_on(async move {
         let mut backend = Backend::new(tun_fd, proxies, rules, maps, verbose)?;
         let fd = backend.device.fd;
-        let async_fd = tokio::io::unix::AsyncFd::with_interest(
-            unsafe { OwnedFd::from_raw_fd(libc::dup(fd)) },
-            tokio::io::Interest::READABLE,
-        )?;
+        let async_fd = crate::readable_copy(fd)?;
         loop {
             backend.device.read_ready();
             backend.tick().await?;

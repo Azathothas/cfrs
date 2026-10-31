@@ -86,6 +86,23 @@ mod prelude {
 #[allow(unused_imports)]
 use prelude::*;
 
+/// Register a copy (`dup`) of `fd` with the tokio reactor, for readable
+/// events. The copy is closed when the `AsyncFd` is dropped; `fd` stays open.
+pub(crate) fn readable_copy(fd: RawFd) -> std::io::Result<tokio::io::unix::AsyncFd<OwnedFd>> {
+    let copy = unsafe { libc::dup(fd) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `copy` is a new open descriptor that nothing else owns.
+    let owned = unsafe { OwnedFd::from_raw_fd(copy) };
+    // SAFETY: the OwnedFd holds `copy` open and returns it from as_raw_fd
+    // until the AsyncFd drops it.
+    unsafe {
+        tokio::io::unix::AsyncFd::register_with_interest(owned, tokio::io::Interest::READABLE)
+    }
+    .map_err(std::io::Error::from)
+}
+
 /// The exit code of a usage error (sysexits `EX_USAGE`).
 pub const USAGE: i32 = 64;
 

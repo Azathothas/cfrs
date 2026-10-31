@@ -265,8 +265,8 @@ fn client_config() -> Result<quinn::ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    let mut reader = std::io::BufReader::new(CF_EDGE_ROOTS_PEM);
-    for cert in rustls_pemfile::certs(&mut reader) {
+    use rustls::pki_types::pem::PemObject;
+    for cert in CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM) {
         let cert: CertificateDer<'static> = cert.context("CF edge root PEM is malformed")?;
         let _ = roots.add(cert);
     }

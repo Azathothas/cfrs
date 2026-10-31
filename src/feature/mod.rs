@@ -632,7 +632,7 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     }
 
     let bytes: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

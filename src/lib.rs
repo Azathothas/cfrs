@@ -50,6 +50,7 @@ pub mod util;
 pub mod vnet;
 pub mod warp;
 pub mod ws;
+pub mod yaml;
 
 pub use config::{Config, Credentials, Protocol, ReconnectPolicy, Transport};
 pub use egress::Proxy;

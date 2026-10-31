@@ -152,10 +152,10 @@ impl Tun {
             "SIOCSIFFLAGS",
         )?;
 
-        Ok(Self {
-            fd: AsyncFd::new(fd)?,
-            name,
-        })
+        // SAFETY: `fd` is an OwnedFd: it holds the TUN descriptor open and
+        // returns it from as_raw_fd until the AsyncFd drops it.
+        let fd = unsafe { AsyncFd::register(fd) }.map_err(std::io::Error::from)?;
+        Ok(Self { fd, name })
     }
 
     /// Read one packet.

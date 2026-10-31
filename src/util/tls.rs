@@ -32,8 +32,8 @@ pub fn client_config(
     let mut roots = RootCertStore::empty();
     if let Some(path) = ca_file {
         let pem = std::fs::read(path).map_err(|e| format!("reading ca file {path:?}: {e}"))?;
-        let mut cursor = std::io::Cursor::new(pem);
-        for cert in rustls_pemfile::certs(&mut cursor) {
+        use rustls::pki_types::{pem::PemObject, CertificateDer};
+        for cert in CertificateDer::pem_slice_iter(&pem) {
             let cert = cert.map_err(|e| format!("parsing ca file {path:?}: {e}"))?;
             roots
                 .add(cert)

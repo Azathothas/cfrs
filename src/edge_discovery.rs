@@ -95,16 +95,21 @@ pub async fn discover(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 /// Resolve the SRV record and its targets with the system resolver
 /// (`/etc/resolv.conf`).
 pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
-    let resolver = hickory_resolver::TokioAsyncResolver::tokio_from_system_conf()
-        .context("reading the system resolver configuration")?;
+    let resolver = hickory_resolver::TokioResolver::builder_tokio()
+        .context("reading the system resolver configuration")?
+        .build()
+        .context("starting the system resolver")?;
     let srv = resolver
         .srv_lookup(EDGE_SRV)
         .await
         .with_context(|| format!("SRV lookup of {EDGE_SRV}"))?;
     let mut edges = Vec::new();
-    for record in srv.iter() {
-        let target = record.target().to_utf8();
-        let port = record.port();
+    for record in srv.answers() {
+        let hickory_resolver::proto::rr::RData::SRV(record) = &record.data else {
+            continue;
+        };
+        let target = record.target.to_utf8();
+        let port = record.port;
         let Ok(ips) = resolver.lookup_ip(target.trim_end_matches('.')).await else {
             continue;
         };

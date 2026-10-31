@@ -232,9 +232,9 @@ impl std::error::Error for EdgeError {}
 pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String> {
     let mut roots = rustls::RootCertStore::empty();
 
-    let mut cursor = std::io::Cursor::new(CF_EDGE_ROOTS_PEM);
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
     let mut added = 0usize;
-    for cert in rustls_pemfile::certs(&mut cursor) {
+    for cert in CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM) {
         let cert = cert.map_err(|e| format!("parsing embedded edge roots: {e}"))?;
         if roots.add(cert).is_ok() {
             added += 1;
@@ -334,8 +334,8 @@ mod tests {
             "the embedded roots look empty: {} bytes",
             CF_EDGE_ROOTS_PEM.len()
         );
-        let mut cursor = std::io::Cursor::new(CF_EDGE_ROOTS_PEM);
-        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
+        use rustls::pki_types::{pem::PemObject, CertificateDer};
+        let certs: Vec<_> = CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM)
             .filter_map(|c| c.ok())
             .collect();
         assert!(
