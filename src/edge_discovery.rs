@@ -10,13 +10,16 @@
 //!
 //! Order of attempts:
 //!
-//! 1. DoH over HTTPS, through the proxy when one is configured.
-//! 2. The crate's resolver path, which uses the system resolver and then DoT.
+//! 1. DoH by IP address (`crate::resolve::DOH_SERVERS`), through the proxy
+//!    when one is configured.
+//! 2. The system resolver.
 //! 3. A short list of anycast addresses, for a host where DNS is entirely
 //!    unusable. These are a last resort and are labelled as such.
 //!
 //! The port comes from the SRV record, not from a constant, so a future change
-//! at Cloudflare is followed rather than guessed.
+//! at Cloudflare is followed rather than guessed. An SRV answer of another
+//! shape (more than two targets, a target outside `argotunnel.com`, two
+//! ports) is not used: cfrs takes [`FIXED_TARGETS`] and says why.
 
 use std::net::IpAddr;
 
@@ -37,6 +40,46 @@ const STATIC_EDGE_IPS: &[&str] = &[
     "198.41.200.13",
     "198.41.200.53",
 ];
+
+/// The SRV targets when the SRV answer has an unexpected shape.
+pub const FIXED_TARGETS: &[(&str, u16)] = &[
+    ("region1.v2.argotunnel.com", 7844),
+    ("region2.v2.argotunnel.com", 7844),
+];
+
+/// The SRV targets to use: `targets` when they have the known shape, else
+/// [`FIXED_TARGETS`], with one line that gives the reason.
+pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
+    let mut ports: Vec<u16> = targets.iter().map(|(_, p)| *p).collect();
+    ports.sort();
+    ports.dedup();
+    let reason = if targets.is_empty() {
+        Some("it has no target".to_string())
+    } else if targets.len() > 2 {
+        Some(format!("it has {} targets, not 1 or 2", targets.len()))
+    } else if let Some((name, _)) = targets
+        .iter()
+        .find(|(name, _)| !name.to_ascii_lowercase().ends_with(".argotunnel.com"))
+    {
+        Some(format!("the target {name} is not under argotunnel.com"))
+    } else if ports.len() > 1 {
+        Some(format!("it has the ports {ports:?}, not one port"))
+    } else {
+        None
+    };
+    match reason {
+        None => targets,
+        Some(reason) => {
+            tracing::warn!(
+                "the SRV answer of {EDGE_SRV} has an unexpected shape: {reason}; cfrs uses region1 and region2.v2.argotunnel.com on port 7844"
+            );
+            FIXED_TARGETS
+                .iter()
+                .map(|(n, p)| (n.to_string(), *p))
+                .collect()
+        }
+    }
+}
 
 /// The port the SRV record names when the static list is used.
 const STATIC_EDGE_PORT: u16 = 7844;
@@ -80,14 +123,20 @@ pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
         .srv_lookup(EDGE_SRV)
         .await
         .with_context(|| format!("SRV lookup of {EDGE_SRV}"))?;
+    let targets: Vec<(String, u16)> = srv
+        .answers()
+        .iter()
+        .filter_map(|record| match &record.data {
+            hickory_resolver::proto::rr::RData::SRV(srv) => Some((
+                srv.target.to_utf8().trim_end_matches('.').to_string(),
+                srv.port,
+            )),
+            _ => None,
+        })
+        .collect();
     let mut edges = Vec::new();
-    for record in srv.answers() {
-        let hickory_resolver::proto::rr::RData::SRV(record) = &record.data else {
-            continue;
-        };
-        let target = record.target.to_utf8();
-        let port = record.port;
-        let Ok(ips) = resolver.lookup_ip(target.trim_end_matches('.')).await else {
+    for (target, port) in checked_targets(targets) {
+        let Ok(ips) = resolver.lookup_ip(target.as_str()).await else {
             continue;
         };
         for ip in ips.iter() {
@@ -113,9 +162,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
             targets.push((target, port));
         }
     }
-    if targets.is_empty() {
-        bail!("the SRV answer carried no target");
-    }
+    let targets = checked_targets(targets);
 
     let mut edges = Vec::new();
     for (target, port) in targets {
@@ -222,6 +269,31 @@ mod tests {
         assert_eq!(parsed.status, 0);
         assert_eq!(parsed.answer.len(), 1);
         assert_eq!(parsed.answer[0].rtype, 33);
+    }
+
+    #[test]
+    fn an_srv_answer_of_another_shape_gives_the_fixed_names() {
+        let t = |list: &[(&str, u16)]| -> Vec<(String, u16)> {
+            list.iter().map(|(n, p)| (n.to_string(), *p)).collect()
+        };
+        let fixed = t(FIXED_TARGETS);
+        let good = t(&[
+            ("region1.v2.argotunnel.com", 7844),
+            ("region2.v2.argotunnel.com", 7844),
+        ]);
+        assert_eq!(checked_targets(good.clone()), good);
+        let three = t(&[
+            ("a.argotunnel.com", 7844),
+            ("b.argotunnel.com", 7844),
+            ("c.argotunnel.com", 7844),
+        ]);
+        assert_eq!(checked_targets(three), fixed);
+        assert_eq!(checked_targets(t(&[("evil.example.com", 7844)])), fixed);
+        assert_eq!(
+            checked_targets(t(&[("a.argotunnel.com", 7844), ("b.argotunnel.com", 443)])),
+            fixed
+        );
+        assert_eq!(checked_targets(Vec::new()), fixed);
     }
 
     #[test]

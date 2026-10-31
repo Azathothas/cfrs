@@ -117,6 +117,40 @@ jobs:
           cat demo.jsonl
           jq -e 'select(.event == "ready") | .url | test("^https://.*\\.trycloudflare\\.com$")' demo.jsonl
           jq -e 'select(.event == "verified") | .url | test("trycloudflare")' demo.jsonl
+      # No system resolver: names come from DNS over HTTPS by IP address.
+      # Then with Cloudflare's DoH addresses blocked, from Google's.
+      - name: Quick tunnel with no system DNS, then with 1.1.1.1 blocked
+        run: |
+          set -eu
+          restore() {
+            sudo rm -f /etc/resolv.conf
+            sudo cp -P "$RUNNER_TEMP/resolv.conf" /etc/resolv.conf
+            sudo iptables -D OUTPUT -d 1.1.1.1 -j REJECT 2> /dev/null || true
+            sudo iptables -D OUTPUT -d 1.0.0.1 -j REJECT 2> /dev/null || true
+            sudo systemctl start systemd-resolved || true
+          }
+          sudo cp -P /etc/resolv.conf "$RUNNER_TEMP/resolv.conf"
+          trap restore EXIT
+          sudo systemctl stop systemd-resolved || true
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 192.0.2.1" | sudo tee /etc/resolv.conf > /dev/null
+          if timeout 10 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
+          RUST_LOG=cfrs=debug timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns.log ||
+            { tail -40 dns.log; exit 1; }
+          grep -m3 'step="doh"' dns.log
+          sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
+          sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
+          RUST_LOG=cfrs=debug timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns2.log ||
+            { tail -40 dns2.log; exit 1; }
+          grep -m3 'server="https://8\.8\.' dns2.log
+      - name: A wrong --resolve pin fails at the TLS name check
+        run: |
+          set -u
+          if timeout 60 target/release/cfrs --resolve api.trycloudflare.com=1.1.1.1 demo --exit-on-verify 2> pin.log; then
+            echo "a wrong pin was accepted"; exit 1
+          fi
+          cat pin.log
+          grep -E 'NotValidForName|not valid for' pin.log
       - name: Quick tunnel, QUIC through WARP (TCP 443)
         run: timeout 240 target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
       - name: WARP account and probe
