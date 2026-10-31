@@ -14,3 +14,8 @@ The schemas are the wire format. `cfrs` does not compile them: the layouts in
 `src/cloudflare/schema.rs` follow from them.
 
 The Rust dependencies are listed in `Cargo.lock`. Each has its own license.
+Each release has `THIRD-PARTY-LICENSES.md`, which holds the license text of
+each crate in the binaries. The `notes` job of `.github/workflows/release.yml`
+makes it with `cargo about generate --locked` from `about.toml` and
+`about.hbs`. A crate with a license that `about.toml` does not accept stops
+the release.

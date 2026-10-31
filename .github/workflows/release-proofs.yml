@@ -1,0 +1,151 @@
+name: release proofs
+
+# The proofs of a published release, checked on a fresh runner as README.md
+# tells a user to check them:
+#
+# * SHA256SUMS has one line for each binary (and for cfrs.1 when the release
+#   has it), and each line is correct.
+# * The provenance of each binary names release.yml at the tag and the commit
+#   of the tag. It is checked through the API and with the bundle of the
+#   release.
+# * The signature of SHA256SUMS names release.yml at the tag. It is checked
+#   with cosign 3 and cosign 2.6.
+# * The x86_64 binary runs scripts/release-short.sh with --net, and its
+#   --version names the commit of the tag.
+#
+# Each proof must refuse a changed copy. The workflow reads the release and
+# publishes nothing. The publish job of release.yml starts it after each
+# release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published tag to check, as v0.3.0-beta.1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: the tag and its commit
+        run: |
+          set -eu
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "not the tag of a release: $TAG"; exit 1 ;;
+          esac
+          commit=$(timeout 60 gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          case "$commit" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "no commit for $TAG: '$commit'"; exit 1 ;;
+          esac
+          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "the tag $TAG is at $commit"
+      # The scripts of the tag, so that the short check is the one of the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - name: the published files
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release"
+          timeout 300 gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+          ls -la
+      - name: SHA256SUMS against each binary
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -eu
+          n=0
+          for f in cfrs-* pod-netns-*; do
+            grep -q "  $f\$" SHA256SUMS || { echo "SHA256SUMS has no line for $f"; exit 1; }
+            n=$((n + 1))
+          done
+          want=$n
+          if [ -f cfrs.1 ]; then
+            grep -q '  cfrs\.1$' SHA256SUMS || { echo "SHA256SUMS has no line for cfrs.1"; exit 1; }
+            want=$((n + 1))
+          fi
+          lines=$(wc -l < SHA256SUMS)
+          test "$want" -eq "$lines" || { echo "SHA256SUMS has $lines lines, not $want"; exit 1; }
+          sha256sum -c SHA256SUMS
+          cp cfrs-x86_64-unknown-linux-musl "$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
+          printf x >> "$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
+          grep '  cfrs-x86_64-unknown-linux-musl$' SHA256SUMS > "$RUNNER_TEMP/sums-changed"
+          if (cd "$RUNNER_TEMP" && sha256sum -c sums-changed > /dev/null 2>&1); then
+            echo "a changed copy passed sha256sum -c"
+            exit 1
+          fi
+          echo "ok   SHA256SUMS: each of the $n binaries; a changed copy fails"
+      - name: the provenance of each binary
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -eu
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          verify() {
+            timeout 120 gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
+              --source-ref "refs/tags/$TAG" --source-digest "$COMMIT" --deny-self-hosted-runners "${@:2}" > /dev/null
+          }
+          for f in cfrs-* pod-netns-*; do
+            verify "$f"
+            verify "$f" --bundle provenance.sigstore.json
+            echo "ok   $f: $signer at refs/tags/$TAG, $COMMIT, through the API and with the bundle"
+          done
+          changed="$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
+          if verify "$changed" 2> /dev/null; then echo "a changed copy verified"; exit 1; fi
+          if verify "$changed" --bundle provenance.sigstore.json 2> /dev/null; then
+            echo "a changed copy verified with the bundle"
+            exit 1
+          fi
+          echo "ok   a changed copy fails, through the API and with the bundle"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.6.5
+          install-dir: ${{ runner.temp }}/cosign2
+      - name: the signature of SHA256SUMS
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -eu
+          issuer=https://token.actions.githubusercontent.com
+          workflow="https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          check() {
+            "$1" verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "$2" \
+              --certificate-oidc-issuer "$issuer" "$3"
+          }
+          check cosign "$workflow@refs/tags/$TAG" SHA256SUMS
+          check "$RUNNER_TEMP/cosign2/cosign" "$workflow@refs/tags/$TAG" SHA256SUMS
+          # The release workflow at any release tag, as README.md shows it.
+          cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp "^https://github.com/$GITHUB_REPOSITORY/\.github/workflows/release\.yml@refs/tags/v" \
+            --certificate-oidc-issuer "$issuer" SHA256SUMS
+          awk 'NR == 1 { $0 = (substr($0, 1, 1) == "0" ? "1" : "0") substr($0, 2) } { print }' SHA256SUMS \
+            > "$RUNNER_TEMP/sums-flipped"
+          if check cosign "$workflow@refs/tags/$TAG" "$RUNNER_TEMP/sums-flipped" 2> /dev/null; then
+            echo "a changed copy verified"
+            exit 1
+          fi
+          if check cosign "$workflow@refs/heads/main" SHA256SUMS 2> /dev/null; then
+            echo "the identity of a branch verified"
+            exit 1
+          fi
+          echo "ok   SHA256SUMS: signed by $workflow@refs/tags/$TAG (cosign 3.1.4 and 2.6.5); a changed copy and the identity of a branch fail"
+      - name: the short release check, on the published x86_64 binary
+        run: |
+          set -eu
+          bin="$RUNNER_TEMP/release/cfrs-x86_64-unknown-linux-musl"
+          chmod +x "$bin"
+          CFRS_BUILD_COMMIT="$COMMIT" timeout 300 sh scripts/release-short.sh "$bin" --net

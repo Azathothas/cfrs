@@ -47,8 +47,54 @@ A static binary has no run-time dependency on the C library of the host:
 rustup target add x86_64-unknown-linux-musl
 CC_x86_64_unknown_linux_musl=clang cargo build --release --target x86_64-unknown-linux-musl
 ```
- The `LD_PRELOAD` shims need a C compiler at run
-time (`cc`, `gcc` or `clang`). The other commands do not.
+
+The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
+`clang`). The other commands do not.
+
+## Release binaries
+
+Each [release](https://github.com/Azathothas/cfrs/releases) has static
+Linux binaries of `cfrs` and `pod-netns` for `x86_64`, `aarch64`, `armv7` and
+`riscv64gc`, and these files:
+
+| File | Contents |
+| --- | --- |
+| `SHA256SUMS` | The SHA-256 of each binary and of `cfrs.1`. |
+| `SHA256SUMS.sigstore.json` | The keyless cosign signature of `SHA256SUMS`. |
+| `provenance.sigstore.json` | The SLSA provenance of the binaries. |
+| `cfrs.1` | The manual page (`cfrs man --roff`). |
+| `THIRD-PARTY-LICENSES.md` | The license texts of the crates in the binaries. |
+
+Verify the files before you use them. Download the binary, `SHA256SUMS` and
+the two bundles to one directory. Then do these steps:
+
+1. Check the checksums. The command ignores the files that you did not
+   download:
+
+   ```sh
+   sha256sum -c --ignore-missing SHA256SUMS
+   ```
+
+2. Check the signature of `SHA256SUMS`. Replace `vX.Y.Z` with the tag:
+
+   ```sh
+   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+     --certificate-identity https://github.com/Azathothas/cfrs/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+   ```
+
+3. Check the provenance of the binary. With no network access to the GitHub
+   API, add `--bundle provenance.sigstore.json`:
+
+   ```sh
+   gh attestation verify cfrs-x86_64-unknown-linux-musl --repo Azathothas/cfrs \
+     --signer-workflow Azathothas/cfrs/.github/workflows/release.yml
+   ```
+
+A binary that has one changed byte fails each check. The workflow
+`.github/workflows/release-proofs.yml` does these checks on a fresh runner
+after each release. It also does each check on a changed copy, which must
+fail.
 
 ## Quick start
 

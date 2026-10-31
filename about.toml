@@ -16,3 +16,11 @@ accepted = [
 ]
 # The binary's graph only: a crate of the tests ships in no binary.
 ignore-dev-dependencies = true
+# The targets of the release binaries: a crate of another platform only
+# (for example of Windows) ships in no binary.
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "armv7-unknown-linux-musleabihf",
+  "riscv64gc-unknown-linux-musl",
+]
