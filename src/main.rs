@@ -1067,6 +1067,15 @@ struct ProxyArgs {
     /// The seed of the fault sequence.
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// With --switch: serve the shim control socket with this abstract name.
+    /// A shim program with CFRSNET_CONTROL=NAME that binds a virtual address
+    /// can then accept connections from other hosts.
+    #[arg(long)]
+    control: Option<String>,
+    /// With --switch: make a remote virtual address reachable for shim
+    /// programs on this host, repeatable: --import 10.66.0.3:8080
+    #[arg(long = "import", value_name = "VIRT")]
+    imports: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1189,6 +1198,18 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
             };
             let switch = ProxyListen::parse(switch)?;
             _link = Some(cfrs::vnet::switch::attach(&net, &switch, faults).await?);
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(name) = &args.control {
+                    cfrs::vnet::switch::serve_control(net.clone(), name)?;
+                    println!("cfrs: control  \\0{name}  (CFRSNET_CONTROL={name})");
+                }
+                for spec in &args.imports {
+                    let virt: VirtAddr = spec.trim().parse()?;
+                    cfrs::vnet::switch::import(net.clone(), virt)?;
+                    println!("cfrs: import   {virt}");
+                }
+            }
             match &switch {
                 ProxyListen::Unix(path) => println!("cfrs: switch   unix:{} as {address}", path.display()),
                 ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr} as {address}"),

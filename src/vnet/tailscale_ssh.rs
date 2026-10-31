@@ -223,28 +223,28 @@ mod tests {
 
     #[test]
     fn passwd_and_group_include_root() {
-        let user = LocalUser::new("nemo", 966, 965);
+        let user = LocalUser::new("user", 966, 965);
         let passwd = render_passwd(&[user.clone()]);
-        assert!(passwd.contains("nemo:x:966:965:nemo:/state/home:/bin/sh"));
+        assert!(passwd.contains("user:x:966:965:user:/state/home:/bin/sh"));
         assert!(passwd.contains("root:x:0:0:root:/root:/bin/sh"));
         let group = render_group(&[user]);
-        assert!(group.contains("nemo:x:965:"));
+        assert!(group.contains("user:x:965:"));
         assert!(group.contains("root:x:0:"));
     }
 
     #[test]
     fn getent_answers_name_and_uid() {
         let dir = scratch("getent");
-        let shims = install(&dir, &[LocalUser::new("nemo", 966, 965)]).unwrap();
+        let shims = install(&dir, &[LocalUser::new("user", 966, 965)]).unwrap();
 
         let by_name = std::process::Command::new(&shims.getent)
-            .args(["passwd", "--", "nemo"])
+            .args(["passwd", "--", "user"])
             .output()
             .unwrap();
         assert!(by_name.status.success());
         assert_eq!(
             String::from_utf8_lossy(&by_name.stdout).trim(),
-            "nemo:x:966:965:nemo:/state/home:/bin/sh"
+            "user:x:966:965:user:/state/home:/bin/sh"
         );
 
         // The probe that decides whether `--` is accepted asks twice.
@@ -262,7 +262,7 @@ mod tests {
             .args(["passwd", "966"])
             .output()
             .unwrap();
-        assert!(String::from_utf8_lossy(&by_uid.stdout).starts_with("nemo:"));
+        assert!(String::from_utf8_lossy(&by_uid.stdout).starts_with("user:"));
 
         let missing = std::process::Command::new(&shims.getent)
             .args(["passwd", "nosuch"])
@@ -275,10 +275,10 @@ mod tests {
     #[test]
     fn id_answers_group_list() {
         let dir = scratch("id");
-        let shims = install(&dir, &[LocalUser::new("nemo", 966, 965)]).unwrap();
+        let shims = install(&dir, &[LocalUser::new("user", 966, 965)]).unwrap();
 
         let out = std::process::Command::new(&shims.id)
-            .args(["-Gz", "nemo"])
+            .args(["-Gz", "user"])
             .output()
             .unwrap();
         assert!(out.status.success());
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn install_compiles_the_client_preload() {
         let dir = scratch("fakepwd");
-        let shims = install(&dir, &[LocalUser::new("nemo", 966, 965)]).unwrap();
+        let shims = install(&dir, &[LocalUser::new("user", 966, 965)]).unwrap();
         assert!(
             shims.fakepwd.is_file(),
             "{} was not built",
