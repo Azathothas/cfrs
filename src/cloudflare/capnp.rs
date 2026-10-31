@@ -405,12 +405,21 @@ impl Message {
     /// Take `words` from the read budget.
     fn spend(&self, words: u64) -> Result<()> {
         use std::sync::atomic::Ordering;
-        self.budget
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-                left.checked_sub(words)
-            })
-            .map(|_| ())
-            .map_err(|_| anyhow::anyhow!("the message exceeds the read limit"))
+        let mut left = self.budget.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = left.checked_sub(words) else {
+                bail!("the message exceeds the read limit");
+            };
+            match self.budget.compare_exchange_weak(
+                left,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => left = actual,
+            }
+        }
     }
 
     fn word(&self, segment: usize, index: usize) -> Result<u64> {
