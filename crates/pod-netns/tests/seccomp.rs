@@ -915,3 +915,19 @@ fn doctor_json_is_machine_readable() {
     let any = value["backend_available"].as_bool().unwrap();
     assert_eq!(out.status.success(), any);
 }
+
+/// A program named without a `/` is found in PATH, as `execvp` does.
+#[test]
+fn both_backends_find_a_program_in_path() {
+    let dir = std::env::temp_dir().join(format!("pod-netns-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let _listener = UnixListener::bind(&sock).unwrap();
+    if seccomp_available() {
+        run_on("seccomp", &[&sock], std::path::Path::new("true"));
+    }
+    if netns_available() {
+        run_on("netns", &[&sock], std::path::Path::new("true"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

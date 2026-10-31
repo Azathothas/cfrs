@@ -77,6 +77,25 @@ pub(crate) fn intercepted_syscalls() -> [libc::c_long; 17] {
     ]
 }
 
+/// Find `name` as `execvp` does: a name with a `/` is used as it is; another
+/// name is looked up in the directories of `PATH`.
+pub(crate) fn resolve_program(name: &str) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    if name.contains('/') {
+        return Ok(std::path::PathBuf::from(name));
+    }
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into());
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return Ok(candidate);
+            }
+        }
+    }
+    bail!("the program {name:?} is not in PATH")
+}
+
 /// The audit arch value of this build target.
 #[cfg(target_arch = "x86_64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
@@ -363,12 +382,15 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
     // listener fd stays in this process's fd table, so no SCM_RIGHTS handshake
     // is needed (the child's own sendmsg is itself intercepted).
     let program = args.program.clone();
+    // execv does not search PATH, and the child must not allocate after the
+    // fork: find the program here.
+    let resolved = resolve_program(&program[0])?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("pod-netns-filter".into())
         .spawn(move || {
             // Built before fork so the child allocates nothing.
-            let path = match CString::new(program[0].as_bytes()) {
+            let path = match CString::new(resolved.into_os_string().into_encoded_bytes()) {
                 Ok(p) => p,
                 Err(e) => {
                     let _ = tx.send(Err(anyhow::anyhow!("program path: {e}")));

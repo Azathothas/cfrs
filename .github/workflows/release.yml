@@ -1,0 +1,422 @@
+name: release
+
+# A tag `vX.Y.Z[-pre]` builds the release binaries and publishes them, with
+# checksums, provenance and a signature, as a GitHub release (a prerelease
+# when the tag has a suffix). The notes come from docs/releases/<tag>.md,
+# which must exist.
+#
+# Run by hand (workflow_dispatch) with `publish` empty, it builds and checks
+# the same binaries and keeps them as artifacts: a dry run that publishes
+# nothing. Run by hand with `publish` set to v<version of Cargo.toml>, it
+# makes that tag at its commit and starts itself on the tag. A session whose
+# git cannot push a tag releases this way.
+#
+# The Linux binaries are static musl. x86-64 and ARM64 are built in the
+# pinned image of images/build on a native runner; ARMv7 with Alpine's rust
+# in a linux/arm/v7 container on an ARM64 runner; RISC-V 64 with
+# cargo-zigbuild. Each binary is checked for dynamic dependencies, and runs
+# scripts/release-short.sh on its own architecture before it is published.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "The tag to publish, v and the version of Cargo.toml; empty: a dry run"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# The commit that each binary prints in --version.
+env:
+  CFRS_BUILD_COMMIT: ${{ github.sha }}
+
+jobs:
+  # A tag that git pushes with the job's token starts no workflow; a dispatch
+  # does. Thus the run on the tag is started by name, after the tag exists.
+  tag:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish != '' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the tag, and the release run on it
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          want=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          test "$PUBLISH" = "v$want" || { echo "the input publish $PUBLISH is not v$want"; exit 1; }
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$PUBLISH")" ]; then echo "the tag $PUBLISH exists"; exit 1; fi
+          git tag "$PUBLISH" "$GITHUB_SHA"
+          git push origin "refs/tags/$PUBLISH"
+          for try in 1 2 3 4 5 6; do
+            if gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$PUBLISH"; then
+              echo "the tag $PUBLISH is at $GITHUB_SHA; the release runs on it"
+              exit 0
+            fi
+            echo "the dispatch on $PUBLISH failed (try $try); again in 10 s"
+            sleep 10
+          done
+          echo "the tag $PUBLISH exists, and no run started on it: start one by hand on the tag"
+          exit 1
+
+  linux:
+    if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
+    name: linux ${{ matrix.target }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the build image
+        run: |
+          set -eu
+          ref=$(tr -d '\r' < images/build/Dockerfile | sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')
+          case "$ref" in
+            *@sha256:*) echo "BUILD_IMAGE=$ref" >> "$GITHUB_ENV" ;;
+            *) echo "images/build/Dockerfile names no image pinned to a digest" >&2; exit 1 ;;
+          esac
+      - name: build (static musl, in the pinned image)
+        run: |
+          image=$(sh scripts/pull-image.sh "$BUILD_IMAGE")
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static -e CFRS_BUILD_COMMIT \
+            "$image" \
+            cargo build --locked --release --target ${{ matrix.target }}
+      - name: the binaries are static
+        run: |
+          set -eu
+          for b in cfrs pod-netns; do
+            B=target/${{ matrix.target }}/release/$b
+            if readelf -d "$B" | grep -q NEEDED; then echo "$b: dynamic dependencies"; readelf -d "$B"; exit 1; fi
+            if readelf -l "$B" | grep -q INTERP; then echo "$b: asks for a program interpreter"; exit 1; fi
+            file "$B"
+            "$B" --version
+          done
+      - name: the version of the binaries
+        run: |
+          set -eu
+          want=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          case "$GITHUB_REF" in
+            refs/tags/v*) test "$GITHUB_REF_NAME" = "v$want" || { echo "the tag $GITHUB_REF_NAME is not v$want"; exit 1; } ;;
+          esac
+          for b in cfrs pod-netns; do
+            got=$(target/${{ matrix.target }}/release/$b --version)
+            test "$got" = "$b $want ($CFRS_BUILD_COMMIT)" ||
+              { echo "$b prints \"$got\", not \"$b $want ($CFRS_BUILD_COMMIT)\""; exit 1; }
+          done
+      - name: the binary runs
+        run: sh scripts/release-short.sh target/${{ matrix.target }}/release/cfrs --net
+      - name: package
+        run: |
+          set -eu
+          mkdir -p dist
+          for b in cfrs pod-netns; do
+            cp target/${{ matrix.target }}/release/$b dist/$b-${{ matrix.target }}
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cfrs-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # 32-bit ARM: Alpine's own toolchain for armv7, in a linux/arm/v7 container
+  # on an ARM64 runner. QEMU runs it where the runner's CPU cannot.
+  linux-armv7:
+    if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
+    name: linux armv7-unknown-linux-musleabihf
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the image
+        run: |
+          set -eu
+          ref=$(tr -d '\r' < images/armv7/Dockerfile | sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')
+          case "$ref" in
+            *@sha256:*) echo "ARMV7_IMAGE=$(PULL_PLATFORM=linux/arm/v7 sh scripts/pull-image.sh "$ref")" >> "$GITHUB_ENV" ;;
+            *) echo "images/armv7/Dockerfile names no image pinned to a digest" >&2; exit 1 ;;
+          esac
+      - name: does the runner run 32-bit ARM?
+        id: probe
+        run: |
+          if docker run --rm --platform linux/arm/v7 "$ARMV7_IMAGE" uname -m; then
+            echo "native=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "native=no" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.probe.outputs.native != 'yes'
+        name: QEMU for 32-bit ARM
+        run: sh scripts/binfmt.sh arm
+      - name: build (static musl, Alpine's rust for armv7)
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work \
+            -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static -e CFRS_BUILD_COMMIT \
+            "$ARMV7_IMAGE" sh -c 'apk add --no-cache build-base rust cargo >/dev/null && rustc -vV &&
+              t=$(rustc -vV | sed -n "s/^host: //p") && cargo build --locked --release --target "$t" &&
+              mkdir -p dist && for b in cfrs pod-netns; do cp "target/$t/release/$b" "dist/$b-armv7-unknown-linux-musleabihf"; done'
+      - name: the binaries are static
+        run: |
+          set -eu
+          for b in cfrs pod-netns; do
+            B=dist/$b-armv7-unknown-linux-musleabihf
+            file "$B"
+            if readelf -d "$B" | grep -q NEEDED; then echo "$b: dynamic dependencies"; readelf -d "$B"; exit 1; fi
+            if readelf -l "$B" | grep -q INTERP; then echo "$b: asks for a program interpreter"; exit 1; fi
+            readelf -h "$B" | grep -E 'Class|Machine|Flags'
+          done
+      - name: the binary runs
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work -e CFRS_BUILD_COMMIT "$ARMV7_IMAGE" \
+            sh scripts/release-short.sh dist/cfrs-armv7-unknown-linux-musleabihf --net
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cfrs-armv7-unknown-linux-musleabihf
+          path: dist/*
+          if-no-files-found: error
+
+  # RISC-V 64, cross-compiled with cargo-zigbuild in the pinned image; the
+  # binary then runs on the runner under QEMU.
+  linux-riscv64:
+    if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
+    name: linux riscv64gc-unknown-linux-musl
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      ZIGBUILD_VERSION: 0.23.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the build image
+        run: |
+          set -eu
+          ref=$(tr -d '\r' < images/build/Dockerfile | sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')
+          case "$ref" in
+            *@sha256:*) echo "BUILD_IMAGE=$(sh scripts/pull-image.sh "$ref")" >> "$GITHUB_ENV" ;;
+            *) echo "images/build/Dockerfile names no image pinned to a digest" >&2; exit 1 ;;
+          esac
+      - name: build (static musl, cargo-zigbuild in the pinned image)
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static -e CFRS_BUILD_COMMIT \
+            -e ZIG_VERSION -e ZIG_SHA256 -e ZIGBUILD_VERSION \
+            "$BUILD_IMAGE" sh -c '
+              set -eu
+              z="zig-x86_64-linux-$ZIG_VERSION"
+              wget -q -O "/tmp/$z.tar.xz" "https://ziglang.org/download/$ZIG_VERSION/$z.tar.xz"
+              echo "$ZIG_SHA256  /tmp/$z.tar.xz" | sha256sum -c -
+              xzcat "/tmp/$z.tar.xz" | tar -x -C /tmp
+              export PATH="/tmp/$z:$PATH"
+              RUSTFLAGS= cargo install --quiet --locked --root /tmp/zigbuild cargo-zigbuild --version "$ZIGBUILD_VERSION"
+              export PATH="/tmp/zigbuild/bin:$PATH"
+              rustup target add riscv64gc-unknown-linux-musl
+              cargo zigbuild --locked --release --target riscv64gc-unknown-linux-musl
+              mkdir -p dist
+              for b in cfrs pod-netns; do cp "target/riscv64gc-unknown-linux-musl/release/$b" "dist/$b-riscv64gc-unknown-linux-musl"; done'
+      - name: the binaries are static
+        run: |
+          set -eu
+          for b in cfrs pod-netns; do
+            B=dist/$b-riscv64gc-unknown-linux-musl
+            file "$B"
+            if readelf -d "$B" | grep -q NEEDED; then echo "$b: dynamic dependencies"; readelf -d "$B"; exit 1; fi
+            if readelf -l "$B" | grep -q INTERP; then echo "$b: asks for a program interpreter"; exit 1; fi
+          done
+      - name: QEMU for riscv64
+        run: sh scripts/binfmt.sh riscv64
+      - name: the binary runs (under QEMU)
+        run: sh scripts/release-short.sh dist/cfrs-riscv64gc-unknown-linux-musl --net
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cfrs-riscv64gc-unknown-linux-musl
+          path: dist/*
+          if-no-files-found: error
+
+  # The third-party license notices and the list of the commits, made with
+  # third-party tools in a job that holds no write token.
+  notes:
+    if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-about@0.9.2,git-cliff@2.9.1
+      - name: the third-party license notices
+        run: |
+          set -eu
+          mkdir -p notes
+          cargo about generate --manifest-path Cargo.toml --locked -c about.toml about.hbs \
+            -o notes/THIRD-PARTY-LICENSES.md
+          test -s notes/THIRD-PARTY-LICENSES.md
+      - name: the list of the commits
+        run: |
+          set -eu
+          case "$GITHUB_REF" in
+            refs/tags/v*) range=--latest ;;
+            *) range=--unreleased ;;
+          esac
+          git cliff --config cliff.toml "$range" --strip all > notes/changes.md
+          test -s notes/changes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: notes/*
+          if-no-files-found: error
+
+  # On a tag it publishes. Run by hand, each step but the proofs and the last
+  # runs, and the files and the body are an artifact. It runs GitHub's actions
+  # and Sigstore's cosign installer, each pinned by its commit, and no other
+  # tool.
+  publish:
+    needs: [linux, linux-armv7, linux-riscv64, notes]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: cfrs-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes
+      - name: the third-party license notices
+        run: |
+          set -eu
+          cp "$RUNNER_TEMP/notes/THIRD-PARTY-LICENSES.md" dist/THIRD-PARTY-LICENSES.md
+          test -s dist/THIRD-PARTY-LICENSES.md
+          test -s "$RUNNER_TEMP/notes/changes.md"
+      - name: checksums
+        run: |
+          set -eu
+          cd dist
+          sha256sum cfrs-* pod-netns-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: the provenance of the binaries
+        id: attest
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/cfrs-*
+            dist/pod-netns-*
+      - name: the provenance bundle, beside the files
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/provenance.sigstore.json
+      - name: the provenance, checked
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          verify() {
+            gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" --bundle dist/provenance.sigstore.json \
+              --signer-workflow "$signer" --source-ref "$GITHUB_REF" > /dev/null
+          }
+          for f in dist/cfrs-* dist/pod-netns-*; do
+            verify "$f"
+            echo "ok   $f"
+          done
+          cp dist/cfrs-x86_64-unknown-linux-musl "$RUNNER_TEMP/changed"
+          echo changed >> "$RUNNER_TEMP/changed"
+          if verify "$RUNNER_TEMP/changed" 2> /dev/null; then echo "a changed copy verified"; exit 1; fi
+          echo "each binary names $signer at $GITHUB_REF; a changed copy fails"
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+      - name: the signature of the checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          cd dist
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          issuer=https://token.actions.githubusercontent.com
+          workflow="https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          check() {
+            cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "$1" \
+              --certificate-oidc-issuer "$issuer" "$2"
+          }
+          check "$workflow@$GITHUB_REF" SHA256SUMS
+          awk 'NR == 1 { $0 = (substr($0, 1, 1) == "0" ? "1" : "0") substr($0, 2) } { print }' SHA256SUMS \
+            > "$RUNNER_TEMP/changed"
+          if check "$workflow@$GITHUB_REF" "$RUNNER_TEMP/changed"; then echo "a changed copy verified"; exit 1; fi
+          if check "$workflow@refs/heads/main" SHA256SUMS; then echo "a branch identity verified"; exit 1; fi
+          echo "signed by $workflow@$GITHUB_REF; a changed copy and a branch identity fail"
+      - name: the tag
+        run: |
+          set -eu
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          case "$GITHUB_REF" in
+            refs/tags/v*) tag=$GITHUB_REF_NAME ;;
+            *) tag="v$version" ;;
+          esac
+          test "$tag" = "v$version" || { echo "the tag $tag is not v$version, the version of Cargo.toml"; exit 1; }
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - name: the body of the release
+        run: |
+          set -eu
+          notes="docs/releases/$TAG.md"
+          if [ ! -f "$notes" ]; then echo "missing release notes: $notes"; exit 1; fi
+          {
+            cat "$notes"
+            printf '\nThe licenses of the crates in the binaries, with their texts: THIRD-PARTY-LICENSES.md.\n'
+            printf '\n## The commits of this release\n\n'
+          } > "$RUNNER_TEMP/body.md"
+          budget=$((120000 - $(wc -c < "$RUNNER_TEMP/body.md")))
+          if [ "$(wc -c < "$RUNNER_TEMP/notes/changes.md")" -le "$budget" ]; then
+            cat "$RUNNER_TEMP/notes/changes.md" >> "$RUNNER_TEMP/body.md"
+          else
+            cp "$RUNNER_TEMP/notes/changes.md" dist/CHANGES.md
+            printf 'The list is cut; CHANGES.md, among the files, holds each commit.\n\n' >> "$RUNNER_TEMP/body.md"
+            head -c "$((budget - 200))" "$RUNNER_TEMP/notes/changes.md" | sed '$d' >> "$RUNNER_TEMP/body.md"
+          fi
+          test "$(wc -c < "$RUNNER_TEMP/body.md")" -lt 125000
+      - name: publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" $pre --verify-tag --title "cfrs $TAG" --notes-file "$RUNNER_TEMP/body.md" dist/*
+      - name: the files and the body that a tag would publish
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: cp "$RUNNER_TEMP/body.md" dist/BODY.md
+      - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run
+          path: dist/*
+          if-no-files-found: error

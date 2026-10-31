@@ -85,7 +85,11 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
                 }
             }
             "-V" | "--version" => {
-                println!("pod-netns {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "pod-netns {} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CFRS_BUILD_COMMIT")
+                );
                 std::process::exit(0);
             }
             "--map" => {

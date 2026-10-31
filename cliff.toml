@@ -1,0 +1,38 @@
+# git-cliff: the list of the commits since the last tag, for the body of a
+# release (.github/workflows/release.yml, job notes). Each commit is kept. A
+# subject is cut to 200 characters, because GitHub refuses a release body of
+# more than 125,000 characters.
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | trim | truncate(length=200) }} ({{ commit.id | truncate(length=7, end="") }})
+{%- endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+# A name after `@` becomes code, so that a release notifies nobody; an issue
+# named as #N links to it.
+postprocessors = [
+  { pattern = '(?m)(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]*)', replace = "${1}`@${2}`" },
+  { pattern = '#([0-9]+)', replace = "[#${1}](https://github.com/Azathothas/cfrs/issues/${1})" },
+]
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+split_commits = false
+commit_parsers = [
+  { message = '^(Add|Serve)\b', group = "<!-- 0 -->Features" },
+  { message = '^Fix', group = "<!-- 1 -->Repairs" },
+  { message = '^(Build|CI|Use|Vendor|Replace)\b|^pod-netns:', group = "<!-- 2 -->Build and internals" },
+  { message = '^Rewrite', group = "<!-- 3 -->Documents" },
+  { message = '.', group = "<!-- 4 -->Other" },
+]
+filter_commits = false
+tag_pattern = 'v[0-9].*'
+sort_commits = "oldest"

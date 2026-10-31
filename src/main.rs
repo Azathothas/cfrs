@@ -21,8 +21,8 @@ use cfrs::{Protocol, Transport, Tunnel};
 #[derive(Parser, Debug)]
 #[command(
     name = "cfrs",
-    version,
-    about = "Expose anything on the public Electrosphere through Cloudflare tunnels"
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CFRS_BUILD_COMMIT"), ")"),
+    about = "Cloudflare tunnels and the WARP client for hosts with strong network limits"
 )]
 struct Cli {
     #[command(subcommand)]

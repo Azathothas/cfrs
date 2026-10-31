@@ -1,0 +1,22 @@
+# Third-party licenses
+
+The `cfrs` and `pod-netns` binaries of this release include the crates below,
+each under the license or licenses named here. cfrs is under 0BSD (`LICENSE`).
+
+{{#each overview}}
+- {{{name}}}: {{count}}
+{{/each}}
+
+{{#each licenses}}
+## {{{name}}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}
