@@ -722,10 +722,13 @@ struct NetArgs {
 
 #[derive(Args, Debug)]
 struct WarpArgs {
-    /// Keep the device and MASQUE key here and resume them next run, instead of
-    /// registering a new anonymous device every time.
+    /// The file that keeps the device and its MASQUE key, so that each run
+    /// uses the same device. Default: $XDG_STATE_HOME/cfrs/warp.json.
     #[arg(long, value_name = "PATH", global = true)]
     identity: Option<PathBuf>,
+    /// Register a new device for this run only, and do not save it.
+    #[arg(long, global = true, conflicts_with = "identity")]
+    ephemeral: bool,
 
     #[command(subcommand)]
     command: WarpCommand,
@@ -733,35 +736,109 @@ struct WarpArgs {
 
 #[derive(Subcommand, Debug)]
 enum WarpCommand {
-    /// Register anonymously and print the device the API created.
+    /// Register a device (or load the saved one) and print it.
     Register,
-    /// Register, open the tunnel, and print what it carries.
+    /// Print the device and the account (type, WARP+ state, quota).
+    Status {
+        /// Print the account record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Attach a WARP+ license key to the device.
+    License {
+        /// The license key.
+        key: String,
+    },
+    /// Make a new MASQUE key and enrol it. The old key stops working.
+    Rotate,
+    /// Remove the device from the WARP service and delete the saved file.
+    Delete,
+    /// Open the tunnel and test TCP connects through it.
     Probe {
         /// A TCP destination to reach through the tunnel, host:port.
         #[arg(long, value_delimiter = ',')]
         target: Vec<String>,
     },
+    /// Run a local SOCKS5 and HTTP CONNECT proxy whose traffic goes through
+    /// WARP (the proxy mode of the WARP client).
+    Proxy {
+        /// Where to accept clients: tcp://host:port or unix:/path.
+        #[arg(long, default_value = "tcp://127.0.0.1:40000")]
+        listen: String,
+        /// Stay up for this many seconds instead of until Ctrl-C.
+        #[arg(long)]
+        run_for: Option<u64>,
+    },
+    /// Run a program with all its traffic sent through WARP. No root and no
+    /// TUN device are necessary (pod-netns).
+    Run {
+        /// The pod-netns backend: auto, netns or seccomp.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// The program and its arguments.
+        #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
+        program: Vec<String>,
+    },
+}
+
+async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
+    use cfrs::warp::WarpClient;
+    if args.ephemeral {
+        return Ok((WarpClient::register().await?, None));
+    }
+    let path = args
+        .identity
+        .clone()
+        .unwrap_or_else(WarpClient::default_identity_path);
+    Ok((WarpClient::register_or_load(&path).await?, Some(path)))
 }
 
 async fn warp(args: WarpArgs) -> Result<()> {
-    use cfrs::warp::WarpClient;
-
-    let client = match args.identity.as_deref() {
-        Some(path) => WarpClient::register_or_load(path).await?,
-        None => WarpClient::register().await?,
+    let (mut client, path) = warp_client(&args).await?;
+    let save = |client: &cfrs::warp::WarpClient| -> Result<()> {
+        if let Some(path) = &path {
+            client.save(path)?;
+        }
+        Ok(())
     };
 
     match args.command {
-        WarpCommand::Register => {
-            let device = client.device();
-            println!("device      {}", device.id);
-            println!("account     {}", device.account.id);
-            println!("tunnel      {}", device.tunnel_type);
-            println!("key type    {}", device.key_type);
-            println!("ipv4        {:?}", device.ipv4());
-            println!("ipv6        {:?}", device.ipv6());
-            println!("masque      {:?}", device.masque_endpoint());
-            println!("protocol    {}", device.policy.tunnel_protocol);
+        WarpCommand::Register => print_device(&client, path.as_deref()),
+        WarpCommand::Status { json } => {
+            client.refresh().await?;
+            save(&client)?;
+            let account = client.account().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&account)?);
+                return Ok(());
+            }
+            print_device(&client, path.as_deref());
+            let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
+            println!("type        {}", field("account_type"));
+            println!("warp+       {}", field("warp_plus"));
+            println!("premium     {}", field("premium_data"));
+            println!("quota       {}", field("quota"));
+        }
+        WarpCommand::License { key } => {
+            let account = client.set_license(&key).await?;
+            save(&client)?;
+            let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
+            println!("license     set");
+            println!("type        {}", field("account_type"));
+            println!("warp+       {}", field("warp_plus"));
+        }
+        WarpCommand::Rotate => {
+            client.rotate_key().await?;
+            save(&client)?;
+            println!("key         rotated");
+            print_device(&client, path.as_deref());
+        }
+        WarpCommand::Delete => {
+            client.delete().await?;
+            if let Some(path) = &path {
+                let _ = std::fs::remove_file(path);
+            }
+            println!("device      {} deleted", client.device().id);
         }
         WarpCommand::Probe { target } => {
             let targets = if target.is_empty() {
@@ -793,8 +870,70 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 }
             }
         }
+        WarpCommand::Proxy { listen, run_for } => {
+            let listen = cfrs::vnet::proxy::ProxyListen::parse(&listen)?;
+            let stack = Arc::new(client.connect().await?);
+            let proxy = cfrs::warp::proxy::serve(stack, listen).await?;
+            match &proxy.listen {
+                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+                    println!("cfrs: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
+                    println!("  export ALL_PROXY=socks5h://{addr} HTTPS_PROXY=http://{addr}");
+                }
+                cfrs::vnet::proxy::ProxyListen::Unix(path) => {
+                    println!("cfrs: warp proxy  unix:{}", path.display());
+                    println!("  cfrs pod -x socks5://unix:{} -- PROGRAM", path.display());
+                }
+            }
+            match run_for {
+                Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
+                None => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+            proxy.abort();
+        }
+        WarpCommand::Run { backend, program } => {
+            let socket = std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
+            let stack = Arc::new(client.connect().await?);
+            let proxy =
+                cfrs::warp::proxy::serve(stack, cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()))
+                    .await?;
+            let mut argv = vec![
+                "--backend".to_string(),
+                backend,
+                "-x".to_string(),
+                format!("socks5://unix:{}", socket.display()),
+                "--".to_string(),
+            ];
+            argv.extend(program);
+            // pod-netns makes its own runtime, so run it on a plain thread.
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = done_tx.send(pod_netns::main_with_args(&argv));
+            });
+            let code = done_rx.await.unwrap_or(1);
+            proxy.abort();
+            let _ = std::fs::remove_file(&socket);
+            std::process::exit(code);
+        }
     }
     Ok(())
+}
+
+fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>) {
+    let device = client.device();
+    println!("device      {}", device.id);
+    println!("account     {}", device.account.id);
+    println!("tunnel      {}", device.tunnel_type);
+    println!("key type    {}", device.key_type);
+    println!("ipv4        {:?}", device.ipv4());
+    println!("ipv6        {:?}", device.ipv6());
+    println!("masque      {:?}", device.masque_endpoint());
+    println!("protocol    {}", device.policy.tunnel_protocol);
+    match path {
+        Some(path) => println!("saved       {}", path.display()),
+        None => println!("saved       no (--ephemeral)"),
+    }
 }
 
 #[derive(Subcommand, Debug)]

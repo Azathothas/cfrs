@@ -38,6 +38,7 @@ pub mod identity;
 pub mod ip;
 pub mod quic;
 pub mod register;
+pub mod proxy;
 pub mod session;
 
 pub use edge::{start_quick_tunnel, QuickTunnelHandle};
@@ -77,7 +78,7 @@ impl WarpClient {
         if device.token.is_empty() {
             bail!("the registration response carried no token");
         }
-        let enrolled = register::enrol_masque(
+        let mut enrolled = register::enrol_masque(
             &device.id,
             &device.token,
             identity.spki_b64(),
@@ -85,6 +86,9 @@ impl WarpClient {
         )
         .await
         .context("enrolling the MASQUE identity")?;
+        // Only the registration answer has the token. Keep it: the account
+        // calls and the key rotation need it.
+        enrolled.token = device.token;
         if enrolled.tunnel_type != "masque" {
             bail!(
                 "the API kept tunnel_type {:?} instead of masque",
@@ -191,6 +195,68 @@ impl WarpClient {
         let client = Self::register().await?;
         client.save(path)?;
         Ok(client)
+    }
+
+    /// The default place for the saved identity:
+    /// `$XDG_STATE_HOME/cfrs/warp.json`, else `~/.local/state/cfrs/warp.json`,
+    /// else `./cfrs-warp.json`.
+    pub fn default_identity_path() -> std::path::PathBuf {
+        if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
+            return std::path::PathBuf::from(state).join("cfrs").join("warp.json");
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+            return std::path::PathBuf::from(home)
+                .join(".local/state/cfrs")
+                .join("warp.json");
+        }
+        std::path::PathBuf::from("cfrs-warp.json")
+    }
+
+    /// Read the device record from the API again. Keep the token, which only
+    /// the registration answer has.
+    pub async fn refresh(&mut self) -> Result<()> {
+        let token = self.device.token.clone();
+        let mut device = register::get_device(&self.device.id, &token, self.proxy.as_ref()).await?;
+        device.token = token;
+        self.device = device;
+        Ok(())
+    }
+
+    /// The account record: type, WARP+ state and quota.
+    pub async fn account(&self) -> Result<serde_json::Value> {
+        register::get_account(&self.device.id, &self.device.token, self.proxy.as_ref()).await
+    }
+
+    /// Attach a WARP+ license key, then read the device again.
+    pub async fn set_license(&mut self, license: &str) -> Result<serde_json::Value> {
+        let account =
+            register::set_license(&self.device.id, &self.device.token, license, self.proxy.as_ref())
+                .await?;
+        self.refresh().await?;
+        Ok(account)
+    }
+
+    /// Make a new MASQUE key and enrol it. The old key stops working.
+    pub async fn rotate_key(&mut self) -> Result<()> {
+        let identity = Identity::generate().context("generating the MASQUE identity")?;
+        let token = self.device.token.clone();
+        let mut device = register::enrol_masque(
+            &self.device.id,
+            &token,
+            identity.spki_b64(),
+            self.proxy.as_ref(),
+        )
+        .await
+        .context("enrolling the new MASQUE identity")?;
+        device.token = token;
+        self.device = device;
+        self.identity = identity;
+        Ok(())
+    }
+
+    /// Remove the device from the WARP service.
+    pub async fn delete(&self) -> Result<()> {
+        register::delete_device(&self.device.id, &self.device.token, self.proxy.as_ref()).await
     }
 
     /// The device record, including the assigned addresses and the pinned peer

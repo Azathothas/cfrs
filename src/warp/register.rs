@@ -303,6 +303,71 @@ pub async fn enrol_masque(
     check(resp).await
 }
 
+/// Read the device record again (`GET /reg/{id}`).
+pub async fn get_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<Device> {
+    let resp = client(Some(token), proxy)?
+        .get(format!("{API_BASE}/{API_VERSION}/reg/{device_id}"))
+        .send()
+        .await
+        .context("GET /reg/{id}")?;
+    check(resp).await
+}
+
+/// Read the account of the device (`GET /reg/{id}/account`). The answer has
+/// the account type, the WARP+ state and the data quota.
+pub async fn get_account(
+    device_id: &str,
+    token: &str,
+    proxy: Option<&Proxy>,
+) -> Result<serde_json::Value> {
+    let resp = client(Some(token), proxy)?
+        .get(format!("{API_BASE}/{API_VERSION}/reg/{device_id}/account"))
+        .send()
+        .await
+        .context("GET /reg/{id}/account")?;
+    json_body(resp).await
+}
+
+/// Attach a WARP+ license key to the device (`PUT /reg/{id}/account`).
+pub async fn set_license(
+    device_id: &str,
+    token: &str,
+    license: &str,
+    proxy: Option<&Proxy>,
+) -> Result<serde_json::Value> {
+    let resp = client(Some(token), proxy)?
+        .put(format!("{API_BASE}/{API_VERSION}/reg/{device_id}/account"))
+        .json(&serde_json::json!({ "license": license }))
+        .send()
+        .await
+        .context("PUT /reg/{id}/account")?;
+    json_body(resp).await
+}
+
+/// Remove the device from the WARP service (`DELETE /reg/{id}`).
+pub async fn delete_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<()> {
+    let resp = client(Some(token), proxy)?
+        .delete(format!("{API_BASE}/{API_VERSION}/reg/{device_id}"))
+        .send()
+        .await
+        .context("DELETE /reg/{id}")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        bail!("WARP API answered {status}: {body}");
+    }
+    Ok(())
+}
+
+async fn json_body(resp: reqwest::Response) -> Result<serde_json::Value> {
+    let status = resp.status();
+    let body = resp.text().await.context("reading WARP API body")?;
+    if !status.is_success() {
+        bail!("WARP API answered {status}: {body}");
+    }
+    serde_json::from_str(&body).with_context(|| format!("decoding WARP API body: {body}"))
+}
+
 impl Device {
     /// IPv4 address the tunnel assigned, without any prefix length.
     pub fn ipv4(&self) -> Option<std::net::Ipv4Addr> {
