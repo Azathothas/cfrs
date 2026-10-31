@@ -344,6 +344,22 @@ cfrs pod -x tailscale:/run/tailscale/tailscaled.sock -- ssh host
 
 `tailscaled` must run with `--tun=userspace-networking`.
 
+## TLS roots
+
+cfrs checks the certificate of each TLS server that it connects to. Behind a
+proxy that inspects TLS, give the root of the proxy:
+
+```sh
+SSL_CERT_FILE=/etc/corp-root.pem cfrs tunnel --url http://127.0.0.1:8080
+cfrs --ca-file /etc/corp-root.pem warp register
+```
+
+`--ca-file` and `SSL_CERT_FILE` replace the other roots. Without them, cfrs
+trusts `cfrs-ca.pem` beside the binary, the first system bundle that it can
+read (for example `/etc/ssl/certs/ca-certificates.crt`), and the Mozilla
+roots compiled into cfrs. `cfrs status` shows the roots in `tls_roots`. See
+`SECURITY.md`.
+
 ## Manual, status and exit codes
 
 `cfrs man` shows the manual. It is generated from the command tree of the

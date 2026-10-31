@@ -76,6 +76,10 @@ pub fn document() -> Value {
         "proxy": proxy(),
         "edge_override": edge_override(),
         "warp_identity": warp_identity(),
+        "tls_roots": match crate::trust::roots() {
+            Ok(roots) => json!(roots.sources),
+            Err(err) => json!({"error": format!("{err:#}")}),
+        },
         "error_program": std::env::var(crate::report::PROGRAM_VARIABLE).ok().filter(|v| !v.is_empty()),
         "stdin_tty": tty(0),
         "stdout_tty": tty(1),

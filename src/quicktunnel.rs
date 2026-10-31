@@ -175,7 +175,10 @@ pub async fn request_quick_tunnel(
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ProvisionError::BadEndpoint(url));
     }
-    let mut builder = reqwest::Client::builder().timeout(timeout).no_proxy();
+    let mut builder = crate::trust::http_client()
+        .map_err(|e| ProvisionError::Http(format!("{e:#}")))?
+        .timeout(timeout)
+        .no_proxy();
     if let Some(proxy) = proxy {
         let proxy = reqwest::Proxy::all(proxy.url())
             .map_err(|e| ProvisionError::BadEndpoint(format!("proxy: {e}")))?;
@@ -183,7 +186,7 @@ pub async fn request_quick_tunnel(
     }
     let client = builder
         .build()
-        .map_err(|e| ProvisionError::Http(e.to_string()))?;
+        .map_err(|e| ProvisionError::Http(crate::util::chain(&e)))?;
     let mut request = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -194,7 +197,7 @@ pub async fn request_quick_tunnel(
     let response = request
         .send()
         .await
-        .map_err(|e| ProvisionError::Http(e.to_string()))?;
+        .map_err(|e| ProvisionError::Http(crate::util::chain(&e)))?;
     let status = response.status().as_u16();
     let text = response
         .text()

@@ -29,8 +29,13 @@ pub fn client_config(
         ));
     }
 
+    let Some(path) = ca_file else {
+        return crate::trust::client_config(&[], &[])
+            .map(Arc::new)
+            .map_err(|e| format!("{e:#}"));
+    };
     let mut roots = RootCertStore::empty();
-    if let Some(path) = ca_file {
+    {
         let pem = std::fs::read(path).map_err(|e| format!("reading ca file {path:?}: {e}"))?;
         use rustls::pki_types::{pem::PemObject, CertificateDer};
         for cert in CertificateDer::pem_slice_iter(&pem) {

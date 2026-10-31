@@ -87,6 +87,30 @@ These rules apply to each secret:
   and a token, a WARP identity and a proxy password. The test fails when one
   of them is in the output.
 
+## TLS
+
+Each TLS connection that cfrs opens as a client checks the certificate and
+the host name. `src/trust.rs` gives the roots:
+
+1. The file of `--ca-file`, else the file of `SSL_CERT_FILE`. cfrs uses this
+   file alone.
+2. Else `cfrs-ca.pem` beside the binary, the first system bundle that cfrs
+   can read, and the Mozilla roots compiled into cfrs (webpki-roots, version
+   in `trust::ROOTS_CRATE_VERSION`; a test compares it with `Cargo.lock`).
+
+The edge also trusts the Cloudflare roots of `src/cloudflare/cf-edge-roots.pem`.
+The first of them ends on 2029-08-15 (`trust::EDGE_ROOTS_FIRST_END`; a test
+reads it from the certificates). The MASQUE connection of WARP checks the
+key of the server against the key that the WARP API gave, and does not
+connect without one.
+
+Only an origin can turn off the check: `noTLSVerify` in a config file, or
+`--no-tls-verify`. A test (`trust::tests::no_other_code_sets_its_own_verifier`)
+fails when other code sets its own certificate verifier.
+
+When a certificate is expired or not valid yet, the error line also gives
+the clock of the host: a wrong clock is a frequent cause in a container.
+
 ## Text from the network
 
 Text from a peer (an edge error, an HTTP body, a proxy reply) can hold
@@ -103,6 +127,8 @@ ESC, BEL, CR and C1 controls through the error path.
 * The Cap'n Proto encoding, the RPC subset, the HTTP/2 edge transport, the
   MASQUE client and the YAML reader are written for cfrs. The fuzz tests of
   issue #5 are not done yet.
+* cfrs does not read the certificate stores of Windows or macOS: no release
+  is built for them yet (issue #1).
 * With no `XDG_STATE_HOME` and no `HOME`, the WARP identity file is
   `cfrs-warp.json` in the current directory.
 * The `/tmp` paths of the Unix sockets are known to each user. Another user

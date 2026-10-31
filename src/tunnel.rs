@@ -776,7 +776,7 @@ impl TunnelHandle {
     /// Like [`verify`](Self::verify) but for a specific path on the public
     /// URL (a share session lives under `/s/<token>/`, not at the root).
     pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<()> {
-        let client = reqwest::Client::builder()
+        let client = crate::trust::http_client()?
             .timeout(Duration::from_secs(15))
             .build()?;
         let mut last = String::from("no attempt");
@@ -793,7 +793,7 @@ impl TunnelHandle {
                     }
                     last = format!("HTTP {}", status.as_u16());
                 }
-                Err(err) => last = err.to_string(),
+                Err(err) => last = crate::util::chain(&err),
             }
             tracing::debug!(attempt, %last, "verification retry");
             tokio::time::sleep(Duration::from_secs(2)).await;

@@ -26,6 +26,12 @@ use cfrs::{Protocol, Transport, Tunnel};
     about = "Cloudflare tunnels and the WARP client for hosts with strong network limits"
 )]
 struct Cli {
+    /// The only file of TLS roots (PEM) for each connection that cfrs opens
+    /// as a client. Without it, cfrs reads SSL_CERT_FILE, else cfrs-ca.pem
+    /// beside the binary, the system bundle and the compiled-in roots.
+    #[arg(long, global = true, value_name = "PATH")]
+    ca_file: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -307,6 +313,9 @@ fn main() {
         }
     };
     let command = command_name(&argv);
+    if let Some(path) = &cli.ca_file {
+        cfrs::trust::set_ca_file(path.clone());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),

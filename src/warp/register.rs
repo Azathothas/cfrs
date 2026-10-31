@@ -266,7 +266,7 @@ fn client(bearer: Option<&str>, proxy: Option<&Proxy>) -> Result<reqwest::Client
             reqwest::header::HeaderValue::from_str(&value)?,
         );
     }
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::trust::http_client()?
         .default_headers(headers)
         .timeout(std::time::Duration::from_secs(30));
     if let Some(proxy) = proxy {

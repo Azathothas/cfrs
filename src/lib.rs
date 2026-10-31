@@ -45,6 +45,7 @@ pub mod service;
 pub mod share;
 pub mod status;
 pub mod transport;
+pub mod trust;
 pub mod tunnel;
 pub mod util;
 pub mod vnet;

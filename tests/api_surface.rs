@@ -61,9 +61,10 @@ fn identity_example() -> anyhow::Result<()> {
 }
 
 /// The raw session, for callers that want the packet pipe without the stack.
-async fn raw_session_example(addr: SocketAddr) -> anyhow::Result<()> {
+async fn raw_session_example(addr: SocketAddr, pinned_spki: Vec<u8>) -> anyhow::Result<()> {
     let identity = Identity::generate()?;
-    let _session: MasqueSession = MasqueSession::connect(addr, &identity, None, None).await?;
+    let _session: MasqueSession =
+        MasqueSession::connect(addr, &identity, pinned_spki, None).await?;
     Ok(())
 }
 

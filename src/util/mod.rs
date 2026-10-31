@@ -5,6 +5,23 @@ use std::path::Path;
 use anyhow::Result;
 use uuid::Uuid;
 
+/// The text of `err` and of each of its causes, joined with ": ". The
+/// `Display` of a reqwest or hyper error gives the outermost message only;
+/// the cause (for example the TLS alert) is in `source`.
+pub fn chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let part = cause.to_string();
+        if !text.ends_with(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 /// A 32-hex-character unguessable token.
 pub fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())

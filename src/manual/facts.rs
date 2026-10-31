@@ -33,6 +33,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The named-tunnel token, in place of --token. Other users of the host can read a command line, but not the environment of a process of another user.",
     },
     EnvVar {
+        names: &["SSL_CERT_FILE"],
+        used_by: "all commands",
+        meaning: "The only file of TLS roots (PEM), when --ca-file is not given. Without both, cfrs trusts cfrs-ca.pem beside the binary, the first system bundle that it can read, and the roots compiled into cfrs.",
+    },
+    EnvVar {
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
@@ -121,6 +126,14 @@ pub const FILES: &[FileEntry] = &[
     FileEntry {
         path: "$XDG_STATE_HOME/cfrs/warp.json",
         meaning: "The WARP device, its token and its MASQUE key (mode 0600). cfrs warp writes it; cfrs warp delete removes it. --identity names another file.",
+    },
+    FileEntry {
+        path: "cfrs-ca.pem (beside the binary)",
+        meaning: "Extra TLS roots (PEM), for example the root of a TLS-inspecting proxy. cfrs reads it when --ca-file and SSL_CERT_FILE are not set.",
+    },
+    FileEntry {
+        path: "/etc/ssl/certs/ca-certificates.crt",
+        meaning: "The first system bundle of TLS roots. cfrs also tries /etc/pki/tls/certs/ca-bundle.crt, /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem, /etc/ssl/ca-bundle.pem, /etc/ssl/cert.pem and /usr/local/share/certs/ca-root-nss.crt, and reads the first that it can.",
     },
     FileEntry {
         path: "config.yml (--config)",

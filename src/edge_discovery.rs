@@ -180,7 +180,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 
 /// Build the DoH client, through `proxy` when one is given.
 fn doh_client(proxy: Option<&Proxy>) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(15));
+    let mut builder = crate::trust::http_client()?.timeout(Duration::from_secs(15));
     if let Some(proxy) = proxy {
         builder = builder.proxy(reqwest::Proxy::all(proxy.url())?);
     }

@@ -122,7 +122,12 @@ pub fn clean(text: &str) -> String {
 
 /// The line that cfrs prints for the error `err`: masked and clean.
 pub fn error_line(err: &anyhow::Error) -> String {
-    format!("cfrs: {}", clean(&mask(&format!("{err:#}"))))
+    let mut line = format!("cfrs: {}", clean(&mask(&format!("{err:#}"))));
+    if let Some(hint) = crate::trust::clock_hint(err) {
+        line.push_str("\ncfrs: ");
+        line.push_str(&hint);
+    }
+    line
 }
 
 /// Hide the credentials in `line`: `user:pass@` of each URL, the value of

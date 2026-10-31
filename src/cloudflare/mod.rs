@@ -230,28 +230,10 @@ impl std::error::Error for EdgeError {}
 /// initiates every stream, so negotiating `h2` changes the handshake shape and
 /// breaks it.
 pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String> {
-    let mut roots = rustls::RootCertStore::empty();
-
-    use rustls::pki_types::{pem::PemObject, CertificateDer};
-    let mut added = 0usize;
-    for cert in CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM) {
-        let cert = cert.map_err(|e| format!("parsing embedded edge roots: {e}"))?;
-        if roots.add(cert).is_ok() {
-            added += 1;
-        }
-    }
-    if added == 0 {
-        return Err("no Cloudflare edge roots could be loaded".to_string());
-    }
-
-    let builder = rustls::ClientConfig::builder();
-    let mut config = builder.with_root_certificates(roots).with_no_client_auth();
-    config.alpn_protocols = if alpn.is_empty() {
-        Vec::new()
-    } else {
-        vec![alpn.to_vec()]
-    };
-    Ok(Arc::new(config))
+    let alpns: &[&[u8]] = if alpn.is_empty() { &[] } else { &[alpn] };
+    crate::trust::client_config(&[CF_EDGE_ROOTS_PEM], alpns)
+        .map(Arc::new)
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(test)]

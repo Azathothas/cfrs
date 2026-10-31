@@ -259,22 +259,7 @@ pub async fn endpoint(stack: &WarpStack) -> Result<quinn::Endpoint> {
 /// The TLS and transport configuration the edge expects.
 fn client_config() -> Result<quinn::ClientConfig> {
     use crate::cloudflare::{CF_EDGE_ROOTS_PEM, QUIC_ALPN as ALPN};
-    use rustls::pki_types::CertificateDer;
-    use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
-
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    use rustls::pki_types::pem::PemObject;
-    for cert in CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM) {
-        let cert: CertificateDer<'static> = cert.context("CF edge root PEM is malformed")?;
-        let _ = roots.add(cert);
-    }
-
-    let mut tls = RustlsClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    let tls = crate::trust::client_config(&[CF_EDGE_ROOTS_PEM], &[ALPN])?;
 
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|err| anyhow::anyhow!("rustls to quinn: {err}"))?;

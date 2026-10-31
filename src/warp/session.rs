@@ -39,7 +39,7 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// with a different key is refused.
 #[derive(Debug)]
 struct PinnedKey {
-    expected: Option<Vec<u8>>,
+    expected: Vec<u8>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
@@ -52,14 +52,12 @@ impl ServerCertVerifier for PinnedKey {
         _ocsp: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if let Some(expected) = &self.expected {
-            let got = super::identity::spki_from_cert(end_entity.as_ref())
-                .map_err(|_| rustls::Error::General("unparsable peer certificate".into()))?;
-            if &got != expected {
-                return Err(rustls::Error::General(
-                    "MASQUE peer key does not match the pinned key".into(),
-                ));
-            }
+        let got = super::identity::spki_from_cert(end_entity.as_ref())
+            .map_err(|_| rustls::Error::General("unparsable peer certificate".into()))?;
+        if got != self.expected {
+            return Err(rustls::Error::General(
+                "MASQUE peer key does not match the pinned key".into(),
+            ));
         }
         Ok(ServerCertVerified::assertion())
     }
@@ -99,7 +97,7 @@ impl ServerCertVerifier for PinnedKey {
     }
 }
 
-fn tls_config(identity: &Identity, pinned_spki: Option<Vec<u8>>) -> Result<Arc<ClientConfig>> {
+fn tls_config(identity: &Identity, pinned_spki: Vec<u8>) -> Result<Arc<ClientConfig>> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedKey {
         expected: pinned_spki,
@@ -144,7 +142,7 @@ impl MasqueSession {
     pub async fn connect(
         endpoint: std::net::SocketAddr,
         identity: &Identity,
-        pinned_spki: Option<Vec<u8>>,
+        pinned_spki: Vec<u8>,
         proxy: Option<&Proxy>,
     ) -> Result<Self> {
         tokio::time::timeout(
@@ -158,7 +156,7 @@ impl MasqueSession {
     async fn connect_inner(
         endpoint: std::net::SocketAddr,
         identity: &Identity,
-        pinned_spki: Option<Vec<u8>>,
+        pinned_spki: Vec<u8>,
         proxy: Option<&Proxy>,
     ) -> Result<Self> {
         // A sealed host permits no direct TCP. The proxy is the egress, and the

@@ -159,11 +159,14 @@ fn verified_connector() -> TlsConnector {
     static ONCE: OnceLock<TlsConnector> = OnceLock::new();
     ONCE.get_or_init(|| {
         init_crypto();
-        let mut roots = RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let config = crate::trust::client_config(&[], &[]).unwrap_or_else(|err| {
+            tracing::warn!("{err:#}; using the compiled-in roots only");
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth()
+        });
         TlsConnector::from(Arc::new(config))
     })
     .clone()

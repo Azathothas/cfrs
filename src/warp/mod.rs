@@ -287,8 +287,8 @@ impl WarpClient {
         let pinned = self
             .device
             .peer_public_key_pem()
-            .map(identity::spki_from_pem)
-            .transpose()
+            .context("the device has no peer key to pin; cfrs does not connect without one")
+            .and_then(identity::spki_from_pem)
             .context("parsing the pinned peer key")?;
         let session =
             MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await?;
@@ -307,8 +307,8 @@ impl WarpClient {
         let pinned = self
             .device
             .peer_public_key_pem()
-            .map(identity::spki_from_pem)
-            .transpose()
+            .context("the device has no peer key to pin; cfrs does not connect without one")
+            .and_then(identity::spki_from_pem)
             .context("parsing the pinned peer key")?;
         MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await
     }
