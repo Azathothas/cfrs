@@ -35,3 +35,19 @@ These rules apply to each session. Obey them before any other default.
 
 - The project is 0BSD. Code from `talaria0101/cfrs` and `nemo-010/cfrs` is
   also 0BSD and needs no credit or attribution.
+
+## Project
+
+- Workspace: `cfrs` (root: CLI and library), `crates/cfrs-edge` (edge client,
+  MIT or Apache-2.0, keep its license files), `crates/pod-netns` (library and
+  CLI).
+- Check before each push: `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`. CI (`.github/workflows/ci.yml`) runs the same
+  and builds static musl binaries.
+- Static build: `CC_x86_64_unknown_linux_musl=clang cargo build --release
+  --target x86_64-unknown-linux-musl`.
+- The debug `target/` can grow past 20 GB. Remove `target/debug` when the
+  disk is full.
+- Documents: `README.md`, `docs/protocol.md`, `docs/virtual-network.md`,
+  `crates/pod-netns/README.md`.
