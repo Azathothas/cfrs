@@ -40,6 +40,8 @@ pub mod proxy;
 pub mod quic;
 pub mod register;
 pub mod session;
+#[cfg(target_os = "linux")]
+pub mod tun;
 
 pub use edge::{start_quick_tunnel, QuickTunnelHandle};
 pub use identity::Identity;

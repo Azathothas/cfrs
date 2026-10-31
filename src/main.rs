@@ -769,6 +769,13 @@ enum WarpCommand {
         #[arg(long)]
         run_for: Option<u64>,
     },
+    /// Make a TUN interface whose packets go through WARP. Needs
+    /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
+    Tun {
+        /// The interface name.
+        #[arg(long, default_value = "cfrs0")]
+        name: String,
+    },
     /// Run a program with all its traffic sent through WARP. No root and no
     /// TUN device are necessary (pod-netns).
     Run {
@@ -892,6 +899,42 @@ async fn warp(args: WarpArgs) -> Result<()> {
             }
             proxy.abort();
         }
+        #[cfg(target_os = "linux")]
+        WarpCommand::Tun { name } => {
+            let address = client
+                .device()
+                .ipv4()
+                .context("the device has no IPv4 address")?;
+            let tun = cfrs::warp::tun::Tun::create(&name, address, 1280)?;
+            let session = client.connect_raw().await?;
+            let endpoint = client
+                .device()
+                .masque_endpoint()
+                .map(|e| e.ip().to_string())
+                .unwrap_or_default();
+            println!("cfrs: tun      {} {address}/32 mtu 1280", tun.name);
+            println!(
+                "cfrs: masque   {endpoint} (do not route this address into {})",
+                tun.name
+            );
+            println!(
+                "  ip route add 1.1.1.1/32 dev {}        # one destination",
+                tun.name
+            );
+            println!(
+                "  ip route add 0.0.0.0/1 dev {0}; ip route add 128.0.0.0/1 dev {0}",
+                tun.name
+            );
+            println!(
+                "  ip route add {endpoint}/32 via <your gateway>   # keep the session outside"
+            );
+            tokio::select! {
+                result = cfrs::warp::tun::run(tun, session) => result?,
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),
         WarpCommand::Run { backend, program } => {
             let socket =
                 std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));

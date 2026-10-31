@@ -283,9 +283,7 @@ pub fn looks_like_socks5(first: u8) -> bool {
 
 /// Read the SOCKS5 greeting (no authentication) and one request. Return the
 /// command (1 CONNECT, 2 BIND, 3 UDP ASSOCIATE) and the destination.
-pub async fn socks5_read_command<S>(
-    stream: &mut S,
-) -> Result<(u8, ProxyRequest)>
+pub async fn socks5_read_command<S>(stream: &mut S) -> Result<(u8, ProxyRequest)>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

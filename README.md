@@ -195,6 +195,7 @@ cfrs warp delete                  # remove the device and the saved file
 cfrs warp probe                   # test TCP connects through the tunnel
 cfrs warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
 cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace
+cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
 ```
 
 * The device and its key are in `$XDG_STATE_HOME/cfrs/warp.json`
@@ -208,6 +209,10 @@ cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace
   `cfrs pod`. The TCP connections and the DNS queries of the program go
   through WARP, also for static binaries. With the `seccomp` backend, other
   UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE).
+* `cfrs warp tun` makes a TUN interface with the tunnel address and moves its
+  packets through WARP. It does not change the routes: add routes for the
+  destinations to send through WARP, and keep a route for the MASQUE endpoint
+  outside the interface. The command prints examples.
 * The registration API calls and the MASQUE connection use `HTTPS_PROXY` when
   it is set. A proxy that terminates TLS cannot carry the MASQUE connection,
   because the connection uses a client certificate.
