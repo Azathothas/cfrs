@@ -227,10 +227,7 @@ pub const TOPICS: &[&str] = &["environment", "files", "exit-status", "examples",
 impl Manual {
     /// The command whose path is `name`: `warp run` or `warp/run`.
     pub fn command(&self, name: &str) -> Option<&CommandPage> {
-        let words: Vec<&str> = name
-            .split([' ', '/'])
-            .filter(|w| !w.is_empty())
-            .collect();
+        let words: Vec<&str> = name.split([' ', '/']).filter(|w| !w.is_empty()).collect();
         self.commands.iter().find(|c| {
             !c.path.is_empty() && c.path.iter().map(String::as_str).eq(words.iter().copied())
         })
