@@ -31,6 +31,18 @@ struct Cli {
     /// beside the binary, the system bundle and the compiled-in roots.
     #[arg(long, global = true, value_name = "PATH")]
     ca_file: Option<PathBuf>,
+    /// The proxy for each connection: http://, socks5:// or socks5h://
+    /// [user:password@]host[:port]. Without it, cfrs reads HTTPS_PROXY and
+    /// ALL_PROXY. NO_PROXY names the targets that do not use a proxy.
+    #[arg(long, global = true, value_name = "URL", conflicts_with = "no_proxy")]
+    proxy: Option<String>,
+    /// Use no proxy, also when HTTPS_PROXY or ALL_PROXY is set.
+    #[arg(long, global = true)]
+    no_proxy: bool,
+    /// Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. CFRS_RESOLVE
+    /// adds to it. TLS still checks the name of the certificate.
+    #[arg(long, global = true, value_name = "HOST=IP")]
+    resolve: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -316,6 +328,11 @@ fn main() {
     if let Some(path) = &cli.ca_file {
         cfrs::trust::set_ca_file(path.clone());
     }
+    if let Err(err) = network_options(&cli) {
+        let err = cfrs::exit::fault(cfrs::exit::Fault::Usage, err);
+        eprintln!("{}", cfrs::report::error_line(&err));
+        std::process::exit(cfrs::exit::code_of(&err));
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),
@@ -335,6 +352,21 @@ fn main() {
         cfrs::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
     }
+}
+
+/// Apply --proxy, --no-proxy and --resolve.
+fn network_options(cli: &Cli) -> Result<()> {
+    use cfrs::egress::{set_choice, Proxy, ProxyChoice};
+    if let Some(spec) = &cli.proxy {
+        cfrs::report::hide(spec);
+        set_choice(ProxyChoice::Via(Proxy::parse(spec).context("--proxy")?));
+    } else if cli.no_proxy {
+        set_choice(ProxyChoice::Direct);
+    }
+    if let Some(list) = &cli.resolve {
+        cfrs::resolve::set_pins(list).context("--resolve")?;
+    }
+    Ok(())
 }
 
 /// The command of `argv` for the report: `tunnel`, `warp run`, or `None`.

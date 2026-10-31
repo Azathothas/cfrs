@@ -19,7 +19,6 @@ use http::{Method, Request, StatusCode};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
-use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 use super::capsule::{self, CapsuleDecoder};
@@ -162,20 +161,14 @@ impl MasqueSession {
         // A sealed host permits no direct TCP. The proxy is the egress, and the
         // TLS handshake runs inside its CONNECT pipe exactly as it would over a
         // direct socket.
-        let tcp: BoxedIo = match proxy {
-            Some(proxy) => {
-                proxy
-                    .connect(&endpoint.ip().to_string(), endpoint.port(), CONNECT_TIMEOUT)
-                    .await?
-            }
-            None => {
-                let stream = TcpStream::connect(endpoint)
-                    .await
-                    .with_context(|| format!("TCP connect to the MASQUE front door {endpoint}"))?;
-                stream.set_nodelay(true).ok();
-                Box::new(stream)
-            }
-        };
+        let tcp: BoxedIo = crate::egress::dial(
+            &endpoint.ip().to_string(),
+            endpoint.port(),
+            proxy,
+            CONNECT_TIMEOUT,
+        )
+        .await
+        .with_context(|| format!("TCP to the MASQUE front door {endpoint}"))?;
 
         let config = tls_config(identity, pinned_spki)?;
         let server_name = ServerName::try_from(MASQUE_SNI)

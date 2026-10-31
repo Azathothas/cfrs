@@ -15,7 +15,8 @@
 //!   does not change the exit code of cfrs.
 //! * The report holds no credential: each line goes through [`mask`], which
 //!   hides the user and the password of each URL, the value of each proxy
-//!   variable, and the values that [`hide`] names (a tunnel token).
+//!   variable with a user part, and the values that [`hide`] names (a tunnel
+//!   token).
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -131,7 +132,8 @@ pub fn error_line(err: &anyhow::Error) -> String {
 }
 
 /// Hide the credentials in `line`: `user:pass@` of each URL, the value of
-/// each proxy variable, and each value given to [`hide`].
+/// each proxy variable that has a user part, and each value given to
+/// [`hide`].
 pub fn mask(line: &str) -> String {
     let mut out = line.to_string();
     let mut values: Vec<String> = secrets().lock().unwrap().clone();
@@ -143,8 +145,10 @@ pub fn mask(line: &str) -> String {
         "HTTP_PROXY",
         "http_proxy",
     ] {
+        // A value with no user part holds no secret, and a message that
+        // names the proxy helps; a value with one is hidden whole.
         if let Ok(v) = std::env::var(key) {
-            if v.len() >= 4 {
+            if v.len() >= 4 && v.contains('@') {
                 values.push(v);
             }
         }

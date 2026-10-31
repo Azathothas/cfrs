@@ -19,19 +19,12 @@
 //! at Cloudflare is followed rather than guessed.
 
 use std::net::IpAddr;
-use std::time::Duration;
 
 use crate::cloudflare::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
-
-use crate::egress::Proxy;
 
 /// The SRV record cloudflared resolves.
 pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
-
-/// DNS-over-HTTPS endpoint. Reachable on 443, and through an HTTP proxy.
-const DOH_ENDPOINT: &str = "https://cloudflare-dns.com/dns-query";
 
 /// Last-resort anycast addresses, used only when both resolvers fail.
 ///
@@ -47,22 +40,6 @@ const STATIC_EDGE_IPS: &[&str] = &[
 
 /// The port the SRV record names when the static list is used.
 const STATIC_EDGE_PORT: u16 = 7844;
-
-#[derive(Debug, Deserialize)]
-struct DohResponse {
-    #[serde(rename = "Status", default)]
-    status: u16,
-    #[serde(rename = "Answer", default)]
-    answer: Vec<DohAnswer>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DohAnswer {
-    #[serde(rename = "type", default)]
-    rtype: u16,
-    #[serde(default)]
-    data: String,
-}
 
 /// Resolve the edge, preferring DoH, then the system resolver, then the
 /// static list. Returns at least one address or an error naming every attempt.
@@ -126,8 +103,7 @@ pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 
 /// Resolve through Cloudflare's DNS-over-HTTPS JSON API.
 pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
-    let client = doh_client(Proxy::from_env().as_ref())?;
-    let srv = query(&client, EDGE_SRV, "SRV").await?;
+    let srv = query(EDGE_SRV, "SRV").await?;
     let mut targets: Vec<(String, u16)> = Vec::new();
     for answer in &srv.answer {
         if answer.rtype != 33 {
@@ -149,7 +125,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
             IpVersionFilter::Auto => &[("A", 1), ("AAAA", 28)],
         };
         for (rtype, wanted) in records {
-            let answer = match query(&client, &target, rtype).await {
+            let answer = match query(&target, rtype).await {
                 Ok(answer) => answer,
                 Err(err) => {
                     tracing::debug!(%target, rtype, %err, "address lookup failed");
@@ -178,33 +154,12 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
     Ok(edges)
 }
 
-/// Build the DoH client, through `proxy` when one is given.
-fn doh_client(proxy: Option<&Proxy>) -> Result<reqwest::Client> {
-    let mut builder = crate::trust::http_client()?.timeout(Duration::from_secs(15));
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(reqwest::Proxy::all(proxy.url())?);
+async fn query(name: &str, rtype: &str) -> Result<crate::resolve::DohAnswer> {
+    let answer = crate::resolve::doh_query(name, rtype).await?;
+    if answer.status != 0 {
+        bail!("DoH status {} for {name} {rtype}", answer.status);
     }
-    Ok(builder.build()?)
-}
-
-async fn query(client: &reqwest::Client, name: &str, rtype: &str) -> Result<DohResponse> {
-    let url = format!("{DOH_ENDPOINT}?name={name}&type={rtype}");
-    let response = client
-        .get(&url)
-        .header("accept", "application/dns-json")
-        .send()
-        .await
-        .with_context(|| format!("DoH {rtype} {name}"))?
-        .error_for_status()
-        .with_context(|| format!("DoH {rtype} {name}"))?;
-    let body: DohResponse = response
-        .json()
-        .await
-        .with_context(|| format!("decoding the DoH answer for {name}"))?;
-    if body.status != 0 {
-        bail!("DoH status {} for {name} {rtype}", body.status);
-    }
-    Ok(body)
+    Ok(answer)
 }
 
 /// Parse an SRV `data` field: `priority weight port target`.
@@ -263,7 +218,7 @@ mod tests {
     #[test]
     fn decodes_a_cloudflare_doh_answer() {
         let body = r#"{"Status":0,"Answer":[{"name":"_v2-origintunneld._tcp.argotunnel.com","type":33,"TTL":300,"data":"2 1 7844 region2.v2.argotunnel.com"}]}"#;
-        let parsed: DohResponse = serde_json::from_str(body).unwrap();
+        let parsed: crate::resolve::DohAnswer = serde_json::from_str(body).unwrap();
         assert_eq!(parsed.status, 0);
         assert_eq!(parsed.answer.len(), 1);
         assert_eq!(parsed.answer[0].rtype, 33);

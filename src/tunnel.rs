@@ -178,6 +178,11 @@ impl Tunnel {
         // Do not probe TCP 7844 to choose: a firewall can close TCP 7844 and
         // keep UDP 7844 open. Each direct attempt is real and has a time limit.
         let plan = leg_plan(protocol, transport)?;
+        let proxy = crate::egress::proxy_for(EDGE_REGION_NAME, 7844);
+        let (plan, note) = plan_with_proxy(plan, protocol, proxy.as_ref());
+        if let Some(note) = note {
+            info!("{note}");
+        }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut tasks = Vec::new();
         let mut warp_keepalive = None;
@@ -401,7 +406,7 @@ async fn resolve_credentials(
                 crate::quicktunnel::AuthMode::Public,
                 user_agent,
                 Duration::from_secs(30),
-                crate::egress::Proxy::from_env().as_ref(),
+                None,
             )
             .await
             .context("provisioning quick tunnel")
@@ -504,6 +509,36 @@ pub fn leg_plan(protocol: Protocol, transport: Transport) -> Result<Vec<LegKind>
         (Transport::Auto, Protocol::Http2) => vec![H2Direct],
         (Transport::Auto, Protocol::Auto) => vec![QuicDirect, H2Direct, QuicWarp],
     })
+}
+
+/// A name of the edge, for the choice of the proxy (`NO_PROXY` may name it).
+const EDGE_REGION_NAME: &str = "region1.v2.argotunnel.com";
+
+/// With a proxy, `--protocol auto` does not try QUIC on UDP 7844: no proxy
+/// carries UDP, so the packets go around the proxy or are lost. QUIC inside
+/// WARP stays, because MASQUE runs on TCP 443 through the proxy. Gives the
+/// plan and the line that says why.
+pub fn plan_with_proxy(
+    plan: Vec<LegKind>,
+    protocol: Protocol,
+    proxy: Option<&crate::egress::Proxy>,
+) -> (Vec<LegKind>, Option<String>) {
+    let Some(proxy) = proxy else {
+        return (plan, None);
+    };
+    if !matches!(protocol, Protocol::Auto) || !plan.contains(&LegKind::QuicDirect) {
+        return (plan, None);
+    }
+    let kept: Vec<LegKind> = plan
+        .into_iter()
+        .filter(|k| *k != LegKind::QuicDirect)
+        .collect();
+    (
+        kept,
+        Some(format!(
+            "a proxy is set ({proxy}); no proxy carries UDP, so cfrs does not try QUIC on UDP 7844"
+        )),
+    )
 }
 
 /// The first registered leg.
@@ -776,24 +811,21 @@ impl TunnelHandle {
     /// Like [`verify`](Self::verify) but for a specific path on the public
     /// URL (a share session lives under `/s/<token>/`, not at the root).
     pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<()> {
-        let client = crate::trust::http_client()?
-            .timeout(Duration::from_secs(15))
-            .build()?;
         let mut last = String::from("no attempt");
         for attempt in 1..=20 {
-            match client.get(url).send().await {
+            let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
+            match request.send().await {
                 Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    let ok = status.is_success()
+                    let body = response.text();
+                    let ok = response.is_success()
                         && expected.map(|token| body.contains(token)).unwrap_or(true);
                     if ok {
-                        info!(%url, status = status.as_u16(), "verified public URL");
+                        info!(%url, status = response.status, "verified public URL");
                         return Ok(());
                     }
-                    last = format!("HTTP {}", status.as_u16());
+                    last = format!("HTTP {}", response.status);
                 }
-                Err(err) => last = crate::util::chain(&err),
+                Err(err) => last = format!("{err:#}"),
             }
             tracing::debug!(attempt, %last, "verification retry");
             tokio::time::sleep(Duration::from_secs(2)).await;

@@ -241,47 +241,40 @@ fn b64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-fn client(bearer: Option<&str>, proxy: Option<&Proxy>) -> Result<reqwest::Client> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static(USER_AGENT),
-    );
-    headers.insert(
-        "CF-Client-Version",
-        reqwest::header::HeaderValue::from_static(CLIENT_VERSION),
-    );
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json; charset=UTF-8"),
-    );
-    headers.insert(
-        reqwest::header::CONNECTION,
-        reqwest::header::HeaderValue::from_static("Keep-Alive"),
-    );
+/// A request of the WARP API, with the headers of the official client.
+fn request(
+    method: &'static str,
+    path: &str,
+    bearer: Option<&str>,
+    proxy: Option<&Proxy>,
+) -> crate::fetch::Request {
+    let mut request = crate::fetch::Request::new(method, format!("{API_BASE}/{API_VERSION}{path}"))
+        .header("User-Agent", USER_AGENT)
+        .header("CF-Client-Version", CLIENT_VERSION)
+        .header("Content-Type", "application/json; charset=UTF-8")
+        .timeout(std::time::Duration::from_secs(30))
+        .via(proxy.cloned());
     if let Some(token) = bearer {
-        let value = format!("Bearer {token}");
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&value)?,
-        );
+        request = request.header("Authorization", format!("Bearer {token}"));
     }
-    let mut builder = crate::trust::http_client()?
-        .default_headers(headers)
-        .timeout(std::time::Duration::from_secs(30));
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(reqwest::Proxy::all(proxy.url())?);
-    }
-    Ok(builder.build()?)
+    request
 }
 
-async fn check(resp: reqwest::Response) -> Result<Device> {
-    let status = resp.status();
-    let body = resp.text().await.context("reading WARP API body")?;
-    if !status.is_success() {
-        bail!("WARP API answered {status}: {body}");
+fn with_json<T: Serialize>(
+    request: crate::fetch::Request,
+    body: &T,
+) -> Result<crate::fetch::Request> {
+    Ok(request.json(&serde_json::to_value(body).context("encoding the WARP API body")?))
+}
+
+/// The device of an answer. A body that cannot be decoded is not shown: the
+/// answer of `POST /reg` holds the token.
+fn check(resp: crate::fetch::Response) -> Result<Device> {
+    if !resp.is_success() {
+        bail!("WARP API answered HTTP {}: {}", resp.status, resp.text());
     }
-    serde_json::from_str(&body).with_context(|| format!("decoding WARP API body: {body}"))
+    serde_json::from_slice(&resp.body)
+        .with_context(|| format!("decoding the WARP API answer ({} bytes)", resp.body.len()))
 }
 
 /// Create an anonymous device. Returns the device plus its bearer token, which
@@ -301,13 +294,11 @@ pub async fn create_device(proxy: Option<&Proxy>) -> Result<Device> {
         tunnel_type: "wireguard".into(),
         locale: "en_US".into(),
     };
-    let resp = client(None, proxy)?
-        .post(format!("{API_BASE}/{API_VERSION}/reg"))
-        .json(&body)
+    let resp = with_json(request("POST", "/reg", None, proxy), &body)?
         .send()
         .await
         .context("POST /reg")?;
-    check(resp).await
+    check(resp)
 }
 
 /// Enrol a MASQUE identity: upload the P-256 public key (X.509 SPKI, base64) and
@@ -323,23 +314,23 @@ pub async fn enrol_masque(
         key_type: "secp256r1".into(),
         tunnel_type: "masque".into(),
     };
-    let resp = client(Some(token), proxy)?
-        .patch(format!("{API_BASE}/{API_VERSION}/reg/{device_id}"))
-        .json(&body)
-        .send()
-        .await
-        .context("PATCH /reg/{id}")?;
-    check(resp).await
+    let resp = with_json(
+        request("PATCH", &format!("/reg/{device_id}"), Some(token), proxy),
+        &body,
+    )?
+    .send()
+    .await
+    .context("PATCH /reg/{id}")?;
+    check(resp)
 }
 
 /// Read the device record again (`GET /reg/{id}`).
 pub async fn get_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<Device> {
-    let resp = client(Some(token), proxy)?
-        .get(format!("{API_BASE}/{API_VERSION}/reg/{device_id}"))
+    let resp = request("GET", &format!("/reg/{device_id}"), Some(token), proxy)
         .send()
         .await
         .context("GET /reg/{id}")?;
-    check(resp).await
+    check(resp)
 }
 
 /// Read the account of the device (`GET /reg/{id}/account`). The answer has
@@ -349,12 +340,16 @@ pub async fn get_account(
     token: &str,
     proxy: Option<&Proxy>,
 ) -> Result<serde_json::Value> {
-    let resp = client(Some(token), proxy)?
-        .get(format!("{API_BASE}/{API_VERSION}/reg/{device_id}/account"))
-        .send()
-        .await
-        .context("GET /reg/{id}/account")?;
-    json_body(resp).await
+    let resp = request(
+        "GET",
+        &format!("/reg/{device_id}/account"),
+        Some(token),
+        proxy,
+    )
+    .send()
+    .await
+    .context("GET /reg/{id}/account")?;
+    json_body(resp)
 }
 
 /// Attach a WARP+ license key to the device (`PUT /reg/{id}/account`).
@@ -364,37 +359,37 @@ pub async fn set_license(
     license: &str,
     proxy: Option<&Proxy>,
 ) -> Result<serde_json::Value> {
-    let resp = client(Some(token), proxy)?
-        .put(format!("{API_BASE}/{API_VERSION}/reg/{device_id}/account"))
-        .json(&serde_json::json!({ "license": license }))
-        .send()
-        .await
-        .context("PUT /reg/{id}/account")?;
-    json_body(resp).await
+    let resp = request(
+        "PUT",
+        &format!("/reg/{device_id}/account"),
+        Some(token),
+        proxy,
+    )
+    .json(&serde_json::json!({ "license": license }))
+    .send()
+    .await
+    .context("PUT /reg/{id}/account")?;
+    json_body(resp)
 }
 
 /// Remove the device from the WARP service (`DELETE /reg/{id}`).
 pub async fn delete_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<()> {
-    let resp = client(Some(token), proxy)?
-        .delete(format!("{API_BASE}/{API_VERSION}/reg/{device_id}"))
+    let resp = request("DELETE", &format!("/reg/{device_id}"), Some(token), proxy)
         .send()
         .await
         .context("DELETE /reg/{id}")?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        bail!("WARP API answered {status}: {body}");
+    if !resp.is_success() {
+        bail!("WARP API answered HTTP {}: {}", resp.status, resp.text());
     }
     Ok(())
 }
 
-async fn json_body(resp: reqwest::Response) -> Result<serde_json::Value> {
-    let status = resp.status();
-    let body = resp.text().await.context("reading WARP API body")?;
-    if !status.is_success() {
-        bail!("WARP API answered {status}: {body}");
+fn json_body(resp: crate::fetch::Response) -> Result<serde_json::Value> {
+    if !resp.is_success() {
+        bail!("WARP API answered HTTP {}: {}", resp.status, resp.text());
     }
-    serde_json::from_str(&body).with_context(|| format!("decoding WARP API body: {body}"))
+    serde_json::from_slice(&resp.body)
+        .with_context(|| format!("decoding the WARP API answer ({} bytes)", resp.body.len()))
 }
 
 impl Device {

@@ -66,7 +66,7 @@ impl WarpClient {
     /// to MASQUE, and a locally generated keypair. No account, no token, no
     /// external tool.
     pub async fn register() -> Result<Self> {
-        Self::register_with(Proxy::from_env()).await
+        Self::register_with(None).await
     }
 
     /// Register through a specific proxy, or directly when `proxy` is `None`.
@@ -108,7 +108,7 @@ impl WarpClient {
         Self {
             device,
             identity,
-            proxy: Proxy::from_env(),
+            proxy: None,
         }
     }
 

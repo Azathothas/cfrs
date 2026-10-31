@@ -6,7 +6,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 /// The text of `err` and of each of its causes, joined with ": ". The
-/// `Display` of a reqwest or hyper error gives the outermost message only;
+/// `Display` of many errors gives the outermost message only;
 /// the cause (for example the TLS alert) is in `source`.
 pub fn chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut text = err.to_string();

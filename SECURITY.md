@@ -46,6 +46,10 @@ binaries" in `README.md`.
   has no TLS of its own.
 * The edge, the quick-tunnel service and the WARP API see the public IP
   address of the host.
+* When the system resolver gives no address, cfrs asks DNS over HTTPS at
+  Cloudflare (1.1.1.1, 1.0.0.1) and Google (8.8.8.8, 8.8.4.4). These servers
+  see the names that cfrs resolves. A pin (`--resolve`) or a proxy sends no
+  name to them.
 
 ## What listens
 
@@ -82,7 +86,7 @@ These rules apply to each secret:
   `Credentials`, the WARP `Device` and `Account`, and `Proxy` shows
   `<hidden>`. Each error line and each line of the failure report goes
   through `report::mask`, which hides the user and the password of each URL,
-  the value of each proxy variable, and the token.
+  the value of each proxy variable that has a user part, and the token.
 * `tests/cli.rs` (`the_log_holds_no_secret`) runs cfrs with `RUST_LOG=trace`
   and a token, a WARP identity and a proxy password. The test fails when one
   of them is in the output.

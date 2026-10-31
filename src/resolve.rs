@@ -1,0 +1,292 @@
+//! Name resolution for each direct dial of cfrs ([`crate::egress`]).
+//!
+//! The chain, in order:
+//!
+//! 1. An IP address is used as it is.
+//! 2. A pin of `--resolve HOST=IP` or `CFRS_RESOLVE` (a comma-separated list
+//!    of `HOST=IP`). TLS still checks the name of the certificate.
+//! 3. The system resolver (`/etc/resolv.conf`), with a time limit of
+//!    [`STEP_TIMEOUT`].
+//! 4. DNS over HTTPS by IP address, at two operators: Cloudflare (1.1.1.1,
+//!    1.0.0.1), then Google (8.8.8.8, 8.8.4.4). TLS checks the IP address in
+//!    the certificate. An answer that the name does not exist (NXDOMAIN) stops
+//!    the chain.
+//!
+//! A dial through a proxy gives the name to the proxy and resolves nothing
+//! here.
+
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use anyhow::{bail, Context as _, Result};
+use serde::Deserialize;
+
+/// The variable of the pins.
+pub const PINS_VARIABLE: &str = "CFRS_RESOLVE";
+/// The time limit of one step of the chain, and of one DoH server.
+pub const STEP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A DoH server, by IP address.
+#[derive(Clone, Copy, Debug)]
+pub struct DohServer {
+    pub operator: &'static str,
+    /// The URL, with the IP address as its host.
+    pub url: &'static str,
+}
+
+/// The DoH servers, in the order of the chain.
+pub const DOH_SERVERS: &[DohServer] = &[
+    DohServer {
+        operator: "Cloudflare",
+        url: "https://1.1.1.1/dns-query",
+    },
+    DohServer {
+        operator: "Cloudflare",
+        url: "https://1.0.0.1/dns-query",
+    },
+    DohServer {
+        operator: "Google",
+        url: "https://8.8.8.8/resolve",
+    },
+    DohServer {
+        operator: "Google",
+        url: "https://8.8.4.4/resolve",
+    },
+];
+
+static PINS: OnceLock<HashMap<String, Vec<IpAddr>>> = OnceLock::new();
+
+/// Set the pins of `--resolve`. Call it before the first dial; a later call
+/// has no effect. The pins of `CFRS_RESOLVE` are added to them.
+pub fn set_pins(list: &str) -> Result<()> {
+    let mut pins = parse_pins(list)?;
+    if let Ok(env) = std::env::var(PINS_VARIABLE) {
+        for (host, ips) in parse_pins(&env).context(PINS_VARIABLE)? {
+            pins.entry(host).or_default().extend(ips);
+        }
+    }
+    let _ = PINS.set(pins);
+    Ok(())
+}
+
+fn pins() -> &'static HashMap<String, Vec<IpAddr>> {
+    PINS.get_or_init(|| match std::env::var(PINS_VARIABLE) {
+        Ok(list) => parse_pins(&list).unwrap_or_else(|err| {
+            tracing::warn!("{PINS_VARIABLE}: {err:#}; no pins are used");
+            HashMap::new()
+        }),
+        Err(_) => HashMap::new(),
+    })
+}
+
+/// Parse `HOST=IP[,HOST=IP]...`. One host may have several entries.
+pub fn parse_pins(list: &str) -> Result<HashMap<String, Vec<IpAddr>>> {
+    let mut pins: HashMap<String, Vec<IpAddr>> = HashMap::new();
+    for entry in list.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let (host, ip) = entry
+            .split_once('=')
+            .with_context(|| format!("{entry:?} is not HOST=IP"))?;
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            bail!("{entry:?} has no host");
+        }
+        let ip: IpAddr = ip
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse()
+            .with_context(|| format!("{entry:?}: the address is not an IP address"))?;
+        pins.entry(host).or_default().push(ip);
+    }
+    Ok(pins)
+}
+
+/// Resolve `host` with the chain.
+///
+/// The future is boxed: a DoH lookup dials, and a dial resolves, so the type
+/// of the future must end here.
+pub fn resolve(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>> {
+    Box::pin(resolve_chain(host))
+}
+
+async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![ip]);
+    }
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if let Some(ips) = pins().get(&name) {
+        tracing::debug!(%host, step = "pin", ?ips, "resolved");
+        return Ok(ips.clone());
+    }
+    let mut failures = Vec::new();
+    match tokio::time::timeout(STEP_TIMEOUT, tokio::net::lookup_host((host, 0))).await {
+        Ok(Ok(addrs)) => {
+            let ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
+            if !ips.is_empty() {
+                tracing::debug!(%host, step = "system", ?ips, "resolved");
+                return Ok(dedup(ips));
+            }
+            failures.push("system resolver: no address".to_string());
+        }
+        Ok(Err(err)) => failures.push(format!("system resolver: {err}")),
+        Err(_) => failures.push(format!(
+            "system resolver: no answer in {} s",
+            STEP_TIMEOUT.as_secs()
+        )),
+    }
+    match doh_addresses(&name).await {
+        Ok((ips, server)) => {
+            tracing::debug!(%host, step = "doh", server, ?ips, "resolved");
+            Ok(ips)
+        }
+        Err(err) => {
+            failures.push(format!("DNS over HTTPS: {err:#}"));
+            bail!("resolving {host}: {}", failures.join("; "))
+        }
+    }
+}
+
+fn dedup(mut ips: Vec<IpAddr>) -> Vec<IpAddr> {
+    let mut seen = Vec::with_capacity(ips.len());
+    ips.retain(|ip| {
+        let new = !seen.contains(ip);
+        seen.push(*ip);
+        new
+    });
+    ips
+}
+
+/// The A and AAAA addresses of `name` by DoH. Gives the addresses and the
+/// server that answered.
+async fn doh_addresses(name: &str) -> Result<(Vec<IpAddr>, &'static str)> {
+    let mut last = None;
+    for server in DOH_SERVERS {
+        let a = doh_query_at(server, name, "A").await;
+        let aaaa = doh_query_at(server, name, "AAAA").await;
+        match (a, aaaa) {
+            (Err(err), Err(_)) => {
+                last = Some(err);
+                continue;
+            }
+            (a, aaaa) => {
+                let mut ips = Vec::new();
+                let mut nxdomain = false;
+                for answer in [a, aaaa].into_iter().flatten() {
+                    nxdomain |= answer.status == 3;
+                    ips.extend(
+                        answer
+                            .answer
+                            .iter()
+                            .filter(|r| r.rtype == 1 || r.rtype == 28)
+                            .filter_map(|r| r.data.trim().parse::<IpAddr>().ok()),
+                    );
+                }
+                if !ips.is_empty() {
+                    return Ok((dedup(ips), server.url));
+                }
+                if nxdomain {
+                    bail!(
+                        "{} ({}) says that {name} does not exist",
+                        server.url,
+                        server.operator
+                    );
+                }
+                last = Some(anyhow::anyhow!("{} has no address for {name}", server.url));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no DoH server")))
+}
+
+/// A JSON answer of DoH.
+#[derive(Debug, Deserialize)]
+pub struct DohAnswer {
+    #[serde(rename = "Status", default)]
+    pub status: u16,
+    #[serde(rename = "Answer", default)]
+    pub answer: Vec<DohRecord>,
+}
+
+/// One record of a JSON answer.
+#[derive(Debug, Deserialize)]
+pub struct DohRecord {
+    #[serde(rename = "type")]
+    pub rtype: u16,
+    #[serde(default)]
+    pub data: String,
+}
+
+/// Ask the DoH servers for `rtype` records of `name`, one server after the
+/// other, until one answers. An NXDOMAIN answer is an answer.
+pub async fn doh_query(name: &str, rtype: &str) -> Result<DohAnswer> {
+    let mut failures = Vec::new();
+    for server in DOH_SERVERS {
+        match doh_query_at(server, name, rtype).await {
+            Ok(answer) => return Ok(answer),
+            Err(err) => failures.push(format!("{}: {err:#}", server.url)),
+        }
+    }
+    bail!("DoH {rtype} {name}: {}", failures.join("; "))
+}
+
+async fn doh_query_at(server: &DohServer, name: &str, rtype: &str) -> Result<DohAnswer> {
+    let url = format!("{}?name={name}&type={rtype}", server.url);
+    let request = crate::fetch::Request::new("GET", url)
+        .header("Accept", "application/dns-json")
+        .timeout(STEP_TIMEOUT);
+    // The DoH server is an IP address, so this dial resolves no name.
+    let response = request.send().await?;
+    if !response.is_success() {
+        bail!("HTTP {}", response.status);
+    }
+    response.json()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pins() {
+        let pins = parse_pins(
+            "api.trycloudflare.com=104.16.1.1, Api.TryCloudflare.com.=[2606::1],x=1.2.3.4",
+        )
+        .unwrap();
+        assert_eq!(pins["api.trycloudflare.com"].len(), 2);
+        assert_eq!(pins["x"], vec!["1.2.3.4".parse::<IpAddr>().unwrap()]);
+        for bad in ["noequals", "=1.2.3.4", "h=notanip"] {
+            assert!(parse_pins(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_servers_are_ip_addresses_of_two_operators() {
+        let mut operators: Vec<&str> = DOH_SERVERS.iter().map(|s| s.operator).collect();
+        operators.dedup();
+        assert!(operators.len() >= 2);
+        for server in DOH_SERVERS {
+            let host = server
+                .url
+                .trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap();
+            assert!(host.parse::<IpAddr>().is_ok(), "{}", server.url);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ip_address_is_used_as_it_is() {
+        assert_eq!(
+            resolve("192.0.2.7").await.unwrap(),
+            vec!["192.0.2.7".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            resolve("[::1]").await.unwrap(),
+            vec!["::1".parse::<IpAddr>().unwrap()]
+        );
+    }
+}

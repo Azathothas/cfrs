@@ -205,11 +205,23 @@ pub async fn connect(
     if edges.is_empty() {
         bail!("no edge addresses to dial");
     }
+    let mut remaining: Vec<SocketAddr> = edges
+        .iter()
+        .take(5)
+        .map(|e| SocketAddr::new(e.ip, e.port))
+        .collect();
     let mut last = None;
-    for edge in edges.iter().take(5) {
-        let addr = SocketAddr::new(edge.ip, edge.port);
+    while !remaining.is_empty() {
+        let (addr, io) = match dial(&remaining).await {
+            Ok((i, io)) => (remaining.remove(i), io),
+            Err(err) => {
+                last = Some(err);
+                break;
+            }
+        };
         match connect_one(
             addr,
+            io,
             auth,
             tunnel_id,
             conn_index,
@@ -229,8 +241,10 @@ pub async fn connect(
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no edge answered")))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_one(
     addr: SocketAddr,
+    io: crate::net::BoxedIo,
     auth: &rpc::TunnelAuth,
     tunnel_id: Uuid,
     conn_index: u8,
@@ -238,7 +252,6 @@ async fn connect_one(
     runtime: Arc<ServiceRuntime>,
     ingress: Arc<Ingress>,
 ) -> Result<H2Leg> {
-    let io = dial(addr).await?;
     let config = edge_tls().map_err(|e| anyhow::anyhow!(e))?;
     let name = rustls_pki_types::ServerName::try_from(H2_SNI.to_string())
         .context("the HTTP/2 SNI is not a valid name")?;
@@ -314,20 +327,28 @@ async fn connect_one(
     })
 }
 
-/// Open TCP to the edge, directly or through the `HTTPS_PROXY` proxy.
-async fn dial(addr: SocketAddr) -> Result<crate::net::BoxedIo> {
-    if let Some(proxy) = crate::egress::Proxy::from_env() {
-        return proxy
-            .connect(&addr.ip().to_string(), addr.port(), DIAL_TIMEOUT)
-            .await
-            .with_context(|| format!("TCP to the edge at {addr} through the proxy"));
+/// Open TCP to one of `addrs`: through the proxy of `crate::egress`, one
+/// address at a time, or directly, with the attempt delay between the
+/// addresses. Gives the index of the address.
+async fn dial(addrs: &[SocketAddr]) -> Result<(usize, crate::net::BoxedIo)> {
+    let first = addrs[0];
+    if let Some(proxy) = crate::egress::proxy_for(&first.ip().to_string(), first.port()) {
+        let mut last = None;
+        for (i, addr) in addrs.iter().enumerate() {
+            match proxy
+                .connect(&addr.ip().to_string(), addr.port(), DIAL_TIMEOUT)
+                .await
+            {
+                Ok(io) => return Ok((i, io)),
+                Err(err) => last = Some(err.context(format!("TCP to the edge at {addr}"))),
+            }
+        }
+        return Err(last.expect("addrs is not empty"));
     }
-    let tcp = tokio::time::timeout(DIAL_TIMEOUT, tokio::net::TcpStream::connect(addr))
+    let (i, tcp) = crate::egress::dial_addrs(addrs, DIAL_TIMEOUT)
         .await
-        .map_err(|_| anyhow::anyhow!("TCP to the edge at {addr} timed out"))?
-        .with_context(|| format!("TCP to the edge at {addr}"))?;
-    let _ = tcp.set_nodelay(true);
-    Ok(Box::new(tcp))
+        .context("TCP to the edge")?;
+    Ok((i, Box::new(tcp)))
 }
 
 /// Serve one stream that is not the control stream.

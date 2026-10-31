@@ -20,7 +20,17 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
         used_by: "tunnel, warp, edge discovery, pod",
-        meaning: "An HTTP proxy (http://[user:pass@]host:port) for the quick-tunnel service, DNS over HTTPS, the HTTP/2 edge leg, the WARP API and the MASQUE connection. The first variable that is set and can be parsed is used. pod-netns also accepts a socks5:// value as its default upstream.",
+        meaning: "The proxy for each connection of cfrs, when --proxy and --no-proxy are not given: http://, socks5:// (this host resolves the name) or socks5h:// (the proxy resolves it), [user:password@]host[:port]. The first variable that is set and can be parsed is used. With a proxy, --protocol auto does not try QUIC on UDP 7844. pod-netns uses the value as its default upstream.",
+    },
+    EnvVar {
+        names: &["NO_PROXY", "no_proxy"],
+        used_by: "all commands",
+        meaning: "The targets that do not use the proxy, separated by commas: * (all), a name (it matches the names under it too), .name, an IP address, a network (10.0.0.0/8), each with an optional :port.",
+    },
+    EnvVar {
+        names: &["CFRS_RESOLVE"],
+        used_by: "all commands",
+        meaning: "Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. --resolve adds to it. Without a pin, cfrs asks the system resolver, then DNS over HTTPS at 1.1.1.1, 1.0.0.1, 8.8.8.8 and 8.8.4.4.",
     },
     EnvVar {
         names: &["HTTP_PROXY", "http_proxy"],
@@ -300,7 +310,12 @@ mod tests {
                     }
                 }
             }
-            for list in ["\"HTTPS_PROXY\"", "\"ALL_PROXY\"", "\"HTTP_PROXY\""] {
+            for list in [
+                "\"HTTPS_PROXY\"",
+                "\"ALL_PROXY\"",
+                "\"HTTP_PROXY\"",
+                "\"NO_PROXY\"",
+            ] {
                 if text.contains(list) {
                     names.insert(list.trim_matches('"').to_string());
                 }

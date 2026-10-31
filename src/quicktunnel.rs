@@ -162,8 +162,8 @@ pub fn user_agent() -> String {
 
 /// Provision a quick tunnel: `POST <endpoint>/tunnel`.
 ///
-/// `proxy` is an HTTP proxy for the request (for example `HTTPS_PROXY`), or
-/// `None` for a direct request.
+/// `proxy` is a proxy for this request only. With `None`, the request takes
+/// the proxy choice of the process (`crate::egress::proxy_for`).
 pub async fn request_quick_tunnel(
     endpoint: &str,
     auth_mode: AuthMode,
@@ -175,34 +175,20 @@ pub async fn request_quick_tunnel(
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ProvisionError::BadEndpoint(url));
     }
-    let mut builder = crate::trust::http_client()
-        .map_err(|e| ProvisionError::Http(format!("{e:#}")))?
-        .timeout(timeout)
-        .no_proxy();
-    if let Some(proxy) = proxy {
-        let proxy = reqwest::Proxy::all(proxy.url())
-            .map_err(|e| ProvisionError::BadEndpoint(format!("proxy: {e}")))?;
-        builder = builder.proxy(proxy);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| ProvisionError::Http(crate::util::chain(&e)))?;
-    let mut request = client
-        .post(&url)
+    let mut request = crate::fetch::Request::new("POST", url)
         .header("Content-Type", "application/json")
-        .header("User-Agent", user_agent);
+        .header("User-Agent", user_agent)
+        .timeout(timeout)
+        .via(proxy.cloned());
     if let Some(body) = auth_mode.request_body() {
-        request = request.body(body);
+        request.body = Some(body.into());
     }
     let response = request
         .send()
         .await
-        .map_err(|e| ProvisionError::Http(crate::util::chain(&e)))?;
-    let status = response.status().as_u16();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| ProvisionError::Decode(format!("could not read body: {e}")))?;
+        .map_err(|e| ProvisionError::Http(format!("{e:#}")))?;
+    let status = response.status;
+    let text = response.text();
     parse_quick_tunnel_response(status, &text)
 }
 

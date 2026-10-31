@@ -15,7 +15,8 @@ part of `cfrs` for it, and where that part is tested.
 | --- | --- | --- |
 | No UDP to the edge | HTTP/2 edge leg on TCP 7844 | CI, live against the Cloudflare edge |
 | Only TCP 443 out | QUIC edge leg inside WARP (MASQUE) | CI, live |
-| No DNS resolver | DNS over HTTPS, then a static edge list | CI and a sandbox with an HTTP proxy |
+| No DNS resolver | DNS over HTTPS by IP address (1.1.1.1, 8.8.8.8), then a static edge list | CI and a sandbox with an HTTP proxy |
+| Egress through a proxy only | HTTP `CONNECT`, SOCKS5 and `NO_PROXY` for each connection | `tests/egress.rs` |
 | No root, no TUN, no network namespace | `cfrs pod` (seccomp backend), `cfrs warp run` | CI and a sandbox |
 | No `AF_INET` bind | `cfrs net` (shim and userspace stack), unix-socket origins | CI and a sandbox |
 
@@ -186,7 +187,7 @@ path.
 | Leg | Socket on the host | Use it when |
 | --- | --- | --- |
 | `quic` | UDP 7844 | UDP to the edge is open. This is the fastest leg. |
-| `http2` | TCP 7844, directly or through `HTTPS_PROXY` | UDP is blocked and TCP 7844 is open. |
+| `http2` | TCP 7844, directly or through the proxy | UDP is blocked and TCP 7844 is open. |
 | `quic+warp` | TCP 443 only (MASQUE) | Only TCP 443 is open. |
 
 With the default values (`--protocol auto --transport auto`), `cfrs` tries the
@@ -288,9 +289,9 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   packets through WARP. It does not change the routes: add routes for the
   destinations to send through WARP, and keep a route for the MASQUE endpoint
   outside the interface. The command prints examples.
-* The registration API calls and the MASQUE connection use `HTTPS_PROXY` when
-  it is set. A proxy that terminates TLS cannot carry the MASQUE connection,
-  because the connection uses a client certificate.
+* The registration API calls and the MASQUE connection use the proxy (see
+  "Proxies and DNS"). A proxy that terminates TLS cannot carry the MASQUE
+  connection, because the connection uses a client certificate.
 
 ## Run any program through a proxy: `cfrs pod`
 
@@ -343,6 +344,36 @@ cfrs pod -x tailscale:/run/tailscale/tailscaled.sock -- ssh host
 ```
 
 `tailscaled` must run with `--tun=userspace-networking`.
+
+## Proxies and DNS
+
+Each connection of cfrs (the quick-tunnel API, DNS over HTTPS, the HTTP/2
+edge leg, the WARP API, MASQUE, the fetch of the public URL) takes the same
+proxy:
+
+```sh
+cfrs --proxy socks5h://127.0.0.1:1080 tunnel --url http://127.0.0.1:8080
+HTTPS_PROXY=http://user:password@proxy:3128 cfrs demo --exit-on-verify
+NO_PROXY=127.0.0.1,.internal cfrs warp register
+cfrs --no-proxy tunnel --url http://127.0.0.1:8080
+```
+
+* `http://` uses `CONNECT`. `socks5://` resolves the name on this host;
+  `socks5h://` gives the name to the proxy. cfrs refuses `socks4://` and
+  `https://`.
+* Without `--proxy` and `--no-proxy`, cfrs reads `HTTPS_PROXY`,
+  `https_proxy`, `ALL_PROXY` and `all_proxy`. `NO_PROXY` names the targets
+  that do not use the proxy.
+* With a proxy, `--protocol auto` does not try QUIC on UDP 7844 (no proxy
+  carries UDP), and cfrs prints one line that says so.
+* A proxy that answers 407 gets a message with the schemes that it asks
+  for. cfrs sends Basic only.
+
+A direct connection resolves the name with this chain: a pin of
+`--resolve HOST=IP` or `CFRS_RESOLVE`, the system resolver, then DNS over
+HTTPS by IP address at Cloudflare (1.1.1.1, 1.0.0.1) and Google (8.8.8.8,
+8.8.4.4). It tries each address of the name, and starts the next attempt
+250 ms after the one before.
 
 ## TLS roots
 

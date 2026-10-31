@@ -165,13 +165,6 @@ pub fn client_config(extra: &[&[u8]], alpn: &[&[u8]]) -> Result<rustls::ClientCo
     Ok(config)
 }
 
-/// A reqwest client builder with [`roots`]. Each HTTP client of cfrs starts
-/// here.
-pub fn http_client() -> Result<reqwest::ClientBuilder> {
-    let config = client_config(&[], &[b"http/1.1"])?;
-    Ok(reqwest::Client::builder().use_preconfigured_tls(config))
-}
-
 /// For an error of an expired certificate, or of one that is not valid yet:
 /// a line that gives the clock of this host. Else `None`.
 pub fn clock_hint(err: &anyhow::Error) -> Option<String> {
