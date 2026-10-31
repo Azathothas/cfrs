@@ -107,9 +107,8 @@ pub async fn start_quick_tunnel(stack: WarpStack, local_port: u16) -> Result<Qui
         account_tag: tunnel.account_tag.clone(),
         tunnel_secret: tunnel.secret.clone(),
     };
-    let options = rpc::ConnectionOptions::default_for_quick_tunnel(
-        cfrs_edge::manager::CLIENT_VERSION,
-    );
+    let options =
+        rpc::ConnectionOptions::default_for_quick_tunnel(cfrs_edge::manager::CLIENT_VERSION);
     let (details, control) = rpc::register_connection(&conn, &auth, tunnel_id, 0, &options)
         .await
         .context("registering the tunnel on the edge")?;

@@ -242,11 +242,19 @@ pub(crate) fn doctor(json: bool) -> i32 {
     }
     println!(
         "pod-netns: backend netns:   {}",
-        if netns_available { "available" } else { "unavailable" }
+        if netns_available {
+            "available"
+        } else {
+            "unavailable"
+        }
     );
     println!(
         "pod-netns: backend seccomp: {}",
-        if seccomp_available { "available" } else { "unavailable" }
+        if seccomp_available {
+            "available"
+        } else {
+            "unavailable"
+        }
     );
     if probes[3].ok && !any {
         println!("pod-netns: note: descendant ptrace works, so a ptrace backend could run here");

@@ -159,7 +159,6 @@ impl Tunnel {
             verify,
         } = self.config;
 
-
         let (auth, tunnel_id, public_url) =
             resolve_credentials(&credentials, &service_url, &user_agent).await?;
         let account_tag = auth.account_tag.clone();
@@ -815,9 +814,15 @@ mod tests {
             plan(Protocol::Auto, Transport::Auto),
             vec![QuicDirect, H2Direct, QuicWarp]
         );
-        assert_eq!(plan(Protocol::Quic, Transport::Auto), vec![QuicDirect, QuicWarp]);
+        assert_eq!(
+            plan(Protocol::Quic, Transport::Auto),
+            vec![QuicDirect, QuicWarp]
+        );
         assert_eq!(plan(Protocol::Http2, Transport::Auto), vec![H2Direct]);
-        assert_eq!(plan(Protocol::Auto, Transport::Direct), vec![QuicDirect, H2Direct]);
+        assert_eq!(
+            plan(Protocol::Auto, Transport::Direct),
+            vec![QuicDirect, H2Direct]
+        );
         assert_eq!(plan(Protocol::Quic, Transport::Warp), vec![QuicWarp]);
         assert!(leg_plan(Protocol::Http2, Transport::Warp).is_err());
     }

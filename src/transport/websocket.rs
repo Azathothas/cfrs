@@ -191,7 +191,7 @@ impl Transport for WebSocketTunnel {
             // TLS first when the URL is wss.
             let stream: Box<dyn Duplex> = if secure {
                 let config = crate::util::tls::client_config(&url_host, false, None)
-                    .map_err(|e| TransportError::Handshake(e))?;
+                    .map_err(TransportError::Handshake)?;
                 let connector = tokio_rustls::TlsConnector::from(config);
                 let name = rustls_pki_types::ServerName::try_from(url_host.clone())
                     .map_err(|e| TransportError::Handshake(format!("bad server name: {e}")))?;

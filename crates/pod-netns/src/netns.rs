@@ -600,7 +600,8 @@ impl Backend {
                 }
             }
             while !flow.to_upstream.is_empty() {
-                match poll_once(flow.upstream.write(&flow.to_upstream)).unwrap_or_else(would_block) {
+                match poll_once(flow.upstream.write(&flow.to_upstream)).unwrap_or_else(would_block)
+                {
                     Ok(0) => break,
                     Ok(n) => {
                         flow.to_upstream.drain(..n);
@@ -756,8 +757,6 @@ pub(crate) fn parse_tcp_syn(pkt: &[u8]) -> Option<(Ipv4Addr, u16, Ipv4Addr, u16)
     let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
     Some((src, sport, dst, dport))
 }
-
-
 
 // ── process orchestration ───────────────────────────────────────────────────
 

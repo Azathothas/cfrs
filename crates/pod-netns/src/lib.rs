@@ -71,9 +71,8 @@ mod prelude {
     };
 
     pub(crate) use crate::upstream::{
-        connect_upstream, connect_upstream_async, dial_proxy, select_chain,
-        socks5_udp_associate, within_timeout, wrap_udp, Proxy, ProxyKind, Rule, RuleMatch,
-        Upstream,
+        connect_upstream, connect_upstream_async, dial_proxy, select_chain, socks5_udp_associate,
+        within_timeout, wrap_udp, Proxy, ProxyKind, Rule, RuleMatch, Upstream,
     };
 
     pub(crate) use crate::cli::*;
@@ -154,12 +153,9 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use crate::prelude::*;
-
 
     #[test]
     fn fake_dns_is_stable_and_reversible() {
@@ -172,8 +168,6 @@ mod tests {
         assert_ne!(a, other);
         assert!(a.octets()[0] == 198 && a.octets()[1] == 18);
     }
-
-
 
     #[test]
     fn the_filter_covers_the_bypass_surfaces() {
@@ -198,8 +192,6 @@ mod tests {
             );
         }
     }
-
-
 
     #[test]
     fn parses_a_tcp_syn() {

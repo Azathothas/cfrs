@@ -40,7 +40,7 @@ pub const RPC_STREAM_SIGNATURE: [u8; 6] = [0x52, 0xBB, 0x82, 0x5C, 0xDB, 0x65];
 /// Two ASCII bytes (`"01"`). cloudflared treats `readVersion` as a
 /// NO-OP for now — kept here verbatim so a future bump shows up
 /// loudly.
-pub const PROTOCOL_V1: [u8; 2] = [b'0', b'1'];
+pub const PROTOCOL_V1: [u8; 2] = *b"01";
 
 /// What kind of payload the edge is asking us to serve on this
 /// stream. Mirror of `quic_metadata_protocol.ConnectionType`.

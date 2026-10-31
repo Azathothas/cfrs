@@ -10,7 +10,6 @@
 //! One WebSocket message maps to one write, so binary framing is preserved and
 //! interactive protocols (SSH, RDP, databases, raw sockets) work unchanged.
 
-use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use cfrs_edge::stream as cqstream;
@@ -19,6 +18,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 
 use crate::ingress::{ForwardTarget, OriginOptions, Service};
 use crate::metrics::Metrics;

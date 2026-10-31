@@ -878,6 +878,14 @@ where
     Ok(())
 }
 
+// `connect.rs` is the HTTP CONNECT client (a dial through a proxy). This
+// module serves the edge streams. These re-exports keep the old paths
+// (`crate::proxy::connect_tunnel` and others).
+pub use crate::connect::{
+    base64_encode, base64_encode_pub, connect_tunnel, connect_tunnel_with_auth, strip_scheme,
+    TunnelStream,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,12 +975,3 @@ mod tests {
 
 // ── re-exports from the outbound CONNECT client ─────────────────────────────
 //
-// `connect.rs` is the HTTP CONNECT *client* (dial out through a proxy); this
-// module is the inbound edge-stream dispatcher. They were the same filename in
-// the two branches, so the client keeps the name `connect` and the upstream
-// call sites (`crate::proxy::connect_tunnel`, …) resolve through these
-// re-exports.
-pub use crate::connect::{
-    base64_encode, base64_encode_pub, connect_tunnel, connect_tunnel_with_auth, strip_scheme,
-    TunnelStream,
-};

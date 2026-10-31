@@ -190,7 +190,6 @@ pub fn select_chain<'a>(rules: &'a [Rule], default: &'a [Proxy], target: &str) -
     default
 }
 
-
 pub async fn connect_upstream(proxy: &Proxy, target: &str) -> Result<tokio::net::TcpStream> {
     let stream = tokio::net::TcpStream::connect(proxy.endpoint())
         .await
@@ -492,69 +491,68 @@ pub fn wrap_udp(payload: &[u8], ip: IpAddr, port: u16) -> Vec<u8> {
     out
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-        #[test]
-        fn parses_proxy_specs() {
-            let p = Proxy::parse("socks5://user:pass@127.0.0.1:1080").unwrap();
-            assert_eq!(p.kind, ProxyKind::Socks5);
-            assert_eq!(p.host, "127.0.0.1");
-            assert_eq!(p.port, 1080);
-            assert_eq!(p.user.as_deref(), Some("user"));
-            assert_eq!(p.pass.as_deref(), Some("pass"));
+    #[test]
+    fn parses_proxy_specs() {
+        let p = Proxy::parse("socks5://user:pass@127.0.0.1:1080").unwrap();
+        assert_eq!(p.kind, ProxyKind::Socks5);
+        assert_eq!(p.host, "127.0.0.1");
+        assert_eq!(p.port, 1080);
+        assert_eq!(p.user.as_deref(), Some("user"));
+        assert_eq!(p.pass.as_deref(), Some("pass"));
 
-            let p = Proxy::parse("http://proxy.example:8080").unwrap();
-            assert_eq!(p.kind, ProxyKind::Http);
-            assert_eq!(p.endpoint(), "proxy.example:8080");
+        let p = Proxy::parse("http://proxy.example:8080").unwrap();
+        assert_eq!(p.kind, ProxyKind::Http);
+        assert_eq!(p.endpoint(), "proxy.example:8080");
 
-            assert!(Proxy::parse("ftp://x:1").is_err());
-            assert!(Proxy::parse("socks5://nohostport").is_err());
-        }
-        #[test]
-        fn base64_matches_known_vectors() {
-            assert_eq!(base64(b""), "");
-            assert_eq!(base64(b"f"), "Zg==");
-            assert_eq!(base64(b"fo"), "Zm8=");
-            assert_eq!(base64(b"foo"), "Zm9v");
-            assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-            assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
-        }
-        #[test]
-        fn split_target_keeps_ipv4_and_names() {
-            assert_eq!(
-                split_target("example.com:443").unwrap(),
-                ("example.com".into(), 443)
-            );
-            assert_eq!(split_target("1.2.3.4:80").unwrap(), ("1.2.3.4".into(), 80));
-            assert!(split_target("noport").is_err());
-        }
-        #[test]
-        fn rules_select_chains_in_order() {
-            let default = vec![Proxy::parse("socks5://127.0.0.1:1").unwrap()];
-            let rules = vec![
-                Rule {
-                    matcher: RuleMatch::Domain("example.com".into()),
-                    proxy: Proxy::parse("socks5://127.0.0.1:2").unwrap(),
-                },
-                Rule {
-                    matcher: RuleMatch::Cidr("10.0.0.0".parse().unwrap(), 8),
-                    proxy: Proxy::parse("socks5://127.0.0.1:3").unwrap(),
-                },
-            ];
-            assert_eq!(select_chain(&rules, &default, "example.com:80")[0].port, 2);
-            assert_eq!(select_chain(&rules, &default, "EXAMPLE.com:443")[0].port, 2);
-            assert_eq!(select_chain(&rules, &default, "10.1.2.3:443")[0].port, 3);
-            assert_eq!(select_chain(&rules, &default, "1.2.3.4:80")[0].port, 1);
-        }
-        #[test]
-        fn cidr_matching_is_exact() {
-            let net: Ipv4Addr = "10.0.0.0".parse().unwrap();
-            assert!(in_cidr("10.0.0.1".parse().unwrap(), net, 8));
-            assert!(in_cidr("10.255.255.255".parse().unwrap(), net, 8));
-            assert!(!in_cidr("11.0.0.1".parse().unwrap(), net, 8));
-            assert!(in_cidr("1.2.3.4".parse().unwrap(), net, 0));
-        }
+        assert!(Proxy::parse("ftp://x:1").is_err());
+        assert!(Proxy::parse("socks5://nohostport").is_err());
+    }
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
+    }
+    #[test]
+    fn split_target_keeps_ipv4_and_names() {
+        assert_eq!(
+            split_target("example.com:443").unwrap(),
+            ("example.com".into(), 443)
+        );
+        assert_eq!(split_target("1.2.3.4:80").unwrap(), ("1.2.3.4".into(), 80));
+        assert!(split_target("noport").is_err());
+    }
+    #[test]
+    fn rules_select_chains_in_order() {
+        let default = vec![Proxy::parse("socks5://127.0.0.1:1").unwrap()];
+        let rules = vec![
+            Rule {
+                matcher: RuleMatch::Domain("example.com".into()),
+                proxy: Proxy::parse("socks5://127.0.0.1:2").unwrap(),
+            },
+            Rule {
+                matcher: RuleMatch::Cidr("10.0.0.0".parse().unwrap(), 8),
+                proxy: Proxy::parse("socks5://127.0.0.1:3").unwrap(),
+            },
+        ];
+        assert_eq!(select_chain(&rules, &default, "example.com:80")[0].port, 2);
+        assert_eq!(select_chain(&rules, &default, "EXAMPLE.com:443")[0].port, 2);
+        assert_eq!(select_chain(&rules, &default, "10.1.2.3:443")[0].port, 3);
+        assert_eq!(select_chain(&rules, &default, "1.2.3.4:80")[0].port, 1);
+    }
+    #[test]
+    fn cidr_matching_is_exact() {
+        let net: Ipv4Addr = "10.0.0.0".parse().unwrap();
+        assert!(in_cidr("10.0.0.1".parse().unwrap(), net, 8));
+        assert!(in_cidr("10.255.255.255".parse().unwrap(), net, 8));
+        assert!(!in_cidr("11.0.0.1".parse().unwrap(), net, 8));
+        assert!(in_cidr("1.2.3.4".parse().unwrap(), net, 0));
+    }
 }

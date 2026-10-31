@@ -296,7 +296,11 @@ where
 
 /// Connect `stack` to the switch at `switch`. The returned task moves the
 /// packets until the connection closes.
-pub async fn attach(stack: &NetStack, switch: &ProxyListen, faults: Faults) -> Result<JoinHandle<()>> {
+pub async fn attach(
+    stack: &NetStack,
+    switch: &ProxyListen,
+    faults: Faults,
+) -> Result<JoinHandle<()>> {
     let link_in = stack.link_in();
     let link_out = stack.link_out();
     Ok(match switch {
@@ -510,13 +514,11 @@ mod tests {
             conn.read_to_end(&mut got).await.unwrap();
             got
         });
-        let mut conn = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            client.connect(address),
-        )
-        .await
-        .expect("connect in time")
-        .unwrap();
+        let mut conn =
+            tokio::time::timeout(std::time::Duration::from_secs(20), client.connect(address))
+                .await
+                .expect("connect in time")
+                .unwrap();
         conn.write_all(&payload).await.unwrap();
         AsyncWriteExt::shutdown(&mut conn).await.unwrap();
         let got = tokio::time::timeout(std::time::Duration::from_secs(60), accept)
@@ -559,10 +561,13 @@ mod tests {
         let mut conn = b.connect(addr).await.unwrap();
         conn.write_all(b"ping").await.unwrap();
         let mut reply = [0u8; 4];
-        tokio::time::timeout(std::time::Duration::from_secs(10), conn.read_exact(&mut reply))
-            .await
-            .expect("reply in time")
-            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            conn.read_exact(&mut reply),
+        )
+        .await
+        .expect("reply in time")
+        .unwrap();
         assert_eq!(&reply, b"pong");
         switch.abort();
     }

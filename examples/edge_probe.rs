@@ -190,8 +190,10 @@ async fn connect(proxy: &str, host: &str, port: u16) -> Option<russh::client::Ha
             return None;
         }
     };
-    let mut cfg = Config::default();
-    cfg.inactivity_timeout = Some(Duration::from_secs(600));
+    let cfg = Config {
+        inactivity_timeout: Some(Duration::from_secs(600)),
+        ..Config::default()
+    };
 
     let mut handle = match russh::client::connect_stream(Arc::new(cfg), stream, Client).await {
         Ok(h) => h,

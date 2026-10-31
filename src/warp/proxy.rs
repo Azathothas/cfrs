@@ -107,8 +107,9 @@ where
         Err(err) => {
             let message = format!("{err:#}");
             if is_socks {
-                let _ = socks::socks5_reply(&mut stream, socks::socks5_code_for_error(&message), None)
-                    .await;
+                let _ =
+                    socks::socks5_reply(&mut stream, socks::socks5_code_for_error(&message), None)
+                        .await;
             } else {
                 let _ = socks::http_connect_reply(&mut stream, 502, "Bad Gateway").await;
             }
@@ -131,9 +132,12 @@ pub async fn dial(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<D
         ProxyHost::Ip(ip) => ip,
         ProxyHost::Domain(name) => resolve(&stack, &name).await?,
     };
-    let conn = tokio::time::timeout(CONNECT_TIMEOUT, stack.tcp_connect(SocketAddr::new(ip, port)))
-        .await
-        .map_err(|_| anyhow::anyhow!("connect to {ip}:{port} through WARP timed out"))??;
+    let conn = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        stack.tcp_connect(SocketAddr::new(ip, port)),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("connect to {ip}:{port} through WARP timed out"))??;
     let (local, remote) = tokio::io::duplex(4 * CHUNK);
     tokio::spawn(bridge(conn, remote));
     Ok(local)
@@ -141,7 +145,10 @@ pub async fn dial(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<D
 
 /// Resolve `name` to an IPv4 address with a DNS query through the tunnel.
 pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
-    if let Ok(ip) = name.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>() {
+    if let Ok(ip) = name
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
         return Ok(ip);
     }
     let udp = stack.udp_bind().await?;

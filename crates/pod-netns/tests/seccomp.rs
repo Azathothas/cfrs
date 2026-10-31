@@ -474,7 +474,6 @@ fn seccomp_backend_relays_udp() {
     });
     // The relay: unwrap a SOCKS5 UDP header, forward, wrap the reply.
     {
-        let echo_addr = echo_addr;
         std::thread::spawn(move || {
             let mut buf = [0u8; 65535];
             while let Ok((n, from)) = relay.recv_from(&mut buf) {
@@ -589,7 +588,12 @@ fn seccomp_backend_accepts_inbound() {
     c.write_all(b"PING\n").unwrap();
     let mut buf = [0u8; 16];
     let n = c.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"PONG\n", "got {:?}", String::from_utf8_lossy(&buf[..n]));
+    assert_eq!(
+        &buf[..n],
+        b"PONG\n",
+        "got {:?}",
+        String::from_utf8_lossy(&buf[..n])
+    );
     drop(c);
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
@@ -887,7 +891,10 @@ fn seccomp_backend_pins_names_with_map() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("DNS:1.2.3.4:18:HELLO-FROM-TARGET"), "{stdout:?}");
+    assert!(
+        stdout.contains("DNS:1.2.3.4:18:HELLO-FROM-TARGET"),
+        "{stdout:?}"
+    );
     // The pinned address reaches the proxy, not a fake IP.
     assert_eq!(rx.recv().unwrap(), "1.2.3.4:80");
     let _ = std::fs::remove_dir_all(&dir);
@@ -899,7 +906,8 @@ fn doctor_json_is_machine_readable() {
         .args(["doctor", "--json"])
         .output()
         .unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor --json is JSON");
+    let value: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("doctor --json is JSON");
     assert!(value["capabilities"].is_object());
     assert!(value["backend_seccomp"].is_boolean());
     assert!(value["backend_available"].is_boolean());

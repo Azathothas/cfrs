@@ -84,7 +84,11 @@ pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
 #[cfg(target_arch = "riscv64")]
 pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_00F3;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 compile_error!("pod-netns: add the AUDIT_ARCH value for this target");
 
 /// The x32 system-call bit on x86_64. Zero on other targets.
@@ -641,7 +645,12 @@ pub(crate) async fn drain_relays(limit: Duration) {
 /// that leaks sockets cannot grow the supervisor without bound.
 pub(crate) const MAX_TRACKED_FDS: usize = 4096;
 
-pub(crate) fn handle_socket(lfd: RawFd, id: u64, a: [u64; 6], map: &mut HashMap<i32, Sock>) -> Result<()> {
+pub(crate) fn handle_socket(
+    lfd: RawFd,
+    id: u64,
+    a: [u64; 6],
+    map: &mut HashMap<i32, Sock>,
+) -> Result<()> {
     if map.len() >= MAX_TRACKED_FDS {
         return notif_respond(lfd, id, -1, libc::EMFILE);
     }
@@ -803,8 +812,9 @@ pub(crate) async fn handle_sendto(
     }
 }
 
-/// `sendmmsg` is what glibc's resolver uses: a vector of `mmsghdr`. Only the
-/// first message is answered.
+/// `sendmmsg` is what the glibc resolver uses: a vector of `mmsghdr`, for
+/// example the A and the AAAA query in one call.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_sendmmsg(
     lfd: RawFd,
     id: u64,
@@ -1051,7 +1061,10 @@ pub(crate) async fn handle_listen(
     }
     notif_respond(lfd, id, 0, 0)?;
     // The listener is a real unix socket; say where it is.
-    eprintln!("pod-netns: listening on unix:{} (port {port})", path.display());
+    eprintln!(
+        "pod-netns: listening on unix:{} (port {port})",
+        path.display()
+    );
     Ok(())
 }
 

@@ -496,14 +496,18 @@ pub async fn reactor(
         }
         attempt += 1;
         if attempt > policy.max_attempts {
-            warn!(conn_index, "giving up after {} reconnect attempts", policy.max_attempts);
+            warn!(
+                conn_index,
+                "giving up after {} reconnect attempts", policy.max_attempts
+            );
             return;
         }
         tokio::select! {
             _ = shutdown.changed() => return,
             _ = tokio::time::sleep(policy.backoff(attempt)) => {}
         }
-        let mut options = rpc::ConnectionOptions::default_for_quick_tunnel(crate::tunnel::CLIENT_VERSION);
+        let mut options =
+            rpc::ConnectionOptions::default_for_quick_tunnel(crate::tunnel::CLIENT_VERSION);
         options.replace_existing = true;
         match connect(
             &edges,
@@ -584,7 +588,10 @@ mod tests {
 
     #[test]
     fn a_websocket_request_gets_the_upgrade_headers() {
-        let p = parts(&[(CONTROL_STREAM_HEADER, "websocket"), ("sec-websocket-key", "k")]);
+        let p = parts(&[
+            (CONTROL_STREAM_HEADER, "websocket"),
+            ("sec-websocket-key", "k"),
+        ]);
         let request = connect_request(&p, StreamType::Websocket);
         assert_eq!(request.conn_type, ConnectionType::Websocket);
         assert_eq!(request.meta("HttpHeader:Upgrade"), Some("websocket"));
@@ -609,7 +616,9 @@ mod tests {
         ];
         let (status, headers) = edge_response("", &meta);
         assert_eq!(status, 201);
-        assert!(headers.iter().any(|(k, v)| k == "content-length" && v == "5"));
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "content-length" && v == "5"));
         let blob = headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("cf-cloudflared-response-headers"))
@@ -628,9 +637,8 @@ mod tests {
     #[tokio::test]
     async fn serves_a_visitor_request_over_http2() {
         let ingress = Arc::new(Ingress::new().catch_all(crate::ingress::Service::HelloWorld));
-        let runtime = Arc::new(
-            ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap(),
-        );
+        let runtime =
+            Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
         let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
         let server = tokio::spawn(async move {
             let mut conn = h2::server::handshake(cfrs_side).await.unwrap();

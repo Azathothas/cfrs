@@ -138,8 +138,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
             "--serve" => {
                 let spec = argv.get(i + 1).context("--serve needs a listen spec")?;
                 serve = Some(
-                    crate::listen::ProxyListen::parse(spec)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?,
+                    crate::listen::ProxyListen::parse(spec).map_err(|e| anyhow::anyhow!("{e}"))?,
                 );
                 i += 2;
             }

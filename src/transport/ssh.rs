@@ -154,8 +154,10 @@ impl Transport for SshRelay {
                 ),
             };
 
-            let mut config = Config::default();
-            config.inactivity_timeout = Some(Duration::from_secs(3600));
+            let config = Config {
+                inactivity_timeout: Some(Duration::from_secs(3600)),
+                ..Config::default()
+            };
 
             let client = Client {
                 accept_any_host_key: self.accept_any_host_key,

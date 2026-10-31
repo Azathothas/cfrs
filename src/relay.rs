@@ -425,9 +425,11 @@ pub async fn run(config: RelayConfig) -> Result<(TunnelHandle, Handle<Client>), 
             .map_err(|e| RelayError::Key(e.to_string()))?,
     );
 
-    let mut ssh_config = Config::default();
-    ssh_config.inactivity_timeout = Some(Duration::from_secs(3600));
-    ssh_config.preferred = russh::Preferred::DEFAULT;
+    let ssh_config = Config {
+        inactivity_timeout: Some(Duration::from_secs(3600)),
+        preferred: russh::Preferred::DEFAULT,
+        ..Config::default()
+    };
     let ssh_config = Arc::new(ssh_config);
 
     let served = Arc::new(Mutex::new(0u64));

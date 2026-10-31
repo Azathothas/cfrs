@@ -893,11 +893,14 @@ async fn warp(args: WarpArgs) -> Result<()> {
             proxy.abort();
         }
         WarpCommand::Run { backend, program } => {
-            let socket = std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
+            let socket =
+                std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
             let stack = Arc::new(client.connect().await?);
-            let proxy =
-                cfrs::warp::proxy::serve(stack, cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()))
-                    .await?;
+            let proxy = cfrs::warp::proxy::serve(
+                stack,
+                cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()),
+            )
+            .await?;
             let mut argv = vec![
                 "--backend".to_string(),
                 backend,
@@ -1132,7 +1135,9 @@ async fn net(args: NetArgs) -> Result<()> {
                 cfrs::vnet::proxy::ProxyListen::Unix(path) => {
                     println!("cfrs: switch   unix:{}", path.display())
                 }
-                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr}"),
+                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+                    println!("cfrs: switch   tcp://{addr}")
+                }
             }
             wait_stop(args.run_for).await;
             switch.abort();
@@ -1211,7 +1216,9 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
                 }
             }
             match &switch {
-                ProxyListen::Unix(path) => println!("cfrs: switch   unix:{} as {address}", path.display()),
+                ProxyListen::Unix(path) => {
+                    println!("cfrs: switch   unix:{} as {address}", path.display())
+                }
                 ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr} as {address}"),
             }
             net
@@ -1407,7 +1414,10 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
     let environment = tailscale_ssh::client_environment(&shims);
     if !args.json {
         println!("cfrs: shims    {}", shims.dir.display());
-        println!("cfrs: user     {} uid={} gid={}", user.name, user.uid, user.gid);
+        println!(
+            "cfrs: user     {} uid={} gid={}",
+            user.name, user.uid, user.gid
+        );
         println!("cfrs: passwd   {}", shims.passwd.display());
         println!("cfrs: fakepwd  {}", shims.fakepwd.display());
         println!(

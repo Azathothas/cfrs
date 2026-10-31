@@ -60,7 +60,12 @@ pub(crate) fn listen_str(listen: &crate::listen::ProxyListen) -> String {
     }
 }
 
-pub(crate) async fn serve_one(conn: Upstream, chain: &[Proxy], rules: &[Rule], verbose: bool) -> Result<()> {
+pub(crate) async fn serve_one(
+    conn: Upstream,
+    chain: &[Proxy],
+    rules: &[Rule],
+    verbose: bool,
+) -> Result<()> {
     use crate::socks;
     use tokio::io::AsyncBufReadExt;
     let mut reader = tokio::io::BufReader::new(conn);
@@ -129,7 +134,9 @@ pub(crate) async fn serve_one(conn: Upstream, chain: &[Proxy], rules: &[Rule], v
 
 /// Read a SOCKS5 greeting and request, accepting any command so
 /// `UDP ASSOCIATE` is not rejected before it can be served.
-pub(crate) async fn read_socks5_command<S>(stream: &mut S) -> Result<(u8, crate::socks::ProxyRequest)>
+pub(crate) async fn read_socks5_command<S>(
+    stream: &mut S,
+) -> Result<(u8, crate::socks::ProxyRequest)>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

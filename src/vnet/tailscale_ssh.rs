@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn passwd_and_group_include_root() {
         let user = LocalUser::new("user", 966, 965);
-        let passwd = render_passwd(&[user.clone()]);
+        let passwd = render_passwd(std::slice::from_ref(&user));
         assert!(passwd.contains("user:x:966:965:user:/state/home:/bin/sh"));
         assert!(passwd.contains("root:x:0:0:root:/root:/bin/sh"));
         let group = render_group(&[user]);

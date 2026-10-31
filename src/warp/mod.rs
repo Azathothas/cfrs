@@ -36,9 +36,9 @@ pub mod capsule;
 pub mod edge;
 pub mod identity;
 pub mod ip;
+pub mod proxy;
 pub mod quic;
 pub mod register;
-pub mod proxy;
 pub mod session;
 
 pub use edge::{start_quick_tunnel, QuickTunnelHandle};
@@ -202,7 +202,9 @@ impl WarpClient {
     /// else `./cfrs-warp.json`.
     pub fn default_identity_path() -> std::path::PathBuf {
         if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-            return std::path::PathBuf::from(state).join("cfrs").join("warp.json");
+            return std::path::PathBuf::from(state)
+                .join("cfrs")
+                .join("warp.json");
         }
         if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
             return std::path::PathBuf::from(home)
@@ -229,9 +231,13 @@ impl WarpClient {
 
     /// Attach a WARP+ license key, then read the device again.
     pub async fn set_license(&mut self, license: &str) -> Result<serde_json::Value> {
-        let account =
-            register::set_license(&self.device.id, &self.device.token, license, self.proxy.as_ref())
-                .await?;
+        let account = register::set_license(
+            &self.device.id,
+            &self.device.token,
+            license,
+            self.proxy.as_ref(),
+        )
+        .await?;
         self.refresh().await?;
         Ok(account)
     }
