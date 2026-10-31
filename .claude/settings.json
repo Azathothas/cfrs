@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Skill",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "TaskStop",
+      "Monitor",
+      "mcp__github",
+      "mcp__claude-code-remote",
+      "mcp__Claude_Docs"
+    ]
+  },
+  "includeCoAuthoredBy": false,
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "env": {
+    "GIT_AUTHOR_NAME": "Azathothas",
+    "GIT_AUTHOR_EMAIL": "ajamx101@gmail.com",
+    "GIT_COMMITTER_NAME": "Azathothas",
+    "GIT_COMMITTER_EMAIL": "ajamx101@gmail.com"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
