@@ -282,7 +282,7 @@ pub(crate) fn notif_addfd_send(lfd: RawFd, id: u64, srcfd: RawFd, newfd_flags: u
         newfd: 0,
         newfd_flags,
     };
-    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_ADDFD, &req) };
+    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_ADDFD as _, &req) };
     if r < 0 {
         return Err(std::io::Error::last_os_error()).context("NOTIF_ADDFD");
     }
@@ -296,7 +296,7 @@ pub(crate) fn notif_respond(lfd: RawFd, id: u64, val: i64, error: i32) -> Result
         error,
         flags: 0,
     };
-    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_SEND, &resp) };
+    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_SEND as _, &resp) };
     if r < 0 {
         let e = std::io::Error::last_os_error();
         // ENOENT means the target died or the syscall was interrupted.
@@ -315,7 +315,7 @@ pub(crate) fn notif_continue(lfd: RawFd, id: u64) -> Result<()> {
         error: 0,
         flags: SECCOMP_USER_NOTIF_FLAG_CONTINUE,
     };
-    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_SEND, &resp) };
+    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_SEND as _, &resp) };
     if r < 0 {
         let e = std::io::Error::last_os_error();
         if e.raw_os_error() == Some(libc::ENOENT) {
@@ -490,7 +490,7 @@ pub(crate) async fn supervise_seccomp(
             continue;
         }
         let mut req: SeccompNotif = unsafe { std::mem::zeroed() };
-        let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_RECV, &mut req) };
+        let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_RECV as _, &mut req) };
         if r < 0 {
             match std::io::Error::last_os_error().raw_os_error() {
                 // ENOENT: the child left the system call before it was read.
@@ -609,7 +609,7 @@ pub(crate) fn open_mem(pid: u32) -> (RawFd, bool) {
 /// Return true while the notification `id` is still pending.
 pub(crate) fn notif_id_valid(lfd: RawFd, id: u64) -> bool {
     let mut id = id;
-    unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_ID_VALID, &mut id) == 0 }
+    unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_ID_VALID as _, &mut id) == 0 }
 }
 
 /// The number of byte relays that are in progress.

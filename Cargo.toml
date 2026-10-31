@@ -12,6 +12,7 @@ categories = ["network-programming", "command-line-utilities"]
 
 [workspace]
 members = [".", "crates/cfrs-edge", "crates/pod-netns"]
+default-members = [".", "crates/pod-netns"]
 
 [lib]
 name = "cfrs"

@@ -27,7 +27,15 @@ cargo build --release
 ```
 
 The binaries are `target/release/cfrs` and `target/release/pod-netns`. Rust
-1.86 or newer is necessary. The `LD_PRELOAD` shims need a C compiler at run
+1.86 or newer is necessary.
+
+A static binary has no run-time dependency on the C library of the host:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=clang cargo build --release --target x86_64-unknown-linux-musl
+```
+ The `LD_PRELOAD` shims need a C compiler at run
 time (`cc`, `gcc` or `clang`). The other commands do not.
 
 ## Quick start
