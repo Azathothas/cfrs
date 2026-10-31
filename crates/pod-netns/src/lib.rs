@@ -86,6 +86,9 @@ mod prelude {
 #[allow(unused_imports)]
 use prelude::*;
 
+/// The exit code of a usage error (sysexits `EX_USAGE`).
+pub const USAGE: i32 = 64;
+
 /// Run the `pod-netns` command line with `argv` (without the program name).
 /// Return the exit status.
 pub fn main_with_args(argv: &[String]) -> i32 {
@@ -93,7 +96,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => {
             eprintln!("pod-netns: {e:#}");
-            return 2;
+            return USAGE;
         }
     };
     if args.doctor {
@@ -102,7 +105,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     if args.serve.is_some() {
         if args.proxies.is_empty() {
             eprintln!("pod-netns: --serve needs at least one -x upstream");
-            return 2;
+            return USAGE;
         }
         let listen = args.serve.clone().unwrap();
         let runtime = match tokio::runtime::Builder::new_multi_thread()

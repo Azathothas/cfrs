@@ -1,0 +1,158 @@
+//! Exit codes.
+//!
+//! [`TABLE`] is the one list of the exit codes. `cfrs man exit-status`
+//! renders it, and `main` maps each error to a code with [`code_of`].
+//!
+//! The codes follow sysexits.h, so that a script can tell the usage error of
+//! cfrs from the failure of another program:
+//!
+//! * 64 (`EX_USAGE`): a bad command line, before cfrs does anything.
+//! * 69 (`EX_UNAVAILABLE`): a service or a network path is not available:
+//!   the edge, the quick-tunnel service, the WARP API or its MASQUE endpoint.
+//! * 78 (`EX_CONFIG`): a configuration that cannot be used: a variable of the
+//!   environment (for example `CFRS_EDGE`) or a configuration file.
+//!
+//! An error with no class exits 1. `cfrs pod` and `cfrs warp run` give the
+//! status of the program that they run, and 3 when no backend can run it.
+
+/// The class of a failure. Attach it to an error with [`fault`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// A bad command line.
+    Usage,
+    /// A service or a network path is not available.
+    Unavailable,
+    /// A configuration that cannot be used.
+    Config,
+}
+
+impl Fault {
+    /// The exit code of this class.
+    pub fn code(self) -> i32 {
+        match self {
+            Fault::Usage => USAGE,
+            Fault::Unavailable => UNAVAILABLE,
+            Fault::Config => CONFIG,
+        }
+    }
+}
+
+pub const SUCCESS: i32 = 0;
+pub const FAILURE: i32 = 1;
+pub const NO_BACKEND: i32 = 3;
+pub const USAGE: i32 = 64;
+pub const UNAVAILABLE: i32 = 69;
+pub const CONFIG: i32 = 78;
+
+/// One row of the table of exit codes.
+#[derive(Clone, Copy, Debug)]
+pub struct ExitCode {
+    pub code: i32,
+    pub name: &'static str,
+    pub meaning: &'static str,
+}
+
+/// Each exit code of cfrs.
+pub const TABLE: &[ExitCode] = &[
+    ExitCode {
+        code: SUCCESS,
+        name: "success",
+        meaning: "The command completed. A server command (tunnel, serve, share, proxy) exits 0 when it is stopped with Ctrl-C or when --run-for ends.",
+    },
+    ExitCode {
+        code: FAILURE,
+        name: "failure",
+        meaning: "A failure that has no other code.",
+    },
+    ExitCode {
+        code: NO_BACKEND,
+        name: "no-backend",
+        meaning: "cfrs pod (and pod-netns): no backend can run on this host, the program is not in PATH, or the setup of the backend failed. pod doctor gives 3 when no backend can run.",
+    },
+    ExitCode {
+        code: USAGE,
+        name: "usage",
+        meaning: "A bad command line: an unknown command or flag, a missing or bad value. Nothing was done.",
+    },
+    ExitCode {
+        code: UNAVAILABLE,
+        name: "unavailable",
+        meaning: "A service or a network path is not available: no edge leg worked, the quick-tunnel service, the WARP API or the MASQUE endpoint did not answer.",
+    },
+    ExitCode {
+        code: CONFIG,
+        name: "config",
+        meaning: "A configuration that cannot be used: a variable of the environment such as CFRS_EDGE, or a configuration file given with --config.",
+    },
+];
+
+/// An error with a [`Fault`] class. Its text is the text of the error.
+#[derive(Debug)]
+pub struct Faulted {
+    pub fault: Fault,
+    inner: anyhow::Error,
+}
+
+impl std::fmt::Display for Faulted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(f, "{:#}", self.inner)
+        } else {
+            write!(f, "{}", self.inner)
+        }
+    }
+}
+
+impl std::error::Error for Faulted {}
+
+/// Give `err` the class `fault`.
+pub fn fault(fault: Fault, err: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(Faulted { fault, inner: err })
+}
+
+/// Extension for `Result`: `.fault(Fault::Config)`.
+pub trait ResultExt<T> {
+    fn fault(self, fault: Fault) -> anyhow::Result<T>;
+}
+
+impl<T, E: Into<anyhow::Error>> ResultExt<T> for Result<T, E> {
+    fn fault(self, class: Fault) -> anyhow::Result<T> {
+        self.map_err(|e| fault(class, e.into()))
+    }
+}
+
+/// The exit code for `err`: the class of the outermost [`Faulted`] error in
+/// its chain, else [`FAILURE`].
+pub fn code_of(err: &anyhow::Error) -> i32 {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<Faulted>())
+        .map(|f| f.fault.code())
+        .unwrap_or(FAILURE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+
+    #[test]
+    fn a_class_survives_context() {
+        let err = fault(Fault::Config, anyhow::anyhow!("bad CFRS_EDGE"));
+        let err = Err::<(), _>(err)
+            .context("starting the tunnel")
+            .unwrap_err();
+        assert_eq!(code_of(&err), CONFIG);
+        assert_eq!(format!("{err:#}"), "starting the tunnel: bad CFRS_EDGE");
+        assert_eq!(code_of(&anyhow::anyhow!("plain")), FAILURE);
+    }
+
+    #[test]
+    fn each_class_has_a_row_of_the_table() {
+        for class in [Fault::Usage, Fault::Unavailable, Fault::Config] {
+            assert!(TABLE.iter().any(|row| row.code == class.code()));
+        }
+        let mut codes: Vec<i32> = TABLE.iter().map(|r| r.code).collect();
+        codes.dedup();
+        assert_eq!(codes.len(), TABLE.len(), "no code is listed two times");
+    }
+}

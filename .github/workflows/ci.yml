@@ -22,6 +22,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: The man page renders with groff and mandoc
+        run: |
+          set -eu
+          sudo apt-get install -y -qq groff mandoc > /dev/null
+          cargo run -q --bin cfrs -- man --roff > cfrs.1
+          groff -man -Tutf8 -ww -z cfrs.1 2> groff.log || true
+          if [ -s groff.log ]; then cat groff.log; exit 1; fi
+          mandoc -T lint -W error cfrs.1
+          mandoc -T utf8 cfrs.1 | head -20
 
   # Run each edge leg against the real Cloudflare edge, and fetch the public
   # URL. Also run the WARP client.

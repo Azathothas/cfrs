@@ -289,6 +289,30 @@ cfrs pod -x tailscale:/run/tailscale/tailscaled.sock -- ssh host
 
 `tailscaled` must run with `--tun=userspace-networking`.
 
+## Manual, status and exit codes
+
+`cfrs man` shows the manual. It is generated from the command tree of the
+binary, so it always agrees with `--help`. It needs no man(1), no groff and no
+network.
+
+```sh
+cfrs man                      # the whole manual, in a pager on a terminal
+cfrs man warp run             # one command
+cfrs man exit-status          # one topic: environment, files, exit-status, examples, pod
+cfrs man --roff > cfrs.1      # a man(7) page (also a release asset)
+cfrs man --json               # the tables, for a program
+cfrs status                   # one JSON line about this host; no network
+```
+
+The exit codes follow sysexits.h: 64 for a bad command line, 69 when a
+service or a network path is not available (no edge leg worked), 78 for a
+bad configuration (for example `CFRS_EDGE`). `cfrs man exit-status` gives all
+of them.
+
+`CFRS_ERROR_PROGRAM=/path/to/program` gives a JSON report of each failure
+(version, system, command, exit code, the last 64 log lines) to that program
+on its stdin. Credentials are masked. Use it to collect failures in tests.
+
 ## Library
 
 ```rust

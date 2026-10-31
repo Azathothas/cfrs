@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 use cfrs::config::{load_file, Config};
+use cfrs::exit::{Fault, ResultExt};
 use cfrs::gate::Gate;
 use cfrs::ingress::{ForwardTarget, Ingress, IngressRule, OriginOptions, Service};
 use cfrs::net::BoxedIo;
@@ -58,6 +59,27 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Show the manual, generated from this binary.
+    Man(ManArgs),
+    /// Print one line of JSON about this host. It opens no connection.
+    Status,
+}
+
+#[derive(Args, Debug)]
+struct ManArgs {
+    /// One section: a command (tunnel, "warp run") or a topic (environment,
+    /// files, exit-status, examples, pod).
+    #[arg(value_name = "SECTION", num_args = 0..)]
+    section: Vec<String>,
+    /// Write to stdout, also on a terminal.
+    #[arg(long)]
+    no_pager: bool,
+    /// Write a man(7) page.
+    #[arg(long, conflicts_with = "json")]
+    roff: bool,
+    /// Write the manual as one JSON object.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -232,27 +254,71 @@ struct DemoArgs {
     token: Option<String>,
 }
 
-fn main() -> Result<()> {
+fn main() {
     // pod-netns forks and makes its own runtime. Start it before the async
     // runtime of cfrs exists.
     let argv: Vec<String> = std::env::args().collect();
     if argv.get(1).map(String::as_str) == Some("pod") {
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
     }
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("starting the async runtime")?
-        .block_on(async_main())
-}
-
-async fn async_main() -> Result<()> {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            use clap::error::ErrorKind;
+            let code = match err.kind() {
+                ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => cfrs::exit::SUCCESS,
+                _ => cfrs::exit::USAGE,
+            };
+            let _ = err.print();
+            std::process::exit(code);
+        }
+    };
+    let command = command_name(&argv);
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),
         )
+        .with_writer(cfrs::report::TeeStderr)
         .init();
-    match Cli::parse().command {
+    let result = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")
+        .and_then(|runtime| runtime.block_on(async_main(cli)));
+    if let Err(err) = result {
+        let code = cfrs::exit::code_of(&err);
+        let line = format!("cfrs: {}", cfrs::report::mask(&format!("{err:#}")));
+        cfrs::report::record(&line);
+        eprintln!("{line}");
+        cfrs::report::send(command.as_deref(), code, Some(&err));
+        std::process::exit(code);
+    }
+}
+
+/// The command of `argv` for the report: `tunnel`, `warp run`, or `None`.
+fn command_name(argv: &[String]) -> Option<String> {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let mut words = Vec::new();
+    for arg in argv.iter().skip(1) {
+        if arg.starts_with('-') {
+            break;
+        }
+        match cmd.find_subcommand(arg) {
+            Some(sub) => {
+                words.push(arg.clone());
+                cmd = sub.clone();
+            }
+            None => break,
+        }
+    }
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+async fn async_main(cli: Cli) -> Result<()> {
+    match cli.command {
         Command::Tunnel(args) => tunnel(args).await,
         Command::Serve(args) => serve(args).await,
         Command::Share(args) => share(args).await,
@@ -271,16 +337,36 @@ async fn async_main() -> Result<()> {
         Command::Net(args) => net(args).await,
         Command::Warp(args) => warp(args).await,
         Command::Pod { .. } => unreachable!("main runs pod before the runtime"),
+        Command::Man(args) => {
+            use clap::CommandFactory;
+            let manual = cfrs::manual::model::build(Cli::command());
+            let request = cfrs::manual::Request {
+                section: (!args.section.is_empty()).then(|| args.section.join(" ")),
+                no_pager: args.no_pager,
+                roff: args.roff,
+                json: args.json,
+            };
+            let text = cfrs::manual::body(&manual, &request)
+                .map_err(|e| cfrs::exit::fault(cfrs::exit::Fault::Usage, anyhow::anyhow!(e)))?;
+            let paged = !request.roff && !request.json;
+            cfrs::manual::pager::show(&text, request.no_pager || !paged)?;
+            Ok(())
+        }
+        Command::Status => {
+            println!("{}", cfrs::status::document());
+            Ok(())
+        }
     }
 }
 
 async fn tunnel(args: TunnelArgs) -> Result<()> {
     let mut config = if let Some(path) = &args.config {
-        load_file(path)?
+        load_file(path).fault(Fault::Config)?
     } else {
         Config::default()
     };
     if let Some(token) = &args.token {
+        cfrs::report::hide(token);
         config.credentials = cfrs::config::parse_token(token)?;
     } else if let Some(path) = &args.credentials_file {
         config.credentials = cfrs::config::parse_credentials_file(path)?;
@@ -464,6 +550,7 @@ async fn accept_unix(listener: tokio::net::UnixListener, remote: String) {
 async fn serve(args: ServeArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
+        cfrs::report::hide(token);
         config.credentials = cfrs::config::parse_token(token)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Static {
@@ -497,6 +584,7 @@ async fn share(args: ShareArgs) -> Result<()> {
 
     let mut config = Config::default();
     if let Some(token) = &args.token {
+        cfrs::report::hide(token);
         config.credentials = cfrs::config::parse_token(token)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Share(share_config.clone()));
@@ -519,6 +607,7 @@ async fn share(args: ShareArgs) -> Result<()> {
 async fn demo(args: DemoArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
+        cfrs::report::hide(token);
         config.credentials = cfrs::config::parse_token(token)?;
     }
     config.ingress = Ingress::new().catch_all(Service::HelloWorld);
@@ -790,13 +879,21 @@ enum WarpCommand {
 async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
     use cfrs::warp::WarpClient;
     if args.ephemeral {
-        return Ok((WarpClient::register().await?, None));
+        return Ok((
+            WarpClient::register().await.fault(Fault::Unavailable)?,
+            None,
+        ));
     }
     let path = args
         .identity
         .clone()
         .unwrap_or_else(WarpClient::default_identity_path);
-    Ok((WarpClient::register_or_load(&path).await?, Some(path)))
+    Ok((
+        WarpClient::register_or_load(&path)
+            .await
+            .fault(Fault::Unavailable)?,
+        Some(path),
+    ))
 }
 
 async fn warp(args: WarpArgs) -> Result<()> {
@@ -854,7 +951,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             };
             println!("device      {}", client.device().id);
             println!("masque      {:?}", client.device().masque_endpoint());
-            let stack = client.connect().await?;
+            let stack = client.connect().await.fault(Fault::Unavailable)?;
             println!("tunnel      up (TCP 443 only)");
             for spec in targets {
                 let addr: std::net::SocketAddr = spec
@@ -878,7 +975,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
         }
         WarpCommand::Proxy { listen, run_for } => {
             let listen = cfrs::vnet::proxy::ProxyListen::parse(&listen)?;
-            let stack = Arc::new(client.connect().await?);
+            let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
             let proxy = cfrs::warp::proxy::serve(stack, listen).await?;
             match &proxy.listen {
                 cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
@@ -937,7 +1034,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Run { backend, program } => {
             let socket =
                 std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
-            let stack = Arc::new(client.connect().await?);
+            let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
             let proxy = cfrs::warp::proxy::serve(
                 stack,
                 cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()),
@@ -1470,4 +1567,90 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
         println!("cfrs: note     --statedir lets the daemon keep its SSH host keys");
     }
     print_environment(environment, args.json, "  export ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_command_tree_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    /// Each example of the manual is a command line that the parser accepts.
+    #[test]
+    fn each_example_of_the_manual_parses() {
+        for example in cfrs::manual::facts::EXAMPLES {
+            let words: Vec<&str> = example.command.split_whitespace().collect();
+            assert_eq!(words[0], "cfrs", "{}", example.command);
+            if words.get(1) == Some(&"pod") {
+                // pod has its own parser, in pod-netns.
+                continue;
+            }
+            if let Err(err) = Cli::try_parse_from(&words) {
+                panic!("the example {:?} does not parse: {err}", example.command);
+            }
+        }
+    }
+
+    /// The manual names each command and each flag of the command tree.
+    #[test]
+    fn the_manual_names_each_command_and_flag() {
+        let manual = cfrs::manual::model::build(Cli::command());
+        let text = cfrs::manual::text::render(&manual);
+        fn walk(cmd: &clap::Command, path: &mut Vec<String>, text: &str) {
+            for sub in cmd.get_subcommands().filter(|c| c.get_name() != "help") {
+                path.push(sub.get_name().to_string());
+                assert!(
+                    text.contains(&format!("cfrs {}", path.join(" "))),
+                    "the manual has no section for cfrs {}",
+                    path.join(" ")
+                );
+                for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
+                    if let Some(long) = arg.get_long() {
+                        if long != "help" && long != "version" {
+                            assert!(
+                                text.contains(&format!("--{long}")),
+                                "the manual has no --{long} (cfrs {})",
+                                path.join(" ")
+                            );
+                        }
+                    }
+                }
+                walk(sub, path, text);
+                path.pop();
+            }
+        }
+        walk(&Cli::command(), &mut Vec::new(), &text);
+        assert!(
+            text.contains("pod-netns"),
+            "the pod section has the pod-netns usage"
+        );
+    }
+
+    #[test]
+    fn a_bad_command_line_is_a_usage_error() {
+        let err = Cli::try_parse_from(["cfrs", "tunel"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert!(
+            err.to_string().contains("tunnel"),
+            "clap suggests the nearest command"
+        );
+    }
+
+    #[test]
+    fn the_command_name_of_the_report() {
+        let argv = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            command_name(&argv("cfrs warp run -- curl")).as_deref(),
+            Some("warp run")
+        );
+        assert_eq!(
+            command_name(&argv("cfrs tunnel --url x")).as_deref(),
+            Some("tunnel")
+        );
+        assert_eq!(command_name(&argv("cfrs nothing")), None);
+    }
 }

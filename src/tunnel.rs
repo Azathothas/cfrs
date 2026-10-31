@@ -159,6 +159,10 @@ impl Tunnel {
             verify,
         } = self.config;
 
+        // A bad CFRS_EDGE is a configuration error: check it before the
+        // quick tunnel is provisioned.
+        edge_override()?;
+
         let (auth, tunnel_id, public_url) =
             resolve_credentials(&credentials, &service_url, &user_agent).await?;
         let account_tag = auth.account_tag.clone();
@@ -240,7 +244,10 @@ impl Tunnel {
             }
         }
         let Some((kind, first)) = chosen else {
-            bail!("no edge leg worked: {}", failures.join("; "));
+            return Err(crate::exit::fault(
+                crate::exit::Fault::Unavailable,
+                anyhow::anyhow!("no edge leg worked: {}", failures.join("; ")),
+            ));
         };
         metrics.connection_opened();
 
@@ -397,7 +404,8 @@ async fn resolve_credentials(
                 crate::egress::Proxy::from_env().as_ref(),
             )
             .await
-            .context("provisioning quick tunnel")?;
+            .context("provisioning quick tunnel")
+            .map_err(|e| crate::exit::fault(crate::exit::Fault::Unavailable, e))?;
             let secret = tunnel
                 .secret_bytes()
                 .map_err(|e| anyhow::anyhow!(e))
@@ -538,7 +546,8 @@ fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
     for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
         let socket: std::net::SocketAddr = item
             .parse()
-            .with_context(|| format!("CFRS_EDGE entry {item:?} is not host:port"))?;
+            .with_context(|| format!("CFRS_EDGE entry {item:?} is not host:port"))
+            .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
         overridden.push(edge::EdgeAddr {
             ip: socket.ip(),
             port: socket.port(),

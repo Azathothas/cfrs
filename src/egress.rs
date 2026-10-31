@@ -25,12 +25,23 @@ use crate::net::BoxedIo;
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 
 /// An HTTP proxy that supports `CONNECT`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Proxy {
     url: String,
     host: String,
     port: u16,
     auth: Option<(String, String)>,
+}
+
+/// The Debug form shows no credentials: they go to logs and reports.
+impl std::fmt::Debug for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proxy")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("credentials", &self.auth.is_some())
+            .finish()
+    }
 }
 
 impl Proxy {
@@ -100,6 +111,11 @@ impl Proxy {
     /// The proxy's own address. Connecting here is direct, never proxied.
     pub fn address(&self) -> (&str, u16) {
         (&self.host, self.port)
+    }
+
+    /// True when the proxy URL holds a user and a password.
+    pub fn has_credentials(&self) -> bool {
+        self.auth.is_some()
     }
 
     /// Open a `CONNECT` tunnel to `host:port` and return the stream.

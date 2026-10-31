@@ -129,6 +129,11 @@ jobs:
           for b in cfrs pod-netns; do
             cp target/${{ matrix.target }}/release/$b dist/$b-${{ matrix.target }}
           done
+          # The man page, once: it is the same text on each target.
+          if [ "${{ matrix.target }}" = x86_64-unknown-linux-musl ]; then
+            target/${{ matrix.target }}/release/cfrs man --roff > dist/cfrs.1
+            test -s dist/cfrs.1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cfrs-${{ matrix.target }}
@@ -317,7 +322,7 @@ jobs:
         run: |
           set -eu
           cd dist
-          sha256sum cfrs-* pod-netns-* > SHA256SUMS
+          sha256sum cfrs-* pod-netns-* cfrs.1 > SHA256SUMS
           cat SHA256SUMS
       - name: the provenance of the binaries
         id: attest
