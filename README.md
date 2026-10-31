@@ -8,16 +8,28 @@
 | Try Cloudflare (`*.trycloudflare.com`) | `cfrs tunnel` with no account |
 | The Cloudflare WARP client | `cfrs warp` |
 
-`cfrs` works on hosts with strong limits: no root, no TUN device, no network
-namespace, no UDP, no `AF_INET` bind, or egress on TCP 443 only. The commands
-`cfrs pod` and `cfrs net` give programs a network on such hosts.
+`cfrs` is made for hosts with strong limits. The table gives each limit, the
+part of `cfrs` for it, and where that part is tested.
+
+| Limit on the host | Part of `cfrs` | Tested |
+| --- | --- | --- |
+| No UDP to the edge | HTTP/2 edge leg on TCP 7844 | CI, live against the Cloudflare edge |
+| Only TCP 443 out | QUIC edge leg inside WARP (MASQUE) | CI, live |
+| No DNS resolver | DNS over HTTPS, then a static edge list | CI and a sandbox with an HTTP proxy |
+| No root, no TUN, no network namespace | `cfrs pod` (seccomp backend), `cfrs warp run` | CI and a sandbox |
+| No `AF_INET` bind | `cfrs net` (shim and userspace stack), unix-socket origins | CI and a sandbox |
+
+The live CI job (`.github/workflows/ci.yml`, job `live`) runs `cfrs demo` with
+each edge leg on a GitHub runner and fetches the public URL. One limit stays:
+a proxy that terminates TLS cannot carry the edge connection or the MASQUE
+connection, because both need the Cloudflare certificate chain (and MASQUE
+needs a client certificate).
 
 The repository is a Cargo workspace:
 
 | Crate | Contents |
 | --- | --- |
-| `cfrs` (root) | The CLI and the library: tunnel, service layer, WARP, virtual network. |
-| `crates/cfrs-edge` | The edge client: provisioning, edge discovery, QUIC, capnp RPC, stream framing. |
+| `cfrs` (root) | The CLI and the library: the edge client (provisioning, discovery, QUIC, HTTP/2, Cap'n Proto and its RPC), the service layer, WARP, the virtual network. |
 | `crates/pod-netns` | A library and a CLI: run a program with all its traffic sent through a proxy. |
 
 ## Build

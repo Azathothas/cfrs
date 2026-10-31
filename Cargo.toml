@@ -11,7 +11,7 @@ keywords = ["cloudflare", "tunnel", "trycloudflare", "quic", "reverse-proxy"]
 categories = ["network-programming", "command-line-utilities"]
 
 [workspace]
-members = [".", "crates/cfrs-edge", "crates/pod-netns"]
+members = [".", "crates/pod-netns"]
 default-members = [".", "crates/pod-netns"]
 
 [lib]
@@ -29,7 +29,6 @@ axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
-cfrs-edge = { path = "crates/cfrs-edge", version = "0.1.0" }
 futures = "0.3"
 getrandom = "0.3"
 h2 = "0.4"
@@ -51,7 +50,6 @@ rustls-pemfile = "2"
 rustls-pki-types = "1"
 russh = { version = "0.64", default-features = false, features = ["ring"] }
 ssh-key = { version = "0.7.0-rc.11", features = ["getrandom"] }
-ureq = { version = "=2.12.1", default-features = false, features = ["tls"] }
 hickory-resolver = { version = "0.24", default-features = false, features = [
     "tokio-runtime",
     "system-config",

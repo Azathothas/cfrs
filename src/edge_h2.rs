@@ -23,14 +23,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use bytes::Bytes;
-use cfrs_edge::edge::EdgeAddr;
-use cfrs_edge::rpc;
-use cfrs_edge::stream::{
+use crate::cloudflare::rpc;
+use crate::cloudflare::stream::{
     ConnectRequest, ConnectionType, HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY,
     HTTP_STATUS_KEY,
 };
+use anyhow::{bail, Context, Result};
+use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -41,7 +40,7 @@ use crate::cloudflare::http2::{
     build_origin_response, canonical_header_name, edge_tls, is_control_header, is_hop_by_hop,
     CONTROL_STREAM_HEADER, CONTROL_STREAM_VALUE, PROXY_SRC_HEADER,
 };
-use crate::cloudflare::H2_SNI;
+use crate::cloudflare::{EdgeAddr, H2_SNI};
 use crate::ingress::Ingress;
 use crate::service::ServiceRuntime;
 
@@ -359,11 +358,11 @@ async fn serve_stream(
     ));
 
     let mut from_service = from_service.compat();
-    let (error, metadata) = match cfrs_edge::stream::read_connect_response(&mut from_service).await
-    {
-        Ok(response) => response,
-        Err(err) => (err.to_string(), Vec::new()),
-    };
+    let (error, metadata) =
+        match crate::cloudflare::stream::read_connect_response(&mut from_service).await {
+            Ok(response) => response,
+            Err(err) => (err.to_string(), Vec::new()),
+        };
     let (status, headers) = edge_response(&error, &metadata);
     let mut response = http::Response::builder().status(status);
     for (name, value) in &headers {

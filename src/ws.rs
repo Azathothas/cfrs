@@ -10,9 +10,9 @@
 //! One WebSocket message maps to one write, so binary framing is preserved and
 //! interactive protocols (SSH, RDP, databases, raw sockets) work unchanged.
 
+use crate::cloudflare::stream as cqstream;
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use cfrs_edge::stream as cqstream;
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_tungstenite::tungstenite::protocol::Role;

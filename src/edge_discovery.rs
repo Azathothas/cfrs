@@ -21,8 +21,8 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
+use crate::cloudflare::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
 use anyhow::{bail, Context, Result};
-use cfrs_edge::edge::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
 use serde::Deserialize;
 
 use crate::egress::Proxy;
@@ -64,7 +64,7 @@ struct DohAnswer {
     data: String,
 }
 
-/// Resolve the edge, preferring DoH, then the crate's resolver, then the
+/// Resolve the edge, preferring DoH, then the system resolver, then the
 /// static list. Returns at least one address or an error naming every attempt.
 pub async fn discover(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
     let mut failures = Vec::new();
@@ -75,10 +75,10 @@ pub async fn discover(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
         Err(err) => failures.push(format!("DoH: {err:#}")),
     }
 
-    match cfrs_edge::edge::discover(filter).await {
+    match discover_system(filter).await {
         Ok(edges) if !edges.is_empty() => return Ok(edges),
-        Ok(_) => failures.push("system/DoT resolver returned no addresses".to_string()),
-        Err(err) => failures.push(format!("system/DoT resolver: {err}")),
+        Ok(_) => failures.push("the system resolver returned no addresses".to_string()),
+        Err(err) => failures.push(format!("system resolver: {err:#}")),
     }
 
     let edges = static_edges(filter);
@@ -90,6 +90,33 @@ pub async fn discover(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
     }
 
     bail!("edge discovery failed: {}", failures.join("; "))
+}
+
+/// Resolve the SRV record and its targets with the system resolver
+/// (`/etc/resolv.conf`).
+pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
+    let resolver = hickory_resolver::TokioAsyncResolver::tokio_from_system_conf()
+        .context("reading the system resolver configuration")?;
+    let srv = resolver
+        .srv_lookup(EDGE_SRV)
+        .await
+        .with_context(|| format!("SRV lookup of {EDGE_SRV}"))?;
+    let mut edges = Vec::new();
+    for record in srv.iter() {
+        let target = record.target().to_utf8();
+        let port = record.port();
+        let Ok(ips) = resolver.lookup_ip(target.trim_end_matches('.')).await else {
+            continue;
+        };
+        for ip in ips.iter() {
+            let edge = EdgeAddr::new(std::net::SocketAddr::new(ip, port));
+            if filter.allows(edge.version) && !edges.contains(&edge) {
+                edges.push(edge);
+            }
+        }
+    }
+    edges.sort_by_key(|e| e.version != EdgeIpVersion::V4);
+    Ok(edges)
 }
 
 /// Resolve through Cloudflare's DNS-over-HTTPS JSON API.

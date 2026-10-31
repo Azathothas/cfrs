@@ -33,7 +33,6 @@
 //! ```
 
 pub mod capsule;
-pub mod edge;
 pub mod identity;
 pub mod ip;
 pub mod proxy;
@@ -43,7 +42,6 @@ pub mod session;
 #[cfg(target_os = "linux")]
 pub mod tun;
 
-pub use edge::{start_quick_tunnel, QuickTunnelHandle};
 pub use identity::Identity;
 pub use ip::{StackConfig, TcpConn, UdpConn, WarpStack};
 pub use register::Device;

@@ -249,8 +249,7 @@ fn main() -> Result<()> {
 async fn async_main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("cfrs=info,cfrs_edge=warn")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),
         )
         .init();
     match Cli::parse().command {

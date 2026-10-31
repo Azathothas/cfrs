@@ -24,6 +24,45 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # Run each edge leg against the real Cloudflare edge, and fetch the public
+  # URL. Also run the WARP client.
+  live:
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      RUST_LOG: cfrs=info
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --bin cfrs
+      - name: Quick tunnel, QUIC (UDP 7844)
+        run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
+      - name: Quick tunnel, HTTP/2 (TCP 7844)
+        run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 --transport direct
+      - name: Quick tunnel, QUIC through WARP (TCP 443)
+        run: timeout 240 target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
+      - name: WARP account and probe
+        run: |
+          target/release/cfrs warp register
+          target/release/cfrs warp status
+          timeout 120 target/release/cfrs warp probe
+      - name: WARP run
+        run: |
+          out=$(timeout 120 target/release/cfrs warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace)
+          echo "$out"
+          echo "$out" | grep -q '^warp=on'
+      - name: WARP proxy
+        run: |
+          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 60 &
+          sleep 15
+          out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
+          echo "$out"
+          echo "$out" | grep -q '^warp=on'
+      - name: Remove the WARP device
+        if: always()
+        run: target/release/cfrs warp delete || true
+
   static:
     runs-on: ubuntu-latest
     needs: test

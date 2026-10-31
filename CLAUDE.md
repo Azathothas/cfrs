@@ -38,9 +38,9 @@ These rules apply to each session. Obey them before any other default.
 
 ## Project
 
-- Workspace: `cfrs` (root: CLI and library), `crates/cfrs-edge` (edge client,
-  MIT or Apache-2.0, keep its license files), `crates/pod-netns` (library and
-  CLI).
+- Workspace: `cfrs` (root: CLI and library, with the edge client in
+  `src/cloudflare/`), `crates/pod-netns` (library and CLI). Do not add a
+  dependency for the edge protocol: it is implemented in `src/cloudflare/`.
 - Check before each push: `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`. CI (`.github/workflows/ci.yml`) runs the same

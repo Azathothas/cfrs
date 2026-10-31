@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cloudflare as edge;
+use crate::cloudflare::{quic as quic_dial, rpc, IpVersionFilter};
 use anyhow::{bail, Context, Result};
-use cfrs_edge::edge::IpVersionFilter;
-use cfrs_edge::{api, edge, quic_dial, rpc};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -389,15 +389,25 @@ async fn resolve_credentials(
 ) -> Result<(rpc::TunnelAuth, Uuid, Option<String>)> {
     match credentials {
         Credentials::Quick => {
-            let tunnel = api::request_tunnel(service_url, user_agent)
-                .await
-                .context("provisioning quick tunnel")?;
+            let tunnel = crate::quicktunnel::request_quick_tunnel(
+                service_url,
+                crate::quicktunnel::AuthMode::Public,
+                user_agent,
+                Duration::from_secs(30),
+                crate::egress::Proxy::from_env().as_ref(),
+            )
+            .await
+            .context("provisioning quick tunnel")?;
+            let secret = tunnel
+                .secret_bytes()
+                .map_err(|e| anyhow::anyhow!(e))
+                .context("the quick tunnel secret")?;
             let url = validate_quick_hostname(&tunnel.hostname)?;
             let tunnel_id = Uuid::parse_str(&tunnel.id).context("quick tunnel id is not a UUID")?;
             Ok((
                 rpc::TunnelAuth {
                     account_tag: tunnel.account_tag,
-                    tunnel_secret: tunnel.secret,
+                    tunnel_secret: secret,
                 },
                 tunnel_id,
                 Some(url),

@@ -30,10 +30,14 @@
 //! goes on the wire verbatim, as `TunnelAuth.tunnelSecret`; it is not hashed or
 //! otherwise transformed.
 
+pub mod capnp;
 pub mod http2;
 pub mod quic;
+pub mod rpc;
+pub mod schema;
+pub mod stream;
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Duration;
@@ -104,12 +108,59 @@ impl Protocol {
     }
 }
 
-/// A resolved edge address and the port the SRV record specified.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The IP version of an edge address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeIpVersion {
+    V4,
+    V6,
+}
+
+/// Which IP versions edge discovery returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IpVersionFilter {
+    /// IPv4 and IPv6, IPv4 first.
+    #[default]
+    Auto,
+    V4Only,
+    V6Only,
+}
+
+impl IpVersionFilter {
+    /// True when `version` passes the filter.
+    pub fn allows(self, version: EdgeIpVersion) -> bool {
+        match self {
+            Self::Auto => true,
+            Self::V4Only => version == EdgeIpVersion::V4,
+            Self::V6Only => version == EdgeIpVersion::V6,
+        }
+    }
+}
+
+/// One edge address (port 7844 in normal use).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EdgeAddr {
-    pub host: String,
-    pub addr: SocketAddr,
+    pub ip: std::net::IpAddr,
     pub port: u16,
+    pub version: EdgeIpVersion,
+}
+
+impl EdgeAddr {
+    /// Make an address from a socket address.
+    pub fn new(socket: SocketAddr) -> Self {
+        Self {
+            ip: socket.ip(),
+            port: socket.port(),
+            version: if socket.is_ipv4() {
+                EdgeIpVersion::V4
+            } else {
+                EdgeIpVersion::V6
+            },
+        }
+    }
+
+    pub fn socket(&self) -> SocketAddr {
+        SocketAddr::new(self.ip, self.port)
+    }
 }
 
 /// Credentials for one tunnel, as returned by the provisioning API.
@@ -143,59 +194,6 @@ fn parse_uuid(s: &str) -> Result<[u8; 16], String> {
             .map_err(|e| format!("bad hex in uuid {s:?}: {e}"))?;
     }
     Ok(out)
-}
-
-/// Discover edge addresses from the SRV record.
-///
-/// `resolve` is injected so the logic can be tested without DNS, and so a
-/// caller can supply a DoT or DoH resolver when the system one is unusable.
-pub fn discover_edges_with<F>(mut resolve: F) -> Result<Vec<EdgeAddr>, EdgeError>
-where
-    F: FnMut(&str, u16) -> Result<Vec<SocketAddr>, String>,
-{
-    // The SRV record names the service and gives the port; cloudflared builds
-    // the query name from a constant rather than hardcoding a target.
-    let target = EDGE_SRV;
-    let addrs = resolve(target, 0).map_err(EdgeError::Resolve)?;
-
-    let mut edges = Vec::new();
-    for addr in addrs {
-        // The port from the record is what the edge actually listens on.
-        let port = 7844;
-        let host = target_host(&addr);
-        let socket = SocketAddr::new(addr.ip(), port);
-        let _ = addr.port();
-        edges.push(EdgeAddr {
-            host,
-            addr: socket,
-            port,
-        });
-    }
-
-    if edges.is_empty() {
-        return Err(EdgeError::Resolve(format!(
-            "{target} resolved to no addresses"
-        )));
-    }
-    Ok(edges)
-}
-
-/// Discover edges using the system resolver.
-pub fn discover_edges() -> Result<Vec<EdgeAddr>, EdgeError> {
-    discover_edges_with(|name, _port| {
-        (name, 7844u16)
-            .to_socket_addrs()
-            .map(|it| it.collect())
-            .map_err(|e| e.to_string())
-    })
-}
-
-/// A readable name for an edge address, used in logs and as SNI context.
-fn target_host(addr: &SocketAddr) -> String {
-    match addr {
-        SocketAddr::V4(v4) => format!("{}:{}", v4.ip(), 7844),
-        SocketAddr::V6(v6) => format!("[{}]:{}", v6.ip(), 7844),
-    }
 }
 
 /// Why the edge could not be found or reached.
@@ -360,31 +358,5 @@ mod tests {
         );
         let quic = edge_tls_config(QUIC_ALPN).expect("quic config");
         assert_eq!(quic.alpn_protocols, vec![b"argotunnel".to_vec()]);
-    }
-
-    #[test]
-    fn discovery_uses_the_srv_name_and_the_7844_port() {
-        let mut asked: Vec<String> = Vec::new();
-        let edges = discover_edges_with(|name, _| {
-            asked.push(name.to_string());
-            Ok(vec![SocketAddr::from(([198, 41, 192, 167], 7844))])
-        })
-        .expect("discovery");
-        assert_eq!(asked, vec![EDGE_SRV.to_string()]);
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].port, 7844);
-        assert!(edges[0].host.contains("198.41.192.167"));
-    }
-
-    #[test]
-    fn an_empty_dns_answer_is_an_error_not_an_empty_list() {
-        let err = discover_edges_with(|_, _| Ok(vec![])).expect_err("must fail");
-        assert!(err.to_string().contains("no addresses"), "{err}");
-    }
-
-    #[test]
-    fn a_dns_failure_is_reported_with_its_cause() {
-        let err = discover_edges_with(|_, _| Err("SERVFAIL".to_string())).expect_err("must fail");
-        assert!(err.to_string().contains("SERVFAIL"), "{err}");
     }
 }

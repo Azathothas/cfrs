@@ -258,7 +258,7 @@ pub async fn endpoint(stack: &WarpStack) -> Result<quinn::Endpoint> {
 
 /// The TLS and transport configuration the edge expects.
 fn client_config() -> Result<quinn::ClientConfig> {
-    use cfrs_edge::quic_dial::{ALPN, CF_EDGE_ROOTS_PEM};
+    use crate::cloudflare::{CF_EDGE_ROOTS_PEM, QUIC_ALPN as ALPN};
     use rustls::pki_types::CertificateDer;
     use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 

@@ -160,73 +160,47 @@ pub fn user_agent() -> String {
     format!("cfrs/{} (rust)", env!("CARGO_PKG_VERSION"))
 }
 
-/// Request a new anonymous quick tunnel from `endpoint`.
+/// Provision a quick tunnel: `POST <endpoint>/tunnel`.
 ///
-/// `endpoint` is the full base URL of the provisioning service, normally
-/// [`DEFAULT_QUICK_SERVICE`]. The returned [`QuickTunnel`] carries the
-/// credentials that the edge connection would consume.
-///
-/// If `proxy` is set, the request is tunnelled through that HTTP CONNECT proxy
-/// (format `host:port` or a full `http://` URL). Sandboxes with no local DNS
-/// resolver and no direct egress require this: the proxy is what resolves
-/// `api.trycloudflare.com`. When `proxy` is `None`, the request uses the
-/// environment's `HTTPS_PROXY` if ureq picks it up, otherwise a direct call.
-pub fn request_quick_tunnel(
+/// `proxy` is an HTTP proxy for the request (for example `HTTPS_PROXY`), or
+/// `None` for a direct request.
+pub async fn request_quick_tunnel(
     endpoint: &str,
     auth_mode: AuthMode,
-    timeout_secs: u64,
-    proxy: Option<&str>,
+    user_agent: &str,
+    timeout: std::time::Duration,
+    proxy: Option<&crate::egress::Proxy>,
 ) -> Result<QuickTunnel, ProvisionError> {
     let url = format!("{}/tunnel", endpoint.trim_end_matches('/'));
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ProvisionError::BadEndpoint(url));
     }
-
-    let mut builder =
-        ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(timeout_secs));
-
-    if let Some(p) = proxy {
-        let proxy_url = if p.starts_with("http://") || p.starts_with("https://") {
-            p.to_string()
-        } else {
-            format!("http://{p}")
-        };
-        let parsed = ureq::Proxy::new(&proxy_url)
-            .map_err(|e| ProvisionError::BadEndpoint(format!("proxy {proxy_url}: {e}")))?;
-        builder = builder.proxy(parsed);
+    let mut builder = reqwest::Client::builder().timeout(timeout).no_proxy();
+    if let Some(proxy) = proxy {
+        let proxy = reqwest::Proxy::all(proxy.url())
+            .map_err(|e| ProvisionError::BadEndpoint(format!("proxy: {e}")))?;
+        builder = builder.proxy(proxy);
     }
-
-    let agent = builder.build();
-
-    let request = agent
+    let client = builder
+        .build()
+        .map_err(|e| ProvisionError::Http(e.to_string()))?;
+    let mut request = client
         .post(&url)
-        .set("Content-Type", "application/json")
-        .set("User-Agent", &user_agent());
-
-    // cloudflared sends an empty body for a public tunnel and
-    // `{"auth_mode":"otp"}` for a protected one. `send_string` performs the
-    // request and returns the response, whereas `call` does the same for an
-    // empty body.
-    let response = match auth_mode.request_body() {
-        Some(body) => request.send_string(body),
-        None => request.call(),
-    };
-
-    match response {
-        Ok(response) => {
-            let status = response.status();
-            let text = response
-                .into_string()
-                .map_err(|e| ProvisionError::Decode(format!("could not read body: {e}")))?;
-            parse_quick_tunnel_response(status, &text)
-        }
-        // A 4xx/5xx is surfaced by ureq as an Err; the status is recoverable.
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            Err(ProvisionError::Status { code, body })
-        }
-        Err(e) => Err(ProvisionError::Http(e.to_string())),
+        .header("Content-Type", "application/json")
+        .header("User-Agent", user_agent);
+    if let Some(body) = auth_mode.request_body() {
+        request = request.body(body);
     }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ProvisionError::Http(e.to_string()))?;
+    let status = response.status().as_u16();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| ProvisionError::Decode(format!("could not read body: {e}")))?;
+    parse_quick_tunnel_response(status, &text)
 }
 
 /// Parse and validate a provisioning response body.
@@ -555,16 +529,21 @@ mod tests {
         assert_eq!(AuthMode::Otp.request_body(), Some(r#"{"auth_mode":"otp"}"#));
     }
 
-    #[test]
-    fn endpoint_must_be_an_absolute_http_url() {
-        let err = request_quick_tunnel("ftp://example.com", AuthMode::Public, 5, None).unwrap_err();
+    const T: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn endpoint_must_be_an_absolute_http_url() {
+        let err = request_quick_tunnel("ftp://example.com", AuthMode::Public, "t", T, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ProvisionError::BadEndpoint(_)), "got {err:?}");
     }
 
-    #[test]
-    fn trailing_slash_on_the_endpoint_is_not_doubled() {
-        // Guards the URL join: "https://host/" must become ".../tunnel", not "//tunnel".
-        let err = request_quick_tunnel("not-a-url/", AuthMode::Public, 5, None).unwrap_err();
+    #[tokio::test]
+    async fn trailing_slash_on_the_endpoint_is_not_doubled() {
+        let err = request_quick_tunnel("not-a-url/", AuthMode::Public, "t", T, None)
+            .await
+            .unwrap_err();
         match err {
             ProvisionError::BadEndpoint(url) => {
                 assert!(url.ends_with("/tunnel"), "unexpected url {url}");
@@ -574,19 +553,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_bare_proxy_address_is_upgraded_to_an_http_url() {
-        // "1.2.3.4:8080" is not a valid proxy URL, but the CLI commonly holds
-        // it in that form; the function must accept it rather than fail later
-        // with an opaque DNS error.
+    #[tokio::test]
+    async fn a_closed_proxy_is_a_transport_failure() {
+        let proxy = crate::egress::Proxy::parse("127.0.0.1:1").unwrap();
         let err = request_quick_tunnel(
             "https://api.trycloudflare.com",
             AuthMode::Public,
-            1,
-            Some("127.0.0.1:1"),
+            "t",
+            T,
+            Some(&proxy),
         )
+        .await
         .unwrap_err();
-        // Port 1 is closed, so this is a transport failure, not a parse failure.
         assert!(
             matches!(err, ProvisionError::Http(_) | ProvisionError::Status { .. }),
             "expected a transport failure, got {err:?}"

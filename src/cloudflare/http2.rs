@@ -250,10 +250,10 @@ pub fn edge_tls() -> Result<Arc<rustls::ClientConfig>, String> {
 /// what address the SRV record produced. The returned stream is ready for the
 /// edge to open streams on.
 pub async fn connect(addr: &EdgeAddr, timeout: Duration) -> Result<TlsH2Stream, super::EdgeError> {
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr.addr))
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr.socket()))
         .await
-        .map_err(|_| super::EdgeError::Connect(format!("connect {} timed out", addr.addr)))?
-        .map_err(|e| super::EdgeError::Connect(format!("connect {}: {e}", addr.addr)))?;
+        .map_err(|_| super::EdgeError::Connect(format!("connect {} timed out", addr.socket())))?
+        .map_err(|e| super::EdgeError::Connect(format!("connect {}: {e}", addr.socket())))?;
     let _ = tcp.set_nodelay(true);
 
     let config = edge_tls().map_err(super::EdgeError::Connect)?;

@@ -6,11 +6,11 @@
 //! routers called directly, so multipart, directory serving and file transfer
 //! work without an external process.
 
+use crate::cloudflare::stream as cqstream;
+use crate::cloudflare::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
 use anyhow::{anyhow, bail, Context, Result};
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
-use cfrs_edge::stream as cqstream;
-use cfrs_edge::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tower::ServiceExt;
 
@@ -52,9 +52,9 @@ async fn serve_inner(
     send: quinn::SendStream,
     recv: quinn::RecvStream,
 ) -> Result<()> {
-    let (reader, writer) = cqstream::split(send, recv);
-    let mut reader: EdgeReader = Box::pin(reader);
-    let writer: EdgeWriter = Box::pin(writer);
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    let mut reader: EdgeReader = Box::pin(recv.compat());
+    let writer: EdgeWriter = Box::pin(send.compat_write());
     let request = cqstream::read_connect_request(&mut reader).await?;
     serve_request(runtime, ingress, request, reader, writer).await
 }
@@ -889,7 +889,7 @@ pub use crate::connect::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfrs_edge::stream::ConnectionType;
+    use crate::cloudflare::stream::ConnectionType;
 
     fn req(dest: &str, metadata: Vec<(&str, &str)>) -> cqstream::ConnectRequest {
         cqstream::ConnectRequest {

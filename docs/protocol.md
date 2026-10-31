@@ -56,7 +56,7 @@ The edge addresses come from the SRV record
 * The SNI and the ALPN of QUIC are different strings. If the ALPN value is
   sent as the SNI, the handshake completes key derivation and then stops.
 * The edge certificate chains to Cloudflare roots that are not in public
-  trust stores. The roots are in `crates/cfrs-edge/cf-edge-roots.pem` (from
+  trust stores. The roots are in `src/cloudflare/cf-edge-roots.pem` (from
   `tlsconfig/cloudflare_ca.go`). Without them, TLS fails with `UnknownIssuer`.
 * Port 443 of the edge does not serve the tunnel service.
 
@@ -125,7 +125,8 @@ A visitor stream starts with a 6-byte signature (`0A 36 CD 12 A1 3E`), the
 
 `cfrs` answers with the same preamble and a capnp `ConnectResponse` (`error`,
 `metadata`). After that, the stream is a byte pipe. The schemas are in
-`crates/cfrs-edge/schemas/`.
+`src/cloudflare/schemas/`. `src/cloudflare/capnp.rs` implements the Cap'n
+Proto encoding and `src/cloudflare/rpc.rs` the RPC subset (section 3.1).
 
 In the response metadata, the status is the entry `HttpStatus`. Each header
 must be an entry `HttpHeader:<Name>`. The edge drops a key without the prefix.

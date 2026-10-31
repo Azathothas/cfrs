@@ -1,12 +1,16 @@
 # Third-party notices
 
-`cfrs` is 0BSD (see `LICENSE`). These parts have other licenses:
+`cfrs` is 0BSD (see `LICENSE`). These files are from `cloudflared`
+(<https://github.com/cloudflare/cloudflared>) and have the Apache License 2.0:
 
-| Path | Origin | License |
-| --- | --- | --- |
-| `crates/cfrs-edge/` | Derived from `cloudflare-quick-tunnel` 0.3.1 (<https://github.com/lordmacu/cloudflare-quick-tunnel-rs>) | MIT or Apache-2.0. See `crates/cfrs-edge/LICENSE-MIT`, `crates/cfrs-edge/LICENSE-APACHE` and `crates/cfrs-edge/NOTICE.md`. |
-| `crates/cfrs-edge/schemas/*.capnp` | `cloudflared` (<https://github.com/cloudflare/cloudflared>) | Apache-2.0 |
-| `crates/cfrs-edge/cf-edge-roots.pem`, `src/cloudflare/cf-edge-roots.pem` | `cloudflared`, `tlsconfig/cloudflare_ca.go` | Apache-2.0 |
-| `tools/header-oracle.txt`, the Go program in `tools/check-header-oracle.sh` | `cloudflared`, `connection/header.go` (`SerializeHeaders`) | Apache-2.0 |
+| Path | Source in cloudflared |
+| --- | --- |
+| `src/cloudflare/schemas/tunnelrpc.capnp` | `tunnelrpc/proto/tunnelrpc.capnp` |
+| `src/cloudflare/schemas/quic_metadata_protocol.capnp` | `tunnelrpc/proto/quic_metadata_protocol.capnp` |
+| `src/cloudflare/cf-edge-roots.pem` | `tlsconfig/cloudflare_ca.go` (`cloudflareRootCA`) |
+| `tools/header-oracle.txt`, the Go program in `tools/check-header-oracle.sh` | `connection/header.go` (`SerializeHeaders`) |
+
+The schemas are the wire format. `cfrs` does not compile them: the layouts in
+`src/cloudflare/schema.rs` follow from them.
 
 The Rust dependencies are listed in `Cargo.lock`. Each has its own license.

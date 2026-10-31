@@ -22,8 +22,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
 pub type BoxedIo = Box<dyn AsyncReadWrite>;
 
-/// Install the ring crypto provider once per process. `cloudflare-quick-tunnel`
-/// also does this; calling it early keeps every rustls user consistent.
+/// Install the ring crypto provider once per process, before the first TLS
+/// configuration is made.
 pub fn init_crypto() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {

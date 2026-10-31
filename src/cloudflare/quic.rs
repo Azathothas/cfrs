@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use quinn::{ClientConfig, Endpoint, TransportConfig};
 
-use super::{Credentials, EdgeAddr, EdgeError, DATA_STREAM_SIGNATURE, DATA_STREAM_VERSION};
+use super::{EdgeAddr, EdgeError};
 
 /// Handshake timeout for the QUIC edge connection.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -73,91 +73,57 @@ pub fn client_config() -> Result<ClientConfig, EdgeError> {
     Ok(config)
 }
 
-/// A live QUIC connection to an edge, plus the endpoint that owns its socket.
-pub struct QuicConnection {
-    pub connection: quinn::Connection,
-    _endpoint: Endpoint,
+/// Make a client endpoint on an ephemeral UDP port, with the edge client
+/// configuration.
+pub fn build_endpoint() -> anyhow::Result<Endpoint> {
+    let bind: std::net::SocketAddr = "[::]:0".parse().expect("a valid address");
+    let mut endpoint = match Endpoint::client(bind) {
+        Ok(endpoint) => endpoint,
+        // A host without IPv6 refuses `[::]`; use IPv4 only.
+        Err(_) => Endpoint::client("0.0.0.0:0".parse().expect("a valid address")).map_err(|e| {
+            anyhow::anyhow!(
+                "could not open a local UDP socket: {e}. QUIC needs UDP; \
+                 where it is blocked, use --protocol http2"
+            )
+        })?,
+    };
+    endpoint.set_default_client_config(client_config().map_err(|e| anyhow::anyhow!("{e}"))?);
+    Ok(endpoint)
 }
 
-impl QuicConnection {
-    /// Open a connection to an edge address.
-    pub async fn connect(addr: &EdgeAddr, timeout: Duration) -> Result<QuicConnection, EdgeError> {
-        let config = client_config()?;
-
-        // Bind an ephemeral local UDP port. Failing here is the common case in a
-        // sandbox, and the message says so rather than surfacing a bare EPERM.
-        let mut endpoint = Endpoint::client("[::]:0".parse().map_err(|_| {
-            EdgeError::Connect("could not parse a local UDP bind address".to_string())
-        })?)
-        .map_err(|e| {
-            EdgeError::Connect(format!(
-                "could not open a local UDP socket: {e}. \
-                 QUIC needs UDP; where it is blocked use --protocol http2, \
-                 which runs over TCP and works through a proxy or relay."
-            ))
-        })?;
-        endpoint.set_default_client_config(config);
-
-        // The SNI is quic.cftunnel.com even though the socket goes to the
-        // address the SRV record gave.
-        let connecting = endpoint.connect(addr.addr, super::QUIC_SNI).map_err(|e| {
-            EdgeError::Connect(format!("could not start connecting to {}: {e}", addr.addr))
-        })?;
-
-        let connection = tokio::time::timeout(timeout, connecting)
-            .await
-            .map_err(|_| {
-                EdgeError::Connect(format!(
-                    "handshake with {} timed out. Check that SNI is {:?} and not the ALPN; \
-                     they are different strings and the wrong one fails silently.",
-                    addr.addr,
-                    super::QUIC_SNI
-                ))
-            })?
-            .map_err(|e| EdgeError::Connect(format!("handshake with {}: {e}", addr.addr)))?;
-
-        Ok(QuicConnection {
-            connection,
-            _endpoint: endpoint,
-        })
-    }
-
-    /// Open the control stream, which the edge expects to be first.
-    pub async fn open_control_stream(&self) -> Result<quinn::SendStream, EdgeError> {
-        // The edge assumes the first client-initiated stream is the control
-        // plane, so this must not be preceded by anything else.
-        self.connection
-            .open_bi()
-            .await
-            .map(|(send, _recv)| send)
-            .map_err(|e| EdgeError::Connect(format!("cannot open the control stream: {e}")))
+/// Complete a QUIC handshake with `addr`. The SNI is `quic.cftunnel.com`
+/// for every address.
+pub async fn dial(endpoint: &Endpoint, addr: &EdgeAddr) -> anyhow::Result<quinn::Connection> {
+    let socket = addr.socket();
+    let connecting = endpoint
+        .connect(socket, super::QUIC_SNI)
+        .map_err(|e| anyhow::anyhow!("could not start connecting to {socket}: {e}"))?;
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting).await {
+        Ok(Ok(conn)) => Ok(conn),
+        Ok(Err(e)) => Err(anyhow::anyhow!("QUIC handshake with {socket}: {e}")),
+        Err(_) => Err(anyhow::anyhow!("QUIC handshake with {socket} timed out")),
     }
 }
 
-/// Write the data-stream preamble: six signature bytes then the version.
-///
-/// The edge checks the signature on every stream, so a stream opened without it
-/// is reset rather than served.
-pub async fn write_stream_preamble(send: &mut quinn::SendStream) -> Result<(), EdgeError> {
-    send.write_all(&DATA_STREAM_SIGNATURE)
-        .await
-        .map_err(|e| EdgeError::Connect(format!("writing the stream signature: {e}")))?;
-    send.write_all(DATA_STREAM_VERSION)
-        .await
-        .map_err(|e| EdgeError::Connect(format!("writing the stream version: {e}")))
-}
-
-/// Build the registration request fields for a tunnel.
-///
-/// The secret is sent as raw bytes. cloudflared does not hash it: the base64
-/// value from the provisioning response is decoded and put on the wire
-/// unchanged, so a reimplementation must do the same.
-pub fn tunnel_auth(credentials: &Credentials) -> (String, Vec<u8>, [u8; 16]) {
-    (
-        credentials.account_tag.clone(),
-        credentials.tunnel_secret.clone(),
-        credentials.tunnel_id_bytes().unwrap_or([0u8; 16]),
-    )
+/// Try the addresses in sequence. Return the first connection.
+pub async fn dial_any(
+    endpoint: &Endpoint,
+    edges: &[EdgeAddr],
+) -> anyhow::Result<quinn::Connection> {
+    let mut failures = Vec::new();
+    for addr in edges {
+        match dial(endpoint, addr).await {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                tracing::debug!(error = %err, "QUIC edge attempt failed");
+                failures.push(err.to_string());
+            }
+        }
+    }
+    if failures.is_empty() {
+        anyhow::bail!("no edge addresses to dial");
+    }
+    anyhow::bail!("no edge answered: {}", failures.join("; "))
 }
 
 #[cfg(test)]
@@ -187,62 +153,5 @@ mod tests {
         // about crypto provider versions, and quinn's try_from is where that
         // surfaces, with an error that reads as a TLS problem at handshake.
         client_config().expect("quinn accepts the edge tls config");
-    }
-
-    #[test]
-    fn the_stream_preamble_is_the_signature_then_the_version() {
-        // Written as a unit so the byte order is pinned by a test rather than
-        // only by a comment.
-        let mut expected: Vec<u8> = super::super::DATA_STREAM_SIGNATURE.to_vec();
-        expected.extend_from_slice(super::super::DATA_STREAM_VERSION);
-        assert_eq!(expected.len(), 8);
-        assert_eq!(&expected[..6], &[0x0A, 0x36, 0xCD, 0x12, 0xA1, 0x3E]);
-        assert_eq!(&expected[6..], b"01");
-    }
-
-    #[test]
-    fn the_tunnel_secret_is_sent_unhashed() {
-        let secret = vec![0xABu8; 32];
-        let credentials = Credentials {
-            account_tag: "acct".into(),
-            tunnel_secret: secret.clone(),
-            tunnel_id: "c1267064-5604-4d16-9a83-66b7ed37f182".into(),
-        };
-        let (account, sent_secret, tunnel_id) = tunnel_auth(&credentials);
-        assert_eq!(account, "acct");
-        assert_eq!(
-            sent_secret, secret,
-            "the secret must reach the edge exactly as provisioned"
-        );
-        assert_eq!(tunnel_id[0], 0xc1, "the tunnel id goes as raw bytes");
-    }
-
-    #[test]
-    fn a_malformed_tunnel_id_does_not_panic() {
-        let credentials = Credentials {
-            account_tag: "acct".into(),
-            tunnel_secret: vec![0u8; 32],
-            tunnel_id: "garbage".into(),
-        };
-        // The id is reported as zero rather than aborting the connection.
-        let (_, _, id) = tunnel_auth(&credentials);
-        assert_eq!(id, [0u8; 16]);
-    }
-
-    #[test]
-    fn connecting_without_udp_says_so_rather_than_failing_obscurely() {
-        // `Endpoint::client` fails where UDP is blocked, which is the whole
-        // reason the http2 transport exists. Build the error path directly.
-        let err = EdgeError::Connect(
-            "could not open a local UDP socket: EPERM. QUIC needs UDP; where it is blocked \
-             use --protocol http2, which runs over TCP and works through a proxy or relay."
-                .to_string(),
-        );
-        let text = err.to_string();
-        assert!(text.contains("UDP"), "{text}");
-        assert!(
-            text.contains("http2"),
-            "the message must point at the fix: {text}"
-        );
     }
 }
