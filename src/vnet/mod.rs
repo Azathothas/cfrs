@@ -47,6 +47,7 @@ pub mod proxy;
 pub mod record;
 pub mod shim;
 pub mod stack;
+pub mod switch;
 pub mod tailscale_ssh;
 
 pub use pod_netns::{socks, tailscale, upstream};

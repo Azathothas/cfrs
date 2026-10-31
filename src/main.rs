@@ -948,6 +948,8 @@ enum NetCommand {
     Addresses,
     /// Run a SOCKS5 / HTTP CONNECT proxy into the virtual network.
     Proxy(ProxyArgs),
+    /// Run a switch that connects stacks on this host and on other hosts.
+    Switch(SwitchArgs),
     /// Run a SOCKS5 / HTTP CONNECT front door to a tailnet through tailscaled.
     Tailscale(TailscaleArgs),
     /// Build the LD_PRELOAD shim that sends tailnet connects to a front door.
@@ -1046,6 +1048,35 @@ struct ProxyArgs {
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long)]
     run_for: Option<u64>,
+    /// Connect the stack to a switch (unix:/path or tcp://host:port) instead
+    /// of a loopback link, so it reaches stacks on other hosts.
+    #[arg(long)]
+    switch: Option<String>,
+    /// The IPv4 address of this stack on the switch, for example 10.66.0.3.
+    #[arg(long)]
+    address: Option<std::net::Ipv4Addr>,
+    /// Drop this part of the sent packets (0.0 to 1.0), for tests.
+    #[arg(long, default_value_t = 0.0)]
+    drop: f64,
+    /// Send this part of the packets two times (0.0 to 1.0), for tests.
+    #[arg(long, default_value_t = 0.0)]
+    duplicate: f64,
+    /// Send this part of the packets out of order (0.0 to 1.0), for tests.
+    #[arg(long, default_value_t = 0.0)]
+    reorder: f64,
+    /// The seed of the fault sequence.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+}
+
+#[derive(Args, Debug)]
+struct SwitchArgs {
+    /// Where to accept stacks: unix:/path or tcp://host:port.
+    #[arg(long, default_value = "unix:/tmp/cfrsnet.switch")]
+    listen: String,
+    /// Stay up for this many seconds instead of until Ctrl-C.
+    #[arg(long)]
+    run_for: Option<u64>,
 }
 
 async fn net(args: NetArgs) -> Result<()> {
@@ -1085,6 +1116,19 @@ async fn net(args: NetArgs) -> Result<()> {
             Ok(())
         }
         NetCommand::Proxy(args) => net_proxy(args).await,
+        NetCommand::Switch(args) => {
+            let listen = cfrs::vnet::proxy::ProxyListen::parse(&args.listen)?;
+            let switch = cfrs::vnet::switch::serve(listen).await?;
+            match &switch.listen {
+                cfrs::vnet::proxy::ProxyListen::Unix(path) => {
+                    println!("cfrs: switch   unix:{}", path.display())
+                }
+                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr}"),
+            }
+            wait_stop(args.run_for).await;
+            switch.abort();
+            Ok(())
+        }
         NetCommand::Tailscale(args) => net_tailscale(args).await,
         NetCommand::Socksify(args) => net_socksify(args),
         NetCommand::TsShims(args) => net_ts_shims(args),
@@ -1125,7 +1169,33 @@ fn net_shim(args: ShimArgs) -> Result<()> {
 async fn net_proxy(args: ProxyArgs) -> Result<()> {
     use cfrs::vnet::proxy::{ProxyListen, Resolver};
 
-    let net = Arc::new(cfrs::vnet::NetStack::loopback());
+    let mut _link = None;
+    let net = match &args.switch {
+        None => Arc::new(cfrs::vnet::NetStack::loopback()),
+        Some(switch) => {
+            let address = args
+                .address
+                .context("--switch needs --address, the address of this stack")?;
+            let config = cfrs::vnet::StackConfig {
+                local_v4: address,
+                ..cfrs::vnet::StackConfig::default()
+            };
+            let net = Arc::new(cfrs::vnet::NetStack::over_link(config));
+            let faults = cfrs::vnet::switch::Faults {
+                drop: args.drop,
+                duplicate: args.duplicate,
+                reorder: args.reorder,
+                seed: args.seed,
+            };
+            let switch = ProxyListen::parse(switch)?;
+            _link = Some(cfrs::vnet::switch::attach(&net, &switch, faults).await?);
+            match &switch {
+                ProxyListen::Unix(path) => println!("cfrs: switch   unix:{} as {address}", path.display()),
+                ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr} as {address}"),
+            }
+            net
+        }
+    };
     let mut resolver = Resolver::new();
     for entry in &args.maps {
         let (name, address) = entry

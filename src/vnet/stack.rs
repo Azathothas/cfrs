@@ -517,6 +517,9 @@ struct Conn {
     ctl: mpsc::Receiver<ConnCmd>,
     closing: bool,
     recv_eof_sent: bool,
+    /// Bytes from the app that the socket did not accept yet. `send_slice`
+    /// can take part of a chunk when the send buffer is full.
+    pending: Vec<u8>,
 }
 
 struct UdpConn {
@@ -889,6 +892,7 @@ impl Core {
                 ctl: ctl_rx,
                 closing: false,
                 recv_eof_sent: false,
+                pending: Vec::new(),
             },
         );
         self.emit(StackEvent::Connected { id, local, remote });
@@ -1045,6 +1049,7 @@ impl Core {
                     ctl: ctl_rx,
                     closing: false,
                     recv_eof_sent: false,
+                    pending: Vec::new(),
                 },
             );
             let addr = self
@@ -1133,9 +1138,16 @@ impl Core {
                 if !socket.may_send() {
                     break;
                 }
-                match conn.from_app.try_recv() {
-                    Ok(data) => {
-                        let _ = socket.send_slice(&data);
+                if conn.pending.is_empty() {
+                    match conn.from_app.try_recv() {
+                        Ok(data) => conn.pending = data,
+                        Err(_) => break,
+                    }
+                }
+                match socket.send_slice(&conn.pending) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        conn.pending.drain(..n);
                         wrote = true;
                     }
                     Err(_) => break,
@@ -1189,7 +1201,21 @@ impl Core {
             // runs again on the next pass. A per-poll local forgets the request
             // after one pass, no FIN is ever sent, and a peer reading until EOF
             // waits forever.
-            if conn.closing && send_queue == 0 && recv_queue == 0 {
+            //
+            // Before the handshake completes, a close must wait too: smoltcp
+            // closes a SYN-SENT socket at once, which resets the connection
+            // and loses the data that the app wrote first.
+            let handshake_done = !matches!(
+                state,
+                tcp::State::SynSent | tcp::State::SynReceived | tcp::State::Listen
+            );
+            if conn.closing
+                && handshake_done
+                && send_queue == 0
+                && recv_queue == 0
+                && conn.pending.is_empty()
+                && conn.from_app.is_empty()
+            {
                 self.sockets.get_mut::<tcp::Socket>(conn.handle).close();
             }
             // A socket in TIME_WAIT is finished for this stack's purposes: it
