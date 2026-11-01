@@ -223,7 +223,10 @@ struct TunnelOpts {
     /// User-Agent sent when provisioning.
     #[arg(long, global = true)]
     user_agent: Option<String>,
-    /// Parallel edge connections (1-8).
+    /// Edge connections (1-8), for redundancy: when one is lost, the others
+    /// carry the visitors. The edge chooses the connection of each request,
+    /// and one request uses one connection, so more connections do not make
+    /// one transfer faster.
     #[arg(long, default_value_t = 2, global = true, value_parser = clap::value_parser!(u8).range(1..=8))]
     ha_connections: u8,
     /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then http2).

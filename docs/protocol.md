@@ -88,7 +88,11 @@ The answers of HTTP/2 always carry the serialized header (section 3.2).
 
 cloudflared makes one connection for a quick tunnel (`ha-connections` is
 set to 1 in `quick_tunnel.go`) and four for a named tunnel. cfrs makes two
-by default for both (`--ha-connections`, 1 to 8).
+by default for both (`--ha-connections`, 1 to 8). The extra connections are
+for redundancy: each one registers with the edge, and the edge chooses the
+connection of each visitor request. One request (one stream) uses one
+connection, so `--ha-connections` does not make one transfer faster; it can
+let more requests run at the same time on more connections.
 
 ### 3.2 HTTP/2
 
