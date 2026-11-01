@@ -352,6 +352,27 @@ pub async fn get_account(
     json_body(resp)
 }
 
+/// Hide the license key in an account record (`GET /reg/{id}/account`):
+/// each key named `license`, at any depth, with a non-empty string value
+/// becomes `"<hidden>"`. `cfrs warp status --json` prints the record.
+pub fn redact_account(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, item) in map.iter_mut() {
+                if key.eq_ignore_ascii_case("license") {
+                    if item.as_str().is_some_and(|s| !s.is_empty()) {
+                        *item = serde_json::Value::String("<hidden>".into());
+                    }
+                } else {
+                    redact_account(item);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_account),
+        _ => {}
+    }
+}
+
 /// Attach a WARP+ license key to the device (`PUT /reg/{id}/account`).
 pub async fn set_license(
     device_id: &str,
@@ -447,6 +468,27 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_license_key_is_hidden_in_the_account_record() {
+        let mut account = serde_json::json!({
+            "account_type": "limited",
+            "license": "abcd1234-efgh5678-ijkl9012",
+            "nested": [{"license": "x1y2z3"}],
+            "empty": {"license": ""},
+            "warp_plus": true
+        });
+        redact_account(&mut account);
+        let text = account.to_string();
+        assert!(
+            !text.contains("abcd1234") && !text.contains("x1y2z3"),
+            "{text}"
+        );
+        assert_eq!(account["license"], "<hidden>");
+        assert_eq!(account["nested"][0]["license"], "<hidden>");
+        assert_eq!(account["empty"]["license"], "");
+        assert_eq!(account["account_type"], "limited");
+    }
+
     use super::*;
 
     #[test]

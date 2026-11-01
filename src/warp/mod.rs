@@ -208,9 +208,13 @@ impl WarpClient {
         Ok(())
     }
 
-    /// The account record: type, WARP+ state and quota.
+    /// The account record: type, WARP+ state and quota. The license key is
+    /// hidden (`register::redact_account`).
     pub async fn account(&self) -> Result<serde_json::Value> {
-        register::get_account(&self.device.id, &self.device.token, self.proxy.as_ref()).await
+        let mut account =
+            register::get_account(&self.device.id, &self.device.token, self.proxy.as_ref()).await?;
+        register::redact_account(&mut account);
+        Ok(account)
     }
 
     /// Attach a WARP+ license key, then read the device again.
@@ -223,6 +227,8 @@ impl WarpClient {
         )
         .await?;
         self.refresh().await?;
+        let mut account = account;
+        register::redact_account(&mut account);
         Ok(account)
     }
 

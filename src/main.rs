@@ -750,6 +750,23 @@ fn autostart(command: AutostartCommand) -> Result<()> {
     }
 }
 
+/// Split `host:port`, `[v6]:port` or `ip:port` into the host and the port.
+fn split_host_port(spec: &str) -> Result<(String, u16)> {
+    let (host, port) = spec
+        .rsplit_once(':')
+        .with_context(|| format!("{spec}: give host:port"))?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port: u16 = port
+        .parse()
+        .ok()
+        .filter(|p| *p != 0)
+        .with_context(|| format!("{spec}: the port must be 1 to 65535"))?;
+    if host.is_empty() || host.contains(['/', ' ']) {
+        bail!("{spec}: give host:port");
+    }
+    Ok((host.to_string(), port))
+}
+
 fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
     let mut choices = 0;
     let mut service = None;
@@ -1413,6 +1430,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             println!("quota       {}", field("quota"));
         }
         WarpCommand::License { key } => {
+            cfrs::report::hide(&key);
             let account = client.set_license(&key).await?;
             save(&client)?;
             let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
@@ -1439,27 +1457,39 @@ async fn warp(args: WarpArgs) -> Result<()> {
             } else {
                 target
             };
+            // Check each target before any output or connection: a bad
+            // value is a usage error (exit 64).
+            let targets = targets
+                .iter()
+                .map(|spec| split_host_port(spec).map(|(h, p)| (spec.clone(), h, p)))
+                .collect::<Result<Vec<_>>>()
+                .fault(Fault::Usage)?;
             println!("device      {}", client.device().id);
-            println!("masque      {:?}", client.device().masque_endpoint());
+            println!(
+                "masque      {}",
+                client
+                    .device()
+                    .masque_endpoint()
+                    .map_or_else(|| "-".to_string(), |a| a.to_string())
+            );
             let stack = client.connect().await.fault(Fault::Unavailable)?;
             println!("tunnel      up (TCP 443 only)");
-            for spec in targets {
-                let addr: std::net::SocketAddr = spec
-                    .parse()
-                    .with_context(|| format!("parsing {spec} as host:port"))?;
+            for (spec, host, port) in targets {
                 let started = std::time::Instant::now();
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(12),
-                    stack.tcp_connect(addr),
-                )
-                .await
-                {
-                    Ok(Ok(conn)) => {
-                        println!("OK          {addr} in {:?}", started.elapsed());
+                let attempt = async {
+                    // A name is resolved by DNS through the tunnel.
+                    let ip = cfrs::warp::proxy::resolve(&stack, &host).await?;
+                    let addr = std::net::SocketAddr::new(ip, port);
+                    let conn = stack.tcp_connect(addr).await?;
+                    Ok::<_, anyhow::Error>((addr, conn))
+                };
+                match tokio::time::timeout(std::time::Duration::from_secs(12), attempt).await {
+                    Ok(Ok((addr, conn))) => {
+                        println!("OK          {spec} ({addr}) in {:?}", started.elapsed());
                         conn.close().await;
                     }
-                    Ok(Err(err)) => println!("FAIL        {addr}: {err}"),
-                    Err(_) => println!("TIMEOUT     {addr}"),
+                    Ok(Err(err)) => println!("FAIL        {spec}: {err:#}"),
+                    Err(_) => println!("TIMEOUT     {spec}"),
                 }
             }
         }
@@ -2093,6 +2123,28 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// warp probe targets (issue 67): a name, an IPv4 and an IPv6 address
+    /// with a port; no port, port 0 or an empty host is refused.
+    #[test]
+    fn probe_targets_take_a_name_or_an_address() {
+        assert_eq!(
+            split_host_port("example.com:443").unwrap(),
+            ("example.com".into(), 443)
+        );
+        assert_eq!(
+            split_host_port("1.1.1.1:443").unwrap(),
+            ("1.1.1.1".into(), 443)
+        );
+        assert_eq!(
+            split_host_port("[2606:4700::1]:80").unwrap(),
+            ("2606:4700::1".into(), 80)
+        );
+        for bad in ["example.com", "example.com:0", ":443", "a b:1", "host:http"] {
+            assert!(split_host_port(bad).is_err(), "{bad}");
+        }
+    }
+
     use clap::CommandFactory;
 
     #[test]
