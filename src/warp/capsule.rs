@@ -120,6 +120,25 @@ mod tests {
         out.to_vec()
     }
 
+    /// The DATA capsule of the WARP front door holds a bare IP packet: no
+    /// context ID before it (RFC 9484 has one, a varint 0).
+    #[test]
+    fn a_data_capsule_has_no_context_id() {
+        let packet = b"\x45\x00\x00\x14ipv4";
+        let mut buf = BytesMut::new();
+        put_capsule(&mut buf, CAPSULE_DATA, packet);
+        assert_eq!(buf[0], 0x00, "the type");
+        assert_eq!(buf[1] as usize, packet.len(), "the length");
+        assert_eq!(
+            &buf[2..],
+            packet,
+            "the packet starts at once (0x45), no 0x00 context ID"
+        );
+        let mut d = CapsuleDecoder::new();
+        d.push(&buf);
+        assert_eq!(&d.next_packet().unwrap()[..], packet);
+    }
+
     #[test]
     fn varint_boundaries() {
         for value in [0u64, 63, 64, 16_383, 16_384, 1_073_741_823, 1_073_741_824] {

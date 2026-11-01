@@ -70,6 +70,10 @@ jobs:
       - name: Build
         timeout-minutes: 20
         run: cargo build --locked --release --bin cfrs
+      # The edge facts of docs/protocol.md section 6 (issue 14).
+      - name: Edge facts
+        timeout-minutes: 4
+        run: sh tools/edge-facts.sh
       # cfrs doctor (issue 11): on the runner each leg can work.
       - name: cfrs doctor
         timeout-minutes: 3

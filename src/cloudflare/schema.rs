@@ -24,6 +24,27 @@ pub struct TunnelAuth {
     pub tunnel_secret: Vec<u8>,
 }
 
+/// The features that cfrs sends at registration: the default features of
+/// cloudflared 2026.10.7 (`features/features.go`). cloudflared removes the
+/// legacy features `serialized_headers`, `quick_reconnects`,
+/// `allow_remote_config`, `support_quic_eof` and `management_logs` before it
+/// sends the list (TUN-10904: the edge supports them with no flag). cfrs
+/// does not send `postquantum` (it uses classical key exchange) and does
+/// not send `support_datagram_v3_2` (it carries no UDP or ICMP datagram for
+/// a visitor).
+pub const FEATURES: [&str; 1] = ["support_datagram_v2"];
+
+/// The features that cloudflared 2026.10.7 removes as deprecated.
+pub const DEPRECATED_FEATURES: [&str; 7] = [
+    "serialized_headers",
+    "quick_reconnects",
+    "allow_remote_config",
+    "support_quic_eof",
+    "management_logs",
+    "support_datagram_v3",
+    "support_datagram_v3_1",
+];
+
 /// `struct ConnectionOptions` and its `struct ClientInfo`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionOptions {
@@ -38,20 +59,11 @@ pub struct ConnectionOptions {
 }
 
 impl ConnectionOptions {
-    /// The options of a new connection. The features are the default
-    /// features of cloudflared (`features/features.go`).
+    /// The options of a new connection. The features are [`FEATURES`].
     pub fn default_for_quick_tunnel(version: &str) -> Self {
         Self {
             client_id: *Uuid::new_v4().as_bytes(),
-            features: [
-                "allow_remote_config",
-                "serialized_headers",
-                "support_datagram_v2",
-                "support_quic_eof",
-                "management_logs",
-            ]
-            .map(String::from)
-            .to_vec(),
+            features: FEATURES.map(String::from).to_vec(),
             version: version.to_string(),
             arch: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
             origin_local_ip: Vec::new(),
@@ -316,6 +328,10 @@ mod tests {
             tunnel_secret: vec![9; 32],
         };
         let options = ConnectionOptions::default_for_quick_tunnel("cfrs/test");
+        assert!(options
+            .features
+            .iter()
+            .all(|f| !DEPRECATED_FEATURES.contains(&f.as_str())));
         let tunnel = Uuid::new_v4();
         let mut b = Builder::new();
         let holder = b.init_root(0, 1);

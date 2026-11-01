@@ -655,7 +655,7 @@ mod tests {
         let (index, account, features, answered) = seen_rx.await.unwrap();
         assert_eq!(index, 2);
         assert_eq!(account, "acct");
-        assert!(features.contains(&"serialized_headers".to_string()));
+        assert_eq!(features, ["support_datagram_v2".to_string()]);
         assert!(answered, "cfrs answered the bootstrap of the edge first");
         session.shutdown_graceful(Duration::from_secs(2)).await;
         edge.await.unwrap();
