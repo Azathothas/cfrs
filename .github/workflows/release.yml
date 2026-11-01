@@ -216,7 +216,7 @@ jobs:
           - target: arm-unknown-linux-musleabihf
             qemu: arm
           - target: loongarch64-unknown-linux-musl
-            qemu: loongarch64
+            qemu: loong64
           - target: powerpc64le-unknown-linux-musl
             qemu: ppc64le
     env:

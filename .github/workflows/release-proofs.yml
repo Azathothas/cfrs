@@ -143,6 +143,21 @@ jobs:
             exit 1
           fi
           echo "ok   SHA256SUMS: signed by $workflow@refs/tags/$TAG (cosign 3.1.4 and 2.6.5); a changed copy and the identity of a branch fail"
+      - name: cfrs update, on the published x86_64 binary
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/update"
+          mkdir -p "$dir"
+          cp "$RUNNER_TEMP/release/cfrs-x86_64-unknown-linux-musl" "$dir/cfrs"
+          chmod 0755 "$dir/cfrs"
+          if ! "$dir/cfrs" update --help > /dev/null 2>&1; then
+            echo "skip $TAG has no cfrs update"
+            exit 0
+          fi
+          timeout 300 "$dir/cfrs" update --version "$TAG"
+          got=$("$dir/cfrs" --version)
+          test "$got" = "cfrs ${TAG#v} ($COMMIT)" || { echo "after the update: $got"; exit 1; }
+          echo "ok   cfrs update installed $TAG and checked its signature: $got"
       - name: the short release check, on the published x86_64 binary
         run: |
           set -eu

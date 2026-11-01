@@ -50,6 +50,7 @@ pub mod status;
 pub mod transport;
 pub mod trust;
 pub mod tunnel;
+pub mod update;
 pub mod util;
 pub mod vnet;
 pub mod warp;

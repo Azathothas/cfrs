@@ -195,6 +195,10 @@ pub struct Example {
 /// the tests of `main.rs`.
 pub const EXAMPLES: &[Example] = &[
     Example {
+        command: "cfrs update --check",
+        meaning: "Say whether a newer release exists. cfrs update installs it after it checks the cosign signature and the SHA-256.",
+    },
+    Example {
         command: "cfrs demo --exit-on-verify",
         meaning: "Make a quick tunnel to the built-in origin, and fetch its public URL.",
     },
@@ -282,6 +286,8 @@ mod tests {
             collect(&root.join(dir), &mut files);
         }
         files.push(root.join("build.rs"));
+        // Cargo sets these for build.rs; they are not variables of cfrs.
+        const CARGO_BUILD: &[&str] = &["TARGET"];
         let mut names = BTreeSet::new();
         for file in files {
             let Ok(text) = std::fs::read_to_string(&file) else {
@@ -325,6 +331,9 @@ mod tests {
                     names.insert(list.trim_matches('"').to_string());
                 }
             }
+        }
+        for name in CARGO_BUILD {
+            names.remove(*name);
         }
         names
     }

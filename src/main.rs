@@ -60,6 +60,9 @@ enum Command {
     Connect(ConnectArgs),
     /// List local TCP ports that are listening.
     Ports(PortsArgs),
+    /// Replace this binary with the binary of a release, after checking its
+    /// signature (cosign, release.yml at the tag) and its SHA-256.
+    Update(UpdateArgs),
     /// Print a QR code for a URL.
     Qr(QrArgs),
     /// Test the full path: a built-in origin, a tunnel, a fetch of the URL.
@@ -98,6 +101,17 @@ struct ManArgs {
     /// Write the manual as one JSON object.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+struct UpdateArgs {
+    /// Only say which release is available; change nothing.
+    #[arg(long)]
+    check: bool,
+    /// The tag to install, for example v0.3.0-beta.2. Default: the newest
+    /// release (a prerelease only when this binary is a prerelease).
+    #[arg(long, value_name = "TAG")]
+    version: Option<String>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -395,6 +409,25 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Share(args) => share(args).await,
         Command::Connect(args) => connect(args).await,
+        Command::Update(args) => {
+            use cfrs::update::Outcome;
+            match cfrs::update::run(args.version.as_deref(), args.check)
+                .await
+                .fault(Fault::Unavailable)?
+            {
+                Outcome::UpToDate(tag) => println!("cfrs {tag} is the newest release"),
+                Outcome::Available { current, tag } => {
+                    println!("cfrs {current}; release {tag} is available (cfrs update)")
+                }
+                Outcome::Updated { from, to, path } => {
+                    println!(
+                        "cfrs {from} -> {to}: {} (signature and SHA-256 checked)",
+                        path.display()
+                    )
+                }
+            }
+            Ok(())
+        }
         Command::Ports(args) => {
             let ports = cfrs::ports::listening_ports();
             if args.json {

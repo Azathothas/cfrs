@@ -144,12 +144,27 @@ jobs:
           if timeout 15 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
           RUST_LOG=cfrs=debug timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns.log ||
             { tail -40 dns.log; exit 1; }
+          grep 'cfrs::resolve' dns.log | head -10 || true
           grep -m3 'step="doh"' dns.log
           sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
           sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
           RUST_LOG=cfrs=debug timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns2.log ||
             { tail -40 dns2.log; exit 1; }
+          grep 'cfrs::resolve' dns2.log | head -10 || true
           grep -m3 'server="https://8\.8\.' dns2.log
+      # cfrs update against the real release v0.3.0-beta.1: the signature,
+      # the identity and the SHA-256 are checked, and the copy replaces
+      # itself with the binary of the release.
+      - name: cfrs update to v0.3.0-beta.1
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/update"
+          cp target/release/cfrs "$RUNNER_TEMP/update/cfrs"
+          "$RUNNER_TEMP/update/cfrs" update --check
+          timeout 300 "$RUNNER_TEMP/update/cfrs" update --version v0.3.0-beta.1
+          got=$("$RUNNER_TEMP/update/cfrs" --version)
+          echo "$got"
+          case "$got" in "cfrs 0.3.0-beta.1 (361d1d769d00041602d8e04a4860c11ca71288aa)") ;; *) exit 1 ;; esac
       - name: A wrong --resolve pin fails at the TLS name check
         run: |
           set -u

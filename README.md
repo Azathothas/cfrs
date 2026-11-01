@@ -33,6 +33,23 @@ The repository is a Cargo workspace:
 | `cfrs` (root) | The CLI and the library: the edge client (provisioning, discovery, QUIC, HTTP/2, Cap'n Proto and its RPC), the service layer, WARP, the virtual network. |
 | `crates/pod-netns` | A library and a CLI: run a program with all its traffic sent through a proxy. |
 
+## Update
+
+```sh
+cfrs update --check              # say whether a newer release exists
+cfrs update                      # install it
+cfrs update --version v0.3.0-beta.1
+```
+
+`cfrs update` installs a release only after these checks: the certificate
+of `SHA256SUMS.sigstore.json` chains to the Fulcio roots of Sigstore and
+names `release.yml` of this repository at the tag, the signature over
+`SHA256SUMS` is valid, the SHA-256 of the binary is its line in
+`SHA256SUMS`, and the new binary runs and prints the version of the tag. cfrs
+does not check the inclusion proof of the Rekor log. A prerelease is
+installed only with `--version`, or when the current binary is a
+prerelease.
+
 ## Build
 
 ```sh
