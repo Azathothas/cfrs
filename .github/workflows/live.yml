@@ -366,6 +366,19 @@ jobs:
           HOME="$home" sh -c '. "$HOME/.profile"; test "$HTTPS_PROXY" = http://127.0.0.1:40100'
           # warp exec: the program has no proxy variables, the pod carries it.
           target/release/cfrs warp exec -- sh -c 'test -z "${HTTPS_PROXY:-}" && curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace' | grep -q '^warp=on'
+          # Issue 85: SSH to github.com with TCP 22 dropped on the host,
+          # through warp nc (WARP) and through warp nc --via-relay. The
+          # server answers at the key step: the SSH handshake went through.
+          sudo iptables -A OUTPUT -p tcp --dport 22 -j DROP
+          for nc in "warp nc" "warp nc --via-relay"; do
+            out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+              -o ProxyCommand="$PWD/target/release/cfrs $nc %h %p" -T git@github.com 2>&1 || true)
+            echo "$nc: $out" | tail -1
+            echo "$out" | grep -q 'Permission denied (publickey)'
+          done
+          sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP
+          target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
           # A second warp up is the same instance.
           HOME="$home" target/release/cfrs warp up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
           HOME="$home" target/release/cfrs warp down

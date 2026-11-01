@@ -1867,6 +1867,24 @@ enum WarpCommand {
     /// not run, the shell starts as it is (with the proxy variables when
     /// the env file is there).
     Shell,
+    /// A byte pipe from stdin and stdout to HOST:PORT through WARP, for
+    /// `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH (issue
+    /// 85). It uses the running cfrs warp up, else a WARP session of its
+    /// own.
+    Nc {
+        host: String,
+        port: u16,
+        /// Go through the WebSocket relay (--relay) to HOST:PORT, with no
+        /// WARP (TCP, IPv4).
+        #[arg(long)]
+        via_relay: bool,
+    },
+    /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
+    SshConfig {
+        /// The Host pattern of the block.
+        #[arg(long, default_value = "*")]
+        host: String,
+    },
     /// Make a TUN interface whose packets go through WARP. Needs
     /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
     Tun {
@@ -1954,6 +1972,27 @@ async fn warp(args: WarpArgs) -> Result<()> {
             return Err(cfrs::warp::up::exec_in_pod(rules, program));
         }
         WarpCommand::Shell => return Err(cfrs::warp::up::shell()),
+        WarpCommand::SshConfig { host } => {
+            let exe = std::env::current_exe()?.canonicalize()?;
+            print!("{}", cfrs::warp::nc::ssh_config(&exe, host));
+            return Ok(());
+        }
+        WarpCommand::Nc {
+            host,
+            port,
+            via_relay: true,
+        } => {
+            let relay = cfrs::ws_relay::Relay::from_env(None).fault(Fault::Config)?;
+            let io = cfrs::warp::nc::via_relay(&relay, host, *port)
+                .await
+                .fault(Fault::Unavailable)?;
+            return cfrs::warp::nc::pipe(io).await;
+        }
+        WarpCommand::Nc { host, port, .. } => {
+            if let Some(io) = cfrs::warp::nc::via_running(host, *port).await? {
+                return cfrs::warp::nc::pipe(io).await;
+            }
+        }
         _ => {}
     }
     // These commands use a saved device and register none.
@@ -2192,7 +2231,20 @@ async fn warp(args: WarpArgs) -> Result<()> {
         | WarpCommand::Down
         | WarpCommand::Env
         | WarpCommand::Exec { .. }
-        | WarpCommand::Shell => unreachable!("handled before the client is made"),
+        | WarpCommand::Shell
+        | WarpCommand::SshConfig { .. } => unreachable!("handled before the client is made"),
+        WarpCommand::Nc { host, port, .. } => {
+            // No cfrs warp up runs: a session of this process.
+            let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
+            let target = match host.parse::<std::net::IpAddr>() {
+                Ok(ip) => pod_netns::socks::ProxyHost::Ip(ip),
+                Err(_) => pod_netns::socks::ProxyHost::Domain(host.clone()),
+            };
+            let io = cfrs::warp::proxy::dial(stack, target, port)
+                .await
+                .fault(Fault::Unavailable)?;
+            cfrs::warp::nc::pipe(Box::new(io)).await?;
+        }
         WarpCommand::Run {
             backend,
             rules,

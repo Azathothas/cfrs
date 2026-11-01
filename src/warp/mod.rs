@@ -36,6 +36,7 @@ pub mod capsule;
 pub mod identity;
 pub mod ip;
 pub mod live;
+pub mod nc;
 pub mod proxy;
 pub mod quic;
 pub mod register;

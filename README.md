@@ -387,6 +387,13 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
     file in each new shell, and an interactive shell runs under the pod.
   * `cfrs warp down` stops the instance and removes the env file and the
     blocks; the rest of each file stays.
+* `cfrs warp nc HOST PORT`: a byte pipe from stdin and stdout to HOST:PORT
+  through the running `cfrs warp up` (else a WARP session of its own), for
+  `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH where port 22
+  is closed. `--via-relay` goes through the WebSocket relay to HOST:PORT
+  with no WARP. `cfrs warp ssh-config [--host PATTERN]` prints the SSH
+  config block and a `GIT_SSH_COMMAND`. SSH checks the host key as on a
+  direct connection.
 * `cfrs warp tun` makes a TUN interface with the tunnel address and moves its
   packets through WARP. It does not change the routes: add routes for the
   destinations to send through WARP, and keep a route for the MASQUE endpoint
