@@ -43,6 +43,8 @@ pub const NO_BACKEND: i32 = 3;
 pub const USAGE: i32 = 64;
 pub const UNAVAILABLE: i32 = 69;
 pub const CONFIG: i32 = 78;
+/// `--detach`: the instance was not ready in time (EX_TEMPFAIL).
+pub const TEMPFAIL: i32 = 75;
 
 /// One row of the table of exit codes.
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +80,11 @@ pub const TABLE: &[ExitCode] = &[
         code: UNAVAILABLE,
         name: "unavailable",
         meaning: "A service or a network path is not available: no edge leg worked, the quick-tunnel service, the WARP API or the MASQUE endpoint did not answer.",
+    },
+    ExitCode {
+        code: TEMPFAIL,
+        name: "tempfail",
+        meaning: "--detach: the instance was not ready in --ready-timeout seconds (it is stopped), or it lost the pipe to the command that started it. Try again.",
     },
     ExitCode {
         code: CONFIG,

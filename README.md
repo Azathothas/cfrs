@@ -483,6 +483,40 @@ read (for example `/etc/ssl/certs/ca-certificates.crt`), and the Mozilla
 roots compiled into cfrs. `cfrs status` shows the roots in `tls_roots`. See
 `SECURITY.md`.
 
+## Run in the background: `--detach`
+
+```sh
+cfrs tunnel --port 3000 --detach --name web   # prints one JSON line, exits 0
+cfrs warp proxy --listen unix:/tmp/warp.sock --detach
+cfrs ps                                        # name, state, pid, URL or listen address
+cfrs logs web -f
+cfrs wait web                                  # the ready document again
+cfrs stop web                                  # or: cfrs stop --all
+```
+
+`--detach` works with `tunnel`, `serve`, `share`, `demo`, `warp proxy`,
+`net proxy` and `net switch`. The command runs in the foreground until it
+is ready: until the public URL answers, or until the listener is bound.
+Then it leaves the terminal (`setsid`, SIGHUP ignored, stdin to
+`/dev/null`, stdout and stderr to its log), and the start prints one JSON
+document as its last line: `name`, `pid`, `log`, and `url` or `listen`.
+The instance keeps running when the shell or the terminal closes.
+
+* A second start with the same name and the same arguments prints the same
+  document and starts nothing. Other arguments exit 69; `--replace` stops
+  the instance and starts the new one.
+* Without `--name`, the name is the command and a hash of its arguments.
+* `--ready-timeout SECS` (default 60): after it, the start stops the
+  instance and exits 75. An instance that ends before it is ready gives its
+  own exit code.
+* A token or a proxy password on the command line goes to the environment
+  of the instance, not to its arguments or its record.
+* The files are in `$XDG_RUNTIME_DIR/cfrs/run/` (else `run` in the state
+  directory, or `CFRS_RUN_DIR`), mode 0700: `NAME.json` (0600), `NAME.lock`
+  (held while the instance runs) and `NAME.log` (0600, cut at 1 MiB; the
+  part before goes to `NAME.log.1`).
+* `cfrs status` lists the instances.
+
 ## Autostart
 
 `cfrs autostart` starts a cfrs command at boot and after a logout, with no

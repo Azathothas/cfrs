@@ -83,6 +83,16 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --proxy when the flag is not given. It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry.",
     },
     EnvVar {
+        names: &["CFRS_RUN_DIR"],
+        used_by: "--detach, ps, stop, logs, wait",
+        meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",
+    },
+    EnvVar {
+        names: &["CFRS_DETACH_NAME", "CFRS_DETACH_HASH", "CFRS_DETACH_COMMAND"],
+        used_by: "--detach",
+        meaning: "cfrs sets them for the child of --detach: the name of the instance, the hash of its arguments and the command. Do not set them.",
+    },
+    EnvVar {
         names: &["CFRS_RELAY"],
         used_by: "tunnel, serve, share, demo",
         meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host). The default is https://tcp.ssh.relay.ajam.dev.",

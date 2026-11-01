@@ -87,7 +87,35 @@ pub fn document() -> Value {
         "error_program": std::env::var(crate::report::PROGRAM_VARIABLE).ok().filter(|v| !v.is_empty()),
         "stdin_tty": tty(0),
         "stdout_tty": tty(1),
+        "instances": instances(),
     })
+}
+
+/// The detached instances (`--detach`): name, state, pid, and the URL or
+/// the listen address.
+fn instances() -> Value {
+    match crate::instances::run_dir() {
+        Ok(dir) => Value::Array(
+            crate::instances::list(&dir)
+                .into_iter()
+                .map(|e| {
+                    let at = e.record.ready.as_ref().and_then(|d| {
+                        d.get("url")
+                            .filter(|u| !u.is_null())
+                            .or_else(|| d.get("listen"))
+                            .cloned()
+                    });
+                    json!({
+                        "name": e.record.name,
+                        "state": e.record.state,
+                        "pid": e.record.pid,
+                        "at": at,
+                    })
+                })
+                .collect(),
+        ),
+        Err(err) => json!({ "error": format!("{err:#}") }),
+    }
 }
 
 #[cfg(test)]

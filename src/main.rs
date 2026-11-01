@@ -127,6 +127,44 @@ enum Command {
     /// Start a cfrs command at boot and after a logout, with no root: a
     /// systemd user unit, else an @reboot line in the crontab.
     Autostart(AutostartArgs),
+    /// List the instances that run in the background (--detach).
+    Ps {
+        /// Print one JSON document: {"instances": [...]}.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a detached instance: SIGTERM, then SIGKILL after --timeout.
+    Stop {
+        /// The name of the instance (cfrs ps).
+        #[arg(required_unless_present = "all")]
+        name: Option<String>,
+        /// Stop each instance.
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+        /// Seconds to wait before SIGKILL.
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+    },
+    /// Print the log of a detached instance.
+    Logs {
+        /// The name of the instance (cfrs ps).
+        name: String,
+        /// Print new lines as they come, until Ctrl-C.
+        #[arg(short, long)]
+        follow: bool,
+        /// Print only the last lines.
+        #[arg(short = 'n', long, value_name = "LINES")]
+        lines: Option<usize>,
+    },
+    /// Wait until a detached instance is ready, and print its ready
+    /// document.
+    Wait {
+        /// The name of the instance (cfrs ps).
+        name: String,
+        /// Seconds to wait (else exit 69).
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -221,6 +259,8 @@ struct PortsArgs {
 
 #[derive(Args, Clone, Debug)]
 struct TunnelOpts {
+    #[command(flatten)]
+    detach: DetachArgs,
     /// Quick-tunnel provisioning endpoint.
     #[arg(long, default_value = "https://api.trycloudflare.com", global = true)]
     service_url: String,
@@ -310,6 +350,39 @@ impl TunnelOpts {
         config.verify = !self.no_verify;
         config.failover = cfrs::race::Failover::parse(&self.leg_failover)?;
         Ok(config)
+    }
+}
+
+/// The options of a command that can run in the background (issue 70).
+#[derive(Args, Clone, Debug, Default)]
+struct DetachArgs {
+    /// Run in the background: cfrs prints one JSON document when the
+    /// command is ready (its URL or its listen address) and exits 0. The
+    /// instance keeps running when the shell or the terminal closes. cfrs
+    /// ps, logs, wait and stop manage it.
+    #[arg(long)]
+    detach: bool,
+    /// The name of the detached instance. Default: the command and a hash
+    /// of its arguments. A second start with the same name and the same
+    /// arguments gives the same instance.
+    #[arg(long, value_name = "NAME", requires = "detach")]
+    name: Option<String>,
+    /// Seconds to wait for the instance to be ready (else exit 75).
+    #[arg(long, value_name = "SECS", default_value_t = 60)]
+    ready_timeout: u64,
+    /// Stop a running instance of the same name that has other arguments,
+    /// and start this one.
+    #[arg(long, requires = "detach")]
+    replace: bool,
+}
+
+impl DetachArgs {
+    fn options(&self) -> cfrs::detach::Options {
+        cfrs::detach::Options {
+            name: self.name.clone(),
+            ready_timeout: std::time::Duration::from_secs(self.ready_timeout.max(1)),
+            replace: self.replace,
+        }
     }
 }
 
@@ -446,13 +519,17 @@ fn main() {
     // runtime of cfrs exists.
     // args() panics on an argument that is not UTF-8 (issue 57); clap then
     // reports the bad argument as a usage error.
-    let argv: Vec<String> = std::env::args_os()
+    // A detached child (issue 70) closes the descriptors that it got and
+    // drops its flag before anything else.
+    let args = cfrs::detach::prepare(std::env::args_os().collect());
+    let argv: Vec<String> = args
+        .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if argv.get(1).map(String::as_str) == Some("pod") {
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
     }
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(err) => {
             use clap::error::ErrorKind;
@@ -470,6 +547,19 @@ fn main() {
         }
     };
     let command = command_name(&argv);
+    if let Some(detach) = detach_of(&cli.command).filter(|d| d.detach) {
+        let name = command.clone().unwrap_or_default();
+        if !cfrs::detach::is_child() {
+            std::process::exit(cfrs::detach::start(&name, &detach.options()));
+        }
+        if let Err(err) = cfrs::detach::child_begin() {
+            eprintln!("cfrs: --detach: {err:#}");
+            std::process::exit(cfrs::detach::TEMPFAIL);
+        }
+    } else if cfrs::detach::is_child() {
+        eprintln!("cfrs: --detach-child is for cfrs itself");
+        std::process::exit(cfrs::exit::USAGE);
+    }
     if let Some(path) = &cli.ca_file {
         cfrs::trust::set_ca_file(path.clone());
     }
@@ -550,16 +640,195 @@ fn main() {
     }
 }
 
-/// Ready on SIGINT (Ctrl-C) or SIGTERM (systemd, Docker, Kubernetes): each
-/// starts the same clean shutdown, and the exit code is 0.
+/// Ready on SIGINT (Ctrl-C), SIGTERM (systemd, Docker, Kubernetes, cfrs
+/// stop) or SIGHUP (the terminal closed): each starts the same clean
+/// shutdown, and the exit code is 0. A detached instance ignores SIGHUP.
 async fn shutdown_signal() -> std::io::Result<()> {
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate())?;
+    let hangup = async {
+        if cfrs::detach::is_child() {
+            std::future::pending::<()>().await;
+        }
+        match signal(SignalKind::hangup()) {
+            Ok(mut hup) => {
+                hup.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
     tokio::select! {
         r = tokio::signal::ctrl_c() => r,
         _ = term.recv() => {
             tracing::info!("SIGTERM: stopping");
             Ok(())
         }
+        _ = hangup => {
+            tracing::info!("SIGHUP: stopping");
+            Ok(())
+        }
+    }
+}
+
+/// `cfrs ps`: the instances of the run directory.
+fn instances_ps(json: bool) -> Result<()> {
+    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let list = cfrs::instances::list(&dir);
+    if json {
+        let items: Vec<serde_json::Value> = list
+            .iter()
+            .map(|e| {
+                let r = &e.record;
+                serde_json::json!({
+                    "name": r.name,
+                    "state": r.state,
+                    "pid": r.pid,
+                    "supervisor": r.supervisor,
+                    "command": r.command,
+                    "args": r.args,
+                    "cwd": r.cwd,
+                    "started": r.started,
+                    "restarts": r.restarts,
+                    "log": r.log,
+                    "ready": r.ready,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "instances": items }));
+        return Ok(());
+    }
+    if list.is_empty() {
+        println!("cfrs: no detached instance");
+        return Ok(());
+    }
+    println!("NAME                     STATE          PID RST     AGE  URL/LISTEN");
+    let now = cfrs::instances::now();
+    for e in &list {
+        let r = &e.record;
+        let at = r
+            .ready
+            .as_ref()
+            .and_then(|d| d.get("url").or_else(|| d.get("listen")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let age = now.saturating_sub(r.started);
+        let age = if age >= 3600 {
+            format!("{}h{:02}m", age / 3600, age % 3600 / 60)
+        } else {
+            format!("{}m{:02}s", age / 60, age % 60)
+        };
+        println!(
+            "{:<24} {:<9} {:>8} {:>3} {:>7}  {}",
+            r.name, r.state, r.pid, r.restarts, age, at
+        );
+    }
+    Ok(())
+}
+
+/// `cfrs stop`.
+fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
+    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let names: Vec<String> = if all {
+        cfrs::instances::list(&dir)
+            .into_iter()
+            .map(|e| e.record.name)
+            .collect()
+    } else {
+        let name = name.unwrap_or_default();
+        if cfrs::instances::read(&dir, &name).is_none() || !cfrs::instances::is_alive(&dir, &name) {
+            cfrs::instances::remove(&dir, &name);
+            return Err(cfrs::exit::fault(
+                Fault::Unavailable,
+                anyhow::anyhow!("no instance {name} runs (cfrs ps)"),
+            ));
+        }
+        vec![name]
+    };
+    for name in names {
+        cfrs::detach::stop(&dir, &name, std::time::Duration::from_secs(timeout))?;
+        println!("cfrs: stopped  {name}");
+    }
+    Ok(())
+}
+
+/// `cfrs logs`.
+async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Result<()> {
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let path = cfrs::instances::paths(&dir, name).log;
+    let text = std::fs::read(&path).map_err(|e| {
+        cfrs::exit::fault(
+            Fault::Unavailable,
+            anyhow::anyhow!("no log of {name} at {}: {e}", path.display()),
+        )
+    })?;
+    let shown: Vec<u8> = match lines {
+        Some(n) => {
+            let all: Vec<&[u8]> = text.split_inclusive(|b| *b == b'\n').collect();
+            all[all.len().saturating_sub(n)..].concat()
+        }
+        None => text.clone(),
+    };
+    {
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(&shown);
+        let _ = out.flush();
+    }
+    if !follow {
+        return Ok(());
+    }
+    // Follow: read what comes after the end; a log that became shorter was
+    // rotated (cut to 0), so read it from its start.
+    let mut offset = text.len() as u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        tokio::select! {
+            _ = shutdown_signal() => return Ok(()),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+        }
+        let Ok(mut file) = tokio::fs::File::open(&path).await else {
+            continue;
+        };
+        let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+        if len < offset {
+            offset = 0;
+        }
+        if len == offset {
+            continue;
+        }
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        loop {
+            let n = file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            offset += n as u64;
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(&buf[..n]);
+            let _ = out.flush();
+        }
+    }
+}
+
+/// The options of --detach of a command that can run in the background.
+fn detach_of(command: &Command) -> Option<&DetachArgs> {
+    match command {
+        Command::Tunnel(args) => Some(&args.common.detach),
+        Command::Serve(args) => Some(&args.common.detach),
+        Command::Share(args) => Some(&args.common.detach),
+        Command::Demo(args) => Some(&args.common.detach),
+        Command::Warp(args) => match &args.command {
+            WarpCommand::Proxy { detach, .. } => Some(detach),
+            _ => None,
+        },
+        Command::Net(args) => match &args.command {
+            NetCommand::Proxy(args) => Some(&args.detach),
+            NetCommand::Switch(args) => Some(&args.detach),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -633,6 +902,23 @@ async fn async_main(cli: Cli) -> Result<()> {
                     )
                 }
             }
+            Ok(())
+        }
+        Command::Ps { json } => instances_ps(json),
+        Command::Stop { name, all, timeout } => instances_stop(name, all, timeout),
+        Command::Logs {
+            name,
+            follow,
+            lines,
+        } => instances_logs(&name, follow, lines).await,
+        Command::Wait { name, timeout } => {
+            let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+            let doc = cfrs::detach::wait_ready_record(
+                &dir,
+                &name,
+                std::time::Duration::from_secs(timeout),
+            )?;
+            println!("{doc}");
             Ok(())
         }
         Command::Completions { shell } => {
@@ -1125,6 +1411,7 @@ async fn run_tunnel(
             verified(show, url);
         }
     }
+    cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));
     serve_until(&handle, wait(run_for, controls)).await?;
     handle.shutdown().await;
     Ok(())
@@ -1172,6 +1459,9 @@ async fn run_share(
         handle.verify_url(&public, None).await?;
         verified(show, &public);
     }
+    let mut doc = tunnel_doc(&handle, Some(&public), verify);
+    doc["pin"] = pin.clone().into();
+    cfrs::detach::ready(doc);
     let controls = handle.share_controls();
     serve_until(&handle, wait_with_idle(run_for, controls, idle_secs)).await?;
     handle.shutdown().await;
@@ -1200,6 +1490,7 @@ async fn run_demo(
         return Ok(());
     }
     handle.verify(Some("Hello, world! (cfrs)")).await?;
+    cfrs::detach::ready(tunnel_doc(&handle, handle.url(), true));
     serve_until(&handle, wait(run_for, vec![])).await?;
     handle.shutdown().await;
     Ok(())
@@ -1217,6 +1508,28 @@ async fn serve_until(
             Fault::Unavailable,
             anyhow::anyhow!("each edge connection stopped: {reason}"),
         )),
+    }
+}
+
+/// The ready document of a tunnel for --detach.
+fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) -> serde_json::Value {
+    serde_json::json!({
+        "url": url,
+        "verified": verified && url.is_some(),
+        "tunnel_id": handle.tunnel_id().to_string(),
+        "locations": handle.locations(),
+    })
+}
+
+/// The ready document of a listener for --detach.
+fn listen_doc(listen: &cfrs::vnet::proxy::ProxyListen) -> serde_json::Value {
+    match listen {
+        cfrs::vnet::proxy::ProxyListen::Unix(path) => {
+            serde_json::json!({ "listen": format!("unix:{}", path.display()) })
+        }
+        cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+            serde_json::json!({ "listen": format!("tcp://{addr}") })
+        }
     }
 }
 
@@ -1401,6 +1714,8 @@ enum WarpCommand {
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
+        #[command(flatten)]
+        detach: DetachArgs,
     },
     /// Make a TUN interface whose packets go through WARP. Needs
     /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
@@ -1574,7 +1889,9 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 }
             }
         }
-        WarpCommand::Proxy { listen, run_for } => {
+        WarpCommand::Proxy {
+            listen, run_for, ..
+        } => {
             let listen = cfrs::vnet::proxy::ProxyListen::parse(&listen)?;
             let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
             let proxy = cfrs::warp::proxy::serve(stack, listen).await?;
@@ -1588,6 +1905,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     println!("  cfrs pod -x socks5://unix:{} -- PROGRAM", path.display());
                 }
             }
+            cfrs::detach::ready(listen_doc(&proxy.listen));
             match run_for {
                 Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
                 None => {
@@ -1793,6 +2111,8 @@ struct ShimArgs {
 
 #[derive(Args, Debug)]
 struct ProxyArgs {
+    #[command(flatten)]
+    detach: DetachArgs,
     /// Where to accept proxy clients: unix:/path or tcp://[bind:]port.
     #[arg(long, default_value = "unix:/tmp/cfrsnet.socks")]
     listen: String,
@@ -1848,6 +2168,8 @@ struct SwitchArgs {
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long)]
     run_for: Option<u64>,
+    #[command(flatten)]
+    detach: DetachArgs,
 }
 
 async fn net(args: NetArgs) -> Result<()> {
@@ -1950,6 +2272,7 @@ async fn net(args: NetArgs) -> Result<()> {
                     println!("cfrs: switch   tcp://{addr}")
                 }
             }
+            cfrs::detach::ready(listen_doc(&switch.listen));
             wait_stop(args.run_for).await;
             switch.abort();
             Ok(())
@@ -2068,6 +2391,7 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
         ProxyListen::Unix(path) => println!("cfrs: proxy    unix:{}", path.display()),
         ProxyListen::Tcp(addr) => println!("cfrs: proxy    tcp://{addr}"),
     }
+    cfrs::detach::ready(listen_doc(&proxy.listen));
     wait_stop(args.run_for).await;
     proxy.abort();
     Ok(())
