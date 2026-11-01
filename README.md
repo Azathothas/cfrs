@@ -20,7 +20,7 @@ part of `cfrs` for it, and where that part is tested.
 | No root, no TUN, no network namespace | `cfrs pod` (seccomp backend), `cfrs warp run` | CI and a sandbox |
 | No `AF_INET` bind | `cfrs net` (shim and userspace stack), unix-socket origins | CI and a sandbox |
 
-The live CI job (`.github/workflows/ci.yml`, job `live`) runs `cfrs demo` with
+The live workflow (`.github/workflows/live.yml`, on each push and each day) runs `cfrs demo` with
 each edge leg on a GitHub runner and fetches the public URL. One limit stays:
 a proxy that terminates TLS cannot carry the edge connection or the MASQUE
 connection, because both need the Cloudflare certificate chain (and MASQUE

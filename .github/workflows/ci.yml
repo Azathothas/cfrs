@@ -4,7 +4,6 @@ name: ci
 #
 # * test: format, clippy, the tests, the man page.
 # * msrv: the workspace builds with the rust-version of Cargo.toml.
-# * live: each edge leg against the real Cloudflare edge, and WARP.
 # * static: static musl binaries for x86_64 and aarch64, with their sizes.
 # * workflows: the rules of scripts/check-workflows.py.
 # * plant: each check above must fail on a planted fault.
@@ -83,130 +82,6 @@ jobs:
           fi
           grep -E 'E0658|unstable' msrv.log || { cat msrv.log; echo "the build failed for another cause"; exit 1; }
           git checkout -- src/lib.rs
-
-  # Run each edge leg against the real Cloudflare edge, and fetch the public
-  # URL. Also run the WARP client. One run at a time, so that the
-  # quick-tunnel service does not refuse a burst.
-  live:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    needs: test
-    concurrency:
-      group: live
-      cancel-in-progress: false
-    env:
-      RUST_LOG: cfrs=info
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Toolchain
-        run: |
-          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-      - name: Build
-        run: cargo build --locked --release --bin cfrs
-      - name: Quick tunnel, QUIC (UDP 7844)
-        run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
-      - name: Quick tunnel, HTTP/2 (TCP 7844)
-        run: timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 --transport direct
-      - name: Quick tunnel, JSON lines (--json)
-        run: |
-          set -eu
-          timeout 180 target/release/cfrs demo --exit-on-verify --json > demo.jsonl
-          cat demo.jsonl
-          jq -e 'select(.event == "ready") | .url | test("^https://.*\\.trycloudflare\\.com$")' demo.jsonl
-          jq -e 'select(.event == "verified") | .url | test("trycloudflare")' demo.jsonl
-      # No system resolver: names come from DNS over HTTPS by IP address.
-      # Then with Cloudflare's DoH addresses blocked, from Google's.
-      - name: Quick tunnel with no system DNS, then with 1.1.1.1 blocked
-        run: |
-          set -eu
-          set -x
-          restore() {
-            sudo cp "$RUNNER_TEMP/nsswitch.conf" /etc/nsswitch.conf
-            sudo rm -f /etc/resolv.conf
-            sudo cp -P "$RUNNER_TEMP/resolv.conf" /etc/resolv.conf
-            sudo iptables -D OUTPUT -d 1.1.1.1 -j REJECT 2> /dev/null || true
-            sudo iptables -D OUTPUT -d 1.0.0.1 -j REJECT 2> /dev/null || true
-            sudo systemctl unmask --runtime systemd-resolved || true
-            sudo systemctl start systemd-resolved || true
-          }
-          sudo cp -P /etc/resolv.conf "$RUNNER_TEMP/resolv.conf"
-          sudo cp /etc/nsswitch.conf "$RUNNER_TEMP/nsswitch.conf"
-          trap restore EXIT
-          # NSS starts systemd-resolved again on demand: mask it, and keep
-          # only files and dns (the dead server below) for host names.
-          sudo systemctl mask --runtime systemd-resolved
-          sudo systemctl stop systemd-resolved
-          sudo sed -i 's/^hosts:.*/hosts: files dns/' /etc/nsswitch.conf
-          sudo rm -f /etc/resolv.conf
-          echo "nameserver 192.0.2.1" | sudo tee /etc/resolv.conf > /dev/null
-          if timeout 15 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
-          RUST_LOG=cfrs=debug timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns.log ||
-            { tail -40 dns.log; exit 1; }
-          grep 'cfrs::resolve' dns.log | head -10 || true
-          grep -m3 'step="doh"' dns.log
-          sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
-          sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
-          RUST_LOG=cfrs=debug timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 2> dns2.log ||
-            { tail -40 dns2.log; exit 1; }
-          grep 'cfrs::resolve' dns2.log | head -10 || true
-          grep -m3 'server="https://8\.8\.' dns2.log
-      # cfrs update against the real release v0.3.0-beta.1: the signature,
-      # the identity and the SHA-256 are checked, and the copy replaces
-      # itself with the binary of the release.
-      - name: cfrs update to v0.3.0-beta.1
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/update"
-          cp target/release/cfrs "$RUNNER_TEMP/update/cfrs"
-          "$RUNNER_TEMP/update/cfrs" update --check
-          timeout 300 "$RUNNER_TEMP/update/cfrs" update --version v0.3.0-beta.1
-          got=$("$RUNNER_TEMP/update/cfrs" --version)
-          echo "$got"
-          case "$got" in "cfrs 0.3.0-beta.1 (361d1d769d00041602d8e04a4860c11ca71288aa)") ;; *) exit 1 ;; esac
-      - name: A wrong --resolve pin fails at the TLS name check
-        run: |
-          set -u
-          if timeout 60 target/release/cfrs --resolve api.trycloudflare.com=1.1.1.1 demo --exit-on-verify 2> pin.log; then
-            echo "a wrong pin was accepted"; exit 1
-          fi
-          cat pin.log
-          grep -E 'NotValidForName|not valid for' pin.log
-      - name: Quick tunnel, QUIC through WARP (TCP 443)
-        run: timeout 240 target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
-      # A host that drops UDP and TCP 7844 with no answer: the staggered race
-      # starts WARP after two 2 s steps, not after two 8 s time limits.
-      - name: Quick tunnel with UDP and TCP 7844 dropped (staggered legs)
-        run: |
-          set -eu
-          sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
-          sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
-          trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
-          timeout 240 target/release/cfrs demo --exit-on-verify 2> race.log || { tail -40 race.log; exit 1; }
-          grep 'the leg won the race' race.log
-          grep -q 'leg=quic+warp' race.log
-      - name: WARP account and probe
-        run: |
-          target/release/cfrs warp register
-          target/release/cfrs warp status
-          timeout 120 target/release/cfrs warp probe
-      - name: WARP run
-        run: |
-          out=$(timeout 120 target/release/cfrs warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace)
-          echo "$out"
-          echo "$out" | grep -q '^warp=on'
-      - name: WARP proxy
-        run: |
-          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 60 &
-          sleep 15
-          out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
-          echo "$out"
-          echo "$out" | grep -q '^warp=on'
-      - name: Remove the WARP device
-        if: always()
-        run: target/release/cfrs warp delete || true
 
   static:
     runs-on: ubuntu-24.04
@@ -329,7 +204,7 @@ jobs:
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [test, msrv, live, static, workflows, plant]
+    needs: [test, msrv, static, workflows, plant]
     if: always()
     steps:
       - name: Each job passed
