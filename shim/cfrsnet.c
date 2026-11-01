@@ -34,6 +34,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ── real symbols ─────────────────────────────────────────────────────────── */
@@ -534,9 +535,21 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
     return r_socketpair(domain, type, protocol, sv);
 }
 
-int bind(int fd, const struct sockaddr *sa, socklen_t len) {
-    ensure_init();
-    if (!fd_is_virtual(fd)) return r_bind(fd, sa, len);
+/* The port of an AF_INET or AF_INET6 address, and a copy with another one. */
+static int sa_port(const struct sockaddr *sa, socklen_t len) {
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in))
+        return ntohs(((const struct sockaddr_in *)sa)->sin_port);
+    if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6))
+        return ntohs(((const struct sockaddr_in6 *)sa)->sin6_port);
+    return -1;
+}
+
+static void sa_set_port(struct sockaddr_storage *ss, int port) {
+    if (ss->ss_family == AF_INET) ((struct sockaddr_in *)ss)->sin_port = htons(port);
+    else if (ss->ss_family == AF_INET6) ((struct sockaddr_in6 *)ss)->sin6_port = htons(port);
+}
+
+static int bind_one(int fd, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_un un;
     socklen_t un_len;
     if (to_abstract(sa, len, &un, &un_len) < 0) return -1;
@@ -547,6 +560,31 @@ int bind(int fd, const struct sockaddr *sa, socklen_t len) {
         ctl_register(1, fd, sa);
     }
     return rc;
+}
+
+int bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    ensure_init();
+    if (!fd_is_virtual(fd)) return r_bind(fd, sa, len);
+    if (sa == NULL || sa_port(sa, len) != 0) return bind_one(fd, sa, len);
+    /* Port 0: the kernel would pick a free port. Pick one from the
+       ephemeral range (49152-65535), from a random start, and skip the
+       ones in use. Before, port 0 was a name of its own, and a second bind
+       to port 0 got EADDRINUSE. */
+    struct sockaddr_storage ss;
+    if (len > (socklen_t)sizeof ss) len = sizeof ss;
+    memcpy(&ss, sa, len);
+    unsigned seed = (unsigned)getpid() ^ (unsigned)time(NULL) ^ (unsigned)fd * 2654435761u;
+    int start = 49152 + (int)(rand_r(&seed) % 16384);
+    for (int i = 0; i < 16384; i++) {
+        int port = 49152 + (start - 49152 + i) % 16384;
+        sa_set_port(&ss, port);
+        int saved = errno;
+        if (bind_one(fd, (struct sockaddr *)&ss, len) == 0) return 0;
+        if (errno != EADDRINUSE) return -1;
+        errno = saved;
+    }
+    errno = EADDRINUSE;
+    return -1;
 }
 
 int connect(int fd, const struct sockaddr *sa, socklen_t len) {
@@ -572,77 +610,60 @@ int listen(int fd, int backlog) {
 
 static socklen_t wildcard_addr(int family, struct sockaddr_storage *out);
 
-static int finish_accept(int listener, int client, struct sockaddr *sa, socklen_t *len,
-                         socklen_t capacity) {
+static int finish_accept(int listener, int client, const struct sockaddr_storage *raw,
+                         socklen_t raw_len, struct sockaddr *sa, socklen_t *len) {
     if (client < 0) return client;
-    if (fd_is_virtual(listener)) {
-        pthread_mutex_lock(&fd_lock);
-        int family = 0;
-        struct sockaddr_storage local;
-        socklen_t local_len = 0;
-        if ((size_t)listener < fd_table_len) {
-            family = fd_table[listener].family;
-            local = fd_table[listener].local;
-            local_len = fd_table[listener].local_len;
-        }
-        pthread_mutex_unlock(&fd_lock);
-        fd_mark(client, family ? family : AF_INET, 0);
-        if (local_len) fd_record_local(client, (struct sockaddr *)&local, local_len);
-        /* Recover the logical peer if the client bound a cfrsnet name. */
-        if (sa && len && capacity > 0) {
-            /* Read the kernel's answer through a local buffer: the caller's
-               buffer may be smaller than the abstract name, and the kernel has
-               already told us how much it wanted to write. */
-            struct sockaddr_storage raw;
-            socklen_t raw_len = sizeof raw;
-            socklen_t got = *len;
-            memcpy(&raw, sa, got < sizeof raw ? got : sizeof raw);
-            if (got > sizeof raw) got = sizeof raw;
-            raw_len = got;
-            struct sockaddr_storage peer;
-            socklen_t peer_len = 0;
-            if (peer_from_unix((struct sockaddr *)&raw, raw_len, &peer, &peer_len) == 0) {
-                fd_record_peer(client, (struct sockaddr *)&peer, peer_len);
-                /* Truncate to the caller's buffer and report the true length,
-                   which is what accept(2) does on Linux. */
-                socklen_t copy = peer_len < capacity ? peer_len : capacity;
-                memcpy(sa, &peer, copy);
-                *len = peer_len;
-            } else {
-                /* The client bound no cfrsnet name, so its virtual address is
-                   not known. Report the wildcard address of the family, as a
-                   peer of port 0. A length of 0 is not an answer that accept(2)
-                   gives for TCP: Perl's accept() reads an empty address as a
-                   failure and ends its accept loop. */
-                struct sockaddr_storage any;
-                socklen_t any_len = wildcard_addr(family ? family : AF_INET, &any);
-                fd_record_peer(client, (struct sockaddr *)&any, any_len);
-                socklen_t copy = any_len < capacity ? any_len : capacity;
-                memcpy(sa, &any, copy);
-                *len = any_len;
-            }
-        }
+    pthread_mutex_lock(&fd_lock);
+    int family = 0;
+    struct sockaddr_storage local;
+    socklen_t local_len = 0;
+    if ((size_t)listener < fd_table_len) {
+        family = fd_table[listener].family;
+        local = fd_table[listener].local;
+        local_len = fd_table[listener].local_len;
+    }
+    pthread_mutex_unlock(&fd_lock);
+    fd_mark(client, family ? family : AF_INET, 0);
+    if (local_len) fd_record_local(client, (struct sockaddr *)&local, local_len);
+    /* The logical peer: the cfrsnet name of the client, from the whole
+       answer of the kernel (a local buffer, so a 16-byte sockaddr_in of the
+       caller does not cut the abstract name). A client that bound no name
+       gets the wildcard address of the family, as a peer of port 0: a
+       length of 0 is not an answer that accept(2) gives for TCP, and Perl's
+       accept() reads it as a failure. */
+    struct sockaddr_storage peer;
+    socklen_t peer_len = 0;
+    if (peer_from_unix((const struct sockaddr *)raw, raw_len, &peer, &peer_len) != 0) {
+        peer_len = wildcard_addr(family ? family : AF_INET, &peer);
+    }
+    fd_record_peer(client, (struct sockaddr *)&peer, peer_len);
+    if (sa && len) {
+        /* Truncate to the caller's buffer and report the true length, as
+           accept(2) does on Linux. */
+        socklen_t capacity = *len;
+        socklen_t copy = peer_len < capacity ? peer_len : capacity;
+        memcpy(sa, &peer, copy);
+        *len = peer_len;
     }
     return client;
 }
 
 int accept(int fd, struct sockaddr *sa, socklen_t *len) {
     ensure_init();
-    /* Save the caller's capacity before the real accept overwrites *len with
-       the kernel's own answer. Linux accepts an address longer than the
-       caller's buffer by truncating and reporting the true length, so the
-       shim must do the same; clamping against the kernel's length instead
-       would be clamping against a number the caller never chose. */
-    socklen_t capacity = len ? *len : 0;
-    int client = r_accept(fd, sa, len);
-    return finish_accept(fd, client, sa, len, capacity);
+    if (!fd_is_virtual(fd)) return r_accept(fd, sa, len);
+    struct sockaddr_storage raw;
+    socklen_t raw_len = sizeof raw;
+    int client = r_accept(fd, (struct sockaddr *)&raw, &raw_len);
+    return finish_accept(fd, client, &raw, raw_len, sa, len);
 }
 
 int accept4(int fd, struct sockaddr *sa, socklen_t *len, int flags) {
     ensure_init();
-    socklen_t capacity = len ? *len : 0;
-    int client = r_accept4(fd, sa, len, flags);
-    return finish_accept(fd, client, sa, len, capacity);
+    if (!fd_is_virtual(fd)) return r_accept4(fd, sa, len, flags);
+    struct sockaddr_storage raw;
+    socklen_t raw_len = sizeof raw;
+    int client = r_accept4(fd, (struct sockaddr *)&raw, &raw_len, flags);
+    return finish_accept(fd, client, &raw, raw_len, sa, len);
 }
 
 /* The address an un-bound or unconnected socket reports.

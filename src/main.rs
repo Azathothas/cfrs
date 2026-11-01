@@ -1652,9 +1652,10 @@ struct SocksifyArgs {
     /// Directory to write and compile the shim into.
     #[arg(long)]
     out: Option<PathBuf>,
-    /// The unix socket of the front door.
-    #[arg(long, default_value = "/tmp/cfrssocks.sock")]
-    proxy: String,
+    /// The unix socket of the front door (exported as CFRSSOCKS_PROXY). It
+    /// is not --proxy: that is the global proxy URL of cfrs.
+    #[arg(long, value_name = "PATH", default_value = "/tmp/cfrssocks.sock")]
+    socket: String,
     /// Log each redirect to stderr.
     #[arg(long)]
     log: bool,
@@ -2026,7 +2027,7 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
     }
     println!("cfrs: localapi {}", args.socket);
     println!("cfrs: note     run tailscaled with --tun=userspace-networking");
-    println!("cfrs: shim     eval \"$(cfrs net socksify --proxy <listen-path>)\"");
+    println!("cfrs: shim     eval \"$(cfrs net socksify --socket <listen-path>)\"");
     match args.run_for {
         Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
         None => {
@@ -2068,7 +2069,7 @@ fn net_socksify(args: SocksifyArgs) -> Result<()> {
     };
     let mut environment = vec![
         ("LD_PRELOAD".to_string(), preload),
-        ("CFRSSOCKS_PROXY".to_string(), args.proxy.clone()),
+        ("CFRSSOCKS_PROXY".to_string(), args.socket.clone()),
     ];
     if args.log {
         environment.push(("CFRSSOCKS_LOG".to_string(), "1".to_string()));

@@ -835,3 +835,31 @@ fn a_missing_upstream_is_named_at_start() {
         stderr(&out)
     );
 }
+
+/// Issue 63: `net socksify --socket PATH` and the default work. Before, the
+/// option was --proxy, which the global proxy parser took first: each run
+/// exited 64. Skipped with no C compiler.
+#[test]
+fn socksify_takes_a_socket_path() {
+    if cfrs::vnet::shim::compiler().is_err() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().to_str().unwrap();
+    let with = cfrs(&[
+        "net",
+        "socksify",
+        "--out",
+        out,
+        "--socket",
+        "/tmp/x.sock",
+        "--json",
+    ]);
+    assert_eq!(with.status.code(), Some(0), "{}", stderr(&with));
+    let text = String::from_utf8_lossy(&with.stdout);
+    assert!(text.contains("/tmp/x.sock"), "{text}");
+    let default = cfrs(&["net", "socksify", "--out", out, "--json"]);
+    assert_eq!(default.status.code(), Some(0), "{}", stderr(&default));
+    assert!(String::from_utf8_lossy(&default.stdout).contains("/tmp/cfrssocks.sock"));
+}

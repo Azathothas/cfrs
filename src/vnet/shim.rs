@@ -229,6 +229,31 @@ pub(crate) fn compile_source(source_text: &str, file_name: &str, directory: &Pat
     }
     let output = directory.join(file_name);
     let cc = compiler()?;
+    const FLAGS: &[&str] = &["-O2", "-shared", "-fPIC", "-ldl", "-lpthread"];
+    // A stamp of the source, the compiler and the flags: when it matches
+    // and the library exists, cc does not run again (issue 64).
+    let stamp_path = directory.join(format!("{file_name}.stamp"));
+    let stamp = {
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        ctx.update(source_text.as_bytes());
+        ctx.update(b"\0");
+        ctx.update(cc.as_bytes());
+        for flag in FLAGS {
+            ctx.update(b"\0");
+            ctx.update(flag.as_bytes());
+        }
+        ctx.finish()
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    if output.is_file() && std::fs::read_to_string(&stamp_path).is_ok_and(|s| s.trim() == stamp) {
+        return Ok(Shim {
+            path: output,
+            origin: ShimOrigin::Cached,
+        });
+    }
     let mut command = Command::new(&cc);
     command
         .arg("-O2")
@@ -255,6 +280,7 @@ pub(crate) fn compile_source(source_text: &str, file_name: &str, directory: &Pat
             output.display()
         );
     }
+    let _ = std::fs::write(&stamp_path, format!("{stamp}\n"));
     Ok(Shim {
         path: output,
         origin: ShimOrigin::Compiled,

@@ -535,3 +535,98 @@ print "client $ok\n";"#;
         String::from_utf8_lossy(&client_out.stderr)
     );
 }
+
+/// Issue 64: two virtual binds to port 0 each get a free port (before, port
+/// 0 was a name of its own and the second bind got EADDRINUSE); and a
+/// client that binds 10.66.0.5:5555 is the peer that accept reports, also
+/// through a 16-byte sockaddr_in (before, the kernel cut the abstract name
+/// in that buffer, and the peer was 0.0.0.0:0).
+#[test]
+fn port_zero_and_the_peer_of_a_bound_client() {
+    if !have_compiler() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shim = shim::build(dir.path()).unwrap();
+    let server_src = r#"
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+static int bound(int port){
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET;
+  a.sin_port=htons(port); inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  if(bind(s,(struct sockaddr*)&a,sizeof a)<0){perror("bind");return -1;}
+  return s;
+}
+static int port_of(int s){ struct sockaddr_in a; socklen_t l=sizeof a;
+  getsockname(s,(struct sockaddr*)&a,&l); return ntohs(a.sin_port); }
+int main(void){
+  int z1=bound(0), z2=bound(0); if(z1<0||z2<0) return 1;
+  int p1=port_of(z1), p2=port_of(z2);
+  printf("zero %d %d %s\n", p1, p2, (p1>=49152 && p2>=49152 && p1!=p2) ? "distinct" : "SAME");
+  int s=bound(18085); if(s<0) return 2; listen(s,4);
+  printf("ready\n"); fflush(stdout);
+  struct sockaddr_in peer; socklen_t pl=sizeof peer;
+  int c=accept(s,(struct sockaddr*)&peer,&pl); if(c<0){perror("accept");return 3;}
+  char ip[32]; inet_ntop(AF_INET,&peer.sin_addr,ip,sizeof ip);
+  printf("peer %s:%d len=%u\n", ip, ntohs(peer.sin_port), (unsigned)pl);
+  if(write(c,"ok",2)<0){} close(c); return 0;
+}
+"#;
+    let client_src = r#"
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+int main(void){
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  struct sockaddr_in me; memset(&me,0,sizeof me); me.sin_family=AF_INET;
+  me.sin_port=htons(5555); inet_pton(AF_INET,"10.66.0.5",&me.sin_addr);
+  if(bind(s,(struct sockaddr*)&me,sizeof me)<0){perror("bind");return 1;}
+  struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET;
+  a.sin_port=htons(18085); inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  if(connect(s,(struct sockaddr*)&a,sizeof a)<0){perror("connect");return 2;}
+  char b[4]={0}; if(read(s,b,2)<0){} printf("client got %s\n", b); return 0;
+}
+"#;
+    let server = build_program(dir.path(), "zero_server", server_src);
+    let client = build_program(dir.path(), "zero_client", client_src);
+    let mut server_cmd = Command::new(&server);
+    server_cmd.env("LD_PRELOAD", &shim.path);
+    let mut client_cmd = Command::new(&client);
+    client_cmd.env("LD_PRELOAD", &shim.path);
+    let (server_out, client_out) = run_pair(&mut server_cmd, &mut client_cmd);
+    let s = String::from_utf8_lossy(&server_out.stdout);
+    assert!(
+        server_out.status.success(),
+        "{s}{}",
+        String::from_utf8_lossy(&server_out.stderr)
+    );
+    assert!(s.contains("distinct"), "{s}");
+    assert!(s.contains("peer 10.66.0.5:5555 len=16"), "{s}");
+    assert!(String::from_utf8_lossy(&client_out.stdout).contains("client got ok"));
+}
+
+/// Issue 64: a second build into the same directory does not run cc again.
+#[test]
+fn a_second_build_is_cached() {
+    if !have_compiler() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let first = shim::build(dir.path()).unwrap();
+    assert!(matches!(first.origin, shim::ShimOrigin::Compiled));
+    let modified = std::fs::metadata(&first.path).unwrap().modified().unwrap();
+    let second = shim::build(dir.path()).unwrap();
+    assert!(matches!(second.origin, shim::ShimOrigin::Cached));
+    assert_eq!(
+        std::fs::metadata(&second.path).unwrap().modified().unwrap(),
+        modified
+    );
+}

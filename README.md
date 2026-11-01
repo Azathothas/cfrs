@@ -413,7 +413,7 @@ See [`docs/virtual-network.md`](docs/virtual-network.md).
 
 ```sh
 cfrs net tailscale --socket /run/tailscale/tailscaled.sock   # SOCKS5 front door to the tailnet
-eval "$(cfrs net socksify --proxy /tmp/cfrssocks.sock)"      # shim for tailnet connects
+eval "$(cfrs net socksify --socket /tmp/cfrssocks.sock)"     # shim for tailnet connects
 cfrs net ts-shims --out /run/cfrs-ts-shims                   # user tables for Tailscale SSH
 cfrs pod -x tailscale:/run/tailscale/tailscaled.sock -- ssh host
 ```
