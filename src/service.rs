@@ -114,6 +114,12 @@ fn static_router(root: &Path, spa: bool) -> Result<Router> {
             .map_err(|e| anyhow::anyhow!("static root {}: {e}", root.display()))?,
     );
     let dir = ServeDir::new(canonical.as_path()).append_index_html_on_directories(true);
+    if spa && !canonical.join("index.html").is_file() {
+        bail!(
+            "--spa needs an index.html in {}: each unknown path answers it",
+            root.display()
+        );
+    }
     let router = if spa {
         let index = ServeFile::new(canonical.join("index.html"));
         // fallback, not not_found_service: an SPA route answers 200.
@@ -144,9 +150,19 @@ fn not_found() -> axum::response::Response {
 /// the root must not be writable by an attacker.
 async fn static_guard(
     axum::extract::State(root): axum::extract::State<Arc<std::path::PathBuf>>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // More than one range: answer the whole file (200), as RFC 9110 permits,
+    // in place of the 416 of ServeDir for a multipart range.
+    let multi = request
+        .headers()
+        .get(http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains(','));
+    if multi {
+        request.headers_mut().remove(http::header::RANGE);
+    }
     let decoded = match percent_decode_path(request.uri().path()) {
         Some(p) => p,
         None => return not_found(),
@@ -263,6 +279,23 @@ mod tests {
         }
         let long = format!("/{}", "a".repeat(300));
         assert_eq!(get(&router, &long).await.0, 404);
+
+        // A multipart range gets the whole file.
+        {
+            use tower::ServiceExt;
+            let request = http::Request::builder()
+                .uri("/sub/page.html")
+                .header("range", "bytes=0-0,2-3")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        // --spa needs an index.html.
+        let bare = base.path().join("bare");
+        std::fs::create_dir(&bare).unwrap();
+        let err = static_router(&bare, true).err().unwrap().to_string();
+        assert!(err.contains("--spa needs an index.html"), "{err}");
 
         // An SPA route answers the index with 200; a link out of the root
         // is still refused.
