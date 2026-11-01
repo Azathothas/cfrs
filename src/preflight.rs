@@ -153,29 +153,32 @@ pub async fn check(config: &Config) -> Report {
                 crate::tunnel::plan_with_proxy(plan, config.protocol, proxy.as_ref());
             // The check sends no UDP probe: only CFRS_UDP=off applies here.
             let udp = crate::udp::Choice::from_env().map_err(|e| format!("{e:#}"));
-            let plan = match udp.and_then(|u| {
+            match udp.and_then(|u| {
                 crate::tunnel::plan_with_udp(plan, u, None).map_err(|e| format!("{e:#}"))
             }) {
                 Ok((plan, udp_note)) => {
                     note = note.or(udp_note);
-                    plan
+                    let names: Vec<String> = plan.iter().map(ToString::to_string).collect();
+                    let failover = match config.failover {
+                        crate::race::Failover::Staggered(d) => {
+                            format!("staggered by {}s", d.as_secs())
+                        }
+                        crate::race::Failover::Serial => "serial".to_string(),
+                    };
+                    let mut detail = format!("{} ({failover})", names.join(", then "));
+                    if let Some(note) = note {
+                        detail.push_str(&format!("; {note}"));
+                    }
+                    report.push("legs", Status::Pass, detail);
+                    names
                 }
+                // One row: before, a fail row and then a pass row with an
+                // empty plan (issue 66).
                 Err(err) => {
                     report.push("legs", Status::Fail, err);
                     Vec::new()
                 }
-            };
-            let names: Vec<String> = plan.iter().map(ToString::to_string).collect();
-            let failover = match config.failover {
-                crate::race::Failover::Staggered(d) => format!("staggered by {}s", d.as_secs()),
-                crate::race::Failover::Serial => "serial".to_string(),
-            };
-            let mut detail = format!("{} ({failover})", names.join(", then "));
-            if let Some(note) = note {
-                detail.push_str(&format!("; {note}"));
             }
-            report.push("legs", Status::Pass, detail);
-            names
         }
         Err(err) => {
             report.push("legs", Status::Fail, format!("{err:#}"));

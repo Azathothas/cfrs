@@ -492,7 +492,14 @@ fn main() {
             _ => "cfrs=trace",
         }
     };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(value) if !value.is_empty() => EnvFilter::try_new(&value).unwrap_or_else(|e| {
+            // Before, a bad RUST_LOG gave the default level with no word.
+            eprintln!("cfrs: RUST_LOG={value:?} does not parse ({e}); the log level is {level}");
+            EnvFilter::new(level)
+        }),
+        _ => EnvFilter::new(level),
+    };
     // Colours only on a terminal: a log file or a pipe gets plain text.
     let ansi = match cli.color.as_str() {
         "always" => true,
@@ -644,6 +651,8 @@ async fn async_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Doctor(args) => {
+            cfrs::udp::check_edge_env()?;
+            cfrs::udp::Choice::from_env()?;
             let report = cfrs::doctor::run(cfrs::doctor::Options {
                 samples: args.samples as usize,
                 timeout: Duration::from_secs(args.timeout),
@@ -1823,6 +1832,7 @@ async fn net(args: NetArgs) -> Result<()> {
             Ok(())
         }
         NetCommand::Doctor { json } => {
+            cfrs::udp::check_edge_env()?;
             let mut probes = cfrs::vnet::doctor::run();
             let target = cfrs::udp::probe_target();
             probes.push(

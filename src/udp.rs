@@ -88,6 +88,23 @@ impl Choice {
     }
 }
 
+/// Check `CFRS_EDGE` as `tunnel` does: each entry must be ip:port. The
+/// doctors call it, so a bad value is exit 78 there too (issue 66).
+pub fn check_edge_env() -> Result<()> {
+    let Ok(list) = std::env::var("CFRS_EDGE") else {
+        return Ok(());
+    };
+    for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        if item.parse::<SocketAddr>().is_err() {
+            return Err(crate::exit::fault(
+                crate::exit::Fault::Config,
+                anyhow::anyhow!("CFRS_EDGE entry {item:?} is not ip:port"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The target of the probe: the first address of `CFRS_EDGE`, else
 /// [`PROBE_TARGET`].
 pub fn probe_target() -> SocketAddr {

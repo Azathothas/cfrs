@@ -74,7 +74,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     },
     EnvVar {
         names: &["CFRS_EDGE"],
-        used_by: "tunnel",
+        used_by: "tunnel, serve, share, demo, doctor, net doctor",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
     },
     EnvVar {
@@ -84,8 +84,8 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     },
     EnvVar {
         names: &["CFRS_UDP"],
-        used_by: "tunnel, serve, share, demo, net doctor",
-        meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78).",
+        used_by: "tunnel, serve, share, demo, doctor",
+        meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",
     },
     EnvVar {
         names: &["CFRS_ERROR_PROGRAM"],

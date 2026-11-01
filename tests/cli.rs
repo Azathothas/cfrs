@@ -933,3 +933,42 @@ fn the_failure_report_has_the_error_once() {
         );
     }
 }
+
+/// Issue 66: CFRS_EDGE is checked the same way by tunnel and the doctors;
+/// a bad CFRS_UDP gives one failed legs row in --check, not two rows.
+#[test]
+fn the_environment_is_checked_alike() {
+    for args in [&["doctor", "--samples", "1"][..], &["net", "doctor"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("CFRS_EDGE", "not-an-address")
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains("CFRS_EDGE"), "{}", stderr(&out));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--hello-world", "--check", "--json"])
+        .env("CFRS_UDP", "bogus")
+        .env_remove("CFRS_EDGE")
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let legs: Vec<_> = doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["name"] == "legs")
+        .collect();
+    assert_eq!(legs.len(), 1, "{doc}");
+    assert_eq!(legs[0]["status"], "fail");
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["status"])
+        .env("RUST_LOG", "cfrs=deubg")
+        .output()
+        .unwrap();
+    assert!(stderr(&out).contains("RUST_LOG"), "{}", stderr(&out));
+}
