@@ -570,6 +570,8 @@ int listen(int fd, int backlog) {
     return r_listen(fd, backlog);
 }
 
+static socklen_t wildcard_addr(int family, struct sockaddr_storage *out);
+
 static int finish_accept(int listener, int client, struct sockaddr *sa, socklen_t *len,
                          socklen_t capacity) {
     if (client < 0) return client;
@@ -607,7 +609,17 @@ static int finish_accept(int listener, int client, struct sockaddr *sa, socklen_
                 memcpy(sa, &peer, copy);
                 *len = peer_len;
             } else {
-                *len = 0;
+                /* The client bound no cfrsnet name, so its virtual address is
+                   not known. Report the wildcard address of the family, as a
+                   peer of port 0. A length of 0 is not an answer that accept(2)
+                   gives for TCP: Perl's accept() reads an empty address as a
+                   failure and ends its accept loop. */
+                struct sockaddr_storage any;
+                socklen_t any_len = wildcard_addr(family ? family : AF_INET, &any);
+                fd_record_peer(client, (struct sockaddr *)&any, any_len);
+                socklen_t copy = any_len < capacity ? any_len : capacity;
+                memcpy(sa, &any, copy);
+                *len = any_len;
             }
         }
     }

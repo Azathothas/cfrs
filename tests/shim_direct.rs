@@ -397,3 +397,141 @@ int main(void){
         "unexpected abstract name: {client_stderr}"
     );
 }
+
+/// accept and accept4 under the shim, with each kind of address buffer
+/// (issue 41): a 16-byte sockaddr_in (and the byte after it is not
+/// written), a 128-byte buffer, NULL, and accept4 with SOCK_CLOEXEC. Each
+/// accept gives a peer of AF_INET with the length of a sockaddr_in, never
+/// a length of 0 (Perl reads an empty peer as a failure). Then 1000 more
+/// connections.
+#[test]
+fn accept_gives_a_peer_for_each_buffer() {
+    if !have_compiler() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shim = shim::build(dir.path()).unwrap();
+    let server_src = r#"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+static void answer(int c){ if(write(c,"hi\n",3)<0){} close(c); }
+int main(void){
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  struct sockaddr_in a; memset(&a,0,sizeof a);
+  a.sin_family=AF_INET; a.sin_port=htons(18082);
+  inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  if(bind(s,(struct sockaddr*)&a,sizeof a)<0){perror("bind");return 1;}
+  if(listen(s,64)<0){perror("listen");return 1;}
+  printf("ready\n"); fflush(stdout);
+  struct { struct sockaddr_in in; unsigned char canary; } small;
+  small.canary=0xa5; socklen_t l=sizeof small.in;
+  int c=accept(s,(struct sockaddr*)&small.in,&l); if(c<0){perror("accept16");return 2;}
+  printf("16: len=%u family=%d canary=%x\n",(unsigned)l,small.in.sin_family,small.canary); answer(c);
+  struct sockaddr_storage big; socklen_t bl=128;
+  c=accept(s,(struct sockaddr*)&big,&bl); if(c<0){perror("accept128");return 3;}
+  printf("128: len=%u family=%d\n",(unsigned)bl,big.ss_family); answer(c);
+  c=accept(s,NULL,NULL); if(c<0){perror("acceptnull");return 4;}
+  printf("null: ok\n"); answer(c);
+  struct sockaddr_in four; socklen_t fl=sizeof four;
+  c=accept4(s,(struct sockaddr*)&four,&fl,SOCK_CLOEXEC); if(c<0){perror("accept4");return 5;}
+  printf("accept4: len=%u family=%d cloexec=%d\n",(unsigned)fl,four.sin_family,(fcntl(c,F_GETFD)&FD_CLOEXEC)?1:0); answer(c);
+  int zero=0;
+  for(int i=0;i<1000;i++){ struct sockaddr_in p; socklen_t pl=sizeof p;
+    c=accept(s,(struct sockaddr*)&p,&pl); if(c<0){perror("accept loop");return 6;}
+    if(pl==0) zero++; answer(c); }
+  printf("loop: 1000 zero=%d\n",zero);
+  return 0;
+}
+"#;
+    let client_src = r#"
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+int main(void){
+  int ok=0;
+  for(int i=0;i<1004;i++){
+    int s=socket(AF_INET,SOCK_STREAM,0);
+    struct sockaddr_in a; memset(&a,0,sizeof a);
+    a.sin_family=AF_INET; a.sin_port=htons(18082);
+    inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+    if(connect(s,(struct sockaddr*)&a,sizeof a)<0){perror("connect");return 1;}
+    char buf[8]={0}; if(read(s,buf,sizeof buf)==3 && !memcmp(buf,"hi\n",3)) ok++;
+    close(s);
+  }
+  printf("client: %d ok\n",ok);
+  return 0;
+}
+"#;
+    let server = build_program(dir.path(), "accept_server", server_src);
+    let client = build_program(dir.path(), "accept_client", client_src);
+    let mut server_cmd = Command::new(&server);
+    server_cmd.env("LD_PRELOAD", &shim.path);
+    let mut client_cmd = Command::new(&client);
+    client_cmd.env("LD_PRELOAD", &shim.path);
+    let (server_out, client_out) = run_pair(&mut server_cmd, &mut client_cmd);
+    let s = String::from_utf8_lossy(&server_out.stdout);
+    let c = String::from_utf8_lossy(&client_out.stdout);
+    assert!(
+        server_out.status.success(),
+        "{s}{}",
+        String::from_utf8_lossy(&server_out.stderr)
+    );
+    assert!(s.contains("16: len=16 family=2 canary=a5"), "{s}");
+    assert!(s.contains("128: len=16 family=2"), "{s}");
+    assert!(s.contains("null: ok"), "{s}");
+    assert!(s.contains("accept4: len=16 family=2 cloexec=1"), "{s}");
+    assert!(s.contains("loop: 1000 zero=0"), "{s}");
+    assert!(c.contains("client: 1004 ok"), "{c}");
+}
+
+/// The Perl accept loop of issue 41: IO::Socket::INET under the shim
+/// serves 10 connections. Before, accept gave a peer of length 0, and
+/// Perl ended the loop at the first connection. Skipped with no perl.
+#[test]
+fn a_perl_accept_loop_serves_each_connection() {
+    if !have_compiler() || Command::new("perl").arg("-e1").status().is_err() {
+        eprintln!("skipping: no C compiler or no perl");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shim = shim::build(dir.path()).unwrap();
+    let server = r#"use IO::Socket::INET; $|=1;
+my $s = IO::Socket::INET->new(LocalAddr=>"10.66.0.2", LocalPort=>18083, Listen=>8, ReuseAddr=>1) or die "listen: $!";
+print "ready\n"; my $n = 0;
+while (my $c = $s->accept) { print $c "hello\n"; close $c; $n++; last if $n == 10 }
+print "served $n\n";"#;
+    let client = r#"use IO::Socket::INET; my $ok = 0;
+for (1..10) { my $c = IO::Socket::INET->new(PeerAddr=>"10.66.0.2", PeerPort=>18083) or die "connect: $!";
+  my $l = <$c>; $ok++ if defined $l && $l eq "hello\n"; }
+print "client $ok\n";"#;
+    let mut server_cmd = Command::new("perl");
+    server_cmd
+        .arg("-e")
+        .arg(server)
+        .env("LD_PRELOAD", &shim.path);
+    let mut client_cmd = Command::new("perl");
+    client_cmd
+        .arg("-e")
+        .arg(client)
+        .env("LD_PRELOAD", &shim.path);
+    let (server_out, client_out) = run_pair(&mut server_cmd, &mut client_cmd);
+    let s = String::from_utf8_lossy(&server_out.stdout);
+    let c = String::from_utf8_lossy(&client_out.stdout);
+    assert!(
+        s.contains("served 10"),
+        "{s}{}",
+        String::from_utf8_lossy(&server_out.stderr)
+    );
+    assert!(
+        c.contains("client 10"),
+        "{c}{}",
+        String::from_utf8_lossy(&client_out.stderr)
+    );
+}
