@@ -324,3 +324,16 @@ fn an_empty_environment_works() {
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(status["warp_identity"]["reason"], "CFRS_STATE_DIR=none");
 }
+
+/// A log that goes to a file or a pipe has no escape sequences.
+#[test]
+fn a_log_to_a_pipe_has_no_colours() {
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--hello-world"])
+        .env("CFRS_EDGE", "not-an-address")
+        .env("RUST_LOG", "cfrs=debug")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+}

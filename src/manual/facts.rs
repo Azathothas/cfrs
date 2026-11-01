@@ -63,6 +63,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --leg-failover when the flag is not given: staggered or serial.",
     },
     EnvVar {
+        names: &["NO_COLOR"],
+        used_by: "all commands",
+        meaning: "When set, the log has no colours. The log has colours only when stderr is a terminal.",
+    },
+    EnvVar {
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",

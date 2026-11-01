@@ -358,6 +358,11 @@ fn main() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),
         )
         .with_writer(cfrs::report::TeeStderr)
+        // Colours only on a terminal: a log file or a pipe gets plain text.
+        .with_ansi(
+            std::io::IsTerminal::is_terminal(&std::io::stderr())
+                && std::env::var_os("NO_COLOR").is_none(),
+        )
         .init();
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
