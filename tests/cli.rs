@@ -793,3 +793,45 @@ exit 2"#,
     );
     assert!(!stderr(&out).contains(TOKEN));
 }
+
+/// Issue 41: `net tailscale` with no tailscaled socket fails at start with
+/// exit 69, and `pod -x` to a dead upstream warns and still runs.
+#[test]
+fn a_missing_upstream_is_named_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("nope.sock");
+    let out = cfrs(&[
+        "net",
+        "tailscale",
+        "--socket",
+        socket.to_str().unwrap(),
+        "--listen",
+        &format!("unix:{}", dir.path().join("front.sock").display()),
+        "--run-for",
+        "5",
+    ]);
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("the LocalAPI socket") && stderr(&out).contains("nope.sock"),
+        "{}",
+        stderr(&out)
+    );
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let out = cfrs(&[
+        "pod",
+        "-x",
+        &format!("socks5://127.0.0.1:{closed}"),
+        "--",
+        "true",
+    ]);
+    assert!(
+        stderr(&out).contains(&format!("the upstream 127.0.0.1:{closed} does not answer")),
+        "{}",
+        stderr(&out)
+    );
+}

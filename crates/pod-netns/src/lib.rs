@@ -149,6 +149,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
             }
         }
     }
+    warn_unreachable(&args.proxies);
     let result = match args.backend {
         BackendKind::Netns => run(args),
         BackendKind::Seccomp => run_seccomp(args),
@@ -169,6 +170,39 @@ pub fn main_with_args(argv: &[String]) -> i32 {
         Err(e) => {
             eprintln!("pod-netns: {e:#}");
             EXIT_NO_BACKEND
+        }
+    }
+}
+
+/// Warn when an upstream does not answer a connect in 2 s. The program
+/// still runs (it may open no connection), but each connection that it
+/// opens fails; before, a dead upstream gave no line at all.
+fn warn_unreachable(proxies: &[upstream::Proxy]) {
+    use std::net::ToSocketAddrs;
+    let limit = std::time::Duration::from_secs(2);
+    for proxy in proxies {
+        let (shown, result) = match &proxy.unix_path {
+            Some(path) => (
+                format!("unix:{path}"),
+                std::os::unix::net::UnixStream::connect(path).map(drop),
+            ),
+            None => {
+                let shown = format!("{}:{}", proxy.host, proxy.port);
+                let result = (proxy.host.as_str(), proxy.port)
+                    .to_socket_addrs()
+                    .and_then(|mut addrs| {
+                        addrs.next().ok_or_else(|| {
+                            std::io::Error::new(std::io::ErrorKind::NotFound, "no address")
+                        })
+                    })
+                    .and_then(|addr| std::net::TcpStream::connect_timeout(&addr, limit).map(drop));
+                (shown, result)
+            }
+        };
+        if let Err(err) = result {
+            eprintln!(
+                "pod-netns: warning: the upstream {shown} does not answer ({err}); each connection of the program will fail"
+            );
         }
     }
 }

@@ -96,6 +96,33 @@ UDP egress: refused makes --protocol auto skip QUIC on UDP 7844; ? keeps the
   order (the next leg starts after 2 s); CFRS_UDP=off|on|probe sets it
 ";
 
+/// The last line of `cfrs net doctor`. "not ready" only when the shim is
+/// needed (AF_INET bind is refused) and a condition of it fails. A host that
+/// allows AF_INET needs no shim; `cfrs pod doctor` tests another thing (the
+/// backends of `cfrs pod`), so the two do not contradict.
+pub fn verdict(probes: &[Probe]) -> String {
+    let ok = |name: &str| {
+        probes
+            .iter()
+            .find(|p| p.name == name)
+            .is_some_and(|p| p.result.is_ok())
+    };
+    if ok("bind(AF_INET, 127.0.0.1:0)") && ok("listen(AF_INET, 127.0.0.1:0)") {
+        return "cfrsnet: not needed: this host allows AF_INET bind and listen, so programs use real addresses (cfrs pod doctor tests the backends of cfrs pod)".into();
+    }
+    if ready(probes) {
+        return "cfrsnet: ready".into();
+    }
+    let mut missing = Vec::new();
+    if !ok("bind(AF_UNIX, path)") {
+        missing.push("AF_UNIX bind");
+    }
+    if !ok("cc -shared -fPIC") {
+        missing.push("C compiler for the shim");
+    }
+    format!("cfrsnet: not ready: no {}", missing.join(", no "))
+}
+
 /// True when the core requirements hold: no `AF_INET` bind, `AF_UNIX` binds
 /// work, and a C compiler can build the shim.
 pub fn ready(probes: &[Probe]) -> bool {
@@ -572,6 +599,26 @@ mod tests {
         let rendered = render(&probes);
         assert!(rendered.contains("bind(AF_UNIX, path)"));
         assert!(!ready(&[]), "an empty probe set is not ready");
+        let allowed = |name: &'static str| Probe {
+            name,
+            result: ProbeResult::Ok("allowed".into()),
+        };
+        let open = [
+            allowed("bind(AF_INET, 127.0.0.1:0)"),
+            allowed("listen(AF_INET, 127.0.0.1:0)"),
+        ];
+        assert!(verdict(&open).starts_with("cfrsnet: not needed"));
+        let sealed = [
+            Probe {
+                name: "bind(AF_INET, 127.0.0.1:0)",
+                result: ProbeResult::Fail("EACCES".into()),
+            },
+            allowed("bind(AF_UNIX, path)"),
+        ];
+        assert_eq!(
+            verdict(&sealed),
+            "cfrsnet: not ready: no C compiler for the shim"
+        );
     }
 
     #[test]

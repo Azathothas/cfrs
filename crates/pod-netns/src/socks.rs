@@ -194,7 +194,13 @@ where
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
     if !method.eq_ignore_ascii_case("CONNECT") {
-        http_connect_reply(stream, 405, "Method Not Allowed").await?;
+        http_reply_with_body(
+            stream,
+            405,
+            "Method Not Allowed",
+            "this proxy speaks HTTP CONNECT only: use it as https_proxy, or as socks5h://\n",
+        )
+        .await?;
         bail!("HTTP proxy method {method} is not CONNECT");
     }
     let (host, port) = split_host_port(target).context("CONNECT target is not host:port")?;
@@ -231,6 +237,25 @@ fn split_host_port(target: &str) -> Result<(String, u16)> {
 }
 
 /// Send an HTTP/1.1 response with no body, then the caller may start splicing.
+/// An HTTP answer with a short text body, then the end of the exchange.
+pub async fn http_reply_with_body<S>(
+    stream: &mut S,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 pub async fn http_connect_reply<S>(stream: &mut S, status: u16, reason: &str) -> Result<()>
 where
     S: AsyncWrite + Unpin,

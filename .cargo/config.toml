@@ -1,8 +1,9 @@
 # cfrs's userspace stack owns the local address, the gateway (where the
-# virtual resolver listens) and their IPv6 counterparts. smoltcp defaults
-# IFACE_MAX_ADDR_COUNT to 2, which cannot hold all four, so raise it.
+# virtual resolver listens), their IPv6 counterparts, and each address that
+# a virtual listener binds (a --forward to 10.66.0.3). smoltcp defaults
+# IFACE_MAX_ADDR_COUNT to 2, so raise it.
 [env]
-SMOLTCP_IFACE_MAX_ADDR_COUNT = "4"
+SMOLTCP_IFACE_MAX_ADDR_COUNT = "8"
 
 # A new entry of Cargo.lock takes the newest version of a crate that builds
 # with the rust-version of the workspace.

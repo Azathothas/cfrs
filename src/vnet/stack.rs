@@ -221,6 +221,8 @@ fn endpoint_to_virt(endpoint: IpEndpoint) -> VirtAddr {
 
 #[derive(Debug)]
 enum AppEvent {
+    /// The handshake completed (sent once, before or after the first data).
+    Connected,
     Data(Vec<u8>),
     Eof,
     Reset(String),
@@ -262,6 +264,37 @@ impl std::fmt::Debug for TcpStream {
 }
 
 impl TcpStream {
+    /// Wait for the handshake of a connection that this stack opened. A
+    /// refusal (a reset, or the end before the handshake) is an error of
+    /// kind `ConnectionRefused` or `ConnectionReset`. Data that comes first
+    /// is kept for the next read.
+    pub async fn established(&mut self) -> io::Result<()> {
+        if self.eof {
+            return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+        }
+        if self.read_pos < self.read_buf.len() {
+            return Ok(());
+        }
+        match self.read_rx.recv().await {
+            Some(AppEvent::Connected) => Ok(()),
+            Some(AppEvent::Data(data)) => {
+                self.read_buf = data;
+                self.read_pos = 0;
+                Ok(())
+            }
+            Some(AppEvent::Eof) | None => {
+                self.eof = true;
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "the connection was refused",
+                ))
+            }
+            Some(AppEvent::Reset(message)) => {
+                Err(io::Error::new(io::ErrorKind::ConnectionReset, message))
+            }
+        }
+    }
+
     pub fn id(&self) -> u32 {
         self.id
     }
@@ -330,7 +363,14 @@ impl AsyncRead for TcpStream {
         if self.eof {
             return Poll::Ready(Ok(()));
         }
-        match self.read_rx.poll_recv(cx) {
+        let event = loop {
+            match self.read_rx.poll_recv(cx) {
+                Poll::Ready(Some(AppEvent::Connected)) => continue,
+                other => break other,
+            }
+        };
+        match event {
+            Poll::Ready(Some(AppEvent::Connected)) => unreachable!(),
             Poll::Ready(Some(AppEvent::Data(data))) => {
                 self.read_buf = data;
                 self.read_pos = 0;
@@ -517,6 +557,8 @@ struct Conn {
     ctl: mpsc::Receiver<ConnCmd>,
     closing: bool,
     recv_eof_sent: bool,
+    /// [`AppEvent::Connected`] was sent.
+    announced: bool,
     /// Bytes from the app that the socket did not accept yet. `send_slice`
     /// can take part of a chunk when the send buffer is full.
     pending: Vec<u8>,
@@ -789,6 +831,29 @@ impl Core {
                 format!("{addr} is already bound"),
             ));
         }
+        // A listener on an address that the stack does not own yet: own it,
+        // so that a SYN to it gets an answer. Before, a --forward to an
+        // address other than the stack's own got no SYN-ACK, and each client
+        // waited for its own time limit.
+        let ip = to_smoltcp(addr.ip);
+        if !self.iface.has_ip_addr(ip) && !ip.is_unspecified() {
+            let prefix = match addr.ip {
+                IpAddr::V4(_) => self.config.subnet.v4_prefix,
+                IpAddr::V6(_) => self.config.subnet.v6_prefix,
+            };
+            let mut full = false;
+            self.iface.update_ip_addrs(|addrs| {
+                full = addrs.push(IpCidr::new(ip, prefix)).is_err();
+            });
+            if full {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!(
+                        "{addr}: the stack owns at most 8 addresses (its own, the gateways and the listeners)"
+                    ),
+                ));
+            }
+        }
         let (accept_tx, accept_rx) = mpsc::channel(self.config.accept_pool.max(1) * 4);
         let mut handles = Vec::with_capacity(self.config.accept_pool.max(1));
         for _ in 0..self.config.accept_pool.max(1) {
@@ -892,6 +957,7 @@ impl Core {
                 ctl: ctl_rx,
                 closing: false,
                 recv_eof_sent: false,
+                announced: false,
                 pending: Vec::new(),
             },
         );
@@ -1049,6 +1115,7 @@ impl Core {
                     ctl: ctl_rx,
                     closing: false,
                     recv_eof_sent: false,
+                    announced: false,
                     pending: Vec::new(),
                 },
             );
@@ -1184,6 +1251,18 @@ impl Core {
                     socket.is_open(),
                 )
             };
+            if !conn.announced
+                && matches!(
+                    state,
+                    tcp::State::Established
+                        | tcp::State::CloseWait
+                        | tcp::State::FinWait1
+                        | tcp::State::FinWait2
+                )
+            {
+                conn.announced = true;
+                let _ = conn.to_app.try_send(AppEvent::Connected);
+            }
             // The remote half-closed: tell the app once, but keep the write
             // side open until the app closes it.
             if state == tcp::State::CloseWait && recv_queue == 0 && !conn.recv_eof_sent {
@@ -1827,6 +1906,47 @@ mod tests {
         assert_eq!(
             parse_answers(&buffer[..n]).unwrap(),
             vec!["10.66.0.2".parse::<IpAddr>().unwrap()]
+        );
+        net.shutdown().await;
+    }
+
+    /// A listener on an address other than the stack's own (a --forward
+    /// to 10.66.0.3) accepts a connection (issue 41). A connection to a
+    /// closed port is refused, and established() says so.
+    #[tokio::test]
+    async fn a_listener_on_another_address_accepts() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut net = NetStack::loopback();
+        let other = VirtAddr::new("10.66.0.3".parse().unwrap(), 80);
+        let mut listener = net.listen(other).await.unwrap();
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.unwrap();
+            stream.write_all(b"hi").await.unwrap();
+            stream.shutdown();
+        });
+        let mut client = net.connect(other).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), client.established())
+            .await
+            .expect("no handshake in 3 s")
+            .unwrap();
+        let mut got = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut got))
+            .await
+            .expect("no EOF in 3 s")
+            .unwrap();
+        assert_eq!(got, b"hi");
+        server.await.unwrap();
+        let mut closed = net.connect(VirtAddr::new(net::LOCAL_IP, 81)).await.unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(3), closed.established())
+            .await
+            .expect("no answer in 3 s")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+            ),
+            "{err}"
         );
         net.shutdown().await;
     }

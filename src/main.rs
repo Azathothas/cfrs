@@ -1750,10 +1750,9 @@ async fn net(args: NetArgs) -> Result<()> {
             );
             print!("{}", cfrs::vnet::doctor::render(&probes));
             print!("\n{}", cfrs::vnet::doctor::NEEDS);
-            if cfrs::vnet::doctor::ready(&probes) {
-                println!("\ncfrsnet: ready");
-            } else {
-                println!("\ncfrsnet: not ready");
+            let verdict = cfrs::vnet::doctor::verdict(&probes);
+            println!("\n{verdict}");
+            if verdict.starts_with("cfrsnet: not ready") {
                 println!("cfrsnet: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
             }
             Ok(())
@@ -1978,6 +1977,18 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
     use cfrs::vnet::tailscale::{self, Dialer};
 
     let listen = ProxyListen::parse(&args.listen)?;
+    // The LocalAPI socket of tailscaled must answer before the front door
+    // starts: before, a missing tailscaled was found only at the first
+    // SOCKS request, and the command exited 0.
+    tokio::net::UnixStream::connect(&args.socket)
+        .await
+        .with_context(|| {
+            format!(
+                "the LocalAPI socket {} of tailscaled does not answer: start tailscaled, or give --socket",
+                args.socket
+            )
+        })
+        .fault(Fault::Unavailable)?;
     let proxy = tailscale::serve(Dialer::new(&args.socket), listen, args.port).await?;
     match &proxy.listen {
         ProxyListen::Unix(path) => println!("cfrs: proxy    unix:{}", path.display()),

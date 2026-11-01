@@ -112,8 +112,8 @@ pub async fn handle_connection<S>(
     // gets a SOCKS5 error or a 502, which it can act on.
     match net.connect(target).await {
         Ok(mut remote) => {
-            if let Err(message) = wait_established(&mut remote).await {
-                fail(&mut reader, is_socks, &message).await;
+            if let Err((status, message)) = wait_established(&mut remote).await {
+                fail_with(&mut reader, is_socks, status, &message).await;
                 return;
             }
             let reply = if is_socks {
@@ -138,30 +138,24 @@ pub async fn handle_connection<S>(
     }
 }
 
-/// Wait for the virtual connection to be established, or report why it failed.
-///
-/// [`crate::vnet::stack::NetStack::connect`] returns once the socket is created,
-/// which for a nonexistent listener still succeeds at the API level. A caller
-/// that must choose between "refuse" and "accept" needs the handshake's outcome.
-async fn wait_established(stream: &mut TcpStream) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
-    // The stack signals a reset or a refusal through the read side, and a
-    // pending connection by not completing one. A zero-length read resolves as
-    // soon as the reactor has made the connection usable, and returns an error
-    // when the connection was reset.
-    loop {
-        let mut probe = [0u8; 0];
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            stream.read(&mut probe),
-        )
-        .await
-        {
-            Ok(Ok(_)) => return Ok(()),
-            Ok(Err(err)) => return Err(err.to_string()),
-            // Still pending: give the reactor more time.
-            Err(_) => continue,
-        }
+/// The time limit of the handshake with a virtual address. A SYN to an
+/// address that nothing owns gets no answer; the client gets 504 after this.
+pub const CONNECT_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait for the virtual connection to be established, or report why it
+/// failed: the status for HTTP (502 refused, 504 no answer) and a message.
+async fn wait_established(stream: &mut TcpStream) -> Result<(), (u16, String)> {
+    let peer = stream.peer_addr();
+    match tokio::time::timeout(CONNECT_LIMIT, stream.established()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => Err((502, format!("{peer} refused the connection: {err}"))),
+        Err(_) => Err((
+            504,
+            format!(
+                "no answer from {peer} in {} s: no virtual host has this address",
+                CONNECT_LIMIT.as_secs()
+            ),
+        )),
     }
 }
 
@@ -169,10 +163,29 @@ async fn fail<S>(stream: &mut S, is_socks: bool, message: &str)
 where
     S: AsyncWrite + Unpin,
 {
+    fail_with(stream, is_socks, 502, message).await
+}
+
+/// Refuse a client: a SOCKS5 error code, or an HTTP status with the message
+/// as the body.
+async fn fail_with<S>(stream: &mut S, is_socks: bool, status: u16, message: &str)
+where
+    S: AsyncWrite + Unpin,
+{
+    tracing::debug!(status, message, "proxy request refused");
     if is_socks {
-        let _ = socks::socks5_reply(stream, socks::socks5_code_for_error(message), None).await;
+        let code = match status {
+            504 => 0x04, // host unreachable
+            _ => socks::socks5_code_for_error(message),
+        };
+        let _ = socks::socks5_reply(stream, code, None).await;
     } else {
-        let _ = socks::http_connect_reply(stream, 502, "Bad Gateway").await;
+        let reason = if status == 504 {
+            "Gateway Timeout"
+        } else {
+            "Bad Gateway"
+        };
+        let _ = socks::http_reply_with_body(stream, status, reason, &format!("{message}\n")).await;
     }
 }
 
@@ -340,6 +353,68 @@ mod tests {
             port: 80,
         };
         assert!(resolve_target(&unknown, &Resolver::new(), 80).is_err());
+    }
+
+    /// One HTTP request through the proxy: the whole answer and its time.
+    async fn ask(net: Arc<NetStack>, request: &[u8]) -> (String, std::time::Duration) {
+        let (mut client, server) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            handle_connection(server, net, Resolver::new(), 80).await;
+        });
+        let start = std::time::Instant::now();
+        client.write_all(request).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.read_to_end(&mut answer),
+        )
+        .await
+        .expect("the proxy did not end the answer in 10 s")
+        .unwrap();
+        (
+            String::from_utf8_lossy(&answer).into_owned(),
+            start.elapsed(),
+        )
+    }
+
+    /// Issue 41: a closed virtual port gets 502 with a body at once, an
+    /// address that nothing owns gets 504 after CONNECT_LIMIT (not a hang),
+    /// and a plain GET gets 405 with a body that names CONNECT.
+    #[tokio::test]
+    async fn refusals_have_a_status_and_a_body() {
+        let net = Arc::new(NetStack::loopback());
+        let (answer, took) = ask(net.clone(), b"CONNECT 10.66.0.2:81 HTTP/1.1\r\n\r\n").await;
+        assert!(
+            answer.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("10.66.0.2:81 refused the connection"),
+            "{answer}"
+        );
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+
+        let (answer, took) = ask(net.clone(), b"CONNECT 10.66.0.9:80 HTTP/1.1\r\n\r\n").await;
+        assert!(
+            answer.starts_with("HTTP/1.1 504 Gateway Timeout\r\n"),
+            "{answer}"
+        );
+        assert!(answer.contains("no answer from 10.66.0.9:80"), "{answer}");
+        assert!(
+            took >= CONNECT_LIMIT && took < CONNECT_LIMIT * 2,
+            "{took:?}"
+        );
+
+        let (answer, _) = ask(
+            net.clone(),
+            b"GET http://10.66.0.2:8080/ HTTP/1.1\r\nHost: 10.66.0.2\r\n\r\n",
+        )
+        .await;
+        assert!(
+            answer.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"),
+            "{answer}"
+        );
+        assert!(answer.contains("HTTP CONNECT only"), "{answer}");
     }
 
     #[tokio::test]
