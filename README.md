@@ -714,6 +714,12 @@ stdout in place of the text lines. A line with `"event": "ready"` gives
 `url`, `tunnel_id` and `locations` (and `pin` for `share`). A line with
 `"event": "verified"` comes after the fetch of the public URL.
 
+Stop signals: after a server command is ready, SIGINT (Ctrl-C), SIGTERM
+and SIGHUP each start the clean shutdown, also with `--run-for`. The exit
+code is 0. A second signal during the shutdown stops cfrs at once. Before
+the ready, each signal has its default action. A detached instance ignores
+SIGHUP. When the parent ignores SIGHUP (`nohup`), cfrs ignores it too.
+
 `--check` on `tunnel`, `serve`, `share` and `demo` checks the plan and stops.
 It tests the flags and the config file, each origin (a connection, and the
 TLS handshake for `https`; no request is sent), the files and the

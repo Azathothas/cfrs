@@ -86,6 +86,21 @@ pub fn prepare(mut args: Vec<OsString>) -> Vec<OsString> {
     args
 }
 
+/// Set when a command is ready, or when it first waits for a stop signal:
+/// from then on SIGINT, SIGTERM and SIGHUP start its clean shutdown. Before
+/// it, each has its default action.
+static STOP_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// From now on, a stop signal starts the clean shutdown.
+pub fn arm_stop() {
+    STOP_ARMED.store(true, Ordering::SeqCst);
+}
+
+/// Whether a stop signal starts the clean shutdown ([`arm_stop`]).
+pub fn stop_armed() -> bool {
+    STOP_ARMED.load(Ordering::SeqCst)
+}
+
 /// Whether this process is a detached child (before or after its ready).
 pub fn is_child() -> bool {
     CHILD.load(Ordering::SeqCst)
@@ -157,6 +172,7 @@ pub fn child_begin() -> Result<()> {
 /// caller and sends the ready line; each other call, and a call in a
 /// process that is not a detached child, does nothing.
 pub fn ready(mut doc: serde_json::Value) {
+    arm_stop();
     if !is_child() || SENT.swap(true, Ordering::SeqCst) {
         return;
     }

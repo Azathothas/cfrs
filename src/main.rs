@@ -700,7 +700,12 @@ fn main() {
         .enable_all()
         .build()
         .context("starting the async runtime")
-        .and_then(|runtime| runtime.block_on(async_main(cli)));
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                install_signals();
+                async_main(cli).await
+            })
+        });
     if let Err(err) = result {
         let code = cfrs::exit::code_of(&err);
         let line = cfrs::report::error_line(&err);
@@ -712,32 +717,93 @@ fn main() {
     }
 }
 
+/// The stop request: false until SIGINT, SIGTERM or SIGHUP comes.
+static STOP: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> = std::sync::OnceLock::new();
+
+/// Whether the action of `signal` is SIG_IGN (`nohup` gives it for SIGHUP).
+fn signal_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: sigaction() with no new action only reads the old action.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut old) == 0
+            && old.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+/// At the start of the runtime: take SIGINT, SIGTERM and SIGHUP (issue
+/// 91). After the ready of a command (or its first wait), each is in the
+/// stop request, also when it comes between two waits. Before, and in a
+/// command that does not wait, each has the default action. A second
+/// signal during the shutdown also has the default action. SIGHUP stays ignored in a detached instance
+/// and when the parent ignored it (`nohup`).
+fn install_signals() {
+    use tokio::signal::unix::{signal, SignalKind};
+    STOP.get_or_init(|| {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut kinds = vec![
+            (SignalKind::interrupt(), libc::SIGINT, "SIGINT"),
+            (SignalKind::terminate(), libc::SIGTERM, "SIGTERM"),
+        ];
+        if !cfrs::detach::is_child() && !signal_ignored(libc::SIGHUP) {
+            kinds.push((SignalKind::hangup(), libc::SIGHUP, "SIGHUP"));
+        }
+        let tx = std::sync::Arc::new(tx);
+        for (kind, number, name) in kinds {
+            match signal(kind) {
+                Ok(mut stream) => {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        while stream.recv().await.is_some() {
+                            // No command waits, or the second signal
+                            // during the shutdown: the default action.
+                            if !cfrs::detach::stop_armed() || *tx.borrow() {
+                                // SAFETY: signal() and raise() with a
+                                // valid signal number.
+                                unsafe {
+                                    libc::signal(number, libc::SIG_DFL);
+                                    libc::raise(number);
+                                }
+                                continue;
+                            }
+                            if number == libc::SIGINT {
+                                tracing::info!("Ctrl-C: stopping");
+                            } else {
+                                tracing::info!("{name}: stopping");
+                            }
+                            let _ = tx.send(true);
+                        }
+                    });
+                }
+                Err(err) => tracing::warn!("{name}: cannot take the signal ({err})"),
+            }
+        }
+        rx
+    });
+}
+
 /// Ready on SIGINT (Ctrl-C), SIGTERM (systemd, Docker, Kubernetes, cfrs
 /// stop) or SIGHUP (the terminal closed): each starts the same clean
 /// shutdown, and the exit code is 0. A detached instance ignores SIGHUP.
+/// A signal that came before this call is not lost.
 async fn shutdown_signal() -> std::io::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut term = signal(SignalKind::terminate())?;
-    let hangup = async {
-        if cfrs::detach::is_child() {
-            std::future::pending::<()>().await;
-        }
-        match signal(SignalKind::hangup()) {
-            Ok(mut hup) => {
-                hup.recv().await;
+    install_signals();
+    cfrs::detach::arm_stop();
+    let mut rx = STOP.get().expect("installed").clone();
+    let _ = rx.wait_for(|stop| *stop).await;
+    Ok(())
+}
+
+/// Ready after `run_for` seconds (when given), or on a stop signal.
+async fn sleep_or_signal(run_for: Option<u64>) {
+    match run_for {
+        Some(secs) => {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
+                _ = shutdown_signal() => {}
             }
-            Err(_) => std::future::pending::<()>().await,
         }
-    };
-    tokio::select! {
-        r = tokio::signal::ctrl_c() => r,
-        _ = term.recv() => {
-            tracing::info!("SIGTERM: stopping");
-            Ok(())
-        }
-        _ = hangup => {
-            tracing::info!("SIGHUP: stopping");
-            Ok(())
+        None => {
+            let _ = shutdown_signal().await;
         }
     }
 }
@@ -1532,12 +1598,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
             }
         }
     }
-    match args.run_for {
-        Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
-        None => {
-            let _ = shutdown_signal().await;
-        }
-    }
+    sleep_or_signal(args.run_for).await;
     for task in tasks {
         task.abort();
     }
@@ -2391,12 +2452,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 .collect::<Vec<_>>()
                 .into();
             cfrs::detach::ready(doc);
-            match run_for {
-                Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
-                None => {
-                    let _ = shutdown_signal().await;
-                }
-            }
+            sleep_or_signal(run_for).await;
             for proxy in &proxies {
                 proxy.abort();
             }
@@ -2982,7 +3038,7 @@ async fn net(args: NetArgs) -> Result<()> {
                 }
             }
             cfrs::detach::ready(listen_doc(&switch.listen));
-            wait_stop(args.run_for).await;
+            sleep_or_signal(args.run_for).await;
             switch.abort();
             Ok(())
         }
@@ -3101,18 +3157,9 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
         ProxyListen::Tcp(addr) => println!("cfrs: proxy    tcp://{addr}"),
     }
     cfrs::detach::ready(listen_doc(&proxy.listen));
-    wait_stop(args.run_for).await;
+    sleep_or_signal(args.run_for).await;
     proxy.abort();
     Ok(())
-}
-
-async fn wait_stop(run_for: Option<u64>) {
-    match run_for {
-        Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
-        None => {
-            let _ = shutdown_signal().await;
-        }
-    }
 }
 
 /// A real destination a virtual forward bridges to.
@@ -3195,12 +3242,7 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
     println!("cfrs: localapi {}", args.socket);
     println!("cfrs: note     run tailscaled with --tun=userspace-networking");
     println!("cfrs: shim     eval \"$(cfrs net socksify --socket <listen-path>)\"");
-    match args.run_for {
-        Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
-        None => {
-            let _ = shutdown_signal().await;
-        }
-    }
+    sleep_or_signal(args.run_for).await;
     proxy.abort();
     Ok(())
 }
