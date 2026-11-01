@@ -105,12 +105,165 @@ fn static_router(root: &Path, spa: bool) -> Result<Router> {
     if !root.is_dir() {
         bail!("static root is not a directory: {}", root.display());
     }
-    let dir = ServeDir::new(root).append_index_html_on_directories(true);
+    let canonical = Arc::new(
+        root.canonicalize()
+            .map_err(|e| anyhow::anyhow!("static root {}: {e}", root.display()))?,
+    );
+    let dir = ServeDir::new(canonical.as_path()).append_index_html_on_directories(true);
     let router = if spa {
-        let index = ServeFile::new(root.join("index.html"));
-        Router::new().fallback_service(dir.not_found_service(index))
+        let index = ServeFile::new(canonical.join("index.html"));
+        // fallback, not not_found_service: an SPA route answers 200.
+        Router::new().fallback_service(dir.fallback(index))
     } else {
         Router::new().fallback_service(dir)
     };
-    Ok(router)
+    Ok(router.layer(axum::middleware::from_fn_with_state(
+        canonical,
+        static_guard,
+    )))
+}
+
+/// The answer of [`static_guard`] for a path that is not served.
+fn not_found() -> axum::response::Response {
+    axum::response::IntoResponse::into_response((http::StatusCode::NOT_FOUND, "Not Found"))
+}
+
+/// Serve a path of the static root only when it stays in the root:
+///
+/// * A name that starts with a dot (`.git`, `.env`) is not served.
+/// * The real path (each symlink resolved) must be in the canonical root, so
+///   a link to `/etc/passwd` or `../secret` is not served.
+/// * Only a regular file or a directory is served: a FIFO, a socket or a
+///   device would hang or leak.
+///
+/// A link that is changed between this check and the open is still a race;
+/// the root must not be writable by an attacker.
+async fn static_guard(
+    axum::extract::State(root): axum::extract::State<Arc<std::path::PathBuf>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let decoded = match percent_decode_path(request.uri().path()) {
+        Some(p) => p,
+        None => return not_found(),
+    };
+    let mut path = root.as_path().to_path_buf();
+    for segment in decoded.split('/').filter(|s| !s.is_empty()) {
+        if segment.starts_with('.')
+            || segment.len() > 255
+            || segment.contains('\\')
+            || segment.contains('\0')
+        {
+            return not_found();
+        }
+        path.push(segment);
+    }
+    if path.as_os_str().len() > 4096 {
+        return not_found();
+    }
+    match std::fs::symlink_metadata(&path) {
+        // A missing path: ServeDir answers 404 (or the SPA index).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => next.run(request).await,
+        Err(_) => not_found(),
+        Ok(_) => match std::fs::canonicalize(&path) {
+            Ok(real) if real.starts_with(root.as_path()) => match std::fs::metadata(&real) {
+                Ok(meta) if meta.is_file() || meta.is_dir() => next.run(request).await,
+                _ => not_found(),
+            },
+            _ => not_found(),
+        },
+    }
+}
+
+/// Decode the `%XX` escapes of a URL path. A bad escape or bytes that are
+/// not UTF-8 give `None`.
+fn percent_decode_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn get(router: &Router, path: &str) -> (u16, String) {
+        use tower::ServiceExt;
+        let request = http::Request::builder()
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status().as_u16();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// A link out of the root, a relative link, a link to a directory out of
+    /// the root, a chain of links, a dotfile and a FIFO are not served. A
+    /// link in the root, a file and a directory index are served.
+    #[tokio::test]
+    async fn the_static_root_is_a_boundary() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("www");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("index.html"), "index").unwrap();
+        std::fs::write(root.join("sub/page.html"), "page").unwrap();
+        std::fs::write(root.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(base.path().join("outside.txt"), "outside").unwrap();
+        std::fs::create_dir(base.path().join("outdir")).unwrap();
+        std::fs::write(base.path().join("outdir/x.txt"), "outdir").unwrap();
+        symlink(base.path().join("outside.txt"), root.join("abs-link")).unwrap();
+        symlink("../outside.txt", root.join("rel-link")).unwrap();
+        symlink(base.path().join("outdir"), root.join("dir-link")).unwrap();
+        symlink("abs-link", root.join("chain-link")).unwrap();
+        symlink("sub/page.html", root.join("in-link")).unwrap();
+        let fifo = std::ffi::CString::new(root.join("fifo").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+
+        let router = static_router(&root, false).unwrap();
+        assert_eq!(get(&router, "/").await, (200, "index".into()));
+        assert_eq!(get(&router, "/sub/page.html").await, (200, "page".into()));
+        assert_eq!(get(&router, "/in-link").await, (200, "page".into()));
+        for path in [
+            "/abs-link",
+            "/rel-link",
+            "/dir-link/x.txt",
+            "/chain-link",
+            "/.env",
+            "/%2eenv",
+            "/sub/../../outside.txt",
+            "/fifo",
+            "/missing",
+        ] {
+            let (status, body) = get(&router, path).await;
+            assert_eq!(status, 404, "{path}: {body}");
+            assert!(
+                !body.contains("outside") && !body.contains("SECRET"),
+                "{path}: {body}"
+            );
+        }
+        let long = format!("/{}", "a".repeat(300));
+        assert_eq!(get(&router, &long).await.0, 404);
+
+        // An SPA route answers the index with 200; a link out of the root
+        // is still refused.
+        let spa = static_router(&root, true).unwrap();
+        assert_eq!(get(&spa, "/some/route").await, (200, "index".into()));
+        assert_eq!(get(&spa, "/abs-link").await.0, 404);
+    }
 }

@@ -235,6 +235,16 @@ cfrs serve --dir ./public
 cfrs serve --dir ./app --spa          # send index.html for unknown paths
 ```
 
+`cfrs serve` serves only the files in `--dir`:
+
+* A symlink is served only when its real path is in `--dir`.
+* A name that starts with a dot (`.git`, `.env`) is not served.
+* Only regular files and directories are served (no FIFO, socket or
+  device).
+
+Each other path answers 404. With `--spa`, an unknown path answers the
+`index.html` with status 200.
+
 ### Share files
 
 ```sh
