@@ -16,7 +16,7 @@ members = [".", "crates/pod-netns"]
 default-members = [".", "crates/pod-netns"]
 
 [workspace.package]
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 
 [lib]
 name = "cfrs"
@@ -27,7 +27,7 @@ name = "cfrs"
 path = "src/main.rs"
 
 [dependencies]
-pod-netns = { path = "crates/pod-netns", version = "0.3.0-beta.1" }
+pod-netns = { path = "crates/pod-netns", version = "0.3.0-beta.2" }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"
