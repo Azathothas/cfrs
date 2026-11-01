@@ -107,6 +107,23 @@ enum Command {
     Man(ManArgs),
     /// Print one line of JSON about this host. It opens no connection.
     Status,
+    /// Test the path from this host to the edge: the proxy, TCP and TLS to
+    /// the APIs, the edge (7844) and MASQUE (443), and UDP 7844. Exit 0 when
+    /// at least one leg (quic, http2, quic+warp) can work, 1 when none can.
+    Doctor(DoctorArgs),
+}
+
+#[derive(Args, Debug)]
+struct DoctorArgs {
+    /// Print one JSON document.
+    #[arg(long)]
+    json: bool,
+    /// Samples of each TCP path (1-9). All samples end in 10 s.
+    #[arg(long, default_value_t = 9, value_parser = clap::value_parser!(u8).range(1..=9))]
+    samples: u8,
+    /// The time limit of one connection and of one TLS handshake, in seconds.
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..=10))]
+    timeout: u64,
 }
 
 #[derive(Args, Debug)]
@@ -536,6 +553,23 @@ async fn async_main(cli: Cli) -> Result<()> {
                 .map_err(|e| cfrs::exit::fault(cfrs::exit::Fault::Usage, anyhow::anyhow!(e)))?;
             let paged = !request.roff && !request.json;
             cfrs::manual::pager::show(&text, request.no_pager || !paged)?;
+            Ok(())
+        }
+        Command::Doctor(args) => {
+            let report = cfrs::doctor::run(cfrs::doctor::Options {
+                samples: args.samples as usize,
+                timeout: Duration::from_secs(args.timeout),
+                ..cfrs::doctor::Options::default()
+            })
+            .await;
+            if args.json {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.text());
+            }
+            if !report.ok() {
+                bail!("no leg can work on this host; the doctor gives the reason for each");
+            }
             Ok(())
         }
         Command::Status => {

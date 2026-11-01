@@ -13,7 +13,7 @@ Each fact has a date and a mark:
 
 ### A sandbox with an egress proxy (2026-11-01)
 
-The tools: `cfrs status`, `pod-netns doctor --json`, `cfrs net doctor`,
+The tools: `cfrs status`, `cfrs doctor`, `pod-netns doctor --json`, `cfrs net doctor`,
 `openssl s_client -proxy`, `curl`, `cfrs demo`.
 
 | Fact | Result | Mark |
@@ -24,6 +24,7 @@ The tools: `cfrs status`, `pod-netns doctor --json`, `cfrs net doctor`,
 | `CONNECT` to an IP address (`1.1.1.1:443`) | The proxy resets the connection | measured |
 | `CONNECT` to `cloudflare-dns.com:443` | Works (HTTP 200 from DoH) | measured |
 | `CONNECT` to the edge (`198.41.200.x:7844`) | The proxy resets the connection | measured |
+| `cfrs doctor` (2026-11-01): `CONNECT` to the edge on 7844 (name and address) and to MASQUE `162.159.198.2:443` | The proxy answers 200, then no TLS byte comes back: "the proxy answers and carries nothing". `api.trycloudflare.com` (Google Trust Services) and `api.cloudflareclient.com` (Let's Encrypt) have valid chains. 0 of 3 legs can work. | measured |
 | QUIC on UDP 7844, no proxy | No answer (the handshake times out); `cfrs net doctor`: `UDP egress ... ? unknown` | measured |
 | `listen(2)` after `bind(2)` (AF_INET, AF_UNIX) | Allowed (`SO_ACCEPTCONN=1`) | measured |
 | DNS on UDP 53 to `1.1.1.1` | An answer | measured |
@@ -87,5 +88,5 @@ The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
 7. Start the next edge leg after a short stagger, not after a full time
    limit. Code: `src/race.rs`.
 
-The doctors (`cfrs net doctor`, `cfrs pod doctor`) measure a host. Give
+The doctors (`cfrs doctor`, `cfrs net doctor`, `cfrs pod doctor`) measure a host. Give
 their output in an issue, with `cfrs status`.

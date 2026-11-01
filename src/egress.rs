@@ -242,11 +242,19 @@ impl Proxy {
         let head = read_head(stream, timeout).await?;
         let status = parse_status(&head)?;
         if status == 407 {
-            bail!("{}", explain_407(&head, self.auth.is_some()));
+            return Err(Refusal {
+                status,
+                text: explain_407(&head, self.auth.is_some()),
+            }
+            .into());
         }
         if !(200..300).contains(&status) {
             let reason = reply_reason(stream, &head).await;
-            bail!("the proxy refused CONNECT with HTTP {status}{reason}");
+            return Err(Refusal {
+                status,
+                text: format!("the proxy refused CONNECT with HTTP {status}{reason}"),
+            }
+            .into());
         }
         Ok(())
     }
@@ -348,10 +356,14 @@ impl Proxy {
                 bail!("the proxy did not answer the SOCKS5 CONNECT");
             }
             if reply[1] != 0 {
-                bail!(
-                    "the proxy refused the SOCKS5 CONNECT: {}",
-                    socks5_reply(reply[1])
-                );
+                return Err(Refusal {
+                    status: 0,
+                    text: format!(
+                        "the proxy refused the SOCKS5 CONNECT: {}",
+                        socks5_reply(reply[1])
+                    ),
+                }
+                .into());
             }
             let skip = match reply[3] {
                 1 => 4,
@@ -371,6 +383,28 @@ impl Proxy {
             .await
             .context("the SOCKS5 exchange timed out")?
     }
+}
+
+/// A proxy answered and refused the connection: an HTTP status that is not
+/// 2xx (`status`), or a SOCKS5 refusal (`status` 0). A lost connection is
+/// not a refusal.
+#[derive(Debug)]
+pub struct Refusal {
+    pub status: u16,
+    pub text: String,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// The refusal of a proxy in the chain of `err`, if there is one.
+pub fn refusal(err: &anyhow::Error) -> Option<&Refusal> {
+    err.chain().find_map(|e| e.downcast_ref::<Refusal>())
 }
 
 /// The reason of a refusal: the reason phrase of the status line, and the

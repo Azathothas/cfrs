@@ -360,11 +360,18 @@ mod tests {
     }
 
     /// Only these files may set a certificate verifier of their own: the
-    /// origin option noTLSVerify (util/tls.rs, net.rs) and the MASQUE key pin
-    /// (warp/session.rs, which always compares the key).
+    /// origin option noTLSVerify (util/tls.rs, net.rs), the MASQUE key pin
+    /// (warp/session.rs, which always compares the key), and the doctor
+    /// (doctor.rs: it records the chain, gives the decision to webpki, and
+    /// closes each session after the handshake with no data).
     #[test]
     fn no_other_code_sets_its_own_verifier() {
-        const ALLOWED: &[&str] = &["src/util/tls.rs", "src/net.rs", "src/warp/session.rs"];
+        const ALLOWED: &[&str] = &[
+            "src/doctor.rs",
+            "src/net.rs",
+            "src/util/tls.rs",
+            "src/warp/session.rs",
+        ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut stack = vec![root.join("src"), root.join("crates/pod-netns/src")];
         let mut found = Vec::new();

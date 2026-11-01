@@ -24,6 +24,7 @@
 pub mod cloudflare;
 pub mod config;
 pub mod connect;
+pub mod doctor;
 pub mod edge_discovery;
 pub mod edge_h2;
 pub mod egress;

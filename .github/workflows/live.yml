@@ -70,6 +70,16 @@ jobs:
       - name: Build
         timeout-minutes: 20
         run: cargo build --locked --release --bin cfrs
+      # cfrs doctor (issue 11): on the runner each leg can work.
+      - name: cfrs doctor
+        timeout-minutes: 3
+        run: |
+          set -eu
+          target/release/cfrs doctor
+          target/release/cfrs doctor --json > doctor.json
+          for leg in quic http2 quic+warp; do
+            jq -e --arg leg "$leg" '.legs[] | select(.leg == $leg) | .verdict == "ok"' doctor.json
+          done
       - name: Quick tunnel, QUIC (UDP 7844)
         timeout-minutes: 4
         run: sh scripts/live-run.sh quic target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
@@ -205,6 +215,12 @@ jobs:
           sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
+          # The doctor names the legs that cannot work, and quic+warp can.
+          target/release/cfrs doctor --samples 3 || true
+          target/release/cfrs doctor --samples 3 --json > doctor-drop.json || true
+          jq -e '.legs[] | select(.leg == "quic+warp") | .verdict == "ok"' doctor-drop.json
+          jq -e '.legs[] | select(.leg == "http2") | .verdict != "ok"' doctor-drop.json
+          jq -e '.legs[] | select(.leg == "quic") | .verdict != "ok"' doctor-drop.json
           sh scripts/live-run.sh race timeout 240 target/release/cfrs demo --exit-on-verify ||
             { tail -40 race.err; exit 1; }
           grep 'the leg won the race' race.err

@@ -442,6 +442,34 @@ read (for example `/etc/ssl/certs/ca-certificates.crt`), and the Mozilla
 roots compiled into cfrs. `cfrs status` shows the roots in `tls_roots`. See
 `SECURITY.md`.
 
+## Doctor
+
+`cfrs doctor` tests the path from this host to the edge, and gives `ok`,
+`refused` or `unknown` for each hop:
+
+* the proxy of each target (the password is never printed), and the
+  targets that `NO_PROXY` sends direct;
+* TCP to `api.trycloudflare.com:443`, `api.cloudflareclient.com:443`, the
+  edge on 7844 by name and by address, and the MASQUE front door
+  (`162.159.198.2:443`). Each path gets up to 9 samples, 125 ms apart, in
+  at most 10 s: best, median, p95, jitter and loss. A refusal (a proxy 403,
+  a TCP reset) is an answer, not a loss;
+* TLS on each open path: the issuer, and if the chain ends at the roots that
+  cfrs expects. A proxy that answers 200 and then sends no byte, and a proxy
+  that terminates TLS, are named;
+* names and addresses: if the proxy allows one and refuses the other;
+* UDP 7844: one QUIC packet (answered, refused or unknown).
+
+The end is a table of the legs `quic`, `http2` and `quic+warp`, with the
+reason for each leg that cannot work. Exit 0: at least one leg can work.
+Exit 1: none can. `--json` gives one document; `--samples` and `--timeout`
+make it shorter.
+
+```sh
+cfrs doctor
+cfrs doctor --json | jq '.legs'
+```
+
 ## Manual, status and exit codes
 
 `cfrs man` shows the manual. It is generated from the command tree of the
