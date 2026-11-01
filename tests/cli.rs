@@ -692,3 +692,104 @@ fn doctor_tells_listen_from_bind() {
     }
     assert!(line("UDP egress").contains("FAIL refused"), "{text}");
 }
+
+/// `cfrs autostart` with a fake systemctl (no user manager) and a fake
+/// crontab (issue 23): the crontab line holds no secret, other lines stay,
+/// the env file is private, and with no way at all the exit is 69.
+#[test]
+fn autostart_with_cron_and_with_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    const TOKEN: &str = "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=";
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("bin");
+    std::fs::create_dir(&fake).unwrap();
+    let script = |name: &str, body: &str| {
+        let path = fake.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    script("systemctl", "echo 'Failed to connect to bus' >&2; exit 1");
+    script(
+        "crontab",
+        r#"f="$FAKE_CRONTAB"
+if [ "$1" = "-l" ]; then if [ -f "$f" ]; then cat "$f"; exit 0; fi; echo "no crontab for user" >&2; exit 1; fi
+if [ "$1" = "-" ]; then cat > "$f"; exit 0; fi
+exit 2"#,
+    );
+    let crontab = dir.path().join("crontab");
+    std::fs::write(&crontab, "MAILTO=\"\"\n@daily /usr/bin/true # mine\n").unwrap();
+    let state = dir.path().join("state");
+    let run = |args: &[&str], path: &str| {
+        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("PATH", path)
+            .env("HOME", dir.path())
+            .env("CFRS_STATE_DIR", &state)
+            .env("FAKE_CRONTAB", &crontab)
+            .env("TUNNEL_TOKEN", TOKEN)
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("XDG_CONFIG_HOME")
+            .output()
+            .unwrap()
+    };
+    let path = format!("{}:/usr/bin:/bin", fake.display());
+    let out = run(
+        &[
+            "autostart",
+            "add",
+            "web",
+            "--",
+            "status",
+            "--proxy=http://u:pw@127.0.0.1:9",
+        ],
+        &path,
+    );
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("added (cron)"), "{text}");
+    let cron = std::fs::read_to_string(&crontab).unwrap();
+    assert!(
+        cron.starts_with("MAILTO=\"\"\n@daily /usr/bin/true # mine\n"),
+        "{cron}"
+    );
+    assert!(
+        cron.contains("@reboot ") && cron.contains(" autostart run web --dir "),
+        "{cron}"
+    );
+    assert!(cron.trim_end().ends_with("# cfrs autostart web"), "{cron}");
+    assert!(!cron.contains(TOKEN) && !cron.contains("pw@"), "{cron}");
+    let entry = state.join("autostart");
+    let env = std::fs::read_to_string(entry.join("web.env")).unwrap();
+    assert!(env.contains(&format!("TUNNEL_TOKEN={TOKEN}")), "{env}");
+    assert!(env.contains("CFRS_PROXY=http://u:pw@127.0.0.1:9"), "{env}");
+    let mode = std::fs::metadata(entry.join("web.env"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let args = std::fs::read_to_string(entry.join("web.args")).unwrap();
+    assert_eq!(args, r#"["status"]"#);
+    let out = run(&["autostart", "list"], &path);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "web\n");
+
+    let out = run(&["autostart", "remove", "web"], &path);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let cron = std::fs::read_to_string(&crontab).unwrap();
+    assert_eq!(cron, "MAILTO=\"\"\n@daily /usr/bin/true # mine\n");
+    assert!(!entry.join("web.env").exists() && !entry.join("web.args").exists());
+
+    // No systemctl and no crontab: exit 69, and the line to run.
+    let empty = dir.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let out = run(
+        &["autostart", "add", "web", "--", "status"],
+        empty.to_str().unwrap(),
+    );
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("autostart run web --dir"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains(TOKEN));
+}

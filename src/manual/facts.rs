@@ -54,8 +54,13 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     },
     EnvVar {
         names: &["XDG_STATE_HOME", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"],
-        used_by: "warp, net shim, net socksify",
+        used_by: "warp, net shim, net socksify, autostart",
         meaning: "The candidates of the state directory, and of the directory of a shim (a directory that is not noexec). cfrs reads the home from HOME only, not from the user database.",
+    },
+    EnvVar {
+        names: &["XDG_CONFIG_HOME"],
+        used_by: "autostart",
+        meaning: "The base of the systemd user unit: $XDG_CONFIG_HOME/systemd/user/cfrs-NAME.service, else $HOME/.config/systemd/user.",
     },
     EnvVar {
         names: &["CFRS_LEG_FAILOVER"],
@@ -71,6 +76,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
+    },
+    EnvVar {
+        names: &["CFRS_PROXY"],
+        used_by: "all commands",
+        meaning: "The value of --proxy when the flag is not given. It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry.",
     },
     EnvVar {
         names: &["CFRS_UDP"],

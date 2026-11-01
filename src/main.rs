@@ -34,7 +34,16 @@ struct Cli {
     /// The proxy for each connection: http://, socks5:// or socks5h://
     /// [user:password@]host[:port]. Without it, cfrs reads HTTPS_PROXY and
     /// ALL_PROXY. NO_PROXY names the targets that do not use a proxy.
-    #[arg(long, global = true, value_name = "URL", conflicts_with = "no_proxy")]
+    /// CFRS_PROXY gives the same value, and keeps a password out of the
+    /// command line.
+    #[arg(
+        long,
+        global = true,
+        value_name = "URL",
+        conflicts_with = "no_proxy",
+        env = "CFRS_PROXY",
+        hide_env_values = true
+    )]
     proxy: Option<String>,
     /// Use no proxy, also when HTTPS_PROXY or ALL_PROXY is set.
     #[arg(long, global = true)]
@@ -111,6 +120,47 @@ enum Command {
     /// the APIs, the edge (7844) and MASQUE (443), and UDP 7844. Exit 0 when
     /// at least one leg (quic, http2, quic+warp) can work, 1 when none can.
     Doctor(DoctorArgs),
+    /// Start a cfrs command at boot and after a logout, with no root: a
+    /// systemd user unit, else an @reboot line in the crontab.
+    Autostart(AutostartArgs),
+}
+
+#[derive(Args, Debug)]
+struct AutostartArgs {
+    #[command(subcommand)]
+    command: AutostartCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum AutostartCommand {
+    /// Add an entry that runs `cfrs ARGS`. The token and a proxy password
+    /// go to a private env file (mode 0600), not to the unit, the crontab
+    /// or the command line. Exit 69 when this host has no systemd user
+    /// manager and no crontab.
+    Add {
+        /// The name of the entry (letters, digits, - and _).
+        name: String,
+        /// The cfrs command and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        args: Vec<String>,
+    },
+    /// Remove an entry: its unit or its crontab line, and its files. Other
+    /// units and crontab lines stay as they are.
+    Remove {
+        /// The name of the entry.
+        name: String,
+    },
+    /// List the entries.
+    List,
+    /// Run an entry in the place of this process: the unit and the crontab
+    /// line call this. It reads NAME.args and NAME.env in DIR.
+    Run {
+        /// The name of the entry.
+        name: String,
+        /// The directory of the entries (`<state>/autostart`).
+        #[arg(long)]
+        dir: PathBuf,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -572,6 +622,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Autostart(args) => autostart(args.command),
         Command::Status => {
             println!("{}", cfrs::status::document());
             Ok(())
@@ -660,6 +711,43 @@ async fn preflight(config: &Config, show: Show) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn autostart(command: AutostartCommand) -> Result<()> {
+    use cfrs::autostart;
+    match command {
+        AutostartCommand::Add { name, args } => {
+            let added = autostart::add(&name, &args, autostart::PROGRAM_LIMIT)?;
+            println!(
+                "cfrs: autostart {name} added ({}): {}",
+                added.way.name(),
+                added.detail
+            );
+            Ok(())
+        }
+        AutostartCommand::Remove { name } => {
+            for line in autostart::remove(&name, autostart::PROGRAM_LIMIT)? {
+                println!("cfrs: {line}");
+            }
+            Ok(())
+        }
+        AutostartCommand::List => {
+            for name in autostart::list()? {
+                println!("{name}");
+            }
+            Ok(())
+        }
+        AutostartCommand::Run { name, dir } => {
+            use std::os::unix::process::CommandExt;
+            let (args, vars) = autostart::load(&name, &dir).fault(Fault::Config)?;
+            let exe = std::env::current_exe().context("the path of this binary")?;
+            let err = std::process::Command::new(exe)
+                .args(&args)
+                .envs(vars)
+                .exec();
+            Err(anyhow::anyhow!("starting cfrs {}: {err}", args.join(" ")))
+        }
+    }
 }
 
 fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {

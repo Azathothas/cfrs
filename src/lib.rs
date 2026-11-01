@@ -21,6 +21,7 @@
 //! It speaks the Cloudflare quick-tunnel protocol natively (QUIC + Cap'n Proto
 //! RPC, no `cloudflared` subprocess) and also accepts named-tunnel tokens.
 
+pub mod autostart;
 pub mod cloudflare;
 pub mod config;
 pub mod connect;

@@ -207,6 +207,44 @@ jobs:
           got=$("$RUNNER_TEMP/update/cfrs" --version)
           echo "$got"
           case "$got" in "cfrs 0.3.0-beta.1 (361d1d769d00041602d8e04a4860c11ca71288aa)") ;; *) exit 1 ;; esac
+      # cfrs autostart with a systemd user manager (issue 23): systemd starts
+      # a quick tunnel, the URL answers, and no token is in the unit or in ps.
+      - name: Autostart with a systemd user unit
+        timeout-minutes: 5
+        run: |
+          set -eu
+          sudo loginctl enable-linger "$USER"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          i=0
+          until systemctl --user show-environment > /dev/null 2>&1; do
+            i=$((i + 1)); [ "$i" -lt 30 ] || { echo "no user manager"; exit 1; }; sleep 1
+          done
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/cfrs "$HOME/.local/bin/cfrs"
+          cfrs=$HOME/.local/bin/cfrs
+          "$cfrs" autostart add live -- tunnel --hello-world --json
+          token=eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=
+          TUNNEL_TOKEN=$token "$cfrs" autostart add secret -- status --proxy=http://u:pw@127.0.0.1:9
+          i=0
+          until journalctl --user -u cfrs-live -o cat 2> /dev/null | grep -q '"event":"ready"'; do
+            i=$((i + 1)); [ "$i" -lt 90 ] || { systemctl --user status cfrs-live | tail -5; exit 1; }; sleep 1
+          done
+          url=$(journalctl --user -u cfrs-live -o cat | grep '"event":"ready"' | tail -1 | jq -r .url)
+          echo "::add-mask::${url#https://}"
+          i=0
+          until curl -fsS --max-time 10 "$url/" | grep -q 'Hello, world'; do
+            i=$((i + 1)); [ "$i" -lt 30 ] || { echo "the URL of the unit does not answer"; exit 1; }; sleep 2
+          done
+          echo "systemd started the quick tunnel, and its URL answers"
+          systemctl --user is-active cfrs-live
+          if systemctl --user cat cfrs-secret cfrs-live | grep -E "$token|pw@"; then echo "a secret is in a unit"; exit 1; fi
+          if ps auxww | grep -v grep | grep -E "$token|pw@"; then echo "a secret is in ps"; exit 1; fi
+          stat -c '%a %n' "$HOME"/.local/state/cfrs/autostart/*.env
+          test "$(stat -c %a "$HOME/.local/state/cfrs/autostart/secret.env")" = 600
+          "$cfrs" autostart remove live
+          "$cfrs" autostart remove secret
+          if systemctl --user cat cfrs-live > /dev/null 2>&1; then echo "the unit is still there"; exit 1; fi
+          test -z "$(ls "$HOME/.local/state/cfrs/autostart")"
       - name: Quick tunnel, QUIC through WARP (TCP 443)
         timeout-minutes: 5
         run: sh scripts/live-run.sh warpleg target/release/cfrs demo --exit-on-verify --protocol quic --transport warp

@@ -460,6 +460,32 @@ read (for example `/etc/ssl/certs/ca-certificates.crt`), and the Mozilla
 roots compiled into cfrs. `cfrs status` shows the roots in `tls_roots`. See
 `SECURITY.md`.
 
+## Autostart
+
+`cfrs autostart` starts a cfrs command at boot and after a logout, with no
+root. It uses a systemd user unit when `systemctl --user` answers, else an
+`@reboot` line in the crontab. With neither, it prints the line to run at
+login and exits 69.
+
+```sh
+TUNNEL_TOKEN=... cfrs autostart add web -- tunnel --url http://127.0.0.1:8080
+cfrs autostart list
+cfrs autostart remove web
+```
+
+* The arguments and the variables (`TUNNEL_TOKEN`, the proxy variables,
+  `SSL_CERT_FILE`, `CFRS_*`) go to private files (mode 0600) in
+  `<state>/autostart/`. `--token` and a `--proxy` with a password move to
+  `TUNNEL_TOKEN` and `CFRS_PROXY`. The unit, the crontab line and the
+  command line of the process hold no secret.
+* The unit and the line run this binary by its absolute path. A binary in
+  a temporary directory is refused.
+* A systemd user manager stops at logout unless linger is on:
+  `loginctl enable-linger`.
+* `remove` deletes only what `add` wrote (a marker line in the unit, a
+  marker comment on the crontab line).
+* Each program that `add` or `remove` runs has a limit of 10 s.
+
 ## Doctor
 
 `cfrs doctor` tests the path from this host to the edge, and gives `ok`,
