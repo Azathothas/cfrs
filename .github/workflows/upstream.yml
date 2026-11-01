@@ -1,0 +1,43 @@
+name: upstream
+
+# The cloudflared files that cfrs follows (src/cloudflare/cloudflared-pin.txt),
+# compared with the pinned release and with the newest release, each week:
+# tools/check-upstream.py. Then the check must fail on a planted sum, and the
+# header encoding of cfrs must match the Go code of cloudflared
+# (tools/check-header-oracle.sh).
+
+on:
+  schedule:
+    - cron: "19 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CHECK_UPSTREAM_API: https://api.github.com
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The pinned files against cloudflared
+        run: python3 -I tools/check-upstream.py
+      - name: A planted sum fails
+        run: |
+          set -u
+          rc=0
+          python3 -I tools/check-upstream.py --plant-sum src/cloudflare/schemas/tunnelrpc.capnp > plant.log 2>&1 || rc=$?
+          cat plant.log
+          test "$rc" -eq 1 || { echo "the check exited $rc on a planted sum, not 1"; exit 1; }
+          grep -q 'tunnelrpc.capnp' plant.log
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: The header encoding against the Go code of cloudflared
+        run: sh tools/check-header-oracle.sh

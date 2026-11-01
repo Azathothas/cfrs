@@ -40,10 +40,11 @@ impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the edge refused the registration: {} (retry: {}, after {} s)",
+            "the edge refused the registration: {} (retry: {}, after {} s; cfrs speaks {})",
             self.cause,
             if self.should_retry { "yes" } else { "no" },
-            self.retry_after.as_secs()
+            self.retry_after.as_secs(),
+            crate::cloudflare::SPEAKS
         )
     }
 }
@@ -416,8 +417,14 @@ impl<W: AsyncWrite + Unpin> Session<W> {
                     })),
                 }
             }
-            Answer::Exception(reason) => bail!("registerConnection failed: {reason}"),
-            Answer::Other(kind) => bail!("registerConnection answered with kind {kind}"),
+            Answer::Exception(reason) => bail!(
+                "registerConnection failed: {reason} (cfrs speaks {})",
+                crate::cloudflare::SPEAKS
+            ),
+            Answer::Other(kind) => bail!(
+                "registerConnection answered with kind {kind} (cfrs speaks {})",
+                crate::cloudflare::SPEAKS
+            ),
         }
     }
 

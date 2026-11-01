@@ -57,6 +57,10 @@ pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
 /// Cloudflare-internal roots the edge certificate chains to.
 ///
 /// From `cloudflared`'s `tlsconfig/cloudflare_ca.go`, Apache-2.0.
+/// The cloudflared release whose protocol cfrs speaks (the tag of
+/// `cloudflared-pin.txt`). Errors that a protocol change can cause name it.
+pub const SPEAKS: &str = "cloudflared 2026.10.7";
+
 pub const CF_EDGE_ROOTS_PEM: &[u8] = include_bytes!("cf-edge-roots.pem");
 
 /// The six-byte preamble on a data stream, from `tunnelrpc/quic/protocol.go`.
@@ -239,6 +243,16 @@ pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speaks_names_the_tag_of_the_pin() {
+        let pin = include_str!("cloudflared-pin.txt");
+        let tag = pin
+            .lines()
+            .find_map(|l| l.strip_prefix("tag "))
+            .expect("the pin has a tag");
+        assert_eq!(SPEAKS, format!("cloudflared {}", tag.trim()));
+    }
 
     #[test]
     fn quic_alpn_and_sni_are_different_strings() {

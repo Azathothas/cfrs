@@ -360,6 +360,8 @@ mod tests {
             })
             .context("registering")
         };
+        let text = format!("{:#}", refused(false, 0));
+        assert!(text.contains("cfrs speaks cloudflared 2026.10.7"), "{text}");
         match policy.next(1, &refused(false, 0)) {
             Next::Stop(reason) => assert!(reason.contains("tunnel not found"), "{reason}"),
             other => panic!("{other:?}"),

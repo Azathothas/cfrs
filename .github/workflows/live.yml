@@ -29,8 +29,10 @@ on:
 permissions:
   contents: read
 
+# A planted run has its own group, so that it does not wait for (or cancel)
+# a real run.
 concurrency:
-  group: live
+  group: ${{ inputs.plant != '' && format('live-plant-{0}', github.run_id) || 'live' }}
   cancel-in-progress: false
 
 env:

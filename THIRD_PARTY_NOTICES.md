@@ -1,7 +1,8 @@
 # Third-party notices
 
 `cfrs` is 0BSD (see `LICENSE`). These files are from `cloudflared`
-(<https://github.com/cloudflare/cloudflared>) and have the Apache License 2.0:
+(<https://github.com/cloudflare/cloudflared>), release 2026.10.7
+(`src/cloudflare/cloudflared-pin.txt`), and have the Apache License 2.0:
 
 | Path | Source in cloudflared |
 | --- | --- |

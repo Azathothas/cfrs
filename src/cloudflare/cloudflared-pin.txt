@@ -1,0 +1,17 @@
+# The cloudflared release whose protocol cfrs speaks. tools/check-upstream.py
+# compares each file below with this release and with the newest release;
+# .github/workflows/upstream.yml runs it each week. A `copy` line names the
+# file of cfrs that holds the same bytes (or, for the roots, the same
+# certificates); a `source` line names a file whose behaviour cfrs follows.
+tag 2026.10.7
+commit 872b241f94871665c1c157adefcf90c11f0ead96
+released 2026-10-30
+copy tunnelrpc/proto/tunnelrpc.capnp 448aa30f4e251dc8810aba1a16c60ebeaaa5e000f88c46a8a28ba29f73e3bc3c src/cloudflare/schemas/tunnelrpc.capnp
+copy tunnelrpc/proto/quic_metadata_protocol.capnp 639d0b0ac9501bd4c3e2af8d52d3b7692805c825e3e14edd113a2f2263f8091f src/cloudflare/schemas/quic_metadata_protocol.capnp
+roots tlsconfig/cloudflare_ca.go 2cbafae6d85350392221a06d77cdab9223767b791dbca07d18a28de320b99321 src/cloudflare/cf-edge-roots.pem
+source connection/header.go 597a7a4c789019921e5743ea7e320f09b386eed9511d9cd9efc038cd3d4d28ec
+source connection/http2.go 801f23ed2b42c0eb918b349b9a4574c3f54a4cb277efc16643f8a0ce51c82b30
+source connection/control.go 280bbf5a7da15cc0e32131e10aac173fe8706ca460aade01277e448f2f09f963
+source connection/quic_connection.go 977a1b6504981931bcbb295776ec3b06605a3717a8b9579bf53fc82bbc6e65bb
+source tunnelrpc/registration_client.go d6799df9e3f598542671c1c86b25f06d5ac389aed543d3bf942078254b65c991
+source cmd/cloudflared/tunnel/quick_tunnel.go 637457fc155436876ccf51407148dc5c74c4c8117a5ad23b8647428460b8082a
