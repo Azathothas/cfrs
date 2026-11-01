@@ -239,6 +239,11 @@ struct DoctorArgs {
     /// Print one JSON document.
     #[arg(long)]
     json: bool,
+    /// Test what dev work can do here: git over HTTPS and SSH, the package
+    /// registries, UDP DNS, IPv6 and localhost, directly, through the proxy
+    /// and through a running cfrs warp up; then print the commands to run.
+    #[arg(long)]
+    agent: bool,
     /// Samples of each TCP path (1-9). All samples end in 10 s.
     #[arg(long, default_value_t = 9, value_parser = clap::value_parser!(u8).range(1..=9))]
     samples: u8,
@@ -1059,6 +1064,15 @@ async fn async_main(cli: Cli) -> Result<()> {
                 .map_err(|e| cfrs::exit::fault(cfrs::exit::Fault::Usage, anyhow::anyhow!(e)))?;
             let paged = !request.roff && !request.json;
             cfrs::manual::pager::show(&text, request.no_pager || !paged)?;
+            Ok(())
+        }
+        Command::Doctor(args) if args.agent => {
+            let report = cfrs::agent::run(Duration::from_secs(args.timeout.max(3))).await;
+            if args.json {
+                println!("{}", serde_json::to_string(&report)?);
+            } else {
+                print!("{}", cfrs::agent::text(&report));
+            }
             Ok(())
         }
         Command::Doctor(args) => {

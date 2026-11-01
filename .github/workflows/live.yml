@@ -379,6 +379,13 @@ jobs:
             echo "$nc: $out" | tail -1
             echo "$out" | grep -q 'Permission denied (publickey)'
           done
+          # Issue 82: the agent doctor sees SSH fail direct and work
+          # through the running warp up.
+          target/release/cfrs doctor --agent --json > agent.json
+          jq -e '.warp_up == true' agent.json
+          jq -e '.rows[] | select(.task == "git (SSH)") | .direct != "ok" and .warp == "ok"' agent.json
+          jq -e '.rows[] | select(.task == "git (HTTPS)") | .warp == "ok"' agent.json
+          target/release/cfrs doctor --agent
           sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP
           target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
           # A second warp up is the same instance.

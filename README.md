@@ -625,6 +625,22 @@ cfrs doctor
 cfrs doctor --json | jq '.legs'
 ```
 
+### What dev work can do: `cfrs doctor --agent`
+
+```sh
+cfrs doctor --agent           # a table and the commands to run
+cfrs doctor --agent --json
+```
+
+For each task (git over HTTPS and over SSH, pip, npm, cargo, go modules,
+docker pull), the doctor tries three paths: `direct`, the proxy of the
+environment, and a running `cfrs warp up`. A TLS check is a handshake
+with the public roots: `tls-intercepted` means that the chain is not
+public but the CA bundle of this host (`SSL_CERT_FILE`) trusts it, so a
+proxy or a gateway terminates TLS. It also tests UDP DNS to 1.1.1.1,
+IPv6 and TCP on 127.0.0.1, and prints the commands: for example
+`cfrs warp up`, `cfrs warp ssh-config`, or "nothing to do".
+
 ## Manual, status and exit codes
 
 `cfrs man` shows the manual. It is generated from the command tree of the
