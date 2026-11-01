@@ -628,7 +628,16 @@ pub(crate) async fn supervise_seccomp(
             handle_socket(lfd, id, a, &mut map)
         } else if nr == libc::SYS_connect as i32 {
             handle_connect(
-                lfd, id, a, mem, &mut map, &mut dns, &proxies, &rules, verbose,
+                lfd,
+                id,
+                a,
+                mem,
+                &mut map,
+                &mut dns,
+                &proxies,
+                &rules,
+                verbose,
+                &inbound_dir,
             )
             .await
         } else if nr == libc::SYS_sendto as i32 {
@@ -838,6 +847,7 @@ pub(crate) async fn handle_connect(
     proxies: &[Proxy],
     rules: &[Rule],
     verbose: bool,
+    inbound_dir: &std::path::Path,
 ) -> Result<()> {
     let fd = a[0] as i32;
     let is_datagram = matches!(map.get(&fd), Some(Sock::Datagram { .. }));
@@ -861,11 +871,21 @@ pub(crate) async fn handle_connect(
         },
         IpAddr::V6(v6) => format!("[{v6}]:{port}"),
     };
-    let chain = select_chain(rules, proxies, &target);
-    if verbose {
-        eprintln!("pod-netns: connect {target} via {}", chain[0].endpoint());
-    }
-    match within_timeout("upstream connect", connect_upstream_async(chain, &target)).await {
+    let connected = if ip.is_loopback() {
+        // Loopback does not go to the proxy (issue 80): a listener of the
+        // program itself (its inbound socket), else TCP on this host.
+        if verbose {
+            eprintln!("pod-netns: connect {target} direct (loopback)");
+        }
+        within_timeout("loopback connect", connect_loopback(inbound_dir, ip, port)).await
+    } else {
+        let chain = select_chain(rules, proxies, &target);
+        if verbose {
+            eprintln!("pod-netns: connect {target} via {}", chain[0].endpoint());
+        }
+        within_timeout("upstream connect", connect_upstream_async(chain, &target)).await
+    };
+    match connected {
         Ok(mut upstream) => {
             notif_respond(lfd, id, 0, 0)?;
             if let Some(Sock::Stream { mut pair, .. }) = map.remove(&fd) {
@@ -882,6 +902,22 @@ pub(crate) async fn handle_connect(
         }
     }
     Ok(())
+}
+
+/// A loopback connect of the program: its own inbound listener on `port`
+/// when there is one, else TCP to `ip:port` on this host.
+async fn connect_loopback(
+    inbound_dir: &std::path::Path,
+    ip: IpAddr,
+    port: u16,
+) -> Result<crate::upstream::Upstream> {
+    let own = inbound_dir.join(format!("{port}.sock"));
+    if let Ok(stream) = tokio::net::UnixStream::connect(&own).await {
+        return Ok(Box::new(stream));
+    }
+    let stream =
+        crate::upstream::connect_direct(&std::net::SocketAddr::new(ip, port).to_string()).await?;
+    Ok(Box::new(stream))
 }
 
 pub(crate) async fn handle_sendto(

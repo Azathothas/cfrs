@@ -165,6 +165,9 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     let result = match args.backend {
         BackendKind::Netns => run(args),
         BackendKind::Seccomp => run_seccomp(args),
+        BackendKind::Auto if args.prefer_udp && doctor::probe_seccomp_notif().ok => {
+            run_seccomp(args)
+        }
         BackendKind::Auto => {
             // The netns backend needs unshare and a TUN; without them the
             // seccomp backend is the only thing that can work.

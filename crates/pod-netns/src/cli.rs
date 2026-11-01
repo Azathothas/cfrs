@@ -25,6 +25,9 @@ pub(crate) struct Args {
     pub(crate) keep_proxy_env: bool,
     pub(crate) serve: Option<crate::listen::ProxyListen>,
     pub(crate) backend: BackendKind,
+    /// `--prefer-udp`: `auto` takes the seccomp backend first (it carries
+    /// all UDP; the netns backend carries DNS only).
+    pub(crate) prefer_udp: bool,
 }
 
 pub fn usage() -> String {
@@ -45,12 +48,19 @@ OPTIONS:
                            Default: $ALL_PROXY, $HTTPS_PROXY or $HTTP_PROXY
     -r, --rule SPEC        Per-destination route; first match wins:
                              domain:NAME=socks5://host:port
+                             domain:.example.com=...  (the name and each
+                                                       name under it)
                              cidr:10.0.0.0/8=socks5://host:port
+                             cidr:10.0.0.0/8=direct   (no proxy)
+                           With the seccomp backend, 127.0.0.0/8 goes direct
+                           (or to a listener of the program itself)
         --map NAME=ADDR    Resolve NAME to ADDR locally, repeatable
         --keep-proxy-env   Keep HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
                            (and the lower-case forms) for the program; by
                            default the program does not get them
         --backend NAME     auto (default), netns or seccomp
+        --prefer-udp       With auto: seccomp first when it works (all UDP
+                           goes through; netns carries DNS only)
         --inbound-dir DIR  Where a bound port is exposed as a unix socket
                            (seccomp backend only)
                            [default: /tmp/pod-netns-inbound]
@@ -75,6 +85,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
     let mut verbose = false;
     let mut maps: Vec<(String, IpAddr)> = Vec::new();
     let mut backend = BackendKind::Auto;
+    let mut prefer_udp = false;
     let mut inbound_dir = std::path::PathBuf::from("/tmp/pod-netns-inbound");
     let mut inbound_dir_given = false;
     let mut keep_proxy_env = false;
@@ -104,6 +115,10 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
             }
             "--keep-proxy-env" => {
                 keep_proxy_env = true;
+                i += 1;
+            }
+            "--prefer-udp" => {
+                prefer_udp = true;
                 i += 1;
             }
             "--map" => {
@@ -217,5 +232,6 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
         keep_proxy_env,
         serve,
         backend,
+        prefer_udp,
     })
 }

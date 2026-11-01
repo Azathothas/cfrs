@@ -30,6 +30,8 @@ pub enum ProxyKind {
     /// Not a proxy at all: dial the target through a running `tailscaled`'s
     /// LocalAPI `ts-dial` endpoint, so the tailnet is the transport.
     Tailscale,
+    /// No proxy: TCP to the target from this process (a rule `=direct`).
+    Direct,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +48,16 @@ pub struct Proxy {
 
 impl Proxy {
     pub fn parse(spec: &str) -> Result<Self> {
+        if spec == "direct" {
+            return Ok(Self {
+                kind: ProxyKind::Direct,
+                host: String::new(),
+                port: 0,
+                user: None,
+                pass: None,
+                unix_path: None,
+            });
+        }
         // unix:/path or socks5+unix:/path — a SOCKS5 proxy on a unix socket.
         if let Some(path) = spec
             .strip_prefix("unix:")
@@ -129,6 +141,9 @@ impl Proxy {
     }
 
     pub fn endpoint(&self) -> String {
+        if self.kind == ProxyKind::Direct {
+            return "direct".to_string();
+        }
         match &self.unix_path {
             Some(p) => format!("unix:{p}"),
             None => format!("{}:{}", self.host, self.port),
@@ -165,6 +180,26 @@ pub fn in_cidr(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
     (u32::from(ip) & mask) == (u32::from(net) & mask)
 }
 
+/// A domain rule: `NAME` matches the name only; `.NAME` matches the name
+/// and each name under it (`a.NAME`), not `NAMEx` or `NAME.evil`.
+pub fn domain_matches(rule: &str, host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let rule = rule.to_ascii_lowercase();
+    match rule.strip_prefix('.') {
+        Some(base) => host == base || host.ends_with(&format!(".{base}")),
+        None => host == rule.trim_end_matches('.'),
+    }
+}
+
+/// TCP to `target` (`host:port`, `[v6]:port`) from this process.
+pub async fn connect_direct(target: &str) -> Result<tokio::net::TcpStream> {
+    let stream = tokio::net::TcpStream::connect(target)
+        .await
+        .with_context(|| format!("direct TCP to {target}"))?;
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
+}
+
 /// First matching rule wins; otherwise the default `-x` chain. A rule is a
 /// single hop; the default is a chain.
 pub fn select_chain<'a>(rules: &'a [Rule], default: &'a [Proxy], target: &str) -> &'a [Proxy] {
@@ -174,7 +209,7 @@ pub fn select_chain<'a>(rules: &'a [Rule], default: &'a [Proxy], target: &str) -
     for rule in rules {
         match &rule.matcher {
             RuleMatch::Domain(d) => {
-                if d.eq_ignore_ascii_case(host) {
+                if domain_matches(d, host) {
                     return std::slice::from_ref(&rule.proxy);
                 }
             }
@@ -191,6 +226,9 @@ pub fn select_chain<'a>(rules: &'a [Rule], default: &'a [Proxy], target: &str) -
 }
 
 pub async fn connect_upstream(proxy: &Proxy, target: &str) -> Result<tokio::net::TcpStream> {
+    if proxy.kind == ProxyKind::Direct {
+        return connect_direct(target).await;
+    }
     let stream = tokio::net::TcpStream::connect(proxy.endpoint())
         .await
         .with_context(|| format!("connect to proxy {}", proxy.endpoint()))?;
@@ -198,6 +236,7 @@ pub async fn connect_upstream(proxy: &Proxy, target: &str) -> Result<tokio::net:
         ProxyKind::Socks5 => socks5_connect(stream, proxy, target).await,
         ProxyKind::Http => http_connect(stream, proxy, target).await,
         ProxyKind::Tailscale => bail!("the tailscale hop is only available on the seccomp backend"),
+        ProxyKind::Direct => unreachable!("handled above"),
     }
 }
 
@@ -212,6 +251,12 @@ pub type Upstream = Box<dyn AsyncStream>;
 /// address of the next one.
 pub async fn connect_upstream_async(chain: &[Proxy], target: &str) -> Result<Upstream> {
     let (first, rest) = chain.split_first().context("no proxy configured")?;
+    if first.kind == ProxyKind::Direct {
+        if !rest.is_empty() {
+            bail!("direct cannot be chained with a proxy hop");
+        }
+        return Ok(Box::new(connect_direct(target).await?));
+    }
     if first.kind == ProxyKind::Tailscale {
         if !rest.is_empty() {
             bail!("a tailscale hop cannot be chained with a proxy hop");
@@ -232,7 +277,7 @@ pub async fn connect_upstream_async(chain: &[Proxy], target: &str) -> Result<Ups
         return match first.kind {
             ProxyKind::Socks5 => socks5_connect(stream, first, target).await,
             ProxyKind::Http => http_connect(stream, first, target).await,
-            ProxyKind::Tailscale => unreachable!("handled above"),
+            ProxyKind::Tailscale | ProxyKind::Direct => unreachable!("handled above"),
         };
     }
     for (i, hop) in chain.iter().enumerate().take(chain.len() - 1) {
@@ -251,6 +296,7 @@ pub async fn connect_upstream_async(chain: &[Proxy], target: &str) -> Result<Ups
         ProxyKind::Socks5 => socks5_connect(stream, last, target).await,
         ProxyKind::Http => http_connect(stream, last, target).await,
         ProxyKind::Tailscale => bail!("a tailscale hop must be the only hop"),
+        ProxyKind::Direct => bail!("direct must be the only hop"),
     }
 }
 
@@ -493,6 +539,37 @@ pub fn wrap_udp(payload: &[u8], ip: IpAddr, port: u16) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn domain_rules_match_a_name_or_a_suffix() {
+        use super::domain_matches;
+        assert!(domain_matches("example.com", "EXAMPLE.com"));
+        assert!(!domain_matches("example.com", "a.example.com"));
+        assert!(domain_matches(".example.com", "example.com"));
+        assert!(domain_matches(".example.com", "a.b.example.com."));
+        assert!(!domain_matches(".example.com", "badexample.com"));
+        assert!(!domain_matches(".example.com", "example.com.evil"));
+    }
+
+    #[test]
+    fn direct_is_an_upstream() {
+        let direct = super::Proxy::parse("direct").unwrap();
+        assert_eq!(direct.kind, super::ProxyKind::Direct);
+        assert_eq!(direct.endpoint(), "direct");
+        let rules = vec![super::Rule {
+            matcher: super::RuleMatch::Cidr("10.0.0.0".parse().unwrap(), 8),
+            proxy: direct,
+        }];
+        let default = vec![super::Proxy::parse("socks5://127.0.0.1:1080").unwrap()];
+        assert_eq!(
+            super::select_chain(&rules, &default, "10.1.2.3:22")[0].endpoint(),
+            "direct"
+        );
+        assert_eq!(
+            super::select_chain(&rules, &default, "1.1.1.1:443")[0].endpoint(),
+            "127.0.0.1:1080"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -21,9 +21,10 @@ pod-netns doctor --json
 | Option | Function |
 | --- | --- |
 | `-x, --proxy SPEC` | An upstream. Repeat it to make a chain. Forms: `socks5://[user:pass@]host:port`, `http://[user:pass@]host:port`, `socks5://unix:/path`, `tailscale:/path/to/tailscaled.sock`. Default: `$ALL_PROXY`, `$HTTPS_PROXY` or `$HTTP_PROXY`. |
-| `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY` or `cidr:ADDR/PREFIX=PROXY`. The first rule that matches is used. |
+| `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY`, `domain:.NAME=PROXY` (the name and each name under it) or `cidr:ADDR/PREFIX=PROXY`. PROXY can be `direct` (TCP from pod-netns, no proxy). The first rule that matches is used. |
 | `--map NAME=ADDR` | Resolve `NAME` to `ADDR`, with no upstream. |
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
+| `--prefer-udp` | With `auto`: `seccomp` first when it works, because it carries all UDP (`netns` carries DNS only). `cfrs warp run` sets it. |
 | `--keep-proxy-env` | Keep `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case forms for the program. By default the program does not get them: the pod is its egress, and a program that used them would send to a host proxy that it cannot reach. |
 | `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
 | `--serve LISTEN` | Serve SOCKS5, HTTP `CONNECT` and UDP ASSOCIATE on `unix:/path` or `tcp://host:port`, through the `-x` chain. |
@@ -35,6 +36,9 @@ backend can run.
 ## Backends
 
 `--backend auto` uses `netns` when the host permits `unshare`, else `seccomp`.
+With the `seccomp` backend, a TCP connect to `127.0.0.0/8` does not go to
+the proxy: it goes to a listener of the program itself (its inbound
+socket) when there is one, else to TCP on the host.
 
 ### netns
 

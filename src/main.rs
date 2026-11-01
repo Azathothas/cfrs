@@ -1787,9 +1787,21 @@ enum WarpCommand {
     /// Run a program with all its traffic sent through WARP. No root and no
     /// TUN device are necessary (pod-netns).
     Run {
-        /// The pod-netns backend: auto, netns or seccomp.
+        /// The pod-netns backend: auto, netns or seccomp. auto takes
+        /// seccomp first when it works, so that UDP goes through WARP too.
         #[arg(long, default_value = "auto")]
         backend: String,
+        /// A pod-netns rule, repeatable: domain:NAME=PROXY,
+        /// domain:.SUFFIX=PROXY, cidr:NET/LEN=PROXY; PROXY may be direct.
+        #[arg(short = 'r', long = "rule", value_name = "SPEC")]
+        rules: Vec<String>,
+        /// The program keeps the proxy variables of this shell.
+        #[arg(long)]
+        keep_proxy_env: bool,
+        /// Where a port that the program listens on is a unix socket
+        /// (seccomp backend).
+        #[arg(long, value_name = "DIR")]
+        inbound_dir: Option<PathBuf>,
         /// The program and its arguments.
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         program: Vec<String>,
@@ -2051,7 +2063,13 @@ async fn warp(args: WarpArgs) -> Result<()> {
         }
         #[cfg(not(target_os = "linux"))]
         WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),
-        WarpCommand::Run { backend, program } => {
+        WarpCommand::Run {
+            backend,
+            rules,
+            keep_proxy_env,
+            inbound_dir,
+            program,
+        } => {
             let socket =
                 std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
             let live = Arc::new(client)
@@ -2065,11 +2083,25 @@ async fn warp(args: WarpArgs) -> Result<()> {
             .await?;
             let mut argv = vec![
                 "--backend".to_string(),
-                backend,
+                backend.clone(),
                 "-x".to_string(),
                 format!("socks5://unix:{}", socket.display()),
-                "--".to_string(),
             ];
+            if backend == "auto" {
+                argv.push("--prefer-udp".to_string());
+            }
+            for rule in rules {
+                argv.push("-r".to_string());
+                argv.push(rule);
+            }
+            if keep_proxy_env {
+                argv.push("--keep-proxy-env".to_string());
+            }
+            if let Some(dir) = inbound_dir {
+                argv.push("--inbound-dir".to_string());
+                argv.push(dir.display().to_string());
+            }
+            argv.push("--".to_string());
             argv.extend(program);
             // pod-netns makes its own runtime, so run it on a plain thread.
             let (done_tx, done_rx) = tokio::sync::oneshot::channel();

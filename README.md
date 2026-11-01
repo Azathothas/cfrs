@@ -367,7 +367,10 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   `--listen unix:/path` on a host that refuses `AF_INET` binds. Names are
   resolved through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
 * `cfrs warp run` starts the proxy on a unix socket and runs the program with
-  `cfrs pod`. The TCP connections and the DNS queries of the program go
+  `cfrs pod` (`auto` takes the `seccomp` backend first, for UDP). It passes
+  `-r` (for example `-r cidr:10.0.0.0/8=direct`), `--keep-proxy-env` and
+  `--inbound-dir` to the pod. A connect to 127.0.0.1 goes to the host, not
+  to WARP. The TCP connections and the DNS queries of the program go
   through WARP, also for static binaries. With the `seccomp` backend, other
   UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE).
 * `cfrs warp tun` makes a TUN interface with the tunnel address and moves its

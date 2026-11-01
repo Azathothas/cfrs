@@ -1082,3 +1082,43 @@ fn the_program_does_not_get_the_host_proxy() {
         "{env}"
     );
 }
+
+/// Issue 80: a connect to 127.0.0.1 in a seccomp pod goes to the host
+/// listener, not to the proxy (here the proxy socket does not exist, so a
+/// connect through it fails).
+#[test]
+fn seccomp_backend_sends_loopback_direct() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-loop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut conn, _)) = listener.accept() {
+            let mut buf = [0u8; 16];
+            let _ = conn.read(&mut buf);
+            let _ = conn.write_all(b"LOCAL-SERVICE\n");
+        }
+    });
+    let source = CLIENT
+        .replace("htons(80)", &format!("htons({port})"))
+        .replace("93.184.216.34", "127.0.0.1");
+    let program = build_program(&dir, "client-loop", &source, false);
+    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "-x"])
+        .arg(format!("unix:{}", dir.join("no-proxy.sock").display()))
+        .arg("--")
+        .arg(&program)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("LOCAL-SERVICE"),
+        "stdout={stdout:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
