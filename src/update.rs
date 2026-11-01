@@ -33,6 +33,16 @@ pub const FULCIO_PEM: &[u8] = include_bytes!("sigstore-fulcio.pem");
 /// The target triple of this binary.
 pub const TARGET: &str = env!("CFRS_BUILD_TARGET");
 
+/// The release asset for the target `target`: the static musl binary of the
+/// same architecture (a release ships no glibc binary, and a static binary
+/// runs on a glibc host too).
+pub fn asset_target(target: &str) -> String {
+    target
+        .replace("-gnueabihf", "-musleabihf")
+        .replace("-gnueabi", "-musleabi")
+        .replace("-gnu", "-musl")
+}
+
 /// One release of the GitHub API.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Release {
@@ -319,7 +329,7 @@ pub async fn run(tag: Option<&str>, check: bool) -> Result<Outcome> {
             tag: release.tag_name.clone(),
         });
     }
-    let name = format!("cfrs-{TARGET}");
+    let name = format!("cfrs-{}", asset_target(TARGET));
     let binary_url = release.asset(&name)?.browser_download_url.clone();
     let sums_url = release.asset("SHA256SUMS")?.browser_download_url.clone();
     let bundle_url = release
@@ -427,6 +437,22 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("signature"), "{err}");
+    }
+
+    #[test]
+    fn a_glibc_build_takes_the_musl_asset() {
+        assert_eq!(
+            asset_target("x86_64-unknown-linux-gnu"),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            asset_target("armv7-unknown-linux-gnueabihf"),
+            "armv7-unknown-linux-musleabihf"
+        );
+        assert_eq!(
+            asset_target("riscv64gc-unknown-linux-musl"),
+            "riscv64gc-unknown-linux-musl"
+        );
     }
 
     #[test]
