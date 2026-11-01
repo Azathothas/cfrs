@@ -545,7 +545,8 @@ jobs:
           grep -q '^warp=on' warprun.out
           # Issue 84: UDP of the seccomp pod goes to warp proxy as frames on
           # the unix control connection (no kernel UDP socket).
-          sh scripts/live-run.sh warpudp timeout 120 target/release/cfrs warp run --backend seccomp -v -- python3 -c "
+          # RUST_LOG of the job (info) has priority over -v: set debug here.
+          RUST_LOG=cfrs=debug sh scripts/live-run.sh warpudp timeout 120 target/release/cfrs warp run --backend seccomp -- python3 -c "
           import socket
           s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
           s.sendto(bytes.fromhex('123401000001000000000000076578616d706c6503636f6d0000010001'), ('1.1.1.1', 53))
