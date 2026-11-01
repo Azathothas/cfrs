@@ -26,6 +26,7 @@ permissions:
 env:
   NIGHTLY: nightly-2026-10-15
   CARGO_FUZZ: "0.13.1"
+  STABLE: "1.97.0"
   CARGO_TERM_COLOR: never
 
 jobs:
@@ -42,7 +43,10 @@ jobs:
         timeout-minutes: 15
         run: |
           sh scripts/retry.sh rustup toolchain install "$NIGHTLY" --profile minimal
-          sh scripts/retry.sh cargo +"$NIGHTLY" install cargo-fuzz --locked --version "$CARGO_FUZZ"
+          sh scripts/retry.sh rustup toolchain install "$STABLE" --profile minimal
+          # cargo-fuzz itself builds with stable: its locked rustix 0.36
+          # does not build on a nightly.
+          sh scripts/retry.sh cargo +"$STABLE" install cargo-fuzz --locked --version "$CARGO_FUZZ"
       - name: Seeds
         timeout-minutes: 15
         working-directory: fuzz

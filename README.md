@@ -78,7 +78,7 @@ needs a nightly toolchain and glibc. `.github/workflows/fuzz.yml` runs each
 target each week. A crash input becomes a unit test before the fix.
 
 ```sh
-cargo +nightly-2026-10-15 install cargo-fuzz --locked --version 0.13.1
+cargo +stable install cargo-fuzz --locked --version 0.13.1
 cd fuzz
 cargo +nightly-2026-10-15 run --bin seed -- corpus
 cargo +nightly-2026-10-15 fuzz run capnp_message corpus/capnp_message -- -max_total_time=60 -malloc_limit_mb=64
