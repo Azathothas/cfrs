@@ -111,6 +111,15 @@ jobs:
           grep -q '^api.trycloudflare.com:443$' "$RUNNER_TEMP/connect.log"
           grep -q ':7844$' "$RUNNER_TEMP/connect.log"
           grep -q '\.trycloudflare\.com:443$' "$RUNNER_TEMP/connect.log"
+      # The rate of a GET and a POST on the HTTP path, through cfrs connect,
+      # and through a WebSocket client in Python (issue 51).
+      - name: Throughput of the HTTP path and of a --forward WebSocket
+        timeout-minutes: 15
+        run: |
+          set -eu
+          sh scripts/retry.sh sudo python3 -m pip install -q --break-system-packages websockets || true
+          sh scripts/live-throughput.sh target/release/cfrs quic 16
+          sh scripts/live-throughput.sh target/release/cfrs http2 16
       # No system resolver: names come from DNS over HTTPS by IP address.
       # Then with Cloudflare's DoH addresses blocked, from Google's.
       - name: Quick tunnel with no system DNS, then with 1.1.1.1 blocked

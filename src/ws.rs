@@ -283,3 +283,104 @@ mod tests {
         let _ = server.await.unwrap();
     }
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// One direction of a delay line: each chunk goes out `delay` after it came in.
+    async fn delay_pipe(
+        mut r: tokio::net::tcp::OwnedReadHalf,
+        mut w: tokio::net::tcp::OwnedWriteHalf,
+        delay: Duration,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let reader = async move {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = match r.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                let _ = tx.send((Instant::now() + delay, buf[..n].to_vec()));
+            }
+        };
+        let writer = async move {
+            while let Some((at, chunk)) = rx.recv().await {
+                tokio::time::sleep_until(at.into()).await;
+                if w.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+            let _ = w.shutdown().await;
+        };
+        tokio::join!(reader, writer);
+    }
+
+    /// A TCP listener that forwards to `to` through a delay line.
+    async fn delay_line(to: std::net::SocketAddr, delay: Duration) -> std::net::SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((a, _)) = l.accept().await {
+                let b = TcpStream::connect(to).await.unwrap();
+                let (ar, aw) = a.into_split();
+                let (br, bw) = b.into_split();
+                tokio::spawn(delay_pipe(ar, bw, delay));
+                tokio::spawn(delay_pipe(br, aw, delay));
+            }
+        });
+        addr
+    }
+
+    const SIZE: usize = 16 << 20;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn throughput() {
+        let delay = Duration::from_millis(25);
+        // Raw TCP through the delay line.
+        let sink = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sink_addr = sink.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = sink.accept().await.unwrap();
+            s.write_all(&vec![7u8; SIZE]).await.unwrap();
+        });
+        let via = delay_line(sink_addr, delay).await;
+        let t = Instant::now();
+        let mut c = TcpStream::connect(via).await.unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).await.unwrap();
+        eprintln!("raw tcp: {} bytes in {:?}", got.len(), t.elapsed());
+
+        // The WS bridge: origin -> server bridge -> delay line -> client bridge -> local.
+        let ws_l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_addr = ws_l.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (s, _) = ws_l.accept().await.unwrap();
+            let ws = WebSocketStream::from_raw_socket(s, Role::Server, None).await;
+            let (origin_a, mut origin_b) = tokio::io::duplex(1 << 16);
+            tokio::spawn(async move {
+                origin_b.write_all(&vec![7u8; SIZE]).await.unwrap();
+                origin_b.shutdown().await.unwrap();
+                let mut sink = Vec::new();
+                let _ = origin_b.read_to_end(&mut sink).await;
+            });
+            let _ = bridge(ws, Box::new(origin_a), &Metrics::new()).await;
+        });
+        let via = delay_line(ws_addr, delay).await;
+        let (local_a, mut local_b) = tokio::io::duplex(1 << 16);
+        let t = Instant::now();
+        tokio::spawn(async move {
+            let s = TcpStream::connect(via).await.unwrap();
+            let ws = WebSocketStream::from_raw_socket(s, Role::Client, None).await;
+            let _ = bridge(ws, Box::new(local_a), &Metrics::new()).await;
+        });
+        let mut got = vec![0u8; SIZE];
+        local_b.read_exact(&mut got).await.unwrap();
+        eprintln!("ws bridge: {} bytes in {:?}", got.len(), t.elapsed());
+    }
+}
