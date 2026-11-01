@@ -234,6 +234,126 @@ pub struct Served {
     pub draining: tokio::sync::oneshot::Receiver<String>,
 }
 
+/// The bytes that the edge (the HTTP/2 client) sends before its frames.
+const CLIENT_PREFACE_LEN: usize = 24;
+/// The HTTP/2 frame type of GOAWAY.
+const FRAME_GOAWAY: u8 = 0x7;
+
+/// Find a GOAWAY frame in the bytes from the edge.
+///
+/// h2 gives the end of the connection (`accept` gives `None`) only after
+/// each open stream ends. A long stream (a WebSocket) can keep a connection
+/// that takes no new stream open for hours, and the tunnel does not replace
+/// it. This scan reads the frame headers as the bytes pass, so the drain
+/// signal comes when GOAWAY arrives.
+#[derive(Debug)]
+struct FrameScan {
+    preface_left: usize,
+    header: [u8; 9],
+    header_len: usize,
+    skip: usize,
+}
+
+impl FrameScan {
+    fn new() -> Self {
+        Self {
+            preface_left: CLIENT_PREFACE_LEN,
+            header: [0; 9],
+            header_len: 0,
+            skip: 0,
+        }
+    }
+
+    /// Read `data`; true when it has the header of a GOAWAY frame.
+    fn feed(&mut self, mut data: &[u8]) -> bool {
+        let mut goaway = false;
+        while !data.is_empty() {
+            if self.preface_left > 0 {
+                let n = self.preface_left.min(data.len());
+                self.preface_left -= n;
+                data = &data[n..];
+            } else if self.skip > 0 {
+                let n = self.skip.min(data.len());
+                self.skip -= n;
+                data = &data[n..];
+            } else {
+                let n = (9 - self.header_len).min(data.len());
+                self.header[self.header_len..self.header_len + n].copy_from_slice(&data[..n]);
+                self.header_len += n;
+                data = &data[n..];
+                if self.header_len == 9 {
+                    let h = self.header;
+                    self.skip = u32::from_be_bytes([0, h[0], h[1], h[2]]) as usize;
+                    self.header_len = 0;
+                    goaway |= h[3] == FRAME_GOAWAY;
+                }
+            }
+        }
+        goaway
+    }
+}
+
+/// The connection of the edge, with a [`FrameScan`] on the bytes it reads.
+struct GoawayScan<T> {
+    inner: T,
+    scan: FrameScan,
+    seen: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for GoawayScan<T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let this = &mut *self;
+        let poll = std::pin::Pin::new(&mut this.inner).poll_read(cx, buf);
+        if poll.is_ready() && this.seen.is_some() && this.scan.feed(&buf.filled()[before..]) {
+            if let Some(seen) = this.seen.take() {
+                seen.notify_one();
+            }
+        }
+        poll
+    }
+}
+
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for GoawayScan<T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, data)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
 /// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
 /// One task accepts the streams, gives the control stream to the caller,
 /// and sends a PING each `keepalive.interval`.
@@ -246,6 +366,12 @@ pub async fn serve_connection<T>(
 where
     T: AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let goaway = Arc::new(tokio::sync::Notify::new());
+    let io = GoawayScan {
+        inner: io,
+        scan: FrameScan::new(),
+        seen: Some(goaway.clone()),
+    };
     let mut conn = h2::server::Builder::new()
         .max_concurrent_streams(u32::MAX)
         .initial_window_size(1 << 20)
@@ -280,13 +406,24 @@ where
     }
     let serve = tokio::spawn(async move {
         let mut control_tx = Some(control_tx);
+        let mut drain_tx = Some(drain_tx);
         let reason = loop {
             let next = tokio::select! {
                 next = conn.accept() => next,
+                _ = goaway.notified(), if drain_tx.is_some() => {
+                    // No new stream comes; the open streams go on.
+                    debug!("the edge sent GOAWAY");
+                    if let Some(tx) = drain_tx.take() {
+                        let _ = tx.send("the edge sent GOAWAY".to_string());
+                    }
+                    continue;
+                }
                 lost = &mut lost_rx => {
                     // A lost connection has no streams to finish.
                     let reason = lost.unwrap_or_else(|_| "the keepalive ended".into());
-                    let _ = drain_tx.send(reason);
+                    if let Some(tx) = drain_tx.take() {
+                        let _ = tx.send(reason);
+                    }
                     return;
                 }
             };
@@ -314,7 +451,9 @@ where
             });
         };
         debug!(%reason, "the HTTP/2 edge connection takes no new stream");
-        let _ = drain_tx.send(reason);
+        if let Some(tx) = drain_tx.take() {
+            let _ = tx.send(reason);
+        }
         // The open streams go on while the connection is polled.
         let closed = std::future::poll_fn(|cx| conn.poll_closed(cx));
         let _ = tokio::time::timeout(DRAIN_LIMIT, closed).await;
@@ -640,9 +779,14 @@ pub async fn reactor(
                 reason = &mut draining => {
                     let reason = reason.unwrap_or_else(|_| "the connection task ended".into());
                     warn!(conn_index, %reason, "the HTTP/2 edge connection ends; connecting a replacement now");
-                    drop(control);
-                    // The old connection finishes its open streams on its own.
-                    drop(serve);
+                    // The old connection finishes its open streams on its
+                    // own (GOAWAY can come while streams are open). The
+                    // control stream stays until then: a reset of it can
+                    // make the edge close the connection.
+                    tokio::spawn(async move {
+                        let _ = serve.await;
+                        drop(control);
+                    });
                 }
             }
             if started.elapsed() >= policy.stable {
@@ -865,6 +1009,82 @@ mod tests {
         );
         let _ = tokio::time::timeout(Duration::from_secs(5), served.serve).await;
         driver.abort();
+    }
+
+    /// An edge that sends GOAWAY while a stream is open (a long WebSocket):
+    /// the drain signal comes at once, not when the stream ends. The test
+    /// writes the HTTP/2 frames itself.
+    #[tokio::test]
+    async fn goaway_with_an_open_stream_drains_at_once() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+            let len = payload.len() as u32;
+            let mut out = len.to_be_bytes()[1..].to_vec();
+            out.extend_from_slice(&[kind, flags]);
+            out.extend_from_slice(&stream.to_be_bytes());
+            out.extend_from_slice(payload);
+            out
+        }
+        let (runtime, ingress) = service();
+        let (mut edge, cfrs_side) = tokio::io::duplex(1 << 16);
+        let mut start = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
+        start.extend(frame(0x4, 0, 0, &[])); // SETTINGS
+                                             // HEADERS on stream 1, END_HEADERS, no END_STREAM: GET https://x/.
+        start.extend(frame(0x1, 0x4, 1, &[0x82, 0x87, 0x84, 0x41, 0x01, b'x']));
+        edge.write_all(&start).await.unwrap();
+        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+            .await
+            .unwrap();
+        let mut draining = served.draining;
+        // The edge reads what cfrs sends, so cfrs is not blocked.
+        let (mut edge_read, mut edge_write) = tokio::io::split(edge);
+        let reader = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1 << 16];
+            while edge_read.read(&mut buf).await.unwrap_or(0) > 0 {}
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(draining.try_recv().is_err(), "no drain before GOAWAY");
+        edge_write
+            .write_all(&frame(0x4, 0x1, 0, &[])) // SETTINGS ACK
+            .await
+            .unwrap();
+        let mut goaway = 1u32.to_be_bytes().to_vec();
+        goaway.extend_from_slice(&0u32.to_be_bytes());
+        edge_write
+            .write_all(&frame(0x7, 0, 0, &goaway))
+            .await
+            .unwrap();
+        let reason = tokio::time::timeout(Duration::from_secs(2), draining)
+            .await
+            .expect("the drain signal while stream 1 is open")
+            .unwrap();
+        assert!(reason.contains("GOAWAY"), "{reason}");
+        reader.abort();
+    }
+
+    /// The scan finds a GOAWAY header in any split of the bytes, and skips
+    /// the payloads (a payload with the byte 0x07 in it is not a header).
+    #[test]
+    fn the_frame_scan_finds_goaway_in_any_split() {
+        let mut bytes = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
+        bytes.extend_from_slice(&[0, 0, 6, 0x4, 0, 0, 0, 0, 0]); // SETTINGS
+        bytes.extend_from_slice(&[0, 3, 0, 0, 0, 0x7]);
+        bytes.extend_from_slice(&[0, 0, 4, 0x0, 0, 0, 0, 0, 1, 7, 7, 7, 7]); // DATA
+        let before_goaway = bytes.len();
+        bytes.extend_from_slice(&[0, 0, 8, 0x7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+        for split in 1..bytes.len() {
+            let mut scan = FrameScan::new();
+            let mut found_at = None;
+            for (i, chunk) in bytes.chunks(split).enumerate() {
+                if scan.feed(chunk) && found_at.is_none() {
+                    found_at = Some((i + 1) * split);
+                }
+            }
+            let at = found_at.unwrap_or_else(|| panic!("split {split}: no GOAWAY"));
+            assert!(at > before_goaway, "split {split}: GOAWAY found too early");
+        }
+        let mut scan = FrameScan::new();
+        assert!(!scan.feed(&bytes[..before_goaway]));
     }
 
     /// Run a real HTTP/2 connection in memory: the test is the edge (the
