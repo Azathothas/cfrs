@@ -257,10 +257,12 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// The text of the systemd user unit.
+/// The text of the systemd user unit. It restarts after a failure, with
+/// no start limit, but not after exit 64 (usage) or 78 (configuration):
+/// another start cannot fix them (issue 74).
 pub fn unit_text(name: &str, line: &str) -> String {
     format!(
-        "{}\n[Unit]\nDescription=cfrs autostart {name}\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nExecStart={line}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
+        "{}\n[Unit]\nDescription=cfrs autostart {name}\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nExecStart={line}\nRestart=on-failure\nRestartSec=5\nRestartPreventExitStatus=64 78\n\n[Install]\nWantedBy=default.target\n",
         marker(name)
     )
 }
@@ -402,22 +404,57 @@ pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
             let next = crontab_with(&current, name, &line, &log);
             ok(run_limited("crontab", &["-"], Some(&next), limit)?)?;
             // Start it now too: cron starts it at the next boot.
-            let started = Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "nohup {line} >> {} 2>&1 &",
-                    quote(&log.display().to_string())
-                ))
-                .stdin(Stdio::null())
-                .status();
+            let started = start_now(&exe, name, &dir, &log);
             format!(
-                "an @reboot line in the crontab; started now: {}; the log: {}",
-                started.map(|s| s.success()).unwrap_or(false),
+                "an @reboot line in the crontab; started now: {started}; the log: {}",
                 log.display()
             )
         }
     };
     Ok(Added { way, detail })
+}
+
+/// Start the entry now, in its own session (not in the process group of
+/// the caller, and with no descriptor of the caller), with its output in
+/// `log`. It counts as started when it still runs after 1 s.
+fn start_now(exe: &Path, name: &str, dir: &Path, log: &Path) -> String {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::process::CommandExt;
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(log)
+    };
+    let (Ok(out), Ok(err)) = (open(), open()) else {
+        return format!("no (cannot write {})", log.display());
+    };
+    let mut cmd = Command::new(exe);
+    cmd.args(["autostart", "run", name, "--dir"])
+        .arg(dir)
+        .stdin(Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    // SAFETY: setsid and close_range are async-signal-safe; they run in
+    // the child between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+            Ok(())
+        });
+    }
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return format!("no ({e})"),
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    match child.try_wait() {
+        Ok(None) => format!("yes (pid {})", child.id()),
+        Ok(Some(status)) => format!("no (it ended with {status}; see the log)"),
+        Err(e) => format!("unknown ({e})"),
+    }
 }
 
 fn ok(ran: Ran) -> Result<()> {
@@ -580,6 +617,8 @@ mod tests {
         let unit = unit_text("web", &line);
         assert!(unit.starts_with("# cfrs autostart web\n"));
         assert!(unit.contains("ExecStart=/home/u/.local/bin/cfrs autostart run web"));
+        assert!(unit.contains("\nRestartPreventExitStatus=64 78\n"));
+        assert!(unit.contains("\nStartLimitIntervalSec=0\n"));
         assert!(!unit.contains(TOKEN));
     }
 

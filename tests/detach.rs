@@ -304,7 +304,14 @@ fn a_killed_instance_is_removed_and_can_start_again() {
     let env = Env::new();
     let switch = env.switch();
     let args = [
-        "net", "switch", "--listen", &switch, "--detach", "--name", "k",
+        "net",
+        "switch",
+        "--listen",
+        &switch,
+        "--detach",
+        "--name",
+        "k",
+        "--no-restart",
     ];
     let start = env.run(&args);
     assert!(start.status.success());
@@ -346,8 +353,11 @@ fn no_secret_in_the_arguments_of_the_child_or_in_the_record() {
         String::from_utf8_lossy(&start.stderr)
     );
     let pid = ready_doc(&start)["pid"].as_i64().unwrap();
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
-    assert!(!String::from_utf8_lossy(&cmdline).contains("hunter2"));
+    let supervisor = env.ps()["instances"][0]["supervisor"].as_i64().unwrap();
+    for pid in [pid, supervisor] {
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+        assert!(!String::from_utf8_lossy(&cmdline).contains("hunter2"));
+    }
     let record = std::fs::read_to_string(env.run.join("sec.json")).unwrap();
     assert!(!record.contains("hunter2"));
     use std::os::unix::fs::PermissionsExt as _;
@@ -407,4 +417,75 @@ fn no_ready_in_time_exits_75_and_leaves_no_record() {
     );
     assert!(started.elapsed() < Duration::from_secs(15));
     assert!(env.ps()["instances"].as_array().unwrap().is_empty());
+}
+
+fn instance(env: &Env, name: &str) -> serde_json::Value {
+    env.ps()["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == name)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[test]
+fn the_supervisor_starts_a_killed_child_again() {
+    let env = Env::new();
+    let switch = env.switch();
+    let start = env.run(&[
+        "net", "switch", "--listen", &switch, "--detach", "--name", "sup",
+    ]);
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let first = ready_doc(&start)["pid"].as_i64().unwrap() as i32;
+    let supervisor = instance(&env, "sup")["supervisor"].as_i64().unwrap() as i32;
+    assert_ne!(first, supervisor);
+    // SAFETY: a signal to the child of this test.
+    unsafe { libc::kill(first, libc::SIGKILL) };
+    wait_until("a new child is ready", || {
+        let i = instance(&env, "sup");
+        i["restarts"] == 1 && i["state"] == "ready" && i["pid"].as_i64() != Some(first as i64)
+    });
+    assert!(alive(supervisor));
+    assert!(connects(&env.sock), "the new child serves");
+    let log = std::fs::read_to_string(env.run.join("sup.log")).unwrap();
+    assert!(log.contains("start 1"), "{log}");
+    // SIGTERM to the supervisor (cfrs stop) ends both, with no new start.
+    let child = instance(&env, "sup")["pid"].as_i64().unwrap() as i32;
+    assert!(env.run(&["stop", "sup"]).status.success());
+    wait_until("both end", || !alive(child) && !alive(supervisor));
+    assert!(instance(&env, "sup").is_null());
+}
+
+#[test]
+fn a_child_goes_on_when_its_supervisor_is_killed() {
+    let env = Env::new();
+    let switch = env.switch();
+    let start = env.run(&[
+        "net", "switch", "--listen", &switch, "--detach", "--name", "orphan",
+    ]);
+    assert!(start.status.success());
+    let child = ready_doc(&start)["pid"].as_i64().unwrap() as i32;
+    let supervisor = instance(&env, "orphan")["supervisor"].as_i64().unwrap() as i32;
+    // SAFETY: a signal to the supervisor of this test.
+    unsafe { libc::kill(supervisor, libc::SIGKILL) };
+    wait_until("the supervisor ends", || !alive(supervisor));
+    assert!(alive(child));
+    assert!(connects(&env.sock));
+    assert_eq!(instance(&env, "orphan")["pid"].as_i64(), Some(child as i64));
+    // stop signals the child (it holds its lock), not the dead supervisor.
+    let started = Instant::now();
+    assert!(env
+        .run(&["stop", "orphan", "--timeout", "5"])
+        .status
+        .success());
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "SIGTERM, not the SIGKILL timeout"
+    );
+    wait_until("the child ends", || !alive(child));
 }

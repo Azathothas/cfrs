@@ -66,7 +66,11 @@ pub fn check_name(name: &str) -> Result<()> {
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub record: PathBuf,
+    /// Held by the supervisor (issue 73), or by an instance with no
+    /// supervisor.
     pub lock: PathBuf,
+    /// Held by the child of a supervisor.
+    pub child_lock: PathBuf,
     pub start: PathBuf,
     pub log: PathBuf,
 }
@@ -75,6 +79,7 @@ pub fn paths(dir: &Path, name: &str) -> Paths {
     Paths {
         record: dir.join(format!("{name}.json")),
         lock: dir.join(format!("{name}.lock")),
+        child_lock: dir.join(format!("{name}.child.lock")),
         start: dir.join(format!("{name}.start")),
         log: dir.join(format!("{name}.log")),
     }
@@ -187,13 +192,14 @@ pub fn lock(path: &Path) -> Result<Held> {
     }
 }
 
-/// Whether a process holds the lock of the instance `name`.
+/// Whether a process holds a lock of the instance `name`: the lock of the
+/// supervisor, or the lock of its child (a child goes on when its
+/// supervisor is killed).
 pub fn is_alive(dir: &Path, name: &str) -> bool {
-    match try_lock(&paths(dir, name).lock) {
-        Ok(Some(_held)) => false,
-        Ok(None) => true,
-        Err(_) => false,
-    }
+    let p = paths(dir, name);
+    [p.lock, p.child_lock]
+        .iter()
+        .any(|lock| matches!(try_lock(lock), Ok(None)))
 }
 
 /// Remove the files of `name` (not the log, which can tell why it ended).
@@ -201,6 +207,7 @@ pub fn remove(dir: &Path, name: &str) {
     let p = paths(dir, name);
     let _ = std::fs::remove_file(p.record);
     let _ = std::fs::remove_file(p.lock);
+    let _ = std::fs::remove_file(p.child_lock);
 }
 
 /// One instance of [`list`].

@@ -21,6 +21,32 @@
 //! It speaks the Cloudflare quick-tunnel protocol natively (QUIC + Cap'n Proto
 //! RPC, no `cloudflared` subprocess) and also accepts named-tunnel tokens.
 
+/// `println!`, `print!` and `eprintln!` that drop a failed write (issue
+/// 74). The std macros panic when the write fails: a detached instance
+/// writes to its log, and a full disk or a closed stream must not stop it.
+/// A command that only prints keeps the default action of SIGPIPE.
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+
+#[allow(unused_macros)]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stdout(), $($arg)*);
+    }};
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 pub mod autostart;
 pub mod cloudflare;
 pub mod config;

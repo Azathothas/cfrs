@@ -515,6 +515,15 @@ The instance keeps running when the shell or the terminal closes.
   directory, or `CFRS_RUN_DIR`), mode 0700: `NAME.json` (0600), `NAME.lock`
   (held while the instance runs) and `NAME.log` (0600, cut at 1 MiB; the
   part before goes to `NAME.log.1`).
+* A supervisor starts the instance again when it ends, with a backoff of
+  1 s doubled to 30 s, but not after exit 64 or 78, and not before the first
+  ready. After 5 quick failures in sequence it runs `cfrs.prev` (the binary
+  before the last `cfrs update`). A quick tunnel gets a new URL at a
+  restart: `cfrs ps` shows it, and the log has a line for it.
+  `--no-restart` turns the supervisor off. `cfrs stop` stops the supervisor
+  and its instance.
+* `cfrs autostart add NAME --from INSTANCE` makes a detached instance start
+  at boot too.
 * `cfrs status` lists the instances.
 
 ## Autostart

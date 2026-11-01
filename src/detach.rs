@@ -32,6 +32,10 @@ use crate::instances::{self, Held, Record};
 
 /// The first argument of a detached child. Only cfrs writes it.
 pub const CHILD_FLAG: &str = "--detach-child";
+/// The first argument of the supervisor of a detached child (issue 73).
+pub const SUPERVISE_FLAG: &str = "--detach-supervise";
+/// Set for the child of a supervisor.
+pub const SUPERVISED_VARIABLE: &str = "CFRS_DETACH_SUPERVISED";
 /// The name of the instance, for the child.
 pub const NAME_VARIABLE: &str = "CFRS_DETACH_NAME";
 /// The hash of the arguments, for the child.
@@ -61,12 +65,19 @@ pub struct Options {
     pub name: Option<String>,
     pub ready_timeout: Duration,
     pub replace: bool,
+    /// Run a supervisor that starts the instance again after it ends.
+    pub restart: bool,
 }
 
 /// At the start of `main`, before any thread: with [`CHILD_FLAG`] after
 /// the binary, remove it, close each inherited descriptor from 3, and reset
 /// the signals. Gives the arguments with no flag.
 pub fn prepare(mut args: Vec<OsString>) -> Vec<OsString> {
+    if args.get(1).is_some_and(|a| a == SUPERVISE_FLAG) {
+        args.remove(1);
+        unix::prepare();
+        std::process::exit(supervise::run(&args));
+    }
     if args.get(1).is_some_and(|a| a == CHILD_FLAG) {
         args.remove(1);
         CHILD.store(true, Ordering::SeqCst);
@@ -90,8 +101,29 @@ pub fn child_begin() -> Result<()> {
     let command = std::env::var(COMMAND_VARIABLE).unwrap_or_default();
     let dir = instances::run_dir()?;
     let paths = instances::paths(&dir, &name);
-    let lock = instances::try_lock(&paths.lock)?
+    let supervised = std::env::var_os(SUPERVISED_VARIABLE).is_some();
+    let lock_path = if supervised {
+        &paths.child_lock
+    } else {
+        &paths.lock
+    };
+    let lock = instances::try_lock(lock_path)?
         .with_context(|| format!("the instance {name} runs already"))?;
+    if supervised {
+        // The supervisor wrote the record: keep its pid, its start and the
+        // count of restarts.
+        if let Some(mut record) = instances::read(&dir, &name) {
+            record.pid = std::process::id();
+            record.state = "starting".into();
+            instances::write(&dir, &record)?;
+            *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(ChildState {
+                dir,
+                record,
+                _lock: lock,
+            });
+            return Ok(());
+        }
+    }
     let record = Record {
         name: name.clone(),
         pid: std::process::id(),
@@ -287,15 +319,19 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
             use std::os::unix::process::CommandExt;
             cmd.arg0("cfrs");
         }
-        cmd.arg(CHILD_FLAG)
-            .args(&args)
-            .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .env(NAME_VARIABLE, &name)
-            .env(HASH_VARIABLE, &hash)
-            .env(COMMAND_VARIABLE, command)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        cmd.arg(if options.restart {
+            SUPERVISE_FLAG
+        } else {
+            CHILD_FLAG
+        })
+        .args(&args)
+        .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .env(NAME_VARIABLE, &name)
+        .env(HASH_VARIABLE, &hash)
+        .env(COMMAND_VARIABLE, command)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
         match cmd.spawn() {
             Ok(child) => return Ok(wait_ready_child(child, &dir, &name, options.ready_timeout)),
             Err(err) => tried.push(format!("{}: {err}", program.display())),
@@ -443,20 +479,44 @@ pub fn stop(dir: &Path, name: &str, timeout: Duration) -> Result<()> {
         instances::remove(dir, name);
         return Ok(());
     }
-    let pids: Vec<u32> = record.supervisor.into_iter().chain([record.pid]).collect();
-    for pid in &pids {
-        // SAFETY: a signal to the process that holds the lock of the
-        // instance (the lock proves that the record is not stale).
-        unsafe { libc::kill(*pid as i32, libc::SIGTERM) };
+    // A pid gets a signal only while its process holds its lock: a pid of
+    // the record can belong to another process after a crash.
+    let p = instances::paths(dir, name);
+    let held = |lock: &Path| matches!(instances::try_lock(lock), Ok(None));
+    let targets = || -> Vec<u32> {
+        match record.supervisor {
+            Some(sup) if held(&p.lock) => vec![sup],
+            Some(_) if held(&p.child_lock) && record.pid != 0 => vec![record.pid],
+            None if held(&p.lock) && record.pid != 0 => vec![record.pid],
+            _ => Vec::new(),
+        }
+    };
+    // With a supervisor, only the supervisor gets SIGTERM: it stops its
+    // child, and does not start it again.
+    for pid in targets() {
+        // SAFETY: a signal to a process that holds a lock of the instance.
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
     }
     let deadline = Instant::now() + timeout;
     while instances::is_alive(dir, name) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     if instances::is_alive(dir, name) {
-        for pid in &pids {
+        // The record now has the pid of a child that the supervisor
+        // started again, if it did.
+        let record = instances::read(dir, name).unwrap_or(record.clone());
+        let mut pids = Vec::new();
+        if record.supervisor.is_some() && held(&p.lock) {
+            pids.extend(record.supervisor);
+        }
+        if record.pid != 0
+            && (held(&p.child_lock) || (record.supervisor.is_none() && held(&p.lock)))
+        {
+            pids.push(record.pid);
+        }
+        for pid in pids {
             // SAFETY: as above.
-            unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         while instances::is_alive(dir, name) && Instant::now() < deadline {
@@ -465,6 +525,243 @@ pub fn stop(dir: &Path, name: &str, timeout: Duration) -> Result<()> {
     }
     instances::remove(dir, name);
     Ok(())
+}
+
+/// The supervisor of a detached child (issue 73). It has no async runtime.
+mod supervise {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_stop(_: libc::c_int) {
+        STOP.store(true, Ordering::SeqCst);
+    }
+
+    /// Exit codes after which the supervisor does not start the child
+    /// again: a bad command line, a bad configuration.
+    pub(super) const FINAL: [i32; 2] = [crate::exit::USAGE, crate::exit::CONFIG];
+    /// A run this long resets the backoff.
+    const STABLE: Duration = Duration::from_secs(30);
+    /// A run shorter than this is a quick failure.
+    const QUICK: Duration = Duration::from_secs(10);
+    /// After this many quick failures in sequence, run the kept binary.
+    const QUICK_LIMIT: u32 = 5;
+
+    /// The next delay: twice the delay, at most 30 s.
+    pub(super) fn next_backoff(delay: Duration) -> Duration {
+        (delay * 2).min(Duration::from_secs(30))
+    }
+
+    /// A factor from 0.5 to 1.5, from the clock.
+    fn jitter() -> f64 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        0.5 + (nanos % 1000) as f64 / 1000.0
+    }
+
+    fn note(text: &str) {
+        eprintln!("cfrs: supervisor: {text}");
+    }
+
+    pub(super) fn run(args: &[OsString]) -> i32 {
+        match run_inner(args) {
+            Ok(code) => code,
+            Err(err) => {
+                note(&format!("{err:#}"));
+                TEMPFAIL
+            }
+        }
+    }
+
+    fn run_inner(args: &[OsString]) -> Result<i32> {
+        let name = std::env::var(NAME_VARIABLE).context("a supervisor with no instance name")?;
+        instances::check_name(&name)?;
+        let dir = instances::run_dir()?;
+        let paths = instances::paths(&dir, &name);
+        let _lock = instances::try_lock(&paths.lock)?
+            .with_context(|| format!("the instance {name} runs already"))?;
+        // SAFETY: a handler that only stores to an atomic.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as usize;
+            libc::sigemptyset(&mut action.sa_mask);
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                libc::sigaction(signal, &action, std::ptr::null_mut());
+            }
+        }
+        let child_args: Vec<OsString> = args.iter().skip(1).cloned().collect();
+        let mut record = Record {
+            name: name.clone(),
+            pid: 0,
+            supervisor: Some(std::process::id()),
+            started: instances::now(),
+            command: std::env::var(COMMAND_VARIABLE).unwrap_or_default(),
+            args: child_args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+            hash: std::env::var(HASH_VARIABLE).unwrap_or_default(),
+            cwd: std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
+            state: "starting".into(),
+            ready: None,
+            log: paths.log.display().to_string(),
+            restarts: 0,
+        };
+        instances::write(&dir, &record)?;
+        let current = binaries()
+            .into_iter()
+            .next()
+            .context("no path of this binary")?;
+        let previous = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            .map(|p| crate::update::previous_of(&p))
+            .filter(|p| p.exists());
+        let mut program = current;
+        let mut ready_seen = false;
+        let mut delay = Duration::from_secs(1);
+        let mut quick = 0u32;
+        loop {
+            let mut cmd = Command::new(&program);
+            {
+                use std::os::unix::process::CommandExt;
+                cmd.arg0("cfrs");
+            }
+            cmd.arg(CHILD_FLAG)
+                .args(&child_args)
+                .env(SUPERVISED_VARIABLE, "1")
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            let mut child = cmd
+                .spawn()
+                .with_context(|| format!("starting {}", program.display()))?;
+            let started = Instant::now();
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            if let Some(stdout) = child.stdout.take() {
+                std::thread::spawn(move || {
+                    for line in BufReader::new(stdout).lines() {
+                        let Ok(line) = line else { break };
+                        if tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+            let status = loop {
+                if STOP.load(Ordering::SeqCst) {
+                    stop_child(&mut child);
+                    instances::remove(&dir, &name);
+                    return Ok(0);
+                }
+                while let Ok(line) = rx.try_recv() {
+                    if line.starts_with(READY) {
+                        if !ready_seen {
+                            ready_seen = true;
+                            // The supervisor leaves the terminal too, and
+                            // passes the ready line to the parent.
+                            let log = open_private(&paths.log).ok();
+                            if !unix::leave(log.as_ref(), format!("{line}\n").as_bytes()) {
+                                stop_child(&mut child);
+                                instances::remove(&dir, &name);
+                                return Ok(TEMPFAIL);
+                            }
+                        } else {
+                            note(&format!("ready again: {}", line.trim_start_matches(READY)));
+                        }
+                    } else {
+                        println!("{line}");
+                    }
+                }
+                if let Ok(Some(status)) = child.try_wait() {
+                    break status;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            // The lines that came before the end.
+            while let Ok(line) = rx.try_recv() {
+                if !line.starts_with(READY) {
+                    println!("{line}");
+                }
+            }
+            let code = code_of(status);
+            if !ready_seen {
+                // The first run ended before it was ready: the parent gets
+                // its code.
+                instances::remove(&dir, &name);
+                return Ok(code);
+            }
+            if FINAL.contains(&code) {
+                note(&format!(
+                    "the instance exited {code}; it is not started again"
+                ));
+                instances::remove(&dir, &name);
+                return Ok(code);
+            }
+            if STOP.load(Ordering::SeqCst) {
+                instances::remove(&dir, &name);
+                return Ok(0);
+            }
+            let ran = started.elapsed();
+            if ran >= STABLE {
+                delay = Duration::from_secs(1);
+                quick = 0;
+            } else if ran < QUICK {
+                quick += 1;
+            }
+            if quick >= QUICK_LIMIT {
+                if let Some(prev) = previous.as_ref().filter(|p| **p != program) {
+                    note(&format!(
+                        "{quick} quick failures in sequence: the kept binary {} runs now",
+                        prev.display()
+                    ));
+                    program = prev.clone();
+                    quick = 0;
+                }
+            }
+            record = instances::read(&dir, &name).unwrap_or(record);
+            record.restarts += 1;
+            record.pid = 0;
+            record.state = "restarting".into();
+            instances::write(&dir, &record)?;
+            let wait = delay.mul_f64(jitter());
+            note(&format!(
+                "the instance exited {code} after {} s; start {} in {} ms",
+                ran.as_secs(),
+                record.restarts,
+                wait.as_millis()
+            ));
+            let until = Instant::now() + wait;
+            while Instant::now() < until {
+                if STOP.load(Ordering::SeqCst) {
+                    instances::remove(&dir, &name);
+                    return Ok(0);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            delay = next_backoff(delay);
+        }
+    }
+
+    /// SIGTERM to the child, SIGKILL after 10 s.
+    fn stop_child(child: &mut std::process::Child) {
+        // SAFETY: a signal to a child of this process.
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 mod unix {
@@ -565,6 +862,18 @@ mod tests {
             without_detach_options(&args),
             vec!["tunnel", "--port", "3000"]
         );
+    }
+
+    #[test]
+    fn the_backoff_doubles_to_30_s() {
+        let mut delay = Duration::from_secs(1);
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            seen.push(delay.as_secs());
+            delay = supervise::next_backoff(delay);
+        }
+        assert_eq!(seen, vec![1, 2, 4, 8, 16, 30, 30]);
+        assert_eq!(supervise::FINAL, [64, 78]);
     }
 
     #[test]

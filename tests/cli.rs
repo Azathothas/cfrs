@@ -972,3 +972,25 @@ fn the_environment_is_checked_alike() {
         .unwrap();
     assert!(stderr(&out).contains("RUST_LOG"), "{}", stderr(&out));
 }
+
+/// Issue 74: a write that fails (a full disk) does not panic. Before, the
+/// std print macros panicked with exit 101.
+#[test]
+fn a_full_stdout_is_no_panic() {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["status"])
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
+}

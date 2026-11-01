@@ -1,5 +1,30 @@
 //! cfrs command line.
 
+/// `println!`, `print!` and `eprintln!` that drop a failed write (issue
+/// 74). The std macros panic when the write fails: a detached instance
+/// writes to its log, and a full disk or a closed stream must not stop it.
+/// A command that only prints keeps the default action of SIGPIPE.
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stdout(), $($arg)*);
+    }};
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stdout(), $($arg)*);
+    }};
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -183,8 +208,12 @@ enum AutostartCommand {
         /// The name of the entry (letters, digits, - and _).
         name: String,
         /// The cfrs command and its arguments, after `--`.
-        #[arg(last = true, required = true)]
+        #[arg(last = true, required_unless_present = "from")]
         args: Vec<String>,
+        /// Take the command and its arguments from the detached instance
+        /// INSTANCE (cfrs ps), with no --detach options.
+        #[arg(long, value_name = "INSTANCE", conflicts_with = "args")]
+        from: Option<String>,
     },
     /// Remove an entry: its unit or its crontab line, and its files. Other
     /// units and crontab lines stay as they are.
@@ -374,6 +403,11 @@ struct DetachArgs {
     /// and start this one.
     #[arg(long, requires = "detach")]
     replace: bool,
+    /// Do not start the instance again when it ends. Without it, a
+    /// supervisor starts it again with a backoff (1 s to 30 s), but not
+    /// after exit 64 or 78. A quick tunnel gets a new URL; cfrs ps shows it.
+    #[arg(long, requires = "detach")]
+    no_restart: bool,
 }
 
 impl DetachArgs {
@@ -382,6 +416,7 @@ impl DetachArgs {
             name: self.name.clone(),
             ready_timeout: std::time::Duration::from_secs(self.ready_timeout.max(1)),
             replace: self.replace,
+            restart: !self.no_restart,
         }
     }
 }
@@ -1083,7 +1118,20 @@ async fn preflight(config: &Config, show: Show) -> Result<()> {
 fn autostart(command: AutostartCommand) -> Result<()> {
     use cfrs::autostart;
     match command {
-        AutostartCommand::Add { name, args } => {
+        AutostartCommand::Add { name, args, from } => {
+            let args = match from {
+                Some(instance) => {
+                    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+                    let record = cfrs::instances::read(&dir, &instance).ok_or_else(|| {
+                        cfrs::exit::fault(
+                            Fault::Usage,
+                            anyhow::anyhow!("no detached instance {instance} (cfrs ps)"),
+                        )
+                    })?;
+                    cfrs::detach::without_detach_options(&record.args)
+                }
+                None => args,
+            };
             let added = autostart::add(&name, &args, autostart::PROGRAM_LIMIT)?;
             println!(
                 "cfrs: autostart {name} added ({}): {}",
