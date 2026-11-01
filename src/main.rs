@@ -128,6 +128,9 @@ enum Command {
     Net(NetArgs),
     /// Cloudflare WARP client: registration, account, proxy, run.
     Warp(WarpArgs),
+    /// Inbound access to this host through the WebSocket relay (--relay):
+    /// pair, run a node for a local port, connect as the operator.
+    Relay(RelayArgs),
     /// Run a program with all its traffic sent through a proxy (pod-netns).
     ///
     /// Give the pod-netns arguments after `pod`. See `cfrs pod --help`.
@@ -558,6 +561,59 @@ struct ShareArgs {
     /// the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct RelayArgs {
+    /// The relay for a new pair. A pair keeps the relay that made it.
+    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    relay: String,
+    #[command(subcommand)]
+    command: RelayCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum RelayCommand {
+    /// Ask the relay for a pair: a name, a node token (kept in a file of
+    /// mode 0600 in the state directory) and a connect token for the
+    /// operator. A pair lasts at most 72 h.
+    Pair {
+        /// Print the pair as JSON (with the connect token, not the node
+        /// token).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hold the node socket of a pair, and connect each session of an
+    /// operator to a local service. A lost socket is opened again.
+    Node {
+        /// The pair name. Default: the pair with the most time left.
+        pair: Option<String>,
+        /// The local service: host:port or unix:/path.
+        #[arg(long, value_name = "TARGET")]
+        to: String,
+        #[command(flatten)]
+        detach: DetachArgs,
+    },
+    /// Open a session to a node and copy stdin and stdout (an SSH
+    /// ProxyCommand), or each connection of --listen.
+    Connect {
+        /// The pair name.
+        name: String,
+        /// The connect token. Prefer the variable: other users of the host
+        /// can read a command line. Default: the local pair file.
+        #[arg(long, env = "CFRS_RELAY_CONNECT_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// Accept local connections here (tcp://[bind:]port or unix:/path),
+        /// one session for each, in place of stdin and stdout.
+        #[arg(long, value_name = "LISTEN")]
+        listen: Option<String>,
+    },
+    /// Stop a node and its sessions at the relay (POST /v1/stop), and
+    /// remove the local pair file.
+    Stop {
+        /// The pair name.
+        name: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -1167,6 +1223,10 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
             WarpCommand::Tun { detach, .. } => Some(detach),
             _ => None,
         },
+        Command::Relay(args) => match &args.command {
+            RelayCommand::Node { detach, .. } => Some(detach),
+            _ => None,
+        },
         Command::Net(args) => match &args.command {
             NetCommand::Proxy(args) => Some(&args.detach),
             NetCommand::Switch(args) => Some(&args.detach),
@@ -1325,6 +1385,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Demo(args) => demo(args).await,
         Command::Net(args) => net(args).await,
         Command::Warp(args) => warp(args).await,
+        Command::Relay(args) => relay(args).await,
         Command::Pod { .. } => unreachable!("main runs pod before the runtime"),
         Command::Man(args) => {
             use clap::CommandFactory;
@@ -1934,6 +1995,153 @@ fn listen_doc(listen: &cfrs::vnet::proxy::ProxyListen) -> serde_json::Value {
         }
     }
 }
+
+/// `cfrs relay` (issue 88).
+async fn relay(args: RelayArgs) -> Result<()> {
+    use cfrs::relay_reverse as reverse;
+    let relay = cfrs::ws_relay::Relay::new(&args.relay, None).fault(Fault::Usage)?;
+    let dir = reverse::pairs_dir()?;
+    match args.command {
+        RelayCommand::Pair { json } => {
+            let pair = reverse::pair(&relay).await.fault(Fault::Unavailable)?;
+            cfrs::report::hide(&pair.node_token);
+            cfrs::report::hide(&pair.stop_token);
+            let path = reverse::save(&pair, &dir)?;
+            let left = pair.left().as_secs();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "name": pair.name,
+                        "connect_token": pair.connect_token,
+                        "expires": pair.expires,
+                        "relay": pair.relay,
+                        "file": path,
+                    })
+                );
+            } else {
+                println!("name        {}", pair.name);
+                println!("expires     in {} h {} min", left / 3600, left % 3600 / 60);
+                println!("file        {} (node token, mode 0600)", path.display());
+                println!("connect     {}", pair.connect_token);
+                println!();
+                println!(
+                    "On this host: cfrs relay node {} --to 127.0.0.1:22 --detach",
+                    pair.name
+                );
+                println!("Give the connect token to the operator over a channel that you trust. The operator:");
+                println!(
+                    "  {}=<connect token> ssh -o ProxyCommand='cfrs relay connect {}' USER@{}",
+                    cfrs::relay_reverse::CONNECT_TOKEN_VARIABLE,
+                    pair.name,
+                    pair.name
+                );
+            }
+            Ok(())
+        }
+        RelayCommand::Node { pair, to, .. } => {
+            let target = reverse::Target::parse(&to).fault(Fault::Usage)?;
+            let pair = reverse::load(&dir, pair.as_deref()).fault(Fault::Usage)?;
+            cfrs::report::hide(&pair.node_token);
+            let relay = cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+            tokio::select! {
+                result = reverse::node(&relay, &pair, &target) => result,
+                _ = shutdown_signal() => Ok(()),
+            }
+        }
+        RelayCommand::Connect {
+            name,
+            token,
+            listen,
+        } => {
+            let (token, relay) = match token {
+                Some(token) => (token, relay),
+                None => {
+                    let pair = reverse::load(&dir, Some(&name))
+                        .context("no --token and no local pair file")
+                        .fault(Fault::Usage)?;
+                    let relay =
+                        cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+                    (pair.connect_token, relay)
+                }
+            };
+            cfrs::report::hide(&token);
+            match listen {
+                None => {
+                    reverse::connect(
+                        &relay,
+                        &name,
+                        &token,
+                        tokio::io::stdin(),
+                        tokio::io::stdout(),
+                    )
+                    .await?;
+                    // stdin of tokio blocks the shutdown of the runtime.
+                    std::process::exit(0);
+                }
+                Some(listen) => {
+                    let listen =
+                        cfrs::vnet::proxy::ProxyListen::parse(&listen).fault(Fault::Usage)?;
+                    let relay = Arc::new(relay);
+                    let (name, token) = (Arc::new(name), Arc::new(token));
+                    let serve = |io: Box<dyn RelayIo>| {
+                        let (relay, name, token) = (relay.clone(), name.clone(), token.clone());
+                        tokio::spawn(async move {
+                            let (read, write) = tokio::io::split(io);
+                            if let Err(err) =
+                                reverse::connect(&relay, &name, &token, read, write).await
+                            {
+                                tracing::warn!(error = %format!("{err:#}"), "a relay session failed");
+                            }
+                        });
+                    };
+                    match listen {
+                        cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+                            let listener = tokio::net::TcpListener::bind(addr).await?;
+                            println!(
+                                "cfrs: relay    {} -> tcp://{}",
+                                name,
+                                listener.local_addr()?
+                            );
+                            cfrs::detach::arm_stop();
+                            loop {
+                                tokio::select! {
+                                    accepted = listener.accept() => serve(Box::new(accepted?.0)),
+                                    _ = shutdown_signal() => return Ok(()),
+                                }
+                            }
+                        }
+                        cfrs::vnet::proxy::ProxyListen::Unix(path) => {
+                            let _ = std::fs::remove_file(&path);
+                            let listener = pod_netns::listen::bind_private(&path)?;
+                            println!("cfrs: relay    {} -> unix:{}", name, path.display());
+                            cfrs::detach::arm_stop();
+                            loop {
+                                tokio::select! {
+                                    accepted = listener.accept() => serve(Box::new(accepted?.0)),
+                                    _ = shutdown_signal() => return Ok(()),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        RelayCommand::Stop { name } => {
+            let pair = reverse::load(&dir, Some(&name)).fault(Fault::Usage)?;
+            let relay = cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+            reverse::stop(&relay, &pair)
+                .await
+                .fault(Fault::Unavailable)?;
+            let _ = std::fs::remove_file(dir.join(format!("{name}.json")));
+            println!("cfrs: relay    {name} stopped");
+            Ok(())
+        }
+    }
+}
+
+trait RelayIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> RelayIo for T {}
 
 /// The WARP+ line of `warp status` (issue 95). The field `warp_plus` of
 /// the API is true also for a free account; WARP+ is an account type

@@ -336,6 +336,47 @@ jobs:
           grep -q 'leg=http2+relay' relay.err
           grep -q 'registered over HTTP/2' relay.err
           ! grep -E 'ephm1\.' relay.out relay.err
+      # Issue 88: SSH into this runner through the reverse relay: a pair, a
+      # detached node for 127.0.0.1:22, and ssh with a ProxyCommand of cfrs
+      # relay connect. The host key check is on (StrictHostKeyChecking=yes).
+      - name: SSH through the reverse relay
+        timeout-minutes: 5
+        run: |
+          set -eu
+          command -v sshd > /dev/null || sh scripts/retry.sh sudo apt-get install -y -q openssh-server
+          sudo systemctl start ssh || sudo service ssh start
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/relay_key"
+          cat "$RUNNER_TEMP/relay_key.pub" >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          export CFRS_RUN_DIR="$RUNNER_TEMP/relay-run"
+          target/release/cfrs relay pair --json > pair.json
+          name=$(jq -r .name pair.json)
+          token=$(jq -r .connect_token pair.json)
+          echo "::add-mask::$name"
+          echo "::add-mask::$token"
+          target/release/cfrs relay node "$name" --to 127.0.0.1:22 --detach --name relaynode | tail -1 | jq -c '{target}'
+          echo "$name $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$RUNNER_TEMP/relay_known"
+          export CFRS_RELAY_CONNECT_TOKEN="$token"
+          ssh -i "$RUNNER_TEMP/relay_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/relay_known" -o HostKeyAlias="$name" \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -o ProxyCommand="$PWD/target/release/cfrs relay connect $name" \
+            "$USER@$name" 'echo relay-ssh-ok; uname -s' | tee relayssh.out
+          grep -qx relay-ssh-ok relayssh.out
+          # Two sessions at the same time through the one node.
+          for i in 1 2; do
+            ssh -i "$RUNNER_TEMP/relay_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$RUNNER_TEMP/relay_known" -o HostKeyAlias="$name" \
+              -o HostKeyAlgorithms=ssh-ed25519 \
+              -o ProxyCommand="$PWD/target/release/cfrs relay connect $name" \
+              "$USER@$name" "echo parallel-$i" > "relay-$i.out" &
+          done
+          wait
+          grep -qx parallel-1 relay-1.out
+          grep -qx parallel-2 relay-2.out
+          target/release/cfrs stop relaynode
+          target/release/cfrs relay stop "$name"
       - name: WARP account and probe
         timeout-minutes: 4
         run: |

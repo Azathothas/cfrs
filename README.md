@@ -579,6 +579,44 @@ It then runs the checks again and prints one JSON document: `mode`
 the commands to use (`eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`,
 `cfrs warp ssh-config`).
 
+## Inbound access through the relay: `cfrs relay`
+
+A host with outbound HTTPS only cannot take inbound connections (SSH, a
+debugger, a database client). A quick tunnel carries HTTP and WebSocket
+only. The reverse mode of the WebSocket relay (`--relay`, default
+`https://tcp.ssh.relay.ajam.dev`) carries raw TCP bytes to a local service.
+
+```sh
+# On the host:
+cfrs relay pair                                   # name, connect token; the node token stays in a 0600 file
+cfrs relay node --to 127.0.0.1:22 --detach        # hold the node socket; one local connection for each session
+
+# On the computer of the operator:
+export CFRS_RELAY_CONNECT_TOKEN=<connect token>
+ssh -o ProxyCommand='cfrs relay connect NAME' USER@NAME
+cfrs relay connect NAME --listen tcp://127.0.0.1:2222   # or a local port for each client
+
+# On the host, at the end:
+cfrs relay stop NAME
+```
+
+* `cfrs relay pair` asks the relay for a pair (`POST /v1/pair`). A pair lasts
+  at most 72 h. The file is `relay/NAME.json` in the state directory, with
+  mode 0600. `--json` prints the name, the connect token and the end time.
+* `cfrs relay node [NAME] --to TARGET` takes the pair with the most time left
+  when no name is given. `TARGET` is `host:port` or `unix:/path`. The node
+  answers each `open` with `ready` after its local connection is ready, or
+  with `reject` and the cause. A lost node socket is opened again after 1 s
+  to 30 s, with jitter. When the relay ends the pair (it expired, or `cfrs
+  relay stop` ran), the node exits 78 and is not started again.
+* `cfrs relay connect NAME` waits for `ready`, then copies stdin and stdout.
+  A refused session exits 69 with the cause from the node. A refused token
+  exits 78.
+* The relay authenticates tokens, not persons. Give the connect token only
+  over a channel that you trust. Check the host key of SSH as usual.
+* Limits of the relay: 64 MiB and 12 h for each session, 180 s with no
+  payload. Open a new session after a limit.
+
 ## Run in the background: `--detach`
 
 ```sh

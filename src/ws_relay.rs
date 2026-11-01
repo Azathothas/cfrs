@@ -242,6 +242,31 @@ impl Relay {
         token: &str,
         timeout: Duration,
     ) -> Result<std::result::Result<BoxedIo, Refusal>> {
+        let path = format!("/connect/{}/{}", target.ip(), target.port());
+        let ws = match self.websocket(&path, token, timeout).await? {
+            Ok(ws) => ws,
+            Err((status, body)) => return Ok(Err(refusal(status, &body, target))),
+        };
+        let (ours, theirs) = tokio::io::duplex(PIPE_BUFFER);
+        tokio::spawn(async move {
+            if let Err(err) =
+                crate::ws::bridge(ws, Box::new(theirs), &crate::metrics::Metrics::new()).await
+            {
+                tracing::debug!(error = %format!("{err:#}"), "the relay WebSocket ended");
+            }
+        });
+        Ok(Ok(Box::new(ours)))
+    }
+
+    /// A WebSocket to `path` on the relay, with `token` in `X-Relay-Token`.
+    /// A refused upgrade gives its HTTP status and body (the body never has
+    /// the token).
+    pub(crate) async fn websocket(
+        &self,
+        path: &str,
+        token: &str,
+        timeout: Duration,
+    ) -> Result<std::result::Result<RelaySocket, (u16, String)>> {
         let io = crate::egress::dial(&self.host, self.port, None, timeout)
             .await
             .with_context(|| format!("TCP to the relay {}", self.url()))?;
@@ -262,13 +287,7 @@ impl Relay {
             io
         };
         let scheme = if self.tls { "wss" } else { "ws" };
-        let url = format!(
-            "{scheme}://{}:{}/connect/{}/{}",
-            self.host,
-            self.port,
-            target.ip(),
-            target.port()
-        );
+        let url = format!("{scheme}://{}:{}{path}", self.host, self.port);
         let mut request = url
             .into_client_request()
             .context("the WebSocket request to the relay")?;
@@ -280,12 +299,12 @@ impl Relay {
             .max_message_size(Some(MAX_MESSAGE))
             .max_frame_size(Some(MAX_MESSAGE));
         let handshake = tokio_tungstenite::client_async_with_config(request, io, Some(config));
-        let ws = match tokio::time::timeout(timeout, handshake).await {
+        match tokio::time::timeout(timeout, handshake).await {
             Err(_) => bail!(
                 "the WebSocket to the relay: no answer in {} s",
                 timeout.as_secs()
             ),
-            Ok(Ok((ws, _response))) => ws,
+            Ok(Ok((ws, _response))) => Ok(Ok(ws)),
             Ok(Err(tungstenite::Error::Http(response))) => {
                 let status = response.status().as_u16();
                 let body = response
@@ -294,24 +313,42 @@ impl Relay {
                     .map(String::from_utf8_lossy)
                     .unwrap_or_default()
                     .to_string();
-                return Ok(Err(refusal(status, &body, target)));
+                Ok(Err((status, body)))
             }
             Ok(Err(err)) => {
-                return Err(err)
-                    .with_context(|| format!("the WebSocket to the relay {}", self.url()))
+                Err(err).with_context(|| format!("the WebSocket to the relay {}", self.url()))
             }
-        };
-        let (ours, theirs) = tokio::io::duplex(PIPE_BUFFER);
-        tokio::spawn(async move {
-            if let Err(err) =
-                crate::ws::bridge(ws, Box::new(theirs), &crate::metrics::Metrics::new()).await
-            {
-                tracing::debug!(error = %format!("{err:#}"), "the relay WebSocket ended");
+        }
+    }
+
+    /// A POST of an empty JSON object to `path` on the relay; the JSON
+    /// answer, or the status and the start of the body.
+    pub(crate) async fn post_json(
+        &self,
+        path: &str,
+        token: Option<&str>,
+    ) -> Result<std::result::Result<serde_json::Value, (u16, String)>> {
+        let mut request = crate::fetch::Request::new("POST", format!("{}{path}", self.url()))
+            .json(&serde_json::json!({}))
+            .timeout(Duration::from_secs(20));
+        if let Some(token) = token {
+            request = request.header("X-Relay-Token", token);
+        }
+        let response = request.send().await?;
+        if response.status != 200 {
+            let retry = response.header("retry-after").map(str::to_string);
+            let mut text: String = response.text().chars().take(200).collect();
+            if let Some(retry) = retry {
+                text.push_str(&format!(" (retry after {retry} s)"));
             }
-        });
-        Ok(Ok(Box::new(ours)))
+            return Ok(Err((response.status, text)));
+        }
+        Ok(Ok(response.json()?))
     }
 }
+
+/// A WebSocket to the relay.
+pub(crate) type RelaySocket = tokio_tungstenite::WebSocketStream<BoxedIo>;
 
 /// Classify a refused upgrade. The text never has the token.
 fn refusal(status: u16, body: &str, target: SocketAddr) -> Refusal {

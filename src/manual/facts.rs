@@ -104,13 +104,18 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     },
     EnvVar {
         names: &["CFRS_RELAY"],
-        used_by: "tunnel, serve, share, demo",
+        used_by: "tunnel, serve, share, demo, relay",
         meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host). The default is https://tcp.ssh.relay.ajam.dev.",
     },
     EnvVar {
         names: &["CFRS_RELAY_TOKEN"],
         used_by: "tunnel, serve, share, demo",
         meaning: "A token for the relay of --transport relay. It goes only in the X-Relay-Token header. Without it, cfrs mints a token with POST /v1/mint on the relay.",
+    },
+    EnvVar {
+        names: &["CFRS_RELAY_CONNECT_TOKEN"],
+        used_by: "relay connect",
+        meaning: "The connect token of a pair, for the operator side of the reverse relay. It goes only in the X-Relay-Token header. Without it, cfrs reads the local pair file.",
     },
     EnvVar {
         names: &["CFRS_UDP"],
