@@ -112,7 +112,12 @@ pub enum ProvisionError {
     /// The HTTP request itself failed.
     Http(anyhow::Error),
     /// A non-2xx HTTP status.
-    Status { code: u16, body: String },
+    Status {
+        code: u16,
+        body: String,
+        /// The `Retry-After` of the answer.
+        retry_after: Option<std::time::Duration>,
+    },
     /// A 2xx response that is not valid JSON, or not a `QuickTunnelResponse`.
     Decode(String),
     /// The service returned `"success": false`.
@@ -126,8 +131,25 @@ impl std::fmt::Display for ProvisionError {
         match self {
             ProvisionError::BadEndpoint(e) => write!(f, "invalid quick-service endpoint: {e}"),
             ProvisionError::Http(_) => write!(f, "request to the quick-tunnel service failed"),
-            ProvisionError::Status { code, body } => {
-                write!(f, "quick-tunnel service returned HTTP {code}: {body}")
+            ProvisionError::Status {
+                code,
+                body,
+                retry_after,
+            } => {
+                write!(f, "quick-tunnel service returned HTTP {code}")?;
+                if let Some(wait) = retry_after {
+                    write!(f, " (Retry-After: {} s)", wait.as_secs())?;
+                }
+                if !body.is_empty() {
+                    write!(f, ": {body}")?;
+                }
+                if *code == 405 {
+                    write!(
+                        f,
+                        "; a proxy that answers 405 refuses the request form: use a CONNECT proxy"
+                    )?;
+                }
+                Ok(())
             }
             ProvisionError::Decode(e) => {
                 write!(f, "could not decode the quick-tunnel response: {e}")
@@ -195,7 +217,111 @@ pub async fn request_quick_tunnel(
     let response = request.send().await.map_err(ProvisionError::Http)?;
     let status = response.status;
     let text = response.text();
-    parse_quick_tunnel_response(status, &text)
+    let retry_after = response.header("retry-after").and_then(parse_retry_after);
+    match parse_quick_tunnel_response(status, &text) {
+        Err(ProvisionError::Status { code, body, .. }) => Err(ProvisionError::Status {
+            code,
+            body,
+            retry_after,
+        }),
+        other => other,
+    }
+}
+
+/// The wait of a `Retry-After` value: a number of seconds, or an HTTP date
+/// (IMF-fixdate).
+pub fn parse_retry_after(value: &str) -> Option<std::time::Duration> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    // Sun, 06 Nov 1994 08:49:37 GMT
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if parts.len() != 6 || parts[5] != "GMT" {
+        return None;
+    }
+    let day: i64 = parts[1].parse().ok()?;
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS.iter().position(|m| *m == parts[2])? as i64 + 1;
+    let year: i64 = parts[3].parse().ok()?;
+    let hms: Vec<i64> = parts[4].split(':').filter_map(|p| p.parse().ok()).collect();
+    if hms.len() != 3 {
+        return None;
+    }
+    // Days from 1970-01-01 (the algorithm of H. Hinnant).
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let at = days * 86_400 + hms[0] * 3600 + hms[1] * 60 + hms[2];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(std::time::Duration::from_secs((at - now).max(0) as u64))
+}
+
+/// The longest time that [`provision`] tries.
+pub const PROVISION_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
+/// The most attempts of [`provision`].
+pub const PROVISION_ATTEMPTS: u32 = 5;
+
+/// [`request_quick_tunnel`] with retries: a 429, a 5xx and a transport
+/// error are tried again, after `Retry-After` or else a backoff with jitter
+/// (2, 4, 8, 16 s), up to [`PROVISION_ATTEMPTS`] attempts in `budget`.
+/// Another 4xx fails at once. A `Retry-After` that is longer than the time
+/// left fails with the wait in the error.
+pub async fn provision(
+    endpoint: &str,
+    auth_mode: AuthMode,
+    user_agent: &str,
+    timeout: std::time::Duration,
+    budget: std::time::Duration,
+) -> Result<QuickTunnel, ProvisionError> {
+    let start = std::time::Instant::now();
+    let policy = crate::config::ReconnectPolicy {
+        initial: std::time::Duration::from_secs(2),
+        max: std::time::Duration::from_secs(16),
+        ..Default::default()
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let err = match request_quick_tunnel(endpoint, auth_mode, user_agent, timeout, None).await {
+            Ok(tunnel) => return Ok(tunnel),
+            Err(err) => err,
+        };
+        let wait = match &err {
+            ProvisionError::Status {
+                code, retry_after, ..
+            } if *code == 429 || (500..600).contains(code) => {
+                retry_after.unwrap_or_else(|| policy.backoff_with_jitter(attempt))
+            }
+            ProvisionError::Http(_) => policy.backoff_with_jitter(attempt),
+            _ => return Err(err),
+        };
+        let left = budget.saturating_sub(start.elapsed());
+        if attempt >= PROVISION_ATTEMPTS || wait > left {
+            if wait > left {
+                tracing::warn!(
+                    "the quick-tunnel service asks to wait {} s, more than the {} s left",
+                    wait.as_secs(),
+                    left.as_secs()
+                );
+            }
+            return Err(err);
+        }
+        tracing::warn!(attempt, retry_in = ?wait, "provisioning failed: {err}; trying again");
+        tokio::time::sleep(wait).await;
+    }
 }
 
 /// Parse and validate a provisioning response body.
@@ -204,9 +330,20 @@ pub async fn request_quick_tunnel(
 /// real responses without a live service.
 pub fn parse_quick_tunnel_response(status: u16, body: &str) -> Result<QuickTunnel, ProvisionError> {
     if !(200..300).contains(&status) {
+        // The body of an error, for a terminal: 1 KiB at most, with no
+        // control characters.
+        let mut clipped = crate::report::clean(body.trim());
+        if clipped.len() > 1024 {
+            let mut cut = 1024;
+            while !clipped.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            clipped.truncate(cut);
+        }
         return Err(ProvisionError::Status {
             code: status,
-            body: body.to_string(),
+            body: clipped,
+            retry_after: None,
         });
     }
 
@@ -408,6 +545,109 @@ mod tests {
     }
 
     use super::*;
+
+    const OK_BODY: &str = r#"{"success":true,"result":{"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","hostname":"t.trycloudflare.com","account_tag":"0123456789abcdef","secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}}"#;
+
+    /// A local endpoint that gives `answers` in order, one per connection.
+    /// Gives its URL and the count of requests.
+    fn scripted(
+        answers: Vec<(u16, &'static str, &'static str)>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = hits.clone();
+        std::thread::spawn(move || {
+            let mut answers = answers.into_iter();
+            for mut s in listener.incoming().flatten() {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let Some((code, extra, body)) = answers.next() else {
+                    break;
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {code} X\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, hits)
+    }
+
+    fn hits(h: &std::sync::atomic::AtomicUsize) -> usize {
+        h.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+    const TO: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn a_429_waits_for_retry_after() {
+        let (url, count) = scripted(vec![
+            (429, "Retry-After: 1\r\n", "slow down"),
+            (200, "", OK_BODY),
+        ]);
+        let start = std::time::Instant::now();
+        let tunnel = provision(&url, AuthMode::Public, "t", TO, BUDGET)
+            .await
+            .unwrap();
+        assert_eq!(tunnel.hostname, "t.trycloudflare.com");
+        assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+        assert_eq!(hits(&count), 2);
+    }
+
+    #[tokio::test]
+    async fn a_long_retry_after_fails_with_the_wait() {
+        let (url, count) = scripted(vec![(429, "Retry-After: 9999\r\n", "error code: 1015")]);
+        let err = provision(&url, AuthMode::Public, "t", TO, BUDGET)
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("HTTP 429 (Retry-After: 9999 s): error code: 1015"),
+            "{text}"
+        );
+        assert_eq!(hits(&count), 1);
+    }
+
+    #[tokio::test]
+    async fn a_5xx_is_retried_and_a_403_is_not() {
+        let (url, count) = scripted(vec![
+            (500, "Retry-After: 0\r\n", ""),
+            (502, "Retry-After: 0\r\n", ""),
+            (503, "Retry-After: 0\r\n", ""),
+            (200, "", OK_BODY),
+        ]);
+        provision(&url, AuthMode::Public, "t", TO, BUDGET)
+            .await
+            .unwrap();
+        assert_eq!(hits(&count), 4);
+
+        let (url, count) = scripted(vec![(403, "", "forbidden\u{1b}[2J\u{7}\rnow")]);
+        let err = provision(&url, AuthMode::Public, "t", TO, BUDGET)
+            .await
+            .unwrap_err();
+        assert_eq!(hits(&count), 1);
+        let text = err.to_string();
+        assert!(text.ends_with("HTTP 403: forbiddennow"), "{text:?}");
+    }
+
+    #[test]
+    fn retry_after_values() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(parse_retry_after("120"), Some(secs(120)));
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(std::time::Duration::ZERO)
+        );
+        let later = std::time::SystemTime::now() + secs(3600);
+        let wait = parse_retry_after(&crate::trust::imf_fixdate(later)).unwrap();
+        assert!(wait.as_secs() > 3590 && wait.as_secs() <= 3600, "{wait:?}");
+        assert_eq!(parse_retry_after("soon"), None);
+    }
 
     /// A response captured from a real `POST https://api.trycloudflare.com/tunnel`
     /// run against the live service on 2026-10-09. The values are real but the

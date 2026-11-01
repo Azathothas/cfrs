@@ -414,12 +414,12 @@ async fn resolve_credentials(
 ) -> Result<(rpc::TunnelAuth, Uuid, Option<String>)> {
     match credentials {
         Credentials::Quick => {
-            let tunnel = crate::quicktunnel::request_quick_tunnel(
+            let tunnel = crate::quicktunnel::provision(
                 service_url,
                 crate::quicktunnel::AuthMode::Public,
                 user_agent,
                 Duration::from_secs(30),
-                None,
+                crate::quicktunnel::PROVISION_BUDGET,
             )
             .await
             .context("provisioning quick tunnel")
