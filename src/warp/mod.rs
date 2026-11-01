@@ -271,18 +271,7 @@ impl WarpClient {
 
     /// Open the MASQUE session and start the userspace stack on top of it.
     pub async fn connect(&self) -> Result<WarpStack> {
-        let endpoint = self
-            .device
-            .masque_endpoint()
-            .context("the device has no MASQUE endpoint")?;
-        let pinned = self
-            .device
-            .peer_public_key_pem()
-            .context("the device has no peer key to pin; cfrs does not connect without one")
-            .and_then(identity::spki_from_pem)
-            .context("parsing the pinned peer key")?;
-        let session =
-            MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await?;
+        let session = self.open_session().await?;
         let local = self.local_address()?;
         let (tx, rx) = session.split();
         WarpStack::start(tx, rx, StackConfig::new(local))
@@ -291,17 +280,61 @@ impl WarpClient {
     /// Open the session without the userspace stack, for callers that only want
     /// the raw packet pipe.
     pub async fn connect_raw(&self) -> Result<MasqueSession> {
-        let endpoint = self
-            .device
+        self.open_session().await
+    }
+
+    /// The endpoint and the pinned key of a device record.
+    fn endpoint_and_pin(device: &Device) -> Result<(std::net::SocketAddr, Vec<u8>)> {
+        let endpoint = device
             .masque_endpoint()
             .context("the device has no MASQUE endpoint")?;
-        let pinned = self
-            .device
+        let pinned = device
             .peer_public_key_pem()
             .context("the device has no peer key to pin; cfrs does not connect without one")
             .and_then(identity::spki_from_pem)
             .context("parsing the pinned peer key")?;
-        MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await
+        Ok((endpoint, pinned))
+    }
+
+    /// Open the MASQUE session. When the front door shows a key that is not
+    /// the pinned key (live run 41272909372, on a new device), read the
+    /// device record again and try with its key and endpoint, then once
+    /// more after 1 s (a new connection may reach another server). A key
+    /// that the API did not give is never accepted.
+    async fn open_session(&self) -> Result<MasqueSession> {
+        let (endpoint, pinned) = Self::endpoint_and_pin(&self.device)?;
+        let first =
+            MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await;
+        let err = match first {
+            Ok(session) => return Ok(session),
+            Err(err) if format!("{err:#}").contains(session::PIN_MISMATCH) => err,
+            Err(err) => return Err(err),
+        };
+        tracing::warn!(error = %format!("{err:#}"), "the MASQUE key is not the pinned key; reading the device record again");
+        let fresh = register::get_device(&self.device.id, &self.device.token, self.proxy.as_ref())
+            .await
+            .context("reading the device record again after a MASQUE key mismatch")?;
+        let (endpoint, pinned) = Self::endpoint_and_pin(&fresh)?;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            match MasqueSession::connect(
+                endpoint,
+                &self.identity,
+                pinned.clone(),
+                self.proxy.as_ref(),
+            )
+            .await
+            {
+                Ok(session) => return Ok(session),
+                Err(err) if attempt == 0 && format!("{err:#}").contains(session::PIN_MISMATCH) => {
+                    tracing::warn!("the MASQUE key is still not the pinned key; trying once more");
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        unreachable!("the loop returns")
     }
 }
 

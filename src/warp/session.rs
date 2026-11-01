@@ -27,6 +27,10 @@ use super::register::{CONNECT_URI, MASQUE_SNI};
 use crate::egress::Proxy;
 use crate::net::BoxedIo;
 
+/// The text of a TLS failure when the front door shows a key that is not
+/// the pinned key of the device record.
+pub const PIN_MISMATCH: &str = "MASQUE peer key does not match the pinned key";
+
 /// The HTTP/2 send capacity that the MASQUE stream asks for: the most
 /// packet bytes that wait for the window of the front door.
 pub const SEND_RESERVE: usize = 256 * 1024;
@@ -81,9 +85,7 @@ impl ServerCertVerifier for PinnedKey {
         let got = super::identity::spki_from_cert(end_entity.as_ref())
             .map_err(|_| rustls::Error::General("unparsable peer certificate".into()))?;
         if got != self.expected {
-            return Err(rustls::Error::General(
-                "MASQUE peer key does not match the pinned key".into(),
-            ));
+            return Err(rustls::Error::General(PIN_MISMATCH.into()));
         }
         Ok(ServerCertVerified::assertion())
     }
