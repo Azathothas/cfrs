@@ -1018,6 +1018,112 @@ pub use crate::connect::{
 mod tests {
     use super::*;
 
+    /// Issue 92: on one QUIC connection in memory, three share uploads of
+    /// 60 MB each get 200 and are on disk; a Content-Length over
+    /// --max-request gets 413 before the body; the connection stays open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn large_share_uploads_on_one_quic_connection() {
+        use crate::cloudflare::schema::ConnectionType;
+        use crate::cloudflare::stream::HTTP_STATUS_KEY;
+        use futures::io::AsyncWriteExt as _;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+        let pair = crate::cloudflare::quic::testing::local_pair().await;
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::share::ShareConfig::upload(dir.path());
+        let token = config.token.clone();
+        let ingress = Arc::new(Ingress::new().catch_all(Service::Share(config)));
+        let runtime = Arc::new(ServiceRuntime::build(&ingress, Metrics::new()).unwrap());
+        let client = pair.client.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((send, recv)) = client.accept_bi().await {
+                tokio::spawn(serve_stream(runtime.clone(), ingress.clone(), send, recv));
+            }
+        });
+        const SIZE: usize = 60 * 1024 * 1024;
+        let boundary = "XBOUNDARYX";
+        let post = |name: &str, length: usize| cqstream::ConnectRequest {
+            dest: format!("http://x.trycloudflare.com/s/{token}/upload?{name}"),
+            conn_type: ConnectionType::Http,
+            metadata: vec![
+                (HTTP_METHOD_KEY.into(), "POST".into()),
+                (HTTP_HOST_KEY.into(), "x.trycloudflare.com".into()),
+                (
+                    format!("{HTTP_HEADER_KEY}:Content-Type"),
+                    format!("multipart/form-data; boundary={boundary}"),
+                ),
+                (
+                    format!("{HTTP_HEADER_KEY}:Content-Length"),
+                    length.to_string(),
+                ),
+            ],
+        };
+        for round in 0..3 {
+            let head = format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; \
+                 filename=\"f{round}.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            );
+            let tail = format!("\r\n--{boundary}--\r\n");
+            let total = head.len() + SIZE + tail.len();
+            let (send, recv) = pair.edge.open_bi().await.unwrap();
+            let mut writer = send.compat_write();
+            let mut reader = recv.compat();
+            cqstream::write_connect_request(&mut writer, &post("a", total))
+                .await
+                .unwrap();
+            let body = tokio::spawn(async move {
+                writer.write_all(head.as_bytes()).await.unwrap();
+                let chunk = vec![7u8; 64 * 1024];
+                let mut left = SIZE;
+                while left > 0 {
+                    let n = left.min(chunk.len());
+                    writer.write_all(&chunk[..n]).await.unwrap();
+                    left -= n;
+                }
+                writer.write_all(tail.as_bytes()).await.unwrap();
+                writer.close().await.unwrap();
+            });
+            let (error, meta) = tokio::time::timeout(
+                Duration::from_secs(120),
+                cqstream::read_connect_response(&mut reader),
+            )
+            .await
+            .expect("an answer to the upload")
+            .unwrap();
+            assert!(error.is_empty(), "round {round}: {error}");
+            assert!(
+                meta.contains(&(HTTP_STATUS_KEY.to_string(), "200".to_string())),
+                "round {round}: {meta:?}"
+            );
+            body.await.unwrap();
+            let len = std::fs::metadata(dir.path().join(format!("f{round}.bin")))
+                .unwrap()
+                .len();
+            assert_eq!(len, SIZE as u64);
+        }
+        // Over the limit: 413 at once, with no body sent.
+        let (send, recv) = pair.edge.open_bi().await.unwrap();
+        let mut writer = send.compat_write();
+        let mut reader = recv.compat();
+        cqstream::write_connect_request(&mut writer, &post("b", 150_000_000))
+            .await
+            .unwrap();
+        let (_, meta) = tokio::time::timeout(
+            Duration::from_secs(10),
+            cqstream::read_connect_response(&mut reader),
+        )
+        .await
+        .expect("a 413 before the body")
+        .unwrap();
+        assert!(
+            meta.contains(&(HTTP_STATUS_KEY.to_string(), "413".to_string())),
+            "{meta:?}"
+        );
+        assert!(pair.client.close_reason().is_none());
+        server.abort();
+    }
+
     /// On a QUIC connection in memory: a stream with the RPC signature is
     /// reset at once, and a data stream after it is served (the signature
     /// that cfrs read first goes back in front of the request).

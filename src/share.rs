@@ -53,6 +53,10 @@ impl ShareMode {
     }
 }
 
+/// The default most bytes of one upload request: the edge of Cloudflare
+/// takes at most 100 MB in one request body on the free plan.
+pub const MAX_REQUEST: u64 = 100_000_000;
+
 #[derive(Clone, Debug)]
 pub struct ShareConfig {
     pub mode: ShareMode,
@@ -66,6 +70,9 @@ pub struct ShareConfig {
     pub max_files: u32,
     /// Upload only: the most bytes of the session, over all files.
     pub max_total: u64,
+    /// Upload only: the most bytes of one upload request (issue 92). A
+    /// larger `Content-Length` gets 413 before cfrs reads the body.
+    pub max_request: u64,
     pub stop_after: bool,
     pub gate: Gate,
 }
@@ -81,6 +88,7 @@ impl ShareConfig {
             max_bytes: 512 * 1024 * 1024,
             max_files: 32,
             max_total: 4 * 1024 * 1024 * 1024,
+            max_request: MAX_REQUEST,
             stop_after: false,
             gate: Gate::off(),
         }
@@ -96,6 +104,7 @@ impl ShareConfig {
             max_bytes: 0,
             max_files: 0,
             max_total: 0,
+            max_request: 0,
             stop_after: false,
             gate: Gate::off(),
         }
@@ -111,6 +120,7 @@ impl ShareConfig {
             max_bytes: 0,
             max_files: 0,
             max_total: 0,
+            max_request: 0,
             stop_after: false,
             gate: Gate::pin(),
         }
@@ -211,6 +221,7 @@ struct UploadState {
     max_bytes: u64,
     max_files: u32,
     max_total: u64,
+    max_request: u64,
     used_files: AtomicU32,
     used_bytes: AtomicU64,
     stop_after: bool,
@@ -284,6 +295,7 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
         max_bytes: config.max_bytes,
         max_files: config.max_files,
         max_total: config.max_total,
+        max_request: config.max_request,
         used_files: AtomicU32::new(0),
         used_bytes: AtomicU64::new(0),
         stop_after: config.stop_after,
@@ -292,7 +304,9 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
     });
     // One request may hold several files: the body limit is the session
     // total, and each file and the total are checked while they arrive.
-    let limit = (config.max_total.max(config.max_bytes) as usize).saturating_add(1024 * 1024);
+    let limit = (config.max_total.max(config.max_bytes) as usize)
+        .saturating_add(1024 * 1024)
+        .min(config.max_request as usize);
     Router::new()
         .route(
             UNLOCK_PATH,
@@ -370,7 +384,12 @@ async fn upload_landing(
         return response;
     }
     state.control.touch();
-    Html(upload_page(&state.token, state.max_bytes)).into_response()
+    Html(upload_page(
+        &state.token,
+        state.max_bytes,
+        state.max_request,
+    ))
+    .into_response()
 }
 
 /// The time limit of one chunk of an upload. A body that stops for longer
@@ -486,6 +505,26 @@ async fn upload_receive(
         return response;
     }
     state.control.touch();
+    // Before the body: a request over the limit gets 413 at once (issue 92).
+    let length = headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    if let Some(length) = length.filter(|&n| n > state.max_request) {
+        tracing::info!(
+            bytes = length,
+            limit = state.max_request,
+            "upload refused: the request is over --max-request"
+        );
+        return refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "the upload is {}; one upload can hold at most {} (send fewer or smaller files)",
+                human_bytes(length),
+                human_bytes(state.max_request)
+            ),
+        );
+    }
 
     let mut staging = Staging {
         state: &state,
@@ -630,7 +669,7 @@ async fn upload_receive(
     .into_response()
 }
 
-fn upload_page(token: &str, max_bytes: u64) -> String {
+fn upload_page(token: &str, max_bytes: u64, max_request: u64) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -641,21 +680,25 @@ fn upload_page(token: &str, max_bytes: u64) -> String {
          button{{margin-top:1rem;width:100%;padding:.8rem;border:0;border-radius:8px;\
          background:#4f7cff;color:#fff;font-size:1rem}}input[type=file]{{width:100%}}\
          p{{color:#9aa7c7;font-size:.9rem}}</style></head><body><main>\
-         <h1>Send files</h1><p>Max {} per file.</p>\
+         <h1>Send files</h1><p>Max {} per file, {} per upload.</p>\
          <form id=\"f\" method=\"post\" action=\"/s/{token}/upload\" enctype=\"multipart/form-data\">\
          <input type=\"file\" name=\"files\" multiple required>\
          <button type=\"submit\">Upload</button></form>\
          <progress id=\"bar\" max=\"100\" value=\"0\" hidden style=\"width:100%;margin-top:1rem\"></progress>\
          <p id=\"state\"></p></main><script>\
          var f=document.getElementById('f'),bar=document.getElementById('bar'),st=document.getElementById('state');\
-         f.addEventListener('submit',function(e){{e.preventDefault();var x=new XMLHttpRequest();\
+         f.addEventListener('submit',function(e){{e.preventDefault();\
+         var n=0,fs=f.querySelector('input[type=file]').files;for(var i=0;i<fs.length;i++)n+=fs[i].size;\
+         if(n>{max_request}){{st.textContent='The files are '+n+' bytes; one upload can hold at most {max_request} bytes.';return;}}\
+         var x=new XMLHttpRequest();\
          x.open('POST',f.action);bar.hidden=false;\
          x.upload.onprogress=function(p){{if(p.lengthComputable){{bar.value=100*p.loaded/p.total;\
          st.textContent=Math.round(bar.value)+' %';}}}};\
          x.onload=function(){{document.open();document.write(x.responseText);document.close();}};\
          x.onerror=function(){{st.textContent='The upload failed.';}};\
          x.send(new FormData(f));}});</script></body></html>",
-        human_bytes(max_bytes)
+        human_bytes(max_bytes),
+        human_bytes(max_request)
     )
 }
 
@@ -1012,6 +1055,63 @@ mod tests {
         );
     }
 
+    /// Issue 92: a Content-Length over max_request gets 413 before cfrs
+    /// reads the body (a body that never comes), and saves nothing; the
+    /// landing page and a smaller upload still work.
+    #[tokio::test]
+    async fn a_content_length_over_max_request_gets_413_at_once() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.max_request = 1000;
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let never = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+        let mut request = upload_request(&token, axum::body::Body::from_stream(never));
+        request
+            .headers_mut()
+            .insert("content-length", "60000000".parse().unwrap());
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.router().oneshot(request),
+        )
+        .await
+        .expect("the 413 comes before the body")
+        .unwrap();
+        assert_eq!(response.status(), 413);
+        let text = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&text);
+        assert!(text.contains("at most 1000 B"), "{text}");
+        assert!(files_in(dir.path()).is_empty());
+        let landing = app
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/s/{token}/"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(landing.status(), 200);
+        let page = axum::body::to_bytes(landing.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&page).contains("per upload"));
+        let small = app
+            .router()
+            .oneshot(upload_request(
+                &token,
+                axum::body::Body::from(multipart(&[("a.txt", 10)])),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(small.status(), 200);
+        assert_eq!(files_in(dir.path()), ["a.txt"]);
+    }
+
     /// Issue 59: a body that stops gets 408 after CHUNK_LIMIT, and leaves no
     /// file, partial or staged.
     #[tokio::test(start_paused = true)]
@@ -1110,7 +1210,7 @@ mod tests {
     /// The upload page shows a progress bar, and its script is whole.
     #[test]
     fn the_upload_page_has_progress() {
-        let page = upload_page("abc", 1 << 20);
+        let page = upload_page("abc", 1 << 20, MAX_REQUEST);
         assert!(page.contains("upload.onprogress") && page.contains("<progress"));
         let script = page
             .split("<script>")

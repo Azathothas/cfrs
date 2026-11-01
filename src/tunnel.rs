@@ -864,7 +864,18 @@ async fn reactor(
                         false
                     }
                     Err(err) => {
-                        warn!(conn_index, error = %err, "edge closed the connection");
+                        // The reason (who closed it, and why) and the path
+                        // state help to find an edge limit (issue 92).
+                        let stats = conn.stats();
+                        warn!(
+                            conn_index,
+                            error = %err,
+                            rtt_ms = stats.path.rtt.as_millis() as u64,
+                            received = stats.udp_rx.bytes,
+                            sent = stats.udp_tx.bytes,
+                            lost_packets = stats.path.lost_packets,
+                            "edge closed the connection; a reconnect follows"
+                        );
                         true
                     }
                 }

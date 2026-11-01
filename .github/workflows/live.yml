@@ -166,6 +166,14 @@ jobs:
           sh scripts/retry.sh sudo python3 -m pip install -q --break-system-packages websockets || true
           sh scripts/live-throughput.sh target/release/cfrs quic 16
           sh scripts/live-throughput.sh target/release/cfrs http2 16
+      # Issue 92: share uploads of 20 and 64 MiB on each leg give 200 and
+      # the file; a request over --max-request gets 413; the session stays.
+      - name: Large share uploads, QUIC and HTTP/2
+        timeout-minutes: 12
+        run: |
+          set -eu
+          sh scripts/live-share.sh target/release/cfrs quic "20 64"
+          sh scripts/live-share.sh target/release/cfrs http2 "20 64"
       # Issue 56: a WebSocket through a --url origin, on each leg.
       - name: WebSocket through a --url origin
         timeout-minutes: 6
