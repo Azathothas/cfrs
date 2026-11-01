@@ -144,9 +144,8 @@ pub fn connect_request(parts: &http::request::Parts, kind: StreamType) -> Connec
         if is_control_header(name) || is_hop_by_hop(name) || name == "host" {
             continue;
         }
-        let Ok(value) = value.to_str() else {
-            continue;
-        };
+        let value = String::from_utf8_lossy(value.as_bytes());
+        let value = value.as_ref();
         metadata.push((
             format!("{HTTP_HEADER_KEY}:{}", canonical_header_name(name)),
             value.to_string(),

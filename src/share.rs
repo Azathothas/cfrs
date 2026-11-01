@@ -60,8 +60,12 @@ pub struct ShareConfig {
     pub dest: PathBuf,
     pub file: Option<PathBuf>,
     pub target: Option<String>,
+    /// Upload only: the most bytes of one file.
     pub max_bytes: u64,
+    /// Upload only: the most files of the session.
     pub max_files: u32,
+    /// Upload only: the most bytes of the session, over all files.
+    pub max_total: u64,
     pub stop_after: bool,
     pub gate: Gate,
 }
@@ -76,6 +80,7 @@ impl ShareConfig {
             target: None,
             max_bytes: 512 * 1024 * 1024,
             max_files: 32,
+            max_total: 4 * 1024 * 1024 * 1024,
             stop_after: false,
             gate: Gate::off(),
         }
@@ -88,8 +93,9 @@ impl ShareConfig {
             dest: PathBuf::new(),
             file: Some(file.into()),
             target: None,
-            max_bytes: 2 * 1024 * 1024 * 1024,
-            max_files: 1,
+            max_bytes: 0,
+            max_files: 0,
+            max_total: 0,
             stop_after: false,
             gate: Gate::off(),
         }
@@ -102,8 +108,9 @@ impl ShareConfig {
             dest: PathBuf::new(),
             file: None,
             target: Some(target.into()),
-            max_bytes: 32 * 1024 * 1024,
-            max_files: 1,
+            max_bytes: 0,
+            max_files: 0,
+            max_total: 0,
             stop_after: false,
             gate: Gate::pin(),
         }
@@ -203,6 +210,7 @@ struct UploadState {
     token: String,
     max_bytes: u64,
     max_files: u32,
+    max_total: u64,
     used_files: AtomicU32,
     used_bytes: AtomicU64,
     stop_after: bool,
@@ -275,13 +283,16 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
         token: config.token.clone(),
         max_bytes: config.max_bytes,
         max_files: config.max_files,
+        max_total: config.max_total,
         used_files: AtomicU32::new(0),
         used_bytes: AtomicU64::new(0),
         stop_after: config.stop_after,
         gate: config.gate.clone(),
         control,
     });
-    let limit = (config.max_bytes as usize).saturating_add(1024 * 1024);
+    // One request may hold several files: the body limit is the session
+    // total, and each file and the total are checked while they arrive.
+    let limit = (config.max_total.max(config.max_bytes) as usize).saturating_add(1024 * 1024);
     Router::new()
         .route(
             UNLOCK_PATH,
@@ -362,6 +373,109 @@ async fn upload_landing(
     Html(upload_page(&state.token, state.max_bytes)).into_response()
 }
 
+/// The time limit of one chunk of an upload. A body that stops for longer
+/// gets 408, and its staged files are removed.
+pub const CHUNK_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The files of one upload request before they are committed. Each file is
+/// written to a hidden `.part` file in the destination. On drop, before the
+/// commit, each part file is removed and the reserved file slots and bytes
+/// go back to the session: an error, a stalled body or a dropped request
+/// leaves no partial file and no used slot.
+struct Staging<'a> {
+    state: &'a UploadState,
+    /// (part file, sanitized name, size)
+    parts: Vec<(PathBuf, String, u64)>,
+    slots: u32,
+    bytes: u64,
+}
+
+impl Drop for Staging<'_> {
+    fn drop(&mut self) {
+        for (part, _, _) in &self.parts {
+            let _ = std::fs::remove_file(part);
+        }
+        self.state
+            .used_files
+            .fetch_sub(self.slots, Ordering::SeqCst);
+        self.state
+            .used_bytes
+            .fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
+impl Staging<'_> {
+    /// Take `n` bytes of the session total, or say no.
+    fn reserve_bytes(&mut self, n: u64) -> bool {
+        let max = self.state.max_total;
+        let ok = self
+            .state
+            .used_bytes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(n).filter(|t| *t <= max)
+            })
+            .is_ok();
+        if ok {
+            self.bytes += n;
+        }
+        ok
+    }
+
+    /// Move each part file to a unique final name. A committed file is no
+    /// longer removed on drop, and its slot and bytes stay used.
+    async fn commit(mut self) -> Result<Vec<(String, u64)>, std::io::Error> {
+        let mut saved = Vec::new();
+        let parts = std::mem::take(&mut self.parts);
+        let mut left = parts.clone();
+        for (part, name, size) in parts {
+            let placed = match create_unique(&self.state.dest, &name).await {
+                Ok((path, placeholder)) => {
+                    drop(placeholder);
+                    // The placeholder (made with create_new) is ours: the
+                    // rename replaces it, and never another file.
+                    match tokio::fs::rename(&part, &path).await {
+                        Ok(()) => Ok(path),
+                        Err(err) => {
+                            let _ = tokio::fs::remove_file(&path).await;
+                            Err(err)
+                        }
+                    }
+                }
+                Err(err) => Err(err),
+            };
+            let path = match placed {
+                Ok(path) => path,
+                Err(err) => {
+                    // The committed files keep their slots and bytes; the
+                    // rest are removed and released on drop.
+                    self.slots = left.len() as u32;
+                    self.bytes = left.iter().map(|(_, _, size)| size).sum();
+                    self.parts = left;
+                    return Err(err);
+                }
+            };
+            left.remove(0);
+            let final_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(name);
+            saved.push((final_name, size));
+        }
+        // Committed: keep the slots and the bytes.
+        self.slots = 0;
+        self.bytes = 0;
+        Ok(saved)
+    }
+}
+
+fn refuse(status: StatusCode, message: String) -> Response {
+    (
+        status,
+        format!("{message}; no file of this upload was saved"),
+    )
+        .into_response()
+}
+
 async fn upload_receive(
     State(state): State<Arc<UploadState>>,
     headers: HeaderMap,
@@ -373,18 +487,27 @@ async fn upload_receive(
     }
     state.control.touch();
 
-    let mut saved = Vec::new();
-    let mut total = 0u64;
+    let mut staging = Staging {
+        state: &state,
+        parts: Vec::new(),
+        slots: 0,
+        bytes: 0,
+    };
     loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return (
+        let field = match tokio::time::timeout(CHUNK_LIMIT, multipart.next_field()).await {
+            Ok(Ok(Some(field))) => field,
+            Ok(Ok(None)) => break,
+            Ok(Err(err)) => {
+                return refuse(
                     StatusCode::BAD_REQUEST,
                     format!("bad multipart body: {err}"),
                 )
-                    .into_response()
+            }
+            Err(_) => {
+                return refuse(
+                    StatusCode::REQUEST_TIMEOUT,
+                    format!("no data for {} s", CHUNK_LIMIT.as_secs()),
+                )
             }
         };
         let Some(original) = field.file_name().map(str::to_string) else {
@@ -399,68 +522,96 @@ async fn upload_receive(
                 (n < state.max_files).then_some(n + 1)
             });
         if reserved.is_err() {
-            return (
+            return refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("session file limit reached ({} files)", state.max_files),
-            )
-                .into_response();
+            );
         }
-        let release = || state.used_files.fetch_sub(1, Ordering::SeqCst);
+        staging.slots += 1;
 
-        let (path, mut file) = match create_unique(&state.dest, &name).await {
-            Ok(created) => created,
+        let part = state.dest.join(format!(
+            ".cfrs-upload-{}.part",
+            &crate::util::random_token()[..16]
+        ));
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .await
+        {
+            Ok(file) => file,
             Err(err) => {
-                release();
-                return (
+                return refuse(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("cannot create file: {err}"),
                 )
-                    .into_response();
             }
         };
+        staging.parts.push((part, name, 0));
+        let index = staging.parts.len() - 1;
         let mut field = field;
         let mut written = 0u64;
         loop {
-            match field.chunk().await {
-                Ok(Some(chunk)) => {
-                    written += chunk.len() as u64;
-                    if written > state.max_bytes {
-                        release();
-                        let _ = tokio::fs::remove_file(&path).await;
-                        return (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            format!("file exceeds {}", human_bytes(state.max_bytes)),
-                        )
-                            .into_response();
-                    }
-                    if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
-                        release();
-                        let _ = tokio::fs::remove_file(&path).await;
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("write failed: {err}"),
-                        )
-                            .into_response();
-                    }
+            let chunk = match tokio::time::timeout(CHUNK_LIMIT, field.chunk()).await {
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => break,
+                Ok(Err(err)) => {
+                    return refuse(StatusCode::BAD_REQUEST, format!("upload aborted: {err}"))
                 }
-                Ok(None) => break,
-                Err(err) => {
-                    release();
-                    let _ = tokio::fs::remove_file(&path).await;
-                    return (StatusCode::BAD_REQUEST, format!("upload aborted: {err}"))
-                        .into_response();
+                Err(_) => {
+                    return refuse(
+                        StatusCode::REQUEST_TIMEOUT,
+                        format!("no data for {} s", CHUNK_LIMIT.as_secs()),
+                    )
                 }
+            };
+            // A long upload is activity: --idle-secs does not stop it.
+            state.control.touch();
+            written += chunk.len() as u64;
+            if written > state.max_bytes {
+                return refuse(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("a file exceeds {}", human_bytes(state.max_bytes)),
+                );
+            }
+            if !staging.reserve_bytes(chunk.len() as u64) {
+                return refuse(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        "the session limit of {} is reached",
+                        human_bytes(state.max_total)
+                    ),
+                );
+            }
+            if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+                return refuse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write failed: {err}"),
+                );
             }
         }
-        let _ = tokio::io::AsyncWriteExt::flush(&mut file).await;
-        state.used_bytes.fetch_add(written, Ordering::Relaxed);
-        total += written;
-        saved.push((name, written));
+        if let Err(err) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write failed: {err}"),
+            );
+        }
+        staging.parts[index].2 = written;
     }
 
-    if saved.is_empty() {
+    if staging.parts.is_empty() {
         return (StatusCode::BAD_REQUEST, "no files in upload").into_response();
     }
+    let saved = match staging.commit().await {
+        Ok(saved) => saved,
+        Err(err) => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("cannot save a file: {err}"),
+            )
+        }
+    };
+    let total: u64 = saved.iter().map(|(_, size)| size).sum();
     if state.stop_after {
         state.control.request_stop();
     }
@@ -631,7 +782,7 @@ async fn download_file(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
-    let disposition = format!("attachment; filename=\"{}\"", state.name.replace('"', ""));
+    let disposition = content_disposition(&state.name);
     let stream = tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, count));
     // --stop-after: the session ends when the last byte of the file has gone
     // out in a GET. A HEAD request, a range that stops before the end, and a
@@ -743,9 +894,179 @@ fn html_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// `Content-Disposition` for a download of `name` (RFC 6266): `filename=`
+/// with an ASCII form (each other byte, `"`, `\` and each control
+/// character becomes `_`), and `filename*=UTF-8''` with the percent-encoded
+/// name (RFC 5987) when the name is not plain ASCII. Before, a non-ASCII
+/// name was put in raw, and the header was lost on the way to the edge.
+pub fn content_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut value = format!("attachment; filename=\"{ascii}\"");
+    if ascii != name {
+        let mut encoded = String::new();
+        for byte in name.bytes() {
+            // attr-char of RFC 5987.
+            if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+                encoded.push(byte as char);
+            } else {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        value.push_str(&format!("; filename*=UTF-8''{encoded}"));
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A multipart body with one file part for each (name, size).
+    fn multipart(files: &[(&str, usize)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (name, size) in files {
+            body.extend_from_slice(
+                format!(
+                    "--XB\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend(std::iter::repeat_n(b'x', *size));
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(b"--XB--\r\n");
+        body
+    }
+
+    fn upload_request(token: &str, body: axum::body::Body) -> http::Request<axum::body::Body> {
+        http::Request::builder()
+            .method("POST")
+            .uri(format!("/s/{token}/upload"))
+            .header("content-type", "multipart/form-data; boundary=XB")
+            .body(body)
+            .unwrap()
+    }
+
+    fn files_in(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Issue 58: a request over the file limit or the session total gets
+    /// 413 and saves no file of it (before, the files before the limit
+    /// stayed); the slots and the bytes go back, so a smaller request works.
+    #[tokio::test]
+    async fn an_upload_over_a_limit_saves_nothing() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.max_files = 2;
+        config.max_bytes = 10;
+        config.max_total = 15;
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let send = |files: &[(&str, usize)]| {
+            app.router().oneshot(upload_request(
+                &token,
+                axum::body::Body::from(multipart(files)),
+            ))
+        };
+        let three = send(&[("a.txt", 1), ("b.txt", 1), ("c.txt", 1)])
+            .await
+            .unwrap();
+        assert_eq!(three.status(), 413);
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+        let total = send(&[("a.txt", 10), ("b.txt", 10)]).await.unwrap();
+        assert_eq!(total.status(), 413);
+        let text = axum::body::to_bytes(total.into_body(), 4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&text).contains("session limit"));
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+        let two = send(&[("a.txt", 10), ("b.txt", 5)]).await.unwrap();
+        assert_eq!(two.status(), 200);
+        assert_eq!(files_in(dir.path()), ["a.txt", "b.txt"]);
+        assert_eq!(
+            std::fs::metadata(dir.path().join("a.txt")).unwrap().len(),
+            10
+        );
+    }
+
+    /// Issue 59: a body that stops gets 408 after CHUNK_LIMIT, and leaves no
+    /// file, partial or staged.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_upload_leaves_no_file() {
+        use futures::StreamExt;
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = ShareConfig::upload(dir.path());
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let mut start = multipart(&[("big.bin", 1000)]);
+        start.truncate(start.len() - 300);
+        let stream =
+            futures::stream::once(
+                async move { Ok::<_, std::io::Error>(bytes::Bytes::from(start)) },
+            )
+            .chain(futures::stream::pending());
+        let response = app
+            .router()
+            .oneshot(upload_request(
+                &token,
+                axum::body::Body::from_stream(stream),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 408);
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+    }
+
+    /// Issue 60: a non-ASCII name, a quote and a newline.
+    #[test]
+    fn content_disposition_is_ascii_with_an_rfc5987_name() {
+        assert_eq!(
+            content_disposition("a.txt"),
+            "attachment; filename=\"a.txt\""
+        );
+        assert_eq!(
+            content_disposition("café.txt"),
+            "attachment; filename=\"caf_.txt\"; filename*=UTF-8''caf%C3%A9.txt"
+        );
+        let quoted = content_disposition("a\"b\nc.txt");
+        assert!(
+            quoted.starts_with("attachment; filename=\"a_b_c.txt\""),
+            "{quoted}"
+        );
+        for name in ["café.txt", "a\"b\nc.txt", "日本.pdf"] {
+            let value = content_disposition(name);
+            assert!(value.is_ascii(), "{value}");
+            assert!(http::HeaderValue::from_str(&value).is_ok(), "{value}");
+        }
+    }
 
     /// --stop-after: a HEAD does not end the session; the end of a GET body
     /// does.

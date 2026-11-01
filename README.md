@@ -286,7 +286,13 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
   a constant-time compare. After 10 wrong codes, no code opens the session:
   start a new one. After the unlock, the browser goes back to a path of the
   same site only.
-* The upload limits are 512 MiB for each file and 32 files.
+* The upload limits are 512 MiB for each file, 32 files and 4 GiB in total
+  for each session. A request over a limit gets 413, and no file of that
+  request is saved: each file waits in a hidden `.part` file until the
+  request ends. A body with no data for 60 s gets 408 and leaves no file.
+  The Cloudflare edge also refuses a request body above its own limit.
+* A download name that is not ASCII goes in `filename*=UTF-8''...` (RFC
+  5987), with an ASCII `filename=`.
 * `--stop-after` stops the session after the first transfer. `--idle-secs`
   stops it after a time with no activity.
 

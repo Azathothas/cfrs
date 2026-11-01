@@ -398,7 +398,9 @@ async fn write_axum_response(
         .map(|(name, value)| {
             (
                 name.as_str().to_string(),
-                value.to_str().unwrap_or_default().to_string(),
+                // A value with bytes above 127 is kept (as UTF-8, lossy):
+                // to_str() refuses it, and the header was lost.
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
             )
         })
         .collect();
