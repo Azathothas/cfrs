@@ -429,6 +429,7 @@ impl Tunnel {
             tunnel_id,
             account_tag,
             locations,
+            leg: kind.to_string(),
             metrics,
             runtime,
             shutdown: shutdown_tx,
@@ -988,6 +989,9 @@ pub struct TunnelHandle {
     tunnel_id: Uuid,
     account_tag: String,
     locations: Vec<String>,
+    /// The edge leg that won the race: quic, http2, quic+warp or
+    /// http2+relay (issue 95).
+    leg: String,
     metrics: Metrics,
     runtime: Arc<ServiceRuntime>,
     shutdown: watch::Sender<bool>,
@@ -1033,6 +1037,12 @@ impl TunnelHandle {
         &self.locations
     }
 
+    /// The edge leg that carries the tunnel: `quic`, `http2`, `quic+warp`
+    /// or `http2+relay`.
+    pub fn leg(&self) -> &str {
+        &self.leg
+    }
+
     pub fn metrics(&self) -> Metrics {
         self.metrics.clone()
     }
@@ -1043,11 +1053,11 @@ impl TunnelHandle {
 
     /// Fetch the public URL and confirm the tunnel is reachable. For quick
     /// tunnels the expected token may be checked against the body.
-    pub async fn verify(&self, expected: Option<&str>) -> Result<()> {
+    pub async fn verify(&self, expected: Option<&str>) -> Result<Option<Verified>> {
         let Some(url) = self.url.as_deref() else {
-            return Ok(());
+            return Ok(None);
         };
-        self.verify_url(url, expected).await
+        self.verify_url(url, expected).await.map(Some)
     }
 
     /// Like [`verify`](Self::verify) but for a specific path on the public
@@ -1057,10 +1067,10 @@ impl TunnelHandle {
     /// example 401 or 404 of an app behind a login) is a warning: the
     /// request crossed the tunnel. Only 530 (the edge has no connection of
     /// the tunnel) and transport errors are fatal after the last attempt.
-    pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<()> {
+    pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<Verified> {
         let mut last = String::from("no attempt");
         let mut last_status = None;
-        for attempt in 1..=20 {
+        for attempt in 1..=VERIFY_ATTEMPTS {
             let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
             match request.send().await {
                 Ok(response) => {
@@ -1068,8 +1078,16 @@ impl TunnelHandle {
                     let ok = response.is_success()
                         && expected.map(|token| body.contains(token)).unwrap_or(true);
                     if ok {
-                        info!(%url, status = response.status, "verified public URL");
-                        return Ok(());
+                        let dns = public_dns(url).await;
+                        info!(%url, status = response.status, attempt, dns, "verified public URL");
+                        if dns == "doh" {
+                            info!(
+                                "the system resolver of this host does not resolve the new name yet; \
+                                 public DNS does. A visitor whose resolver cached NXDOMAIN gets an \
+                                 error for some seconds more"
+                            );
+                        }
+                        return Ok(Verified { dns });
                     }
                     last = format!("HTTP {}", response.status);
                     last_status = Some(response.status);
@@ -1077,7 +1095,9 @@ impl TunnelHandle {
                     let edge_error = matches!(response.status, 502..=504 | 520..=530);
                     if expected.is_none() && !edge_error {
                         tracing::warn!(%url, status = response.status, "the origin answered HTTP {}; the tunnel is up", response.status);
-                        return Ok(());
+                        return Ok(Verified {
+                            dns: public_dns(url).await,
+                        });
                     }
                 }
                 Err(err) => {
@@ -1085,12 +1105,22 @@ impl TunnelHandle {
                     last_status = None;
                 }
             }
-            tracing::debug!(attempt, %last, "verification retry");
+            // Issue 94: the retries were at DEBUG only, so a slow new name
+            // looked like a hang for up to a minute.
+            if attempt > 10 {
+                tracing::warn!(attempt, of = VERIFY_ATTEMPTS, %last, "the public URL does not answer yet; cfrs tries again");
+            } else if attempt == 1 || attempt % 5 == 0 {
+                info!(attempt, of = VERIFY_ATTEMPTS, %last, "the public URL does not answer yet (a new name takes some seconds); cfrs tries again");
+            } else {
+                tracing::debug!(attempt, %last, "verification retry");
+            }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
         if expected.is_none() && matches!(last_status, Some(s) if s != 530) {
             tracing::warn!(%url, "the public URL answers {last}; the tunnel is up, check the origin");
-            return Ok(());
+            return Ok(Verified {
+                dns: public_dns(url).await,
+            });
         }
         bail!("could not verify {url}: {last}")
     }
@@ -1115,9 +1145,49 @@ impl Drop for TunnelHandle {
     }
 }
 
+/// The tries of the verify fetch.
+const VERIFY_ATTEMPTS: u32 = 20;
+
+/// The result of a verify of the public URL.
+#[derive(Clone, Copy, Debug)]
+pub struct Verified {
+    /// The step of the resolver chain that resolves the public name now:
+    /// `pin`, `system`, `doh` or `none` ([`crate::resolve::answering_step`]).
+    pub dns: &'static str,
+}
+
+/// [`crate::resolve::answering_step`] for the host of `url`, in at most 10 s.
+async fn public_dns(url: &str) -> &'static str {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    if host.is_empty() {
+        return "none";
+    }
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        crate::resolve::answering_step(host),
+    )
+    .await
+    .unwrap_or("none")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue 94: the host of the URL goes to the resolver chain; an
+    /// address needs no lookup, and a URL with no host is "none".
+    #[tokio::test]
+    async fn the_dns_step_of_a_url() {
+        assert_eq!(public_dns("https://127.0.0.1:8443/s/x/").await, "system");
+        assert_eq!(public_dns("https://localhost/").await, "system");
+        assert_eq!(public_dns("https:///x").await, "none");
+    }
 
     #[test]
     fn cfrs_udp_and_the_probe_shape_the_plan() {

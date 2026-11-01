@@ -101,7 +101,7 @@ pub use egress::Proxy;
 pub use ingress::{ForwardTarget, Ingress, IngressRule, OriginOptions, Service};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use share::{ShareApp, ShareConfig, ShareControl, ShareMode};
-pub use tunnel::{Tunnel, TunnelBuilder, TunnelHandle};
+pub use tunnel::{Tunnel, TunnelBuilder, TunnelHandle, Verified};
 pub use vnet::{NetStack, VirtAddr, VirtualSubnet};
 pub use warp::{Identity, MasqueSession, StackConfig, WarpClient, WarpStack};
 pub use ws::LocalSpec;

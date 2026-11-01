@@ -286,8 +286,8 @@ struct DoctorArgs {
 
 #[derive(Args, Debug)]
 struct ManArgs {
-    /// One section: a command (tunnel, "warp run") or a topic (environment,
-    /// files, exit-status, examples, pod).
+    /// Sections: commands (tunnel, warp run) and topics (environment, files,
+    /// exit-status, examples, pod). `cfrs man tunnel serve` gives both.
     #[arg(value_name = "SECTION", num_args = 0..)]
     section: Vec<String>,
     /// Write to stdout, also on a terminal.
@@ -574,7 +574,7 @@ struct ConnectArgs {
 
 #[derive(Args, Debug)]
 struct QrArgs {
-    /// URL to encode.
+    /// URL to encode (at most 2331 bytes). Another text gets a warning.
     url: String,
 }
 
@@ -604,6 +604,7 @@ fn main() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if argv.get(1).map(String::as_str) == Some("pod") {
+        pod_netns::set_program_name("cfrs pod");
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
     }
     let cli = match Cli::try_parse_from(&args) {
@@ -1179,6 +1180,18 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
 fn network_options(cli: &Cli) -> Result<()> {
     use cfrs::egress::{set_choice, Proxy, ProxyChoice};
     if let Some(spec) = &cli.proxy {
+        // Issue 95: a value with no scheme (CFRS_PROXY=notaurl) became
+        // http://notaurl:8080, and each leg then failed on a name. The
+        // proxy variables of other tools keep the lenient form.
+        if !spec.contains("://") {
+            let shown = match spec.rsplit_once('@') {
+                Some((_, host)) => format!("***@{host}"),
+                None => spec.clone(),
+            };
+            bail!(
+                "--proxy (or CFRS_PROXY) {shown:?} has no scheme; give http://, socks5:// or socks5h://HOST:PORT"
+            );
+        }
         cfrs::report::hide(spec);
         set_choice(ProxyChoice::Via(Proxy::parse(spec).context("--proxy")?));
     } else if cli.no_proxy {
@@ -1287,6 +1300,25 @@ async fn async_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Qr(args) => {
+            // Issue 95: a text over the limit is a usage mistake; a text
+            // that is not a URL gets a warning (a QR code of any text is
+            // valid).
+            if args.url.len() > cfrs::qr::MAX_BYTES {
+                return Err(cfrs::exit::fault(
+                    Fault::Usage,
+                    anyhow::anyhow!(
+                        "the text is {} bytes; a QR code holds at most {} bytes",
+                        args.url.len(),
+                        cfrs::qr::MAX_BYTES
+                    ),
+                ));
+            }
+            if !cfrs::qr::looks_like_url(&args.url) {
+                eprintln!(
+                    "cfrs: warning: {:?} is not a URL (scheme://...); the QR code holds the text as it is",
+                    args.url
+                );
+            }
             print!("{}", cfrs::qr::render_terminal(&args.url)?);
             Ok(())
         }
@@ -1770,9 +1802,8 @@ async fn run_tunnel(
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
     if verify {
-        handle.verify(None).await?;
-        if let Some(url) = handle.url() {
-            verified(show, url);
+        if let (Some(check), Some(url)) = (handle.verify(None).await?, handle.url()) {
+            verified(show, url, check.dns);
         }
     }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));
@@ -1804,6 +1835,7 @@ async fn run_share(
                 "url": public,
                 "tunnel_id": handle.tunnel_id().to_string(),
                 "locations": handle.locations(),
+                "leg": handle.leg(),
                 "pin": pin,
             })
         );
@@ -1813,15 +1845,19 @@ async fn run_share(
         if let Some(pin) = &pin {
             println!("  cfrs: PIN      {pin}");
         }
-        println!("  cfrs: edge     {}", handle.locations().join(", "));
+        println!(
+            "  cfrs: edge     {} ({})",
+            handle.locations().join(", "),
+            handle.leg()
+        );
         println!();
     }
     if show.qr {
         print!("{}", cfrs::qr::render_terminal(&public)?);
     }
     if verify && handle.url().is_some() {
-        handle.verify_url(&public, None).await?;
-        verified(show, &public);
+        let check = handle.verify_url(&public, None).await?;
+        verified(show, &public, check.dns);
     }
     let mut doc = tunnel_doc(&handle, Some(&public), verify);
     doc["pin"] = pin.clone().into();
@@ -1841,9 +1877,10 @@ async fn run_demo(
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
     if exit_on_verify {
-        handle.verify(Some("Hello, world! (cfrs)")).await?;
+        let check = handle.verify(Some("Hello, world! (cfrs)")).await?;
         if show.json {
-            verified(show, handle.url().unwrap_or(""));
+            let dns = check.map(|c| c.dns).unwrap_or("none");
+            verified(show, handle.url().unwrap_or(""), dns);
         } else {
             println!(
                 "  cfrs: PROOF   {} -> HTTP 200 (built-in hello world)",
@@ -1882,6 +1919,7 @@ fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) ->
         "verified": verified && url.is_some(),
         "tunnel_id": handle.tunnel_id().to_string(),
         "locations": handle.locations(),
+        "leg": handle.leg(),
     })
 }
 
@@ -1897,10 +1935,33 @@ fn listen_doc(listen: &cfrs::vnet::proxy::ProxyListen) -> serde_json::Value {
     }
 }
 
-/// After a fetch of the public URL: one JSON line with --json.
-fn verified(show: Show, url: &str) {
+/// The WARP+ line of `warp status` (issue 95). The field `warp_plus` of
+/// the API is true also for a free account; WARP+ is an account type
+/// other than free, or premium data.
+fn warp_plus_label(account: &serde_json::Value) -> &'static str {
+    let kind = account
+        .get("account_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let premium = account
+        .get("premium_data")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if premium > 0 || !(kind.is_empty() || kind == "free") {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+/// After a fetch of the public URL: one JSON line with --json. `dns` is
+/// the step of the resolver chain that resolves the name (issue 94).
+fn verified(show: Show, url: &str, dns: &str) {
     if show.json {
-        println!("{}", serde_json::json!({"event": "verified", "url": url}));
+        println!(
+            "{}",
+            serde_json::json!({"event": "verified", "url": url, "dns": dns})
+        );
     }
 }
 
@@ -1913,6 +1974,7 @@ fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
                 "url": handle.url(),
                 "tunnel_id": handle.tunnel_id().to_string(),
                 "locations": handle.locations(),
+                "leg": handle.leg(),
             })
         );
     } else {
@@ -1938,7 +2000,11 @@ fn announce_text(handle: &cfrs::TunnelHandle) {
             handle.tunnel_id()
         ),
     }
-    println!("  cfrs: edge     {}", handle.locations().join(", "));
+    println!(
+        "  cfrs: edge     {} ({})",
+        handle.locations().join(", "),
+        handle.leg()
+    );
     println!();
 }
 
@@ -2075,7 +2141,8 @@ enum WarpCommand {
     Rotate,
     /// Remove the device from the WARP service and delete the saved file.
     Delete,
-    /// Open the tunnel and test TCP connects through it.
+    /// Open the tunnel and test TCP connects through it. Exit 69 when a
+    /// target fails.
     Probe {
         /// A TCP destination to reach through the tunnel, host:port.
         #[arg(long, value_delimiter = ',')]
@@ -2357,7 +2424,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             print_device(&client, path.as_deref());
             let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
             println!("type        {}", field("account_type"));
-            println!("warp+       {}", field("warp_plus"));
+            println!("warp+       {}", warp_plus_label(&account));
             println!("premium     {}", field("premium_data"));
             println!("quota       {}", field("quota"));
         }
@@ -2368,7 +2435,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
             println!("license     set");
             println!("type        {}", field("account_type"));
-            println!("warp+       {}", field("warp_plus"));
+            println!("warp+       {}", warp_plus_label(&account));
         }
         WarpCommand::Rotate => {
             client.rotate_key().await?;
@@ -2406,6 +2473,8 @@ async fn warp(args: WarpArgs) -> Result<()> {
             );
             let stack = client.connect().await.fault(Fault::Unavailable)?;
             println!("tunnel      up (TCP 443 only)");
+            let total = targets.len();
+            let mut failed = 0;
             for (spec, host, port) in targets {
                 let started = std::time::Instant::now();
                 let attempt = async {
@@ -2420,9 +2489,22 @@ async fn warp(args: WarpArgs) -> Result<()> {
                         println!("OK          {spec} ({addr}) in {:?}", started.elapsed());
                         conn.close().await;
                     }
-                    Ok(Err(err)) => println!("FAIL        {spec}: {err:#}"),
-                    Err(_) => println!("TIMEOUT     {spec}"),
+                    Ok(Err(err)) => {
+                        failed += 1;
+                        println!("FAIL        {spec}: {err:#}");
+                    }
+                    Err(_) => {
+                        failed += 1;
+                        println!("TIMEOUT     {spec}");
+                    }
                 }
+            }
+            // Issue 95: a target that fails is a failure of the probe.
+            if failed > 0 {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("{failed} of {total} targets failed through WARP"),
+                ));
             }
         }
         WarpCommand::Proxy {

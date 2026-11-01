@@ -181,6 +181,28 @@ async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
     }
 }
 
+/// Which step of the chain resolves `host` now (issue 94): `pin`,
+/// `system`, `doh`, or `none`. A name that only DoH resolves is new: the
+/// resolver of a visitor can still answer NXDOMAIN (a cached negative
+/// answer) for some time.
+pub async fn answering_step(host: &str) -> &'static str {
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if pins().contains_key(&name) {
+        return "pin";
+    }
+    if let Ok(Ok(mut addrs)) =
+        tokio::time::timeout(STEP_TIMEOUT, tokio::net::lookup_host((host, 0))).await
+    {
+        if addrs.next().is_some() {
+            return "system";
+        }
+    }
+    match doh_addresses(&name).await {
+        Ok(_) => "doh",
+        Err(_) => "none",
+    }
+}
+
 fn dedup(mut ips: Vec<IpAddr>) -> Vec<IpAddr> {
     let mut seen = Vec::with_capacity(ips.len());
     ips.retain(|ip| {

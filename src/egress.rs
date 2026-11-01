@@ -860,6 +860,36 @@ pub async fn dial_direct(host: &str, port: u16, timeout: Duration) -> Result<Tcp
     Ok(stream)
 }
 
+/// The errors of a dial to more than one address, one entry for each
+/// text (issue 95: the doctor showed 20 errors on one line):
+/// `198.41.192.7:7844: refused` or `20 addresses (198.41.192.7:7844,
+/// 198.41.192.27:7844, ...): Permission denied (os error 13)`.
+pub fn group_errors(errors: &[(SocketAddr, String)]) -> String {
+    let mut groups: Vec<(&str, Vec<SocketAddr>)> = Vec::new();
+    for (addr, text) in errors {
+        match groups.iter_mut().find(|(t, _)| *t == text.as_str()) {
+            Some((_, addrs)) => addrs.push(*addr),
+            None => groups.push((text, vec![*addr])),
+        }
+    }
+    groups
+        .iter()
+        .map(|(text, addrs)| match addrs.as_slice() {
+            [one] => format!("{one}: {text}"),
+            many => {
+                let shown: Vec<String> = many.iter().take(2).map(|a| a.to_string()).collect();
+                let more = if many.len() > 2 { ", ..." } else { "" };
+                format!(
+                    "{} addresses ({}{more}): {text}",
+                    many.len(),
+                    shown.join(", ")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Alternate IPv6 and IPv4 addresses, the first family first (RFC 8305).
 fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     let Some(first) = addrs.first().copied() else {
@@ -908,9 +938,9 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
                         return Ok((i, stream));
                     }
                     Err(err) => {
-                        errors.push(format!("{}: {err}", addrs[i]));
+                        errors.push((addrs[i], err.to_string()));
                         if pending.is_empty() && next >= addrs.len() {
-                            bail!("{}", errors.join("; "));
+                            bail!("{}", group_errors(&errors));
                         }
                     }
                 },
@@ -1115,6 +1145,25 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_same_error_of_many_addresses_is_one_entry() {
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        let denied = "Permission denied (os error 13)".to_string();
+        let mut errors: Vec<(SocketAddr, String)> = (1..=20)
+            .map(|i| (a(&format!("198.41.192.{i}:7844")), denied.clone()))
+            .collect();
+        errors.push((a("1.2.3.4:7844"), "refused".into()));
+        assert_eq!(
+            group_errors(&errors),
+            "20 addresses (198.41.192.1:7844, 198.41.192.2:7844, ...): \
+             Permission denied (os error 13); 1.2.3.4:7844: refused"
+        );
+        assert_eq!(
+            group_errors(&errors[..1]),
+            format!("198.41.192.1:7844: {denied}")
+        );
+    }
 
     #[test]
     fn parses_a_full_url() {

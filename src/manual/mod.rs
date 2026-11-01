@@ -30,6 +30,27 @@ pub struct Request {
     pub json: bool,
 }
 
+fn is_topic(name: &str) -> bool {
+    TOPICS.contains(&name.to_ascii_lowercase().replace(' ', "-").as_str())
+}
+
+/// The words of `text` as two or more section names, the longest name
+/// first; none when a word is in no name.
+fn split_sections(manual: &Manual, text: &str) -> Option<Vec<String>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let end = (at + 1..=words.len().min(at + 3)).rev().find(|&end| {
+            let name = words[at..end].join(" ");
+            manual.command(&name).is_some() || is_topic(&name)
+        })?;
+        parts.push(words[at..end].join(" "));
+        at = end;
+    }
+    (parts.len() > 1).then_some(parts)
+}
+
 /// The bytes for `req`, or the refusal for a request that cannot be served.
 pub fn body(manual: &Manual, req: &Request) -> Result<String, String> {
     if req.json && req.roff {
@@ -44,6 +65,24 @@ pub fn body(manual: &Manual, req: &Request) -> Result<String, String> {
             text::render(manual)
         });
     };
+    // More than one section (issue 95): `cfrs man tunnel serve` gives
+    // both. The words split into names, the longest name first.
+    if manual.command(section).is_none() && !is_topic(section) {
+        if let Some(parts) = split_sections(manual, section) {
+            if req.json {
+                return Err("--json takes one section".into());
+            }
+            let mut out = String::new();
+            for part in parts {
+                let one = Request {
+                    section: Some(part),
+                    ..req.clone()
+                };
+                out.push_str(&body(manual, &one)?);
+            }
+            return Ok(out);
+        }
+    }
     if let Some(c) = manual.command(section) {
         return Ok(if req.json {
             serde_json::to_string_pretty(c).unwrap_or_default() + "\n"
@@ -159,6 +198,15 @@ mod tests {
             .unwrap()
             .contains("78 (config)"));
         assert!(body(&m, &req("nothing"))
+            .unwrap_err()
+            .contains("no section"));
+        // Issue 95: two sections in one call, the longest name first.
+        let two = body(&m, &req("net ts-shims exit-status")).unwrap();
+        assert!(
+            two.contains("--out") && two.contains("78 (config)"),
+            "{two}"
+        );
+        assert!(body(&m, &req("net ts-shims nothing"))
             .unwrap_err()
             .contains("no section"));
         let both = Request {

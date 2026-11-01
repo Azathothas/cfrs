@@ -30,23 +30,45 @@ pub(crate) struct Args {
     pub(crate) prefer_udp: bool,
 }
 
+/// The name in the help and the usage lines: `pod-netns`, or `cfrs pod`
+/// when cfrs runs the pod ([`set_program_name`]).
+static PROGRAM_NAME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Set the name that the help shows (once, before [`crate::main_with_args`]).
+pub fn set_program_name(name: &'static str) {
+    let _ = PROGRAM_NAME.set(name);
+}
+
+fn program_name() -> &'static str {
+    PROGRAM_NAME.get().copied().unwrap_or("pod-netns")
+}
+
+/// The help, in the layout of the other cfrs commands (issue 95).
 pub fn usage() -> String {
-    "\
-pod-netns — run a program with all egress through a proxy, without shims
+    usage_for(program_name())
+}
 
-USAGE:
-    pod-netns [OPTIONS] -- PROGRAM [ARGS...]
-    pod-netns doctor [--json]
-    pod-netns --serve LISTEN -x PROXY
+/// The help with `name` as the name of the program.
+pub fn usage_for(name: &str) -> String {
+    format!(
+        "\
+Run a program with all egress through a proxy, without shims
 
-OPTIONS:
-    -x, --proxy SPEC       Upstream proxy, repeatable; more than one chains:
+Usage: {name} [OPTIONS] -- <PROGRAM> [ARGS]...
+       {name} doctor [--json]
+       {name} --serve <LISTEN> -x <PROXY>
+
+Arguments:
+  <PROGRAM> [ARGS]...  The program to run, and its arguments
+
+Options:
+  -x, --proxy <SPEC>       Upstream proxy, repeatable; more than one chains:
                              socks5://[user:pass@]host:port
                              http://[user:pass@]host:port
                              socks5://unix:/path     (unix-socket proxy)
                              tailscale:/path/to/tailscaled.sock
                            Default: $ALL_PROXY, $HTTPS_PROXY or $HTTP_PROXY
-    -r, --rule SPEC        Per-destination route; first match wins:
+  -r, --rule <SPEC>        Per-destination route; first match wins:
                              domain:NAME=socks5://host:port
                              domain:.example.com=...  (the name and each
                                                        name under it)
@@ -54,26 +76,28 @@ OPTIONS:
                              cidr:10.0.0.0/8=direct   (no proxy)
                            With the seccomp backend, 127.0.0.0/8 goes direct
                            (or to a listener of the program itself)
-        --map NAME=ADDR    Resolve NAME to ADDR locally, repeatable
-        --keep-proxy-env   Keep HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
+      --map <NAME=ADDR>    Resolve NAME to ADDR locally, repeatable
+      --keep-proxy-env     Keep HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
                            (and the lower-case forms) for the program; by
                            default the program does not get them
-        --backend NAME     auto (default), netns or seccomp
-        --prefer-udp       With auto: seccomp first when it works (all UDP
+      --backend <NAME>     auto (default), netns or seccomp
+      --prefer-udp         With auto: seccomp first when it works (all UDP
                            goes through; netns carries DNS only)
-        --inbound-dir DIR  Where a bound port is exposed as a unix socket
+      --inbound-dir <DIR>  Where a bound port is exposed as a unix socket
                            (seccomp backend only)
                            [default: /tmp/pod-netns-inbound]
-        --serve LISTEN     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
+      --serve <LISTEN>     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
                            unix:/path or tcp://host:port, forwarding through
                            the -x chain
-    -v, --verbose          Log each flow
-    -V, --version          Print the version and exit
-    -h, --help             This text
+  -v, --verbose            Log each flow
+  -V, --version            Print the version
+  -h, --help               Print help
 
-doctor measures what the host permits and exits 3 when no backend can run.
+Exit status: the exit code of the program; 64 for a usage mistake (also no
+proxy at all); 3 when no backend can run on this host. doctor measures what
+the host permits and exits 3 when no backend can run.
 "
-    .to_string()
+    )
 }
 
 pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
@@ -217,7 +241,10 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
         }
     }
     if !doctor && serve.is_none() && program.is_empty() {
-        bail!("nothing to run; usage: pod-netns [OPTIONS] -- PROGRAM");
+        bail!(
+            "nothing to run; usage: {} [OPTIONS] -- PROGRAM",
+            program_name()
+        );
     }
     Ok(Args {
         proxies,

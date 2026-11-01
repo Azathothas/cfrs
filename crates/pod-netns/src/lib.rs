@@ -44,7 +44,7 @@ mod frontdoor;
 mod netns;
 mod seccomp;
 
-pub use cli::usage;
+pub use cli::{set_program_name, usage, usage_for};
 pub use listen::ProxyListen;
 pub use upstream::{Proxy, ProxyKind, Rule, RuleMatch, Upstream};
 
@@ -149,6 +149,14 @@ pub fn main_with_args(argv: &[String]) -> i32 {
                 return EXIT_NO_BACKEND;
             }
         }
+    }
+    // Issue 95: no -x, no proxy variable and no rule is a usage mistake
+    // (exit 64), not a host that has no backend (exit 3).
+    if args.proxies.is_empty() && args.rules.is_empty() {
+        eprintln!(
+            "pod-netns: no proxy: give -x PROXY, or set ALL_PROXY, HTTPS_PROXY or HTTP_PROXY"
+        );
+        return USAGE;
     }
     warn_unreachable(&args.proxies);
     // Inbound listeners exist on the seccomp backend only (issue 69).

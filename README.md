@@ -714,8 +714,16 @@ cfrs --color never ...        # colours: auto (a terminal, no NO_COLOR), always,
 
 With `--json`, `cfrs tunnel`, `serve`, `share` and `demo` write JSON lines on
 stdout in place of the text lines. A line with `"event": "ready"` gives
-`url`, `tunnel_id` and `locations` (and `pin` for `share`). A line with
-`"event": "verified"` comes after the fetch of the public URL.
+`url`, `tunnel_id`, `locations` and `leg` (and `pin` for `share`). `leg` is
+the edge leg that carries the tunnel: `quic`, `http2`, `quic+warp` or
+`http2+relay`. The text `edge` line names it too. A line with
+`"event": "verified"` comes after the fetch of the public URL. Its `dns`
+field names the resolver step that resolves the public name at that time:
+`system`, `doh` (public DNS resolves it, the system resolver of this host
+not yet: a visitor whose resolver cached NXDOMAIN gets an error for some
+seconds more), `pin` (`--resolve`) or `none`. While the fetch fails, cfrs
+logs the first try and each fifth try at INFO, and each try after the tenth
+at WARN.
 
 Stop signals: after a server command is ready, SIGINT (Ctrl-C), SIGTERM
 and SIGHUP each start the clean shutdown, also with `--run-for`. The exit

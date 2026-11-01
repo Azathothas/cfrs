@@ -15,12 +15,21 @@ pub enum ProxyListen {
 }
 
 impl ProxyListen {
-    /// Parse `unix:/path` or `tcp://host:port`.
+    /// Parse `unix:/path`, `unix:///path` or `tcp://host:port`.
     pub fn parse(value: &str) -> Result<Self> {
-        if let Some(path) = value.strip_prefix("unix:") {
+        if let Some(path) = value
+            .strip_prefix("unix://")
+            .or_else(|| value.strip_prefix("unix:"))
+        {
             if path.is_empty() {
                 bail!("unix: listen address has no path");
             }
+            // unix:///tmp/x is /tmp/x, not ///tmp/x (issue 95).
+            let path = if path.starts_with('/') {
+                format!("/{}", path.trim_start_matches('/'))
+            } else {
+                path.to_string()
+            };
             return Ok(Self::Unix(PathBuf::from(path)));
         }
         for prefix in ["tcp://", "tcp:"] {
@@ -53,6 +62,27 @@ pub fn bind_private(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_unix_url_with_three_slashes_is_an_absolute_path() {
+        for value in [
+            "unix:///tmp/x.sock",
+            "unix://tmp/x.sock",
+            "unix:/tmp/x.sock",
+            "unix:////tmp/x.sock",
+        ] {
+            let want = if value == "unix://tmp/x.sock" {
+                "tmp/x.sock"
+            } else {
+                "/tmp/x.sock"
+            };
+            assert_eq!(
+                ProxyListen::parse(value).unwrap(),
+                ProxyListen::Unix(PathBuf::from(want)),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn parses_listen_addresses() {

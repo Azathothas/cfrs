@@ -106,8 +106,18 @@ impl ServiceRuntime {
 }
 
 fn static_router(root: &Path, spa: bool) -> Result<Router> {
+    // Issue 95: a bad --dir is a usage mistake (exit 64), and the text
+    // says which mistake.
     if !root.is_dir() {
-        bail!("static root is not a directory: {}", root.display());
+        let why = if root.exists() {
+            "is not a directory"
+        } else {
+            "does not exist"
+        };
+        return Err(crate::exit::fault(
+            crate::exit::Fault::Usage,
+            anyhow::anyhow!("the directory to serve ({}) {why}", root.display()),
+        ));
     }
     let canonical = Arc::new(
         root.canonicalize()

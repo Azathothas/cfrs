@@ -213,7 +213,7 @@ pub fn build(mut cmd: clap::Command) -> Manual {
         about: text(cmd.get_about()),
         description: DESCRIPTION.iter().map(|s| s.to_string()).collect(),
         commands,
-        pod_usage: pod_netns::usage(),
+        pod_usage: pod_netns::usage_for("cfrs pod"),
         environment: ENVIRONMENT,
         files: FILES,
         exit_status: TABLE.iter().map(ExitRow::from).collect(),

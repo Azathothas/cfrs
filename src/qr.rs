@@ -4,10 +4,19 @@ use anyhow::Result;
 use qrcode::{Color, QrCode};
 
 const QUIET_ZONE: usize = 4;
+/// The most bytes that one QR code holds at the error correction level M
+/// (version 40), the level of [`QrCode::new`].
+pub const MAX_BYTES: usize = 2331;
 const MAX_QR_SIZE: usize = 200;
 
 /// Square 0/1 module matrix including the quiet zone.
 pub fn matrix_for(payload: &str) -> Result<Vec<String>> {
+    if payload.len() > MAX_BYTES {
+        anyhow::bail!(
+            "the text is {} bytes; a QR code holds at most {MAX_BYTES} bytes",
+            payload.len()
+        );
+    }
     let code = QrCode::new(payload.as_bytes())?;
     let width = code.width();
     let size = width + QUIET_ZONE * 2;
@@ -28,6 +37,20 @@ pub fn matrix_for(payload: &str) -> Result<Vec<String>> {
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// Whether `text` looks like a URL: a scheme, `://` and more (issue 95).
+pub fn looks_like_url(text: &str) -> bool {
+    match text.split_once("://") {
+        Some((scheme, rest)) => {
+            !rest.is_empty()
+                && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        }
+        None => false,
+    }
 }
 
 /// Terminal rendering using half blocks so the code is compact and square.
@@ -61,6 +84,19 @@ pub fn render_terminal(payload: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue 95: the byte limit, and which texts are URLs.
+    #[test]
+    fn the_limit_and_the_url_check() {
+        assert!(matrix_for(&"a".repeat(MAX_BYTES)).is_ok());
+        let err = matrix_for(&"a".repeat(MAX_BYTES + 1)).unwrap_err();
+        assert!(err.to_string().contains("at most 2331 bytes"), "{err}");
+        assert!(looks_like_url("https://x.trycloudflare.com/s/a/"));
+        assert!(looks_like_url("wss://h/__cfrs/ws"));
+        for text in ["not a url", "://x", "https://", "1http://x", "a b://c"] {
+            assert!(!looks_like_url(text), "{text}");
+        }
+    }
 
     #[test]
     fn matrix_is_square() {
