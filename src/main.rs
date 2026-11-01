@@ -379,6 +379,19 @@ fn main() {
     }
 }
 
+/// Ready on SIGINT (Ctrl-C) or SIGTERM (systemd, Docker, Kubernetes): each
+/// starts the same clean shutdown, and the exit code is 0.
+async fn shutdown_signal() -> std::io::Result<()> {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => r,
+        _ = term.recv() => {
+            tracing::info!("SIGTERM: stopping");
+            Ok(())
+        }
+    }
+}
+
 /// Apply --proxy, --no-proxy and --resolve.
 fn network_options(cli: &Cli) -> Result<()> {
     use cfrs::egress::{set_choice, Proxy, ProxyChoice};
@@ -612,7 +625,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     match args.run_for {
         Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
         None => {
-            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_signal().await;
         }
     }
     for task in tasks {
@@ -923,13 +936,13 @@ async fn wait(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>) -> () {
         Some(secs) => {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal() => {}
                 _ = stop_controls => {}
             }
         }
         None => {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal() => {}
                 _ = stop_controls => {}
             }
         }
@@ -955,14 +968,14 @@ async fn wait_with_idle(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>, 
         Some(secs) => {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal() => {}
                 _ = wait_controls(controls) => {}
                 _ = watch => {}
             }
         }
         None => {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal() => {}
                 _ = wait_controls(controls) => {}
                 _ = watch => {}
             }
@@ -1094,6 +1107,40 @@ async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<
 }
 
 async fn warp(args: WarpArgs) -> Result<()> {
+    // These commands use a saved device and register none.
+    if matches!(
+        args.command,
+        WarpCommand::Status { .. }
+            | WarpCommand::License { .. }
+            | WarpCommand::Rotate
+            | WarpCommand::Delete
+    ) && !args.ephemeral
+    {
+        let path = match args.identity.clone() {
+            Some(path) => Some(path),
+            None => cfrs::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
+        };
+        match path {
+            Some(path) if path.exists() => {}
+            Some(path) => {
+                return Err(cfrs::exit::fault(
+                    Fault::Config,
+                    anyhow::anyhow!(
+                        "no WARP identity at {}; run cfrs warp register first",
+                        path.display()
+                    ),
+                ))
+            }
+            None => {
+                return Err(cfrs::exit::fault(
+                    Fault::Config,
+                    anyhow::anyhow!(
+                        "CFRS_STATE_DIR=none keeps no WARP identity; give --identity PATH"
+                    ),
+                ))
+            }
+        }
+    }
     let (mut client, path) = warp_client(&args).await?;
     let save = |client: &cfrs::warp::WarpClient| -> Result<()> {
         if let Some(path) = &path {
@@ -1187,7 +1234,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             match run_for {
                 Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
                 None => {
-                    let _ = tokio::signal::ctrl_c().await;
+                    let _ = shutdown_signal().await;
                 }
             }
             proxy.abort();
@@ -1223,7 +1270,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             );
             tokio::select! {
                 result = cfrs::warp::tun::run(tun, session) => result?,
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal() => {}
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -1265,9 +1312,19 @@ fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>)
     println!("account     {}", device.account.id);
     println!("tunnel      {}", device.tunnel_type);
     println!("key type    {}", device.key_type);
-    println!("ipv4        {:?}", device.ipv4());
-    println!("ipv6        {:?}", device.ipv6());
-    println!("masque      {:?}", device.masque_endpoint());
+    let or_dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+    println!(
+        "ipv4        {}",
+        or_dash(device.ipv4().map(|a| a.to_string()))
+    );
+    println!(
+        "ipv6        {}",
+        or_dash(device.ipv6().map(|a| a.to_string()))
+    );
+    println!(
+        "masque      {}",
+        or_dash(device.masque_endpoint().map(|a| a.to_string()))
+    );
     println!("protocol    {}", device.policy.tunnel_protocol);
     match path {
         Some(path) => println!("saved       {}", path.display()),
@@ -1603,7 +1660,7 @@ async fn wait_stop(run_for: Option<u64>) {
     match run_for {
         Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
         None => {
-            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_signal().await;
         }
     }
 }
@@ -1679,7 +1736,7 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
     match args.run_for {
         Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
         None => {
-            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_signal().await;
         }
     }
     proxy.abort();

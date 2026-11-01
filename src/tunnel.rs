@@ -896,8 +896,14 @@ impl TunnelHandle {
 
     /// Like [`verify`](Self::verify) but for a specific path on the public
     /// URL (a share session lives under `/s/<token>/`, not at the root).
+    ///
+    /// With no `expected` text, an answer of the origin that is not 2xx (for
+    /// example 401 or 404 of an app behind a login) is a warning: the
+    /// request crossed the tunnel. Only 530 (the edge has no connection of
+    /// the tunnel) and transport errors are fatal after the last attempt.
     pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<()> {
         let mut last = String::from("no attempt");
+        let mut last_status = None;
         for attempt in 1..=20 {
             let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
             match request.send().await {
@@ -910,11 +916,25 @@ impl TunnelHandle {
                         return Ok(());
                     }
                     last = format!("HTTP {}", response.status);
+                    last_status = Some(response.status);
+                    // A status of the origin crossed the tunnel: the tunnel is up.
+                    let edge_error = matches!(response.status, 502..=504 | 520..=530);
+                    if expected.is_none() && !edge_error {
+                        tracing::warn!(%url, status = response.status, "the origin answered HTTP {}; the tunnel is up", response.status);
+                        return Ok(());
+                    }
                 }
-                Err(err) => last = format!("{err:#}"),
+                Err(err) => {
+                    last = format!("{err:#}");
+                    last_status = None;
+                }
             }
             tracing::debug!(attempt, %last, "verification retry");
             tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if expected.is_none() && matches!(last_status, Some(s) if s != 530) {
+            tracing::warn!(%url, "the public URL answers {last}; the tunnel is up, check the origin");
+            return Ok(());
         }
         bail!("could not verify {url}: {last}")
     }

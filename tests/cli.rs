@@ -337,3 +337,57 @@ fn a_log_to_a_pipe_has_no_colours() {
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(!text.contains('\u{1b}'), "{text:?}");
 }
+
+/// SIGTERM stops cfrs as SIGINT does: a clean shutdown and exit 0.
+#[test]
+fn sigterm_is_a_clean_stop() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args([
+                "connect",
+                "-L",
+                &format!("tcp://127.0.0.1:{port}"),
+                "wss://127.0.0.1:9/__cfrs/ws",
+            ])
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Wait for the listener.
+        let start = std::time::Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(20),
+                "no listener"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        unsafe { libc::kill(child.id() as i32, signal) };
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(0), "signal {signal}: {status:?}");
+    }
+}
+
+/// warp status, license, rotate and delete use a saved device and register
+/// none.
+#[test]
+fn warp_status_registers_no_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("none.json");
+    for command in ["status", "rotate", "delete"] {
+        let out = cfrs(&["warp", "--identity", path.to_str().unwrap(), command]);
+        assert_eq!(out.status.code(), Some(78), "{command}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("no WARP identity at"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(!path.exists(), "{command} made a file");
+    }
+}
