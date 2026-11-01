@@ -24,6 +24,7 @@ pod-netns doctor --json
 | `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY` or `cidr:ADDR/PREFIX=PROXY`. The first rule that matches is used. |
 | `--map NAME=ADDR` | Resolve `NAME` to `ADDR`, with no upstream. |
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
+| `--keep-proxy-env` | Keep `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case forms for the program. By default the program does not get them: the pod is its egress, and a program that used them would send to a host proxy that it cannot reach. |
 | `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
 | `--serve LISTEN` | Serve SOCKS5, HTTP `CONNECT` and UDP ASSOCIATE on `unix:/path` or `tcp://host:port`, through the `-x` chain. |
 | `-v, --verbose` | Log each flow. |
@@ -116,3 +117,14 @@ The public modules are also used alone:
 `tests/seccomp.rs` compiles small C programs (static and dynamic) and runs them
 with both backends. A backend that the host does not permit is skipped. Each
 test program has a 10-second alarm, so a lost reply fails the test.
+
+## DNS of the program (netns backend)
+
+The netns backend gives the program a private `/etc/resolv.conf` with
+`nameserver 10.66.255.254` (the gateway of the TUN, where the pod answers
+DNS): a bind mount in a mount namespace of the program, so the file of the
+host stays as it is. The resolver of the host (for example `127.0.0.53`) is
+on the loopback of the host, which the namespace of the program does not
+have. When the mount fails, a warning says so and the program keeps the file
+of the host. The seccomp backend reads the DNS packets of the program
+itself, with any resolver file.

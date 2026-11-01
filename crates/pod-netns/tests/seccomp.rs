@@ -1045,3 +1045,40 @@ fn seccomp_inbound_wakes_epoll_and_accept_does_not_block_the_child() {
     assert!(out.contains("done"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue 61: the program does not get the proxy variables of the host (the
+/// pod is its egress), and --keep-proxy-env keeps them.
+#[test]
+fn the_program_does_not_get_the_host_proxy() {
+    if !seccomp_available() {
+        eprintln!("skipping: no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let run = |keep: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pod-netns"));
+        cmd.args(["--backend", "seccomp"]);
+        if keep {
+            cmd.arg("--keep-proxy-env");
+        }
+        let out = cmd
+            .args(["-x", "socks5://127.0.0.1:1", "--", "sh", "-c", "env"])
+            .env("HTTPS_PROXY", "http://127.0.0.1:3128")
+            .env("no_proxy", "localhost")
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (env, stderr) = run(false);
+    assert!(!env.lines().any(|l| l.starts_with("HTTPS_PROXY=")), "{env}");
+    assert!(!env.lines().any(|l| l.starts_with("no_proxy=")), "{env}");
+    assert!(stderr.contains("does not get"), "{stderr}");
+    let (env, _) = run(true);
+    assert!(
+        env.lines()
+            .any(|l| l == "HTTPS_PROXY=http://127.0.0.1:3128"),
+        "{env}"
+    );
+}

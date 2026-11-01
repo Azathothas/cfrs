@@ -469,6 +469,7 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
     // execv does not search PATH, and the child must not allocate after the
     // fork: find the program here.
     let resolved = resolve_program(&program[0])?;
+    let env = crate::child_env(args.keep_proxy_env);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("pod-netns-filter".into())
@@ -497,6 +498,11 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
                 .map(|c| c.as_ptr())
                 .chain(std::iter::once(std::ptr::null()))
                 .collect();
+            let envp: Vec<*const libc::c_char> = env
+                .iter()
+                .map(|c| c.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect();
 
             let lfd = match install_notif_filter() {
                 Ok(fd) => fd,
@@ -515,7 +521,7 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
             }
             if pid == 0 {
                 // Child: the filter is inherited. execv with no allocation.
-                unsafe { libc::execv(path.as_ptr(), ptrs.as_ptr()) };
+                unsafe { libc::execve(path.as_ptr(), ptrs.as_ptr(), envp.as_ptr()) };
                 unsafe { libc::_exit(127) };
             }
             let _ = tx.send(Ok((lfd, pid)));

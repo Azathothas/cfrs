@@ -21,6 +21,8 @@ pub(crate) struct Args {
     pub(crate) inbound_dir: std::path::PathBuf,
     /// `--inbound-dir` was given (the seccomp backend only uses it).
     pub(crate) inbound_dir_given: bool,
+    /// `--keep-proxy-env`: the program keeps the proxy variables.
+    pub(crate) keep_proxy_env: bool,
     pub(crate) serve: Option<crate::listen::ProxyListen>,
     pub(crate) backend: BackendKind,
 }
@@ -45,6 +47,9 @@ OPTIONS:
                              domain:NAME=socks5://host:port
                              cidr:10.0.0.0/8=socks5://host:port
         --map NAME=ADDR    Resolve NAME to ADDR locally, repeatable
+        --keep-proxy-env   Keep HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
+                           (and the lower-case forms) for the program; by
+                           default the program does not get them
         --backend NAME     auto (default), netns or seccomp
         --inbound-dir DIR  Where a bound port is exposed as a unix socket
                            (seccomp backend only)
@@ -72,6 +77,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
     let mut backend = BackendKind::Auto;
     let mut inbound_dir = std::path::PathBuf::from("/tmp/pod-netns-inbound");
     let mut inbound_dir_given = false;
+    let mut keep_proxy_env = false;
     let mut serve: Option<crate::listen::ProxyListen> = None;
     let mut i = 0;
     while i < argv.len() {
@@ -95,6 +101,10 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
                     env!("CFRS_BUILD_COMMIT")
                 );
                 std::process::exit(0);
+            }
+            "--keep-proxy-env" => {
+                keep_proxy_env = true;
+                i += 1;
             }
             "--map" => {
                 let spec = argv.get(i + 1).context("--map needs NAME=ADDR")?;
@@ -204,6 +214,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
         verbose,
         inbound_dir,
         inbound_dir_given,
+        keep_proxy_env,
         serve,
         backend,
     })

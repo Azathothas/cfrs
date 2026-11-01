@@ -187,6 +187,52 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     }
 }
 
+/// The proxy variables that a program in the pod does not get: the pod is
+/// its egress, and a program that used them would send to a host proxy that
+/// the pod cannot reach (issue 61).
+pub(crate) const PROXY_VARIABLES: &[&str] = &[
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// The environment of the program, as `KEY=VALUE` C strings for execve:
+/// the environment of this process without [`PROXY_VARIABLES`] (unless
+/// `keep_proxy`). Built before the fork; this process's own environment is
+/// not changed (cfrs warp run calls pod-netns on a thread). Prints one line
+/// that names the removed variables.
+pub(crate) fn child_env(keep_proxy: bool) -> Vec<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut removed = Vec::new();
+    let env: Vec<std::ffi::CString> = std::env::vars_os()
+        .filter(|(key, _)| {
+            let drop = !keep_proxy && key.to_str().is_some_and(|k| PROXY_VARIABLES.contains(&k));
+            if drop {
+                removed.push(key.to_string_lossy().into_owned());
+            }
+            !drop
+        })
+        .filter_map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            std::ffi::CString::new(entry).ok()
+        })
+        .collect();
+    if !removed.is_empty() {
+        eprintln!(
+            "pod-netns: the program does not get {} (the pod is its egress; --keep-proxy-env keeps them)",
+            removed.join(", ")
+        );
+    }
+    env
+}
+
 /// Warn when an upstream does not answer a connect in 2 s. The program
 /// still runs (it may open no connection), but each connection that it
 /// opens fails; before, a dead upstream gave no line at all.

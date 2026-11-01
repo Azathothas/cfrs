@@ -867,6 +867,13 @@ pub(crate) fn child_setup(sock: RawFd, args: &Args) -> Result<()> {
     send_fd(sock, tun.as_raw_fd())?;
     unsafe { libc::close(sock) };
     std::mem::forget(tun); // the parent owns its own handle; keep ours open too
+                           // The resolver of the host (often 127.0.0.53) is on the loopback of the
+                           // host, which this namespace does not have: give the program a
+                           // resolv.conf with the gateway of the TUN, where the pod answers DNS
+                           // (issue 61). A failure leaves the host file, with a warning.
+    if let Err(e) = private_resolv_conf() {
+        eprintln!("pod-netns: warning: the program keeps the resolver of the host ({e:#})");
+    }
 
     let program = &args.program;
     let path = CString::new(program[0].as_bytes())?;
@@ -879,10 +886,65 @@ pub(crate) fn child_setup(sock: RawFd, args: &Args) -> Result<()> {
         .map(|c| c.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect();
+    let env = crate::child_env(args.keep_proxy_env);
+    let envp: Vec<*const libc::c_char> = env
+        .iter()
+        .map(|c| c.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
     unsafe {
-        libc::execvp(path.as_ptr(), ptrs.as_ptr());
+        libc::execvpe(path.as_ptr(), ptrs.as_ptr(), envp.as_ptr());
     }
-    bail!("execvp {}: {}", program[0], std::io::Error::last_os_error())
+    bail!(
+        "execvpe {}: {}",
+        program[0],
+        std::io::Error::last_os_error()
+    )
+}
+
+/// In a new mount namespace, put a resolv.conf with the TUN gateway over
+/// /etc/resolv.conf (a bind mount of a file that is then unlinked).
+fn private_resolv_conf() -> Result<()> {
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+        bail!("unshare(CLONE_NEWNS): {}", std::io::Error::last_os_error());
+    }
+    let root = CString::new("/")?;
+    // Make the mounts private, so the bind mount does not reach the host.
+    if unsafe {
+        libc::mount(
+            std::ptr::null(),
+            root.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        bail!(
+            "mount --make-rprivate /: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    let file = std::env::temp_dir().join(format!("pod-netns-resolv-{}.conf", std::process::id()));
+    std::fs::write(&file, format!("nameserver {TUN_GW}\noptions ndots:0\n"))
+        .context("writing the resolv.conf of the pod")?;
+    let source = CString::new(file.as_os_str().as_encoded_bytes())?;
+    let target = CString::new("/etc/resolv.conf")?;
+    let rc = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    let err = std::io::Error::last_os_error();
+    let _ = std::fs::remove_file(&file);
+    if rc != 0 {
+        bail!("bind mount over /etc/resolv.conf: {err}");
+    }
+    Ok(())
 }
 
 pub(crate) fn write_all_fd(fd: RawFd, mut buf: &[u8]) -> Result<()> {
