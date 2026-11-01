@@ -178,7 +178,12 @@ async fn send(request: Request) -> Result<Response> {
         let tls = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
             .connect(name, io)
             .await
-            .with_context(|| format!("TLS with {}", target.host))?;
+            .map_err(|e| {
+                crate::hop::at(
+                    crate::hop::Hop::Tls,
+                    anyhow::anyhow!("TLS with {}: {}", target.host, crate::hop::tls_text(&e)),
+                )
+            })?;
         exchange(tls, &target, &request).await
     } else {
         exchange(io, &target, &request).await

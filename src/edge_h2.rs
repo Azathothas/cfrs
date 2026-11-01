@@ -396,7 +396,12 @@ async fn connect_one(
     )
     .await
     .map_err(|_| anyhow::anyhow!("TLS with the edge at {addr} timed out"))?
-    .with_context(|| format!("TLS with the edge at {addr}"))?;
+    .map_err(|e| {
+        crate::hop::at(
+            crate::hop::Hop::Tls,
+            anyhow::anyhow!("TLS with the edge at {addr}: {}", crate::hop::tls_text(&e)),
+        )
+    })?;
 
     let Served {
         control: control_rx,

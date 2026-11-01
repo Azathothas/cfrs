@@ -210,6 +210,7 @@ impl Proxy {
         };
         work.await
             .with_context(|| format!("{host}:{port} through the proxy {self}"))
+            .map_err(|e| crate::hop::at(crate::hop::Hop::Proxy, e))
     }
 
     async fn http_connect(
@@ -244,7 +245,8 @@ impl Proxy {
             bail!("{}", explain_407(&head, self.auth.is_some()));
         }
         if !(200..300).contains(&status) {
-            bail!("the proxy refused CONNECT with HTTP {status}");
+            let reason = reply_reason(stream, &head).await;
+            bail!("the proxy refused CONNECT with HTTP {status}{reason}");
         }
         Ok(())
     }
@@ -368,6 +370,55 @@ impl Proxy {
         tokio::time::timeout(timeout, work)
             .await
             .context("the SOCKS5 exchange timed out")?
+    }
+}
+
+/// The reason of a refusal: the reason phrase of the status line, and the
+/// first line of the body (for example "not on the egress allowlist"),
+/// with no control characters. Reads at most 512 bytes of the body, for
+/// at most 2 s.
+async fn reply_reason(stream: &mut TcpStream, head: &[u8]) -> String {
+    let text = String::from_utf8_lossy(head);
+    let phrase = text
+        .lines()
+        .next()
+        .and_then(|l| l.splitn(3, ' ').nth(2))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let length = text.lines().find_map(|l| {
+        let (name, value) = l.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    });
+    let mut body = Vec::new();
+    let want = length.unwrap_or(512).min(512);
+    let mut chunk = [0u8; 512];
+    while body.len() < want {
+        match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => body.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+    }
+    body.truncate(want);
+    let first = String::from_utf8_lossy(&body)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let mut parts = Vec::new();
+    for part in [phrase, first] {
+        let part = crate::report::clean(&part);
+        if !part.is_empty() && !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", parts.join(": "))
     }
 }
 
@@ -676,7 +727,9 @@ pub async fn dial_direct(host: &str, port: u16, timeout: Duration) -> Result<Tcp
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let addrs: Vec<SocketAddr> = tokio::time::timeout(timeout, crate::resolve::resolve(host))
         .await
-        .with_context(|| format!("resolving {host}: no answer in {} s", timeout.as_secs()))??
+        .with_context(|| format!("resolving {host}: no answer in {} s", timeout.as_secs()))
+        .and_then(|r| r)
+        .map_err(|e| crate::hop::at(crate::hop::Hop::Dns, e))?
         .into_iter()
         .map(|ip| SocketAddr::new(ip, port))
         .collect();

@@ -320,3 +320,41 @@ async fn a_silent_address_does_not_hold_the_dial() {
     assert_eq!(index, 1);
     assert!(took < Duration::from_millis(1000), "the dial took {took:?}");
 }
+
+/// A proxy that refuses with a text: the error line keeps the text, and
+/// the second line names the proxy hop.
+#[test]
+fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let body = "not on the egress allowlist\n";
+            let _ = write!(
+                s,
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let proxy = format!("http://127.0.0.1:{port}");
+    let (code, text) = cfrs(
+        &[
+            "tunnel",
+            "--hello-world",
+            "--service-url",
+            "https://api.example",
+        ],
+        &[("HTTPS_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+    );
+    assert_eq!(code, Some(69), "{text}");
+    assert!(
+        text.contains(
+            "the proxy refused CONNECT with HTTP 403: Forbidden: not on the egress allowlist"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("cfrs: the proxy hop failed; "), "{text}");
+}

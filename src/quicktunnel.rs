@@ -105,12 +105,12 @@ impl AuthMode {
 }
 
 /// A validation failure detected before any network call is made.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ProvisionError {
     /// The provisioning endpoint was not a valid absolute URL.
     BadEndpoint(String),
     /// The HTTP request itself failed.
-    Http(String),
+    Http(anyhow::Error),
     /// A non-2xx HTTP status.
     Status { code: u16, body: String },
     /// A 2xx response that is not valid JSON, or not a `QuickTunnelResponse`.
@@ -125,7 +125,7 @@ impl std::fmt::Display for ProvisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ProvisionError::BadEndpoint(e) => write!(f, "invalid quick-service endpoint: {e}"),
-            ProvisionError::Http(e) => write!(f, "request to the quick-tunnel service failed: {e}"),
+            ProvisionError::Http(_) => write!(f, "request to the quick-tunnel service failed"),
             ProvisionError::Status { code, body } => {
                 write!(f, "quick-tunnel service returned HTTP {code}: {body}")
             }
@@ -153,7 +153,16 @@ impl std::fmt::Display for ProvisionError {
     }
 }
 
-impl std::error::Error for ProvisionError {}
+/// The cause of a failed request comes through `source`, so that its hop
+/// and its text stay in the chain.
+impl std::error::Error for ProvisionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ProvisionError::Http(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// The user agent cloudflared-style clients send. Kept simple and honest.
 pub fn user_agent() -> String {
@@ -183,10 +192,7 @@ pub async fn request_quick_tunnel(
     if let Some(body) = auth_mode.request_body() {
         request.body = Some(body.into());
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| ProvisionError::Http(format!("{e:#}")))?;
+    let response = request.send().await.map_err(ProvisionError::Http)?;
     let status = response.status;
     let text = response.text();
     parse_quick_tunnel_response(status, &text)

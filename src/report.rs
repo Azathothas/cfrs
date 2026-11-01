@@ -127,6 +127,8 @@ pub fn error_line(err: &anyhow::Error) -> String {
     if let Some(hint) = crate::trust::clock_hint(err) {
         line.push_str("\ncfrs: ");
         line.push_str(&hint);
+    } else if let Some(hop) = crate::hop::of(err) {
+        line.push_str(&format!("\ncfrs: the {hop} hop failed; {}", hop.hint()));
     }
     line
 }
@@ -233,6 +235,7 @@ pub fn document(
     exit: i32,
     error: Option<&anyhow::Error>,
 ) -> serde_json::Value {
+    let error_hop = error.and_then(crate::hop::of).map(|h| h.name());
     let error: Vec<String> = error
         .map(|e| e.chain().map(|c| clean(&mask(&c.to_string()))).collect())
         .unwrap_or_default();
@@ -244,6 +247,7 @@ pub fn document(
         "command": command,
         "exit": exit,
         "error": error,
+        "hop": error_hop,
         "messages": lines().lock().unwrap().iter().cloned().collect::<Vec<_>>(),
     })
 }

@@ -177,7 +177,15 @@ impl MasqueSession {
         let tls = TlsConnector::from(config)
             .connect(server_name, tcp)
             .await
-            .context("TLS handshake with the MASQUE front door")?;
+            .map_err(|e| {
+                crate::hop::at(
+                    crate::hop::Hop::Tls,
+                    anyhow::anyhow!(
+                        "TLS handshake with the MASQUE front door: {}",
+                        crate::hop::tls_text(&e)
+                    ),
+                )
+            })?;
 
         let (client, mut connection) = h2::client::handshake(tls)
             .await

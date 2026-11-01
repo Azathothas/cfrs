@@ -198,3 +198,23 @@ goes inside the MASQUE session. The host opens only TCP 443.
 * The WARP proxy of `cfrs` (`cfrs warp proxy`) carries TCP (SOCKS5 and HTTP
   `CONNECT`) and UDP (SOCKS5 UDP ASSOCIATE). It resolves names through the
   tunnel. The UDP relay socket of an association is on `127.0.0.1`.
+
+## Failure causes
+
+The error line of cfrs names the hop that failed, and a second line says
+what may help. The failure report (`CFRS_ERROR_PROGRAM`) has the hop in
+`hop`. The text of a peer (a proxy reply, an edge reason) is kept, with no
+control characters.
+
+| Hop | Example cause | cfrs does | What may help |
+| --- | --- | --- | --- |
+| `proxy` | `403 Forbidden: not on the egress allowlist`, 407 with NTLM | Stops the attempt; another leg can follow | Fix the proxy URL or its allow-list; `--no-proxy` |
+| `dns` | No resolver answers, DoH blocked | Tries the system resolver, then DoH by IP address | `--resolve HOST=IP`; `socks5h://` |
+| `tls` | `UnknownIssuer`, `TLS alert from the peer: HandshakeFailure`, an expired certificate | Stops the attempt | `--ca-file` for a TLS-inspecting proxy; check the clock |
+| `edge-register` | A refusal with `should_retry = false` (bad token, deleted tunnel) | Stops the leg; does not retry | Check the token, or use a quick tunnel |
+| `edge-register` | A refusal with `retry_after` | Retries after `retry_after` (1 s to 300 s) | Nothing |
+| `edge-stream` | No PING answer, GOAWAY, a lost connection | Connects again at once, then with backoff and jitter, with no limit | `--transport warp` on a host with only TCP 443 |
+| `origin` | Connection refused | Answers the visitor with 502 | Start the origin; check `--url` |
+
+`scripts/soak.sh` runs N quick tunnels end to end, keeps one log for each
+trial, and prints the failure rate.

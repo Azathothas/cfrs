@@ -31,6 +31,7 @@ pub mod exit;
 pub mod feature;
 pub mod fetch;
 pub mod gate;
+pub mod hop;
 pub mod ingress;
 pub mod manual;
 pub mod metrics;
