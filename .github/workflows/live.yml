@@ -148,6 +148,13 @@ jobs:
           sh scripts/retry.sh sudo python3 -m pip install -q --break-system-packages websockets || true
           sh scripts/live-throughput.sh target/release/cfrs quic 16
           sh scripts/live-throughput.sh target/release/cfrs http2 16
+      # Issue 56: a WebSocket through a --url origin, on each leg.
+      - name: WebSocket through a --url origin
+        timeout-minutes: 6
+        run: |
+          set -eu
+          sh scripts/live-ws-url.sh target/release/cfrs quic
+          sh scripts/live-ws-url.sh target/release/cfrs http2
       # Issue 32: 1, 4 and 16 MiB over QUIC inside WARP, and the tunnel must
       # still answer after them.
       - name: Throughput through WARP, 1 to 16 MiB

@@ -238,7 +238,9 @@ async fn forward_http(
     metrics: &Metrics,
 ) -> Result<()> {
     let mut io = net::dial(service, options).await?;
-    let upgrade = is_upgrade(request);
+    // The QUIC leg marks a WebSocket by the connection type and may keep no
+    // Upgrade header (issue 56): is_websocket checks both.
+    let upgrade = is_websocket(request);
     let head = build_request_head(request, options, upgrade);
     tokio::io::AsyncWriteExt::write_all(&mut io, head.as_bytes()).await?;
 
@@ -686,6 +688,7 @@ fn build_request_head(
         head.push_str("\r\n");
     }
     let mut saw_connection = false;
+    let mut saw_upgrade = false;
     for (key, value) in &request.metadata {
         let Some(name) = key.strip_prefix(&prefix) else {
             continue;
@@ -697,19 +700,27 @@ fn build_request_head(
             continue;
         }
         if name.eq_ignore_ascii_case("connection") {
+            // An upgrade always says Connection: Upgrade (below).
+            if upgrade {
+                continue;
+            }
             saw_connection = true;
+        }
+        if name.eq_ignore_ascii_case("upgrade") {
+            saw_upgrade = true;
         }
         head.push_str(name);
         head.push_str(": ");
         head.push_str(value);
         head.push_str("\r\n");
     }
-    if !saw_connection {
-        if upgrade {
-            head.push_str("Connection: Upgrade\r\n");
-        } else {
-            head.push_str("Connection: close\r\n");
+    if upgrade {
+        if !saw_upgrade {
+            head.push_str("Upgrade: websocket\r\n");
         }
+        head.push_str("Connection: Upgrade\r\n");
+    } else if !saw_connection {
+        head.push_str("Connection: close\r\n");
     }
     head.push_str("\r\n");
     head
@@ -1142,6 +1153,37 @@ mod tests {
         let head = build_request_head(&request, &OriginOptions::default(), false);
         assert!(head.starts_with("POST /a HTTP/1.1\r\n"));
         assert!(head.contains("Connection: close\r\n"));
+    }
+
+    /// Issue 56: a WebSocket stream of the QUIC leg (connection type
+    /// Websocket) with no Upgrade header still upgrades the origin.
+    #[test]
+    fn a_websocket_stream_with_no_upgrade_header_upgrades() {
+        let mut ws = req(
+            "https://x/ws",
+            vec![
+                (HTTP_HOST_KEY, "x"),
+                ("HttpHeader:Sec-Websocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ("HttpHeader:Connection", "keep-alive"),
+            ],
+        );
+        ws.conn_type = cqstream::ConnectionType::Websocket;
+        assert!(!is_upgrade(&ws) && is_websocket(&ws));
+        let head = build_request_head(&ws, &OriginOptions::default(), is_websocket(&ws));
+        assert!(head.contains("Upgrade: websocket\r\n"), "{head}");
+        assert!(head.contains("Connection: Upgrade\r\n"), "{head}");
+        assert!(
+            !head.contains("keep-alive") && !head.contains("Connection: close"),
+            "{head}"
+        );
+        assert!(
+            head.contains("Sec-Websocket-Key: dGhlIHNhbXBsZSBub25jZQ=="),
+            "{head}"
+        );
+        // With an Upgrade header, it is not doubled.
+        let with = req("https://x/ws", vec![("HttpHeader:Upgrade", "websocket")]);
+        let head = build_request_head(&with, &OriginOptions::default(), true);
+        assert_eq!(head.matches("pgrade: websocket").count(), 1, "{head}");
     }
 
     #[test]
