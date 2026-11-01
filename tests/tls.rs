@@ -38,7 +38,7 @@ fn ca(expired: bool) -> Ca {
     }
 }
 
-/// Serve HTTPS on a local port: each request gets `503` and a short body.
+/// Serve HTTPS on a local port: each request gets `403` and a short body.
 /// Gives the port.
 fn serve(ca: &Ca) -> u16 {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -71,7 +71,7 @@ fn serve(ca: &Ca) -> u16 {
                 let body = "private CA reached";
                 let _ = write!(
                     tls,
-                    "HTTP/1.1 503 Service Unavailable\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 403 Forbidden\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = tls.flush();
@@ -120,12 +120,12 @@ fn a_private_ca_is_trusted_only_when_it_is_given() {
 
     // With SSL_CERT_FILE: the TLS connection works, and the server answers.
     let text = tunnel(port, &[("SSL_CERT_FILE", file)], &[]);
-    assert!(text.contains("503"), "{text}");
+    assert!(text.contains("HTTP 403"), "{text}");
     assert!(!text.to_lowercase().contains("issuer"), "{text}");
 
     // With --ca-file: the same.
     let text = tunnel(port, &[], &["--ca-file", file]);
-    assert!(text.contains("503"), "{text}");
+    assert!(text.contains("HTTP 403"), "{text}");
 
     // An explicit file is used alone: a file with another CA does not
     // widen to the system roots, and the server is refused.
@@ -133,7 +133,7 @@ fn a_private_ca_is_trusted_only_when_it_is_given() {
     std::fs::write(&other, ca_other()).unwrap();
     let text = tunnel(port, &[("SSL_CERT_FILE", other.to_str().unwrap())], &[]);
     assert!(text.contains("invalid peer certificate"), "{text}");
-    assert!(!text.contains("503"), "{text}");
+    assert!(!text.contains("HTTP 403"), "{text}");
 }
 
 fn ca_other() -> String {

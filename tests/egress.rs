@@ -32,7 +32,7 @@ fn api(ok: bool) -> (u16, Arc<AtomicUsize>) {
                     r#"{"success":true,"result":{"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","hostname":"test.trycloudflare.com","account_tag":"0123456789abcdef","secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}}"#,
                 )
             } else {
-                ("503 Service Unavailable", "the stand-in API")
+                ("403 Forbidden", "the stand-in API")
             };
             let _ = write!(
                 stream,
@@ -276,11 +276,11 @@ fn no_proxy_bypasses_the_proxy() {
         &args,
         &[env[0], env[1], ("NO_PROXY", "127.0.0.1,.example.com")],
     );
-    assert!(text.contains("503"), "{text}");
+    assert!(text.contains("HTTP 403"), "{text}");
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 
     let (_, text) = cfrs(&[&args[..], &["--no-proxy"]].concat(), &env);
-    assert!(text.contains("503"), "{text}");
+    assert!(text.contains("HTTP 403"), "{text}");
     assert_eq!(hits.load(Ordering::SeqCst), 2);
 }
 

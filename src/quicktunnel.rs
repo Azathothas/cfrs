@@ -305,6 +305,16 @@ pub async fn provision(
             } if *code == 429 || (500..600).contains(code) => {
                 retry_after.unwrap_or_else(|| policy.backoff_with_jitter(attempt))
             }
+            // A refusal of the proxy and a TLS failure do not change on a
+            // retry.
+            ProvisionError::Http(inner)
+                if matches!(
+                    crate::hop::of(inner),
+                    Some(crate::hop::Hop::Proxy | crate::hop::Hop::Tls)
+                ) =>
+            {
+                return Err(err)
+            }
             ProvisionError::Http(_) => policy.backoff_with_jitter(attempt),
             _ => return Err(err),
         };
