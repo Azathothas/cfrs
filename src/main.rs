@@ -139,14 +139,14 @@ struct TunnelOpts {
     #[arg(long, global = true)]
     user_agent: Option<String>,
     /// Parallel edge connections (1-8).
-    #[arg(long, default_value_t = 2, global = true)]
+    #[arg(long, default_value_t = 2, global = true, value_parser = clap::value_parser!(u8).range(1..=8))]
     ha_connections: u8,
     /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then http2).
-    #[arg(long, default_value = "auto", global = true)]
+    #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "quic", "http2", "h2"])]
     protocol: String,
     /// How to reach the edge: auto (try 7844, fall back to WARP on 443),
     /// direct (port 7844) or warp (carried on TCP 443).
-    #[arg(long, default_value = "auto", global = true)]
+    #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp"])]
     transport: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.
     /// Without it, every run registers a new anonymous device.
@@ -524,7 +524,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
     if args.config.is_none() {
         let mut ingress = Ingress::new();
         if let Some(forward) = &args.forward {
-            let target = ForwardTarget::parse(forward)?;
+            let target = ForwardTarget::parse(forward).fault(Fault::Usage)?;
             ingress = ingress.rule_with(IngressRule {
                 hostname: None,
                 path: Some(cfrs::ws::DEFAULT_PATH.to_string()),
@@ -532,7 +532,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
                 origin: OriginOptions::default(),
             });
         }
-        if let Some(service) = pick_optional_service(&args)? {
+        if let Some(service) = pick_optional_service(&args).fault(Fault::Usage)? {
             let origin = OriginOptions {
                 no_tls_verify: args.no_tls_verify,
                 http_host_header: args.http_host_header.clone(),
@@ -571,18 +571,41 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
     let mut service = None;
     if let Some(url) = &args.url {
         choices += 1;
+        if url
+            .split("://")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .is_some_and(|a| a.ends_with(":0"))
+        {
+            bail!("--url {url}: the port 0 is not a port");
+        }
         service = Some(Service::parse(url)?);
     }
     if let Some(path) = &args.unix {
         choices += 1;
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.file_type().is_socket() => {}
+            Ok(_) => bail!("--unix {}: not a Unix socket", path.display()),
+            Err(err) => bail!("--unix {}: {err}", path.display()),
+        }
         service = Some(Service::Unix(path.clone()));
     }
     if let Some(port) = args.port {
         choices += 1;
+        if port == 0 {
+            bail!("--port 0: give a port from 1 to 65535");
+        }
         service = Some(Service::Http(format!("http://127.0.0.1:{port}")));
     }
     if let Some(addr) = &args.tcp {
         choices += 1;
+        let (host, port) = addr
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("--tcp {addr}: give host:port"))?;
+        if host.is_empty() || port.parse::<u16>().map_or(true, |p| p == 0) {
+            bail!("--tcp {addr}: give host:port with a port from 1 to 65535");
+        }
         service = Some(Service::Tcp(addr.clone()));
     }
     if args.hello_world {
@@ -597,6 +620,15 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
 
 async fn connect(args: ConnectArgs) -> Result<()> {
     cfrs::init_crypto();
+    if !(args.remote.starts_with("wss://") || args.remote.starts_with("ws://")) {
+        return Err(cfrs::exit::fault(
+            Fault::Usage,
+            anyhow::anyhow!(
+                "the remote {} is not a WebSocket URL: give wss://<host>/__cfrs/ws",
+                args.remote
+            ),
+        ));
+    }
     let mut tasks = Vec::new();
     for raw in &args.locals {
         let local = LocalSpec::parse(raw)?;
@@ -916,8 +948,11 @@ fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
         announce_text(handle);
     }
     if show.qr {
-        if let Some(url) = handle.url() {
-            print!("{}", cfrs::qr::render_terminal(url)?);
+        match handle.url() {
+            Some(url) => print!("{}", cfrs::qr::render_terminal(url)?),
+            None => tracing::warn!(
+                "--qr: a named tunnel has its hostname in Cloudflare, and cfrs does not know it; no QR code"
+            ),
         }
     }
     Ok(())

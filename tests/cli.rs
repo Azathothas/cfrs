@@ -413,3 +413,54 @@ fn completion_scripts() {
     }
     assert_eq!(cfrs(&["completions", "tcsh"]).status.code(), Some(64));
 }
+
+/// A bad value of a tunnel flag is a usage error (exit 64) before any
+/// network work.
+#[test]
+fn bad_flag_values_are_usage_errors() {
+    for (args, want) in [
+        (
+            &["tunnel", "--hello-world", "--ha-connections", "0"][..],
+            "1..=8",
+        ),
+        (
+            &["tunnel", "--hello-world", "--ha-connections", "9"],
+            "1..=8",
+        ),
+        (
+            &["tunnel", "--hello-world", "--protocol", "bogus"],
+            "possible values",
+        ),
+        (
+            &["tunnel", "--hello-world", "--transport", "bogus"],
+            "possible values",
+        ),
+        (&["tunnel", "--port", "0"], "--port 0"),
+        (
+            &["tunnel", "--unix", "/nonexistent/x.sock"],
+            "--unix /nonexistent/x.sock",
+        ),
+        (&["tunnel", "--tcp", "bogus"], "--tcp bogus"),
+        (&["tunnel", "--tcp", "127.0.0.1:0"], "--tcp 127.0.0.1:0"),
+        (&["tunnel", "--url", "http://127.0.0.1:0"], "the port 0"),
+        (
+            &[
+                "connect",
+                "-L",
+                "tcp://127.0.0.1:1",
+                "http://127.0.0.1:19200/",
+            ],
+            "not a WebSocket URL",
+        ),
+    ] {
+        let start = std::time::Instant::now();
+        let out = cfrs(args);
+        let text = stderr(&out);
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {text}");
+        assert!(text.contains(want), "{args:?}: {text}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{args:?} was slow"
+        );
+    }
+}
