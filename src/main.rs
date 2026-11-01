@@ -847,6 +847,56 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
     }
 }
 
+/// `cfrs warp up`: start `warp proxy` detached (instance `warp`) with the
+/// WARP options of this command line, then write the env file.
+fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Result<()> {
+    let socket = cfrs::warp::up::socket_path()?;
+    let mut argv: Vec<String> = Vec::new();
+    if let Some(path) = &args.identity {
+        argv.push("--identity".into());
+        argv.push(path.display().to_string());
+    }
+    if args.ephemeral {
+        argv.push("--ephemeral".into());
+    }
+    if args.no_relay {
+        argv.push("--no-relay".into());
+    }
+    if let Some(endpoint) = args.masque_endpoint {
+        argv.push("--masque-endpoint".into());
+        argv.push(endpoint.to_string());
+    }
+    if let Some(sni) = &args.masque_sni {
+        argv.push("--masque-sni".into());
+        argv.push(sni.clone());
+    }
+    argv.extend([
+        "proxy".into(),
+        "--listen".into(),
+        format!("tcp://127.0.0.1:{port}"),
+        "--listen".into(),
+        format!("unix:{}", socket.display()),
+        "--detach".into(),
+        "--name".into(),
+        cfrs::warp::up::INSTANCE.into(),
+        "--ready-timeout".into(),
+        ready_timeout.to_string(),
+    ]);
+    let doc = cfrs::warp::up::start(&argv)?;
+    let env = cfrs::warp::up::write_env(port, &socket)?;
+    if persist {
+        for file in cfrs::warp::up::persist(&env)? {
+            eprintln!("cfrs: warp up: a block in {}", file.display());
+        }
+    }
+    let mut doc = doc;
+    doc["env"] = env.display().to_string().into();
+    doc["socket"] = socket.display().to_string().into();
+    doc["persist"] = persist.into();
+    println!("{doc}");
+    Ok(())
+}
+
 /// The options of --detach of a command that can run in the background.
 fn detach_of(command: &Command) -> Option<&DetachArgs> {
     match command {
@@ -1769,14 +1819,54 @@ enum WarpCommand {
     /// WARP (the proxy mode of the WARP client).
     Proxy {
         /// Where to accept clients: tcp://host:port or unix:/path.
+        /// Repeatable: each listener serves the same WARP session.
         #[arg(long, default_value = "tcp://127.0.0.1:40000")]
-        listen: String,
+        listen: Vec<String>,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
         #[command(flatten)]
         detach: DetachArgs,
     },
+    /// Start WARP for this sandbox, in the background (issue 78): a
+    /// detached warp proxy on 127.0.0.1:PORT and on a unix socket, and an
+    /// env file with the proxy variables. Later shells join it with
+    /// `eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`, `cfrs warp
+    /// shell`, or --persist.
+    Up {
+        /// The TCP port of the proxy on 127.0.0.1.
+        #[arg(long, default_value_t = 40000)]
+        port: u16,
+        /// Add a marked block to ~/.bashrc and ~/.profile: each new shell
+        /// loads the env file, and an interactive shell runs under the pod
+        /// (static binaries and UDP go through WARP too). cfrs warp down
+        /// removes it.
+        #[arg(long)]
+        persist: bool,
+        /// Seconds to wait for WARP to be ready.
+        #[arg(long, default_value_t = 90)]
+        ready_timeout: u64,
+    },
+    /// Stop what cfrs warp up started, and remove its env file and its
+    /// block in ~/.bashrc and ~/.profile.
+    Down,
+    /// Print the proxy variables of the running cfrs warp up, for
+    /// `eval "$(cfrs warp env)"`.
+    Env,
+    /// Run a program under the pod of the running cfrs warp up: TCP, DNS
+    /// and UDP go through WARP, also for static binaries.
+    Exec {
+        /// A pod-netns rule, repeatable (see cfrs pod --help).
+        #[arg(short = 'r', long = "rule", value_name = "SPEC")]
+        rules: Vec<String>,
+        /// The program and its arguments.
+        #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
+        program: Vec<String>,
+    },
+    /// Run $SHELL under the pod of the running cfrs warp up. When it does
+    /// not run, the shell starts as it is (with the proxy variables when
+    /// the env file is there).
+    Shell,
     /// Make a TUN interface whose packets go through WARP. Needs
     /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
     Tun {
@@ -1848,6 +1938,24 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 }
 
 async fn warp(args: WarpArgs) -> Result<()> {
+    // These commands use the running instance of cfrs warp up.
+    match &args.command {
+        WarpCommand::Up {
+            port,
+            persist,
+            ready_timeout,
+        } => return warp_up(&args, *port, *persist, *ready_timeout),
+        WarpCommand::Down => return cfrs::warp::up::down(),
+        WarpCommand::Env => {
+            print!("{}", cfrs::warp::up::env_text()?);
+            return Ok(());
+        }
+        WarpCommand::Exec { rules, program } => {
+            return Err(cfrs::warp::up::exec_in_pod(rules, program));
+        }
+        WarpCommand::Shell => return Err(cfrs::warp::up::shell()),
+        _ => {}
+    }
     // These commands use a saved device and register none.
     if matches!(
         args.command,
@@ -1974,30 +2082,47 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Proxy {
             listen, run_for, ..
         } => {
-            let listen = cfrs::vnet::proxy::ProxyListen::parse(&listen)?;
+            let listens = listen
+                .iter()
+                .map(|l| cfrs::vnet::proxy::ProxyListen::parse(l))
+                .collect::<Result<Vec<_>>>()
+                .fault(Fault::Usage)?;
             let live = Arc::new(client)
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
-            let proxy = cfrs::warp::proxy::serve(live, listen).await?;
-            match &proxy.listen {
-                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
-                    println!("cfrs: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
-                    println!("  export ALL_PROXY=socks5h://{addr} HTTPS_PROXY=http://{addr}");
-                }
-                cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-                    println!("cfrs: warp proxy  unix:{}", path.display());
-                    println!("  cfrs pod -x socks5://unix:{} -- PROGRAM", path.display());
+            let mut proxies = Vec::new();
+            for listen in listens {
+                proxies.push(cfrs::warp::proxy::serve(live.clone(), listen).await?);
+            }
+            for proxy in &proxies {
+                match &proxy.listen {
+                    cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+                        println!("cfrs: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
+                        println!("  export ALL_PROXY=socks5h://{addr} HTTPS_PROXY=http://{addr}");
+                    }
+                    cfrs::vnet::proxy::ProxyListen::Unix(path) => {
+                        println!("cfrs: warp proxy  unix:{}", path.display());
+                        println!("  cfrs pod -x socks5://unix:{} -- PROGRAM", path.display());
+                    }
                 }
             }
-            cfrs::detach::ready(listen_doc(&proxy.listen));
+            let mut doc = listen_doc(&proxies[0].listen);
+            doc["listens"] = proxies
+                .iter()
+                .map(|p| listen_doc(&p.listen)["listen"].clone())
+                .collect::<Vec<_>>()
+                .into();
+            cfrs::detach::ready(doc);
             match run_for {
                 Some(secs) => tokio::time::sleep(std::time::Duration::from_secs(secs)).await,
                 None => {
                     let _ = shutdown_signal().await;
                 }
             }
-            proxy.abort();
+            for proxy in &proxies {
+                proxy.abort();
+            }
         }
         #[cfg(target_os = "linux")]
         WarpCommand::Tun { name } => {
@@ -2063,6 +2188,11 @@ async fn warp(args: WarpArgs) -> Result<()> {
         }
         #[cfg(not(target_os = "linux"))]
         WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),
+        WarpCommand::Up { .. }
+        | WarpCommand::Down
+        | WarpCommand::Env
+        | WarpCommand::Exec { .. }
+        | WarpCommand::Shell => unreachable!("handled before the client is made"),
         WarpCommand::Run {
             backend,
             rules,

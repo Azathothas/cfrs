@@ -171,6 +171,41 @@ pub async fn http_read_connect<S>(stream: &mut S) -> Result<ProxyRequest>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    match http_read_request(stream).await? {
+        HttpRequest::Connect(request) => Ok(request),
+        HttpRequest::Forward { .. } => {
+            http_reply_with_body(
+                stream,
+                405,
+                "Method Not Allowed",
+                "this proxy speaks HTTP CONNECT only: use it as https_proxy, or as socks5h://\n",
+            )
+            .await?;
+            bail!("HTTP proxy request is not CONNECT");
+        }
+    }
+}
+
+/// An HTTP proxy request: `CONNECT host:port`, or a request for an
+/// `http://` URL (absolute form) that the proxy forwards.
+#[derive(Debug)]
+pub enum HttpRequest {
+    Connect(ProxyRequest),
+    /// `head` is the request in origin form (`GET /path HTTP/1.1`) with
+    /// its headers, no `Proxy-*` header and `Connection: close`, to write
+    /// to the origin before the body.
+    Forward {
+        request: ProxyRequest,
+        head: Vec<u8>,
+    },
+}
+
+/// Read one HTTP proxy request: `CONNECT`, or a forward request for an
+/// `http://` URL (issue 78: `HTTP_PROXY` for apt and for `http://` URLs).
+pub async fn http_read_request<S>(stream: &mut S) -> Result<HttpRequest>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     const MAX_HEADER: usize = 64 * 1024;
     let mut header = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
@@ -193,22 +228,71 @@ where
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
-    if !method.eq_ignore_ascii_case("CONNECT") {
+    let version = parts.next().unwrap_or("HTTP/1.1");
+    if method.eq_ignore_ascii_case("CONNECT") {
+        let (host, port) = split_host_port(target).context("CONNECT target is not host:port")?;
+        return Ok(HttpRequest::Connect(ProxyRequest {
+            host: proxy_host(host),
+            port,
+        }));
+    }
+    let Some(rest) = target.strip_prefix("http://") else {
         http_reply_with_body(
             stream,
-            405,
-            "Method Not Allowed",
-            "this proxy speaks HTTP CONNECT only: use it as https_proxy, or as socks5h://\n",
+            400,
+            "Bad Request",
+            "this proxy forwards http:// URLs; use CONNECT for https://\n",
         )
         .await?;
-        bail!("HTTP proxy method {method} is not CONNECT");
+        bail!("HTTP proxy request for {target:?} is not CONNECT and not an http:// URL");
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = if authority.contains(':') && !authority.ends_with(']') {
+        split_host_port(authority).context("the URL has a bad host:port")?
+    } else {
+        (
+            authority
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string(),
+            80,
+        )
+    };
+    if host.is_empty() {
+        bail!("the URL {target:?} has no host");
     }
-    let (host, port) = split_host_port(target).context("CONNECT target is not host:port")?;
-    let host = match host.parse::<IpAddr>() {
+    let mut head = format!("{method} {path} {version}\r\n");
+    for line in lines.filter(|l| !l.is_empty()) {
+        let name = line
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if name.starts_with("proxy-") || name == "connection" || name == "keep-alive" {
+            continue;
+        }
+        head.push_str(line);
+        head.push_str("\r\n");
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    Ok(HttpRequest::Forward {
+        request: ProxyRequest {
+            host: proxy_host(host),
+            port,
+        },
+        head: head.into_bytes(),
+    })
+}
+
+fn proxy_host(host: String) -> ProxyHost {
+    match host.parse::<IpAddr>() {
         Ok(ip) => ProxyHost::Ip(ip),
         Err(_) => ProxyHost::Domain(host),
-    };
-    Ok(ProxyRequest { host, port })
+    }
 }
 
 fn split_host_port(target: &str) -> Result<(String, u16)> {
@@ -448,6 +532,54 @@ mod tests {
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(reply[1], REP_SUCCEEDED);
         assert_eq!(&reply[4..8], &[10, 66, 0, 2]);
+    }
+
+    /// Issue 78: a request for an http:// URL is forwarded in origin form,
+    /// with no Proxy-* header and Connection: close.
+    #[tokio::test]
+    async fn an_http_url_request_is_forwarded_in_origin_form() {
+        let (mut client, mut server) = duplex(1024);
+        client
+            .write_all(
+                b"GET http://deb.example:8080/dists/x?y=1 HTTP/1.1\r\nHost: deb.example:8080\r\nProxy-Authorization: Basic eA==\r\nProxy-Connection: keep-alive\r\nConnection: keep-alive\r\nUser-Agent: apt\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        match http_read_request(&mut server).await.unwrap() {
+            HttpRequest::Forward { request, head } => {
+                assert_eq!(request.host, ProxyHost::Domain("deb.example".into()));
+                assert_eq!(request.port, 8080);
+                let head = String::from_utf8(head).unwrap();
+                assert!(head.starts_with("GET /dists/x?y=1 HTTP/1.1\r\n"), "{head}");
+                assert!(head.contains("\r\nUser-Agent: apt\r\n"));
+                assert!(head.contains("Host: deb.example:8080\r\n"));
+                assert!(!head.to_ascii_lowercase().contains("proxy-"));
+                assert!(head.ends_with("Connection: close\r\n\r\n"));
+                assert_eq!(head.matches("Connection:").count(), 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        let (mut client, mut server) = duplex(1024);
+        client
+            .write_all(b"GET http://example.com HTTP/1.0\r\n\r\n")
+            .await
+            .unwrap();
+        match http_read_request(&mut server).await.unwrap() {
+            HttpRequest::Forward { request, head } => {
+                assert_eq!(request.port, 80);
+                assert!(String::from_utf8(head)
+                    .unwrap()
+                    .starts_with("GET / HTTP/1.0\r\n"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A URL that is not http:// is refused (400).
+        let (mut client, mut server) = duplex(1024);
+        client
+            .write_all(b"GET https://example.com/ HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(http_read_request(&mut server).await.is_err());
     }
 
     async fn socks5_request_with(client_to_server: &[u8]) -> ProxyRequest {

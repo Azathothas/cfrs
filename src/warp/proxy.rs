@@ -137,7 +137,24 @@ where
             }
         }
     } else {
-        socks::http_read_connect(&mut stream).await?
+        match socks::http_read_request(&mut stream).await? {
+            socks::HttpRequest::Connect(request) => request,
+            socks::HttpRequest::Forward { request, head } => {
+                // An http:// URL (HTTP_PROXY): send the request in origin
+                // form to the origin, then copy the two directions.
+                debug!(host = %request.host, port = request.port, "WARP proxy forward request");
+                let mut upstream = match dial(request.host.clone(), request.port).await {
+                    Ok(upstream) => upstream,
+                    Err(err) => {
+                        let _ = socks::http_connect_reply(&mut stream, 502, "Bad Gateway").await;
+                        return Err(err);
+                    }
+                };
+                upstream.write_all(&head).await?;
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+                return Ok(());
+            }
+        }
     };
     debug!(host = %request.host, port = request.port, "WARP proxy request");
     let mut upstream = match dial(request.host.clone(), request.port).await {

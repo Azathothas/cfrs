@@ -83,6 +83,16 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --proxy when the flag is not given. It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry.",
     },
     EnvVar {
+        names: &["CFRS_WARP_SHELL"],
+        used_by: "warp shell, the block of warp up --persist",
+        meaning: "Set in a shell that cfrs warp shell started; the block of --persist then does not start it again.",
+    },
+    EnvVar {
+        names: &["SHELL"],
+        used_by: "warp shell",
+        meaning: "The shell that cfrs warp shell runs (default /bin/sh).",
+    },
+    EnvVar {
         names: &["CFRS_RUN_DIR"],
         used_by: "--detach, ps, stop, logs, wait",
         meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",

@@ -42,6 +42,7 @@ pub mod register;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod tun;
+pub mod up;
 
 pub use identity::Identity;
 pub use ip::{StackConfig, TcpConn, UdpConn, WarpStack};

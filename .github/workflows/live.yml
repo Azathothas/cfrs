@@ -343,6 +343,35 @@ jobs:
             { tail -30 warprelay.err; exit 1; }
           grep -q 'MASQUE goes through the WebSocket relay' warprelay.err
           ! grep -E 'ephm1\.' warprelay.out warprelay.err
+      # Issue 78: one warp up; later shells join it with warp env, warp
+      # exec and the --persist block; warp down removes each change.
+      - name: warp up, env, exec, --persist and down
+        timeout-minutes: 5
+        run: |
+          set -eu
+          export CFRS_RUN_DIR="$RUNNER_TEMP/run-up"
+          home="$RUNNER_TEMP/home-up"
+          mkdir -p "$home"
+          printf 'export KEEP=1\n' > "$home/.profile"
+          HOME="$home" target/release/cfrs warp up --port 40100 --persist | tail -1 > up.json
+          jq -e '.name == "warp" and .persist == true' up.json
+          grep -q '>>> cfrs warp up >>>' "$home/.profile" "$home/.bashrc"
+          (
+            eval "$(target/release/cfrs warp env)"
+            curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
+            # An http:// URL through HTTP_PROXY (the forward request).
+            curl -fsS --max-time 30 http://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
+          )
+          # A later non-interactive shell loads the env file from .profile.
+          HOME="$home" sh -c '. "$HOME/.profile"; test "$HTTPS_PROXY" = http://127.0.0.1:40100'
+          # warp exec: the program has no proxy variables, the pod carries it.
+          target/release/cfrs warp exec -- sh -c 'test -z "${HTTPS_PROXY:-}" && curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace' | grep -q '^warp=on'
+          # A second warp up is the same instance.
+          HOME="$home" target/release/cfrs warp up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
+          HOME="$home" target/release/cfrs warp down
+          ! grep -q 'cfrs warp up' "$home/.profile" "$home/.bashrc"
+          grep -q 'export KEEP=1' "$home/.profile"
+          ! target/release/cfrs warp env
       - name: WARP run
         timeout-minutes: 3
         run: |

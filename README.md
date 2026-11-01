@@ -373,6 +373,20 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   to WARP. The TCP connections and the DNS queries of the program go
   through WARP, also for static binaries. With the `seccomp` backend, other
   UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE).
+* `cfrs warp up [--port 40000] [--persist]` starts `warp proxy` in the
+  background (instance `warp`, see "Run in the background") on
+  `127.0.0.1:PORT` and on a unix socket, and writes an env file with the
+  proxy variables. Later shells join it:
+  * `eval "$(cfrs warp env)"`: `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`,
+    `NO_PROXY` (and the lower-case forms), `CARGO_HTTP_PROXY` and the npm
+    variables. The proxy also forwards `http://` URLs (for apt).
+  * `cfrs warp exec -- CMD` and `cfrs warp shell`: the command runs under
+    the pod of the socket: TCP, DNS and UDP go through WARP, also for static
+    binaries, with no proxy variable.
+  * `--persist`: a marked block in `~/.bashrc` and `~/.profile` loads the env
+    file in each new shell, and an interactive shell runs under the pod.
+  * `cfrs warp down` stops the instance and removes the env file and the
+    blocks; the rest of each file stays.
 * `cfrs warp tun` makes a TUN interface with the tunnel address and moves its
   packets through WARP. It does not change the routes: add routes for the
   destinations to send through WARP, and keep a route for the MASQUE endpoint
