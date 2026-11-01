@@ -263,13 +263,35 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
     });
     let limit = (config.max_bytes as usize).saturating_add(1024 * 1024);
     Router::new()
-        .route(UNLOCK_PATH, post(unlock_upload))
-        .route("/", get(|| async { Redirect::to("/s/") }))
+        .route(
+            UNLOCK_PATH,
+            post(unlock_upload).layer(DefaultBodyLimit::max(crate::gate::MAX_UNLOCK_BODY as usize)),
+        )
         .route("/s/{token}", get(upload_landing))
         .route("/s/{token}/", get(upload_landing))
         .route("/s/{token}/upload", post(upload_receive))
         .layer(DefaultBodyLimit::max(limit))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(config.token.clone()),
+            check_session,
+        ))
         .with_state(state)
+}
+
+/// A path under `/s/` must name the session id of this share: the id is the
+/// secret of the URL. A wrong id (compared in constant time) answers 404.
+async fn check_session(
+    State(token): State<Arc<String>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(rest) = request.uri().path().strip_prefix("/s/") {
+        let id = rest.split('/').next().unwrap_or("");
+        if !crate::gate::constant_time_eq(id.as_bytes(), token.as_bytes()) {
+            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        }
+    }
+    next.run(request).await
 }
 
 #[derive(Deserialize)]
@@ -289,7 +311,7 @@ async fn unlock_upload(
 fn unlock_response(gate: &Gate, password: &str, next: &str) -> Response {
     match gate.unlock(password) {
         Some(cookie) => {
-            let next = if next.starts_with('/') { next } else { "/" };
+            let next = crate::gate::safe_next(next);
             let mut response = Redirect::to(next).into_response();
             if let Ok(value) = header::HeaderValue::from_str(&cookie) {
                 response.headers_mut().insert(header::SET_COOKIE, value);
@@ -466,10 +488,18 @@ fn download_router(config: &ShareConfig, control: Arc<ShareControl>) -> Result<R
         control,
     });
     Ok(Router::new()
-        .route(UNLOCK_PATH, post(unlock_download))
+        .route(
+            UNLOCK_PATH,
+            post(unlock_download)
+                .layer(DefaultBodyLimit::max(crate::gate::MAX_UNLOCK_BODY as usize)),
+        )
         .route("/s/{token}", get(download_landing))
         .route("/s/{token}/", get(download_landing))
         .route("/s/{token}/file", get(download_file))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(config.token.clone()),
+            check_session,
+        ))
         .with_state(state))
 }
 
@@ -571,6 +601,60 @@ mod tests {
         assert_ne!(second.file_name().unwrap(), "a.txt");
         assert!(second.to_string_lossy().ends_with("a-1.txt"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    async fn send(router: &Router, method: &str, path: &str, body: &str) -> (u16, Option<String>) {
+        use tower::ServiceExt;
+        let request = http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .map(|v| v.to_str().unwrap().to_string());
+        (response.status().as_u16(), location)
+    }
+
+    /// Only the session id of the share opens its paths, and an unlock goes
+    /// back to a path of this site only.
+    #[tokio::test]
+    async fn the_session_id_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.bin");
+        std::fs::write(&file, b"secret file").unwrap();
+        let mut config = ShareConfig::download(&file);
+        config.gate = Gate::pin();
+        let pin = config.gate.pin_display().unwrap().to_string();
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let router = app.router();
+
+        // The gate answers 200 with the lock page for the right id.
+        assert_eq!(
+            send(&router, "GET", &format!("/s/{token}/"), "").await.0,
+            200
+        );
+        for wrong in ["/s/1/", "/s/1/file", "/s/deadbeef/", "/s/", "/"] {
+            assert_eq!(send(&router, "GET", wrong, "").await.0, 404, "{wrong}");
+        }
+        let upper = format!("/s/{}/file", token.to_ascii_uppercase());
+        assert_eq!(send(&router, "GET", &upper, "").await.0, 404);
+
+        let (status, location) = send(
+            &router,
+            "POST",
+            UNLOCK_PATH,
+            &format!("password={pin}&next=//example.com"),
+        )
+        .await;
+        assert_eq!((status, location.as_deref()), (303, Some("/")));
+
+        let big = format!("password=1&next={}", "a".repeat(10_000));
+        assert_eq!(send(&router, "POST", UNLOCK_PATH, &big).await.0, 413);
     }
 
     #[test]

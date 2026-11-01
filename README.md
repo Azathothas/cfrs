@@ -254,9 +254,12 @@ cfrs share --mode proxy --port 3000                 # share a local port, with a
 cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 ```
 
-* The public path is `/s/<token>/`. The token has 32 random bytes.
+* The public path is `/s/<token>/`. The token has 32 random bytes, and a
+  path with another token answers 404.
 * `--password` adds a 6-digit PIN. The host shows the PIN. The PIN check uses
-  a constant-time compare and a rate limit.
+  a constant-time compare. After 10 wrong codes, no code opens the session:
+  start a new one. After the unlock, the browser goes back to a path of the
+  same site only.
 * The upload limits are 512 MiB for each file and 32 files.
 * `--stop-after` stops the session after the first transfer. `--idle-secs`
   stops it after a time with no activity.

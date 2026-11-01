@@ -421,7 +421,17 @@ async fn share_proxy(
     let headers = headers_from_request(request);
 
     if path == UNLOCK_PATH && method.eq_ignore_ascii_case("POST") {
-        let body = read_body(&mut reader, content_length(request).unwrap_or(0)).await?;
+        let len = content_length(request).unwrap_or(0);
+        if len > crate::gate::MAX_UNLOCK_BODY {
+            return write_simple_response(
+                &mut writer,
+                413,
+                "text/plain; charset=utf-8",
+                b"the unlock request is too large",
+            )
+            .await;
+        }
+        let body = read_body(&mut reader, len).await?;
         let fields = parse_form(&body);
         let password = fields
             .iter()
@@ -441,7 +451,10 @@ async fn share_proxy(
                     "text/plain; charset=utf-8",
                     b"",
                     &[
-                        ("Location".to_string(), sanitize_next(&next)),
+                        (
+                            "Location".to_string(),
+                            crate::gate::safe_next(&next).to_string(),
+                        ),
                         ("Set-Cookie".to_string(), cookie),
                     ],
                 )
@@ -482,14 +495,6 @@ async fn share_proxy(
         metrics,
     )
     .await
-}
-
-fn sanitize_next(next: &str) -> String {
-    if next.starts_with('/') && !next.starts_with("//") {
-        next.to_string()
-    } else {
-        "/".to_string()
-    }
 }
 
 fn headers_from_request(request: &cqstream::ConnectRequest) -> HeaderMap {

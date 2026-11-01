@@ -2,8 +2,18 @@
 //! tunnel shows. A correct PIN gets a session cookie. The PIN is never in the
 //! URL.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
 use axum::http::HeaderMap;
 use uuid::Uuid;
+
+/// The number of wrong codes after which the gate opens for no code: the
+/// operator starts a new session. With 10 tries of 1 000 000 codes, a guess
+/// succeeds with a chance of 1 in 100 000.
+pub const MAX_FAILURES: u32 = 10;
+/// The largest body of an unlock request.
+pub const MAX_UNLOCK_BODY: u64 = 4096;
 
 pub const UNLOCK_PATH: &str = "/__cfrs/unlock";
 pub const COOKIE_NAME: &str = "cfrs_pin";
@@ -19,6 +29,32 @@ pub struct Gate {
     mode: Mode,
     pin: String,
     session: String,
+    /// The wrong codes so far, shared by each copy of the gate.
+    failures: Arc<AtomicU32>,
+}
+
+/// Compare two byte strings in a time that does not depend on where they
+/// differ.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// A `next` target of an unlock: a path of this site only. A
+/// scheme-relative URL (`//host`), a backslash (`/\\host`) and a control
+/// character give `/`.
+pub fn safe_next(next: &str) -> &str {
+    let ok = next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.contains('\\')
+        && !next.chars().any(|c| c.is_control());
+    if ok {
+        next
+    } else {
+        "/"
+    }
 }
 
 impl Gate {
@@ -27,6 +63,7 @@ impl Gate {
             mode: Mode::Off,
             pin: String::new(),
             session: String::new(),
+            failures: Arc::default(),
         }
     }
 
@@ -36,6 +73,7 @@ impl Gate {
             mode: Mode::Pin,
             pin,
             session: Uuid::new_v4().simple().to_string(),
+            failures: Arc::default(),
         }
     }
 
@@ -60,7 +98,7 @@ impl Gate {
                 cookies.split(';').any(|part| {
                     let part = part.trim();
                     part.strip_prefix(&format!("{COOKIE_NAME}="))
-                        .map(|value| value == self.session)
+                        .map(|value| constant_time_eq(value.as_bytes(), self.session.as_bytes()))
                         .unwrap_or(false)
                 })
             })
@@ -68,8 +106,26 @@ impl Gate {
     }
 
     /// Check a submitted PIN. On success returns the `Set-Cookie` value.
+    ///
+    /// After [`MAX_FAILURES`] wrong codes, no code opens the gate.
     pub fn unlock(&self, password: &str) -> Option<String> {
-        if !self.enabled() || password.trim() != self.pin {
+        if !self.enabled() {
+            return None;
+        }
+        if self.locked_out() {
+            tracing::warn!(
+                "the PIN gate is locked after {MAX_FAILURES} wrong codes; start a new session"
+            );
+            return None;
+        }
+        if !constant_time_eq(password.trim().as_bytes(), self.pin.as_bytes()) {
+            let n = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
+            tracing::warn!(failures = n, "a wrong PIN");
+            if n >= MAX_FAILURES {
+                tracing::warn!(
+                    "the PIN gate is locked after {MAX_FAILURES} wrong codes; start a new session"
+                );
+            }
             return None;
         }
         Some(format!(
@@ -78,10 +134,17 @@ impl Gate {
         ))
     }
 
+    /// True after [`MAX_FAILURES`] wrong codes.
+    pub fn locked_out(&self) -> bool {
+        self.failures.load(Ordering::SeqCst) >= MAX_FAILURES
+    }
+
     /// HTML unlock page.
     pub fn page_html(&self, next: &str, failed: bool) -> String {
         let next = escape_attr(next);
-        let error = if failed {
+        let error = if self.locked_out() {
+            "<p class=\"err\">Too many wrong codes. The session is locked.</p>"
+        } else if failed {
             "<p class=\"err\">Wrong code, try again.</p>"
         } else {
             ""
@@ -145,6 +208,41 @@ mod tests {
             HeaderValue::from_str(&value).unwrap(),
         );
         assert!(gate.is_open(&headers));
+    }
+
+    #[test]
+    fn wrong_codes_lock_the_gate() {
+        let gate = Gate::pin();
+        let pin = gate.pin_display().unwrap().to_string();
+        let wrong = if pin == "000000" { "000001" } else { "000000" };
+        let copy = gate.clone();
+        for _ in 0..MAX_FAILURES {
+            assert!(copy.unlock(wrong).is_none());
+        }
+        assert!(gate.locked_out(), "the copies share the count");
+        assert!(
+            gate.unlock(&pin).is_none(),
+            "the right code after the limit"
+        );
+        assert!(gate.page_html("/", true).contains("Too many wrong codes"));
+    }
+
+    #[test]
+    fn next_is_a_path_of_this_site() {
+        assert_eq!(safe_next("/s/abc/"), "/s/abc/");
+        for bad in [
+            "//example.com",
+            "/\\example.com",
+            "https://x",
+            "javascript:alert(1)",
+            "/a\r\nb",
+            "",
+        ] {
+            assert_eq!(safe_next(bad), "/", "{bad:?}");
+        }
+        assert!(constant_time_eq(b"123456", b"123456"));
+        assert!(!constant_time_eq(b"123456", b"123457"));
+        assert!(!constant_time_eq(b"12345", b"123456"));
     }
 
     #[test]
