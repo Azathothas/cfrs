@@ -40,6 +40,24 @@ pub const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often to send a keepalive.
 pub const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The most bidi streams that the edge can open at the same time. The edge
+/// opens one stream for each visitor request, and a quick tunnel allows 200
+/// requests at the same time. The default of quinn is 100.
+pub const MAX_EDGE_STREAMS: u32 = 256;
+
+/// The QUIC transport settings of an edge connection, with `initial_mtu` as
+/// the first UDP payload size.
+pub fn transport_config(initial_mtu: u16) -> TransportConfig {
+    let mut transport = TransportConfig::default();
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(MAX_IDLE_TIMEOUT).expect("30 s is a valid idle timeout"),
+    ));
+    transport.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
+    transport.initial_mtu(initial_mtu);
+    transport.max_concurrent_bidi_streams(MAX_EDGE_STREAMS.into());
+    transport
+}
+
 /// The rustls config for the QUIC edge.
 ///
 /// Split out from [`client_config`] so the ALPN and the trust roots can be
@@ -58,16 +76,9 @@ pub fn client_config() -> Result<ClientConfig, EdgeError> {
 
     let mut config = ClientConfig::new(Arc::new(quic_tls));
 
-    let mut transport = TransportConfig::default();
-    transport.max_idle_timeout(Some(
-        MAX_IDLE_TIMEOUT
-            .try_into()
-            .map_err(|_| EdgeError::Connect("idle timeout out of range".to_string()))?,
-    ));
-    transport.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
     // 1252 is the IPv4-safe payload size that avoids fragmentation-related
     // blackholing on consumer routers. cloudflared uses the same value.
-    transport.initial_mtu(1252);
+    let transport = transport_config(1252);
     config.transport_config(Arc::new(transport));
 
     Ok(config)
@@ -129,6 +140,69 @@ pub async fn dial_any(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A local QUIC server opens 200 streams to the client and keeps them
+    /// open, as the edge does with 200 requests at the same time. With the
+    /// default of quinn (100), the stream after the 100th waits.
+    #[tokio::test]
+    async fn the_edge_can_open_200_streams_at_the_same_time() {
+        crate::init_crypto();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["edge.test".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into());
+        let mut server_tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], key_der)
+            .unwrap();
+        server_tls.alpn_protocols = vec![b"cfrs-test".to_vec()];
+        let server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls).unwrap();
+        let server = Endpoint::server(
+            quinn::ServerConfig::with_crypto(Arc::new(server_crypto)),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let addr = server.local_addr().unwrap();
+        let opener = tokio::spawn(async move {
+            let conn = server.accept().await.unwrap().await.unwrap();
+            let mut streams = Vec::new();
+            for i in 0..200 {
+                let (mut send, recv) = tokio::time::timeout(Duration::from_secs(5), conn.open_bi())
+                    .await
+                    .unwrap_or_else(|_| panic!("stream {i} waits for the limit of the client"))
+                    .unwrap();
+                send.write_all(b"x").await.unwrap();
+                streams.push((send, recv));
+            }
+            (server, conn, streams)
+        });
+
+        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"cfrs-test"]).unwrap();
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+        let mut config = ClientConfig::new(Arc::new(crypto));
+        config.transport_config(Arc::new(transport_config(1252)));
+        let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let conn = client
+            .connect_with(config, addr, "edge.test")
+            .unwrap()
+            .await
+            .unwrap();
+        let accept = async {
+            let mut accepted = Vec::new();
+            for _ in 0..200 {
+                let (send, mut recv) = conn.accept_bi().await.unwrap();
+                let mut byte = [0u8; 1];
+                recv.read_exact(&mut byte).await.unwrap();
+                accepted.push((send, recv));
+            }
+            accepted
+        };
+        let (accepted, opened) = tokio::join!(accept, opener);
+        let (_server, _conn, streams) = opened.unwrap();
+        assert_eq!((accepted.len(), streams.len()), (200, 200));
+    }
 
     #[test]
     fn alpn_and_sni_are_distinct() {

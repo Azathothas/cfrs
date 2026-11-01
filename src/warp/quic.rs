@@ -264,13 +264,13 @@ fn client_config() -> Result<quinn::ClientConfig> {
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|err| anyhow::anyhow!("rustls to quinn: {err}"))?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    let mut transport = quinn::TransportConfig::default();
-    transport.max_idle_timeout(Some(
-        std::time::Duration::from_secs(30)
-            .try_into()
-            .expect("30s is a valid idle timeout"),
-    ));
-    transport.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+    // The tunnel carries packets of TUNNEL_MTU bytes. 1232 fits an IPv6 and
+    // UDP header in that; MTU discovery stops at the IPv4 size.
+    let ip_udp_v4 = 28;
+    let mut transport = crate::cloudflare::quic::transport_config(1232);
+    let mut discovery = quinn::MtuDiscoveryConfig::default();
+    discovery.upper_bound((super::ip::TUNNEL_MTU - ip_udp_v4) as u16);
+    transport.mtu_discovery_config(Some(discovery));
     config.transport_config(Arc::new(transport));
     Ok(config)
 }
