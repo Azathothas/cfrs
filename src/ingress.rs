@@ -81,11 +81,12 @@ impl Service {
     /// (`static:` / `spa:` / `metrics`).
     pub fn parse(value: &str) -> Result<Self> {
         let value = value.trim();
-        if let Some(rest) = value.strip_prefix("http://") {
-            return Ok(Service::Http(format!("http://{rest}")));
-        }
-        if let Some(rest) = value.strip_prefix("https://") {
-            return Ok(Service::Http(format!("https://{rest}")));
+        if value.starts_with("http://") || value.starts_with("https://") {
+            // A URL with no host (http://) is refused here, before any
+            // network work (issue 57), not at the first dial.
+            crate::net::parse_http_url(value)
+                .map_err(|e| anyhow::anyhow!("the origin {value}: {e}"))?;
+            return Ok(Service::Http(value.to_string()));
         }
         if let Some(rest) = value.strip_prefix("unix+tls:") {
             return Ok(Service::UnixTls(PathBuf::from(rest)));

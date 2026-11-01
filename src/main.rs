@@ -115,7 +115,11 @@ enum Command {
     /// Show the manual, generated from this binary.
     Man(ManArgs),
     /// Print one line of JSON about this host. It opens no connection.
-    Status,
+    Status {
+        /// The output is JSON; this flag is accepted for scripts.
+        #[arg(long)]
+        json: bool,
+    },
     /// Test the path from this host to the edge: the proxy, TCP and TLS to
     /// the APIs, the edge (7844) and MASQUE (443), and UDP 7844. Exit 0 when
     /// at least one leg (quic, http2, quic+warp) can work, 1 when none can.
@@ -423,7 +427,11 @@ struct DemoArgs {
 fn main() {
     // pod-netns forks and makes its own runtime. Start it before the async
     // runtime of cfrs exists.
-    let argv: Vec<String> = std::env::args().collect();
+    // args() panics on an argument that is not UTF-8 (issue 57); clap then
+    // reports the bad argument as a usage error.
+    let argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     if argv.get(1).map(String::as_str) == Some("pod") {
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
     }
@@ -431,13 +439,16 @@ fn main() {
         Ok(cli) => cli,
         Err(err) => {
             use clap::error::ErrorKind;
+            // Help that the user asked for exits 0. Help that comes up
+            // because a subcommand is missing (cfrs net) is a usage error.
             let code = match err.kind() {
-                ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => cfrs::exit::SUCCESS,
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => cfrs::exit::SUCCESS,
                 _ => cfrs::exit::USAGE,
             };
             let _ = err.print();
+            if code != cfrs::exit::SUCCESS {
+                cfrs::report::send(command_name(&argv).as_deref(), code, None);
+            }
             std::process::exit(code);
         }
     };
@@ -448,7 +459,29 @@ fn main() {
     if let Err(err) = network_options(&cli) {
         let err = cfrs::exit::fault(cfrs::exit::Fault::Usage, err);
         eprintln!("{}", cfrs::report::error_line(&err));
-        std::process::exit(cfrs::exit::code_of(&err));
+        let code = cfrs::exit::code_of(&err);
+        cfrs::report::send(command.as_deref(), code, Some(&err));
+        std::process::exit(code);
+    }
+    // A command that only prints ends at a closed stdout (cfrs status |
+    // head) with no panic: the default action of SIGPIPE. The server
+    // commands keep SIGPIPE ignored.
+    if matches!(
+        command.as_deref(),
+        Some(
+            "status"
+                | "ports"
+                | "qr"
+                | "man"
+                | "completions"
+                | "doctor"
+                | "net doctor"
+                | "net addresses"
+                | "net demo"
+        )
+    ) {
+        // SAFETY: signal() with SIG_DFL, before any thread starts.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     }
     let level = if cli.quiet {
         "cfrs=warn"
@@ -485,7 +518,8 @@ fn main() {
     if let Err(err) = result {
         let code = cfrs::exit::code_of(&err);
         let line = cfrs::report::error_line(&err);
-        cfrs::report::record(&line);
+        // The report has the error in "error"; "messages" holds the log
+        // lines before it (issue 55: the line was in both).
         eprintln!("{line}");
         cfrs::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
@@ -568,8 +602,12 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Completions { shell } => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "cfrs", &mut std::io::stdout());
-            Ok(())
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut cmd, "cfrs", &mut script);
+            match std::io::Write::write_all(&mut std::io::stdout(), &script) {
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                other => other.context("writing the completion script"),
+            }
         }
         Command::Ports(args) => {
             let ports = cfrs::ports::listening_ports();
@@ -623,7 +661,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Autostart(args) => autostart(args.command),
-        Command::Status => {
+        Command::Status { .. } => {
             println!("{}", cfrs::status::document());
             Ok(())
         }
@@ -669,7 +707,12 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
             });
         }
         if ingress.is_empty() {
-            bail!("choose an origin (--url, --unix, --port, --tcp, --hello-world) or --forward");
+            return Err(cfrs::exit::fault(
+                Fault::Usage,
+                anyhow::anyhow!(
+                    "choose an origin (--url, --unix, --port, --tcp, --hello-world) or --forward"
+                ),
+            ));
         }
         config.ingress = ingress;
     }
@@ -1613,11 +1656,19 @@ enum NetCommand {
     /// Prove the userspace TCP handshake + transfer in-process.
     Demo,
     /// Probe what this host permits.
-    Doctor,
+    Doctor {
+        /// Print one JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Build (or locate) the LD_PRELOAD shim and print how to use it.
     Shim(ShimArgs),
     /// Print the default virtual address plan.
-    Addresses,
+    Addresses {
+        /// Print one JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run a SOCKS5 / HTTP CONNECT proxy into the virtual network.
     Proxy(ProxyArgs),
     /// Run a switch that connects stacks on this host and on other hosts.
@@ -1771,7 +1822,7 @@ async fn net(args: NetArgs) -> Result<()> {
             }
             Ok(())
         }
-        NetCommand::Doctor => {
+        NetCommand::Doctor { json } => {
             let mut probes = cfrs::vnet::doctor::run();
             let target = cfrs::udp::probe_target();
             probes.push(
@@ -1779,9 +1830,29 @@ async fn net(args: NetArgs) -> Result<()> {
                     .await
                     .context("the UDP probe")?,
             );
+            let verdict = cfrs::vnet::doctor::verdict(&probes);
+            if json {
+                use cfrs::vnet::doctor::ProbeResult;
+                let rows: Vec<_> = probes
+                    .iter()
+                    .map(|p| {
+                        let (status, detail) = match &p.result {
+                            ProbeResult::Ok(d) => ("ok", d.as_str()),
+                            ProbeResult::Fail(d) => ("fail", d.as_str()),
+                            ProbeResult::Unknown(d) => ("unknown", d.as_str()),
+                            ProbeResult::Unsupported => ("unsupported", ""),
+                        };
+                        serde_json::json!({"probe": p.name, "status": status, "detail": detail})
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"probes": rows, "verdict": verdict})
+                );
+                return Ok(());
+            }
             print!("{}", cfrs::vnet::doctor::render(&probes));
             print!("\n{}", cfrs::vnet::doctor::NEEDS);
-            let verdict = cfrs::vnet::doctor::verdict(&probes);
             println!("\n{verdict}");
             if verdict.starts_with("cfrsnet: not ready") {
                 println!("cfrsnet: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
@@ -1789,8 +1860,32 @@ async fn net(args: NetArgs) -> Result<()> {
             Ok(())
         }
         NetCommand::Shim(args) => net_shim(args),
-        NetCommand::Addresses => {
+        NetCommand::Addresses { json } => {
             let subnet = VirtualSubnet::default();
+            if json {
+                let examples: Vec<_> = [53u16, 80, 443, 8080]
+                    .iter()
+                    .map(|port| {
+                        let addr =
+                            VirtAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(10, 66, 0, 2)), *port);
+                        Ok(serde_json::json!({
+                            "address": addr.to_string(),
+                            "abstract_name": addr.abstract_name()?,
+                        }))
+                    })
+                    .collect::<Result<_>>()?;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "v4_subnet": subnet.v4.to_string(),
+                        "v6_subnet": subnet.v6.to_string(),
+                        "gateway_v4": subnet.gateway(cfrs::vnet::Family::V4).to_string(),
+                        "gateway_v6": subnet.gateway(cfrs::vnet::Family::V6).to_string(),
+                        "examples": examples,
+                    })
+                );
+                return Ok(());
+            }
             println!("cfrsnet: v4 subnet {}", subnet.v4);
             println!("cfrsnet: v6 subnet {}", subnet.v6);
             println!(

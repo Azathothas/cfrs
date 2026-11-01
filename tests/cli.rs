@@ -863,3 +863,73 @@ fn socksify_takes_a_socket_path() {
     assert_eq!(default.status.code(), Some(0), "{}", stderr(&default));
     assert!(String::from_utf8_lossy(&default.stdout).contains("/tmp/cfrssocks.sock"));
 }
+
+/// Issue 57: no panic on a bad argument or a closed pipe; a missing
+/// subcommand and a missing origin are usage errors; --json is accepted.
+#[test]
+fn bad_input_gives_usage_errors_not_panics() {
+    use std::os::unix::ffi::OsStrExt;
+    let bad = std::ffi::OsStr::from_bytes(b"\xff\xfe");
+    for args in [vec![bad], vec![std::ffi::OsStr::new("tunnel"), bad]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(&args)
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
+    }
+    for args in [&[][..], &["net"][..], &["warp"][..], &["tunnel"][..]] {
+        let out = cfrs(args);
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
+    }
+    assert_eq!(cfrs(&["--help"]).status.code(), Some(0));
+    let no_host = cfrs(&["tunnel", "--check", "--url", "http://"]);
+    assert_eq!(no_host.status.code(), Some(64), "{}", stderr(&no_host));
+    assert!(stderr(&no_host).contains("has no host"));
+    for args in [
+        &["status", "--json"][..],
+        &["net", "addresses", "--json"][..],
+    ] {
+        let out = cfrs(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
+    }
+    // A closed stdout: the default SIGPIPE ends the command, no panic (101).
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["completions", "bash"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert_ne!(out.status.code(), Some(101), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+}
+
+/// Issue 55: the failure report has the error in "error" only; "messages"
+/// holds the log lines before it, not the same text again.
+#[test]
+fn the_failure_report_has_the_error_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("report.json");
+    let program = dir.path().join("save.sh");
+    std::fs::write(&program, format!("#!/bin/sh\ncat > {}\n", saved.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--url", "ftp://x"])
+        .env("CFRS_ERROR_PROGRAM", &program)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&saved).unwrap()).unwrap();
+    let error = doc["error"].to_string();
+    assert!(error.contains("ftp"), "{doc}");
+    for line in doc["messages"].as_array().unwrap() {
+        assert!(
+            !line.as_str().unwrap().contains("ftp://x"),
+            "the error is twice: {doc}"
+        );
+    }
+}
