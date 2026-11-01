@@ -387,6 +387,13 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
     file in each new shell, and an interactive shell runs under the pod.
   * `cfrs warp down` stops the instance and removes the env file and the
     blocks; the rest of each file stays.
+  * The CA bundle: when `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+    `CURL_CA_BUNDLE` or `GIT_SSL_CAINFO` names a bundle of fewer than 10
+    certificates (the roots of a proxy that terminates TLS), the tools that
+    use it fail through WARP, which shows the real chains. `warp up` then
+    writes `warp-ca.pem` (that bundle and the system bundle) and the env
+    file, `warp exec` and `warp shell` name it, so that the proxy and WARP
+    both work. With no system bundle, a warning says to unset the variable.
 * `cfrs warp nc HOST PORT`: a byte pipe from stdin and stdout to HOST:PORT
   through the running `cfrs warp up` (else a WARP session of its own), for
   `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH where port 22

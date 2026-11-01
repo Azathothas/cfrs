@@ -383,6 +383,17 @@ jobs:
           target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
           # A second warp up is the same instance.
           HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
+          # Issue 86: a bundle with one root (as of a proxy that terminates
+          # TLS) in SSL_CERT_FILE: warp up names a merged bundle in the env
+          # file, and curl through WARP works with it.
+          awk '/BEGIN CERTIFICATE/{n++} n==1' /etc/ssl/certs/ca-certificates.crt > "$RUNNER_TEMP/one-root.pem"
+          SSL_CERT_FILE="$RUNNER_TEMP/one-root.pem" HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 > /dev/null
+          grep -q "export SSL_CERT_FILE='$CFRS_RUN_DIR/warp-ca.pem'" "$CFRS_RUN_DIR/warp.env"
+          test "$(grep -c 'BEGIN CERTIFICATE' "$CFRS_RUN_DIR/warp-ca.pem")" -gt 10
+          (
+            eval "$(target/release/cfrs warp env)"
+            curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
+          )
           HOME="$home" target/release/cfrs warp down
           ! grep -q 'cfrs warp up' "$home/.profile" "$home/.bashrc"
           grep -q 'export KEEP=1' "$home/.profile"
