@@ -436,10 +436,17 @@ static int peer_from_unix(const struct sockaddr *sa, socklen_t len,
     socklen_t path_len = (socklen_t)(len - offsetof(struct sockaddr_un, sun_path));
     if (path_len <= 1 || un->sun_path[0] != '\0') {
         /* A filesystem path or an unnamed socket: not ours. */
-        if (path_len < 1 || un->sun_path[0] == '\0') return -1;
         return -1;
     }
-    return from_abstract_name(un->sun_path + 1, out, out_len);
+    /* An abstract name has no NUL at its end: the length is the end. Parse
+       a copy with a NUL. Before, the parse read the bytes after the name
+       (a peer of port 5555 read as 55552 with a '2' after it). */
+    size_t name_len = (size_t)path_len - 1;
+    if (name_len > sizeof un->sun_path - 1) name_len = sizeof un->sun_path - 1;
+    char name[sizeof un->sun_path];
+    memcpy(name, un->sun_path + 1, name_len);
+    name[name_len] = '\0';
+    return from_abstract_name(name, out, out_len);
 }
 
 /* ── control protocol (optional, switch mode) ─────────────────────────────── */
