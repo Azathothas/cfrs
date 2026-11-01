@@ -845,6 +845,9 @@ impl Core {
             self.iface.update_ip_addrs(|addrs| {
                 full = addrs.push(IpCidr::new(ip, prefix)).is_err();
             });
+            if !full {
+                self.device.add_local(addr.ip);
+            }
             if full {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrNotAvailable,
@@ -1436,6 +1439,11 @@ impl NetStack {
         } else {
             LinkDevice::tunnel(config.mtu)
         };
+        // A packet to an address of this stack stays in it (issue 65).
+        device.add_local(IpAddr::V4(config.local_v4));
+        device.add_local(IpAddr::V6(config.local_v6));
+        device.add_local(config.subnet.gateway(crate::vnet::addr::Family::V4));
+        device.add_local(config.subnet.gateway(crate::vnet::addr::Family::V6));
         let link_in = device.inbound();
         let link_out = device.outbound();
         let device_stats = device.stats();

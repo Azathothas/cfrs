@@ -194,6 +194,10 @@ pub struct LinkDevice {
     mtu: usize,
     medium: Medium,
     loopback: bool,
+    /// The addresses of this stack: a packet to one of them goes back to
+    /// the inbound queue, not to the link (a switch drops a packet that
+    /// comes back to its sender).
+    local: Arc<std::sync::RwLock<Vec<std::net::IpAddr>>>,
 }
 
 /// Alias kept for the protocol documentation's name.
@@ -231,6 +235,16 @@ impl LinkDevice {
             mtu: mtu.max(1280),
             medium: Medium::Ip,
             loopback,
+            local: Arc::new(std::sync::RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Add an address of this stack (see `local`).
+    pub fn add_local(&self, ip: std::net::IpAddr) {
+        if let Ok(mut local) = self.local.write() {
+            if !local.contains(&ip) {
+                local.push(ip);
+            }
         }
     }
 
@@ -286,6 +300,8 @@ impl LinkDevice {
         LinkTx {
             tx: self.tx.clone(),
             rx: self.loopback.then(|| self.rx.clone()),
+            inbound: self.rx.clone(),
+            local: self.local.clone(),
             stats: self.stats.clone(),
         }
     }
@@ -310,7 +326,24 @@ impl RxToken for LinkRx {
 pub struct LinkTx {
     tx: PacketQueue,
     rx: Option<PacketQueue>,
+    inbound: PacketQueue,
+    local: Arc<std::sync::RwLock<Vec<std::net::IpAddr>>>,
     stats: Arc<DeviceStats>,
+}
+
+/// The destination address of an IPv4 or IPv6 packet.
+fn destination(packet: &[u8]) -> Option<std::net::IpAddr> {
+    match packet.first()? >> 4 {
+        4 if packet.len() >= 20 => {
+            let b: [u8; 4] = packet[16..20].try_into().ok()?;
+            Some(std::net::IpAddr::from(b))
+        }
+        6 if packet.len() >= 40 => {
+            let b: [u8; 16] = packet[24..40].try_into().ok()?;
+            Some(std::net::IpAddr::from(b))
+        }
+        _ => None,
+    }
 }
 
 impl TxToken for LinkTx {
@@ -324,9 +357,17 @@ impl TxToken for LinkTx {
         self.stats
             .tx_bytes
             .fetch_add(buffer.len() as u64, Ordering::Relaxed);
+        let to_self = self.rx.is_none()
+            && destination(&buffer)
+                .is_some_and(|dst| self.local.read().map(|l| l.contains(&dst)).unwrap_or(false));
         match &self.rx {
             Some(rx) => {
                 if !rx.push(buffer) {
+                    self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            None if to_self => {
+                if !self.inbound.push(buffer) {
                     self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }

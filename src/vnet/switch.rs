@@ -530,6 +530,43 @@ mod tests {
         switch.abort();
     }
 
+    /// Issue 65: a stack on a switch reaches its own listener, at its own
+    /// address and at another address that a forward binds. Before, the
+    /// packet went to the switch, which drops a packet back to its sender.
+    #[tokio::test]
+    async fn a_stack_reaches_its_own_listener_through_a_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
+        let switch = serve(listen.clone()).await.unwrap();
+        let stack = NetStack::over_link(config(3));
+        let _a = attach(&stack, &listen, Faults::default()).await.unwrap();
+        for ip in [Ipv4Addr::new(10, 66, 0, 3), Ipv4Addr::new(10, 66, 0, 9)] {
+            let address = VirtAddr::new(IpAddr::V4(ip), 8080);
+            let mut listener = stack.listen(address).await.unwrap();
+            let accept = tokio::spawn(async move {
+                let mut conn = listener.accept().await.unwrap();
+                conn.write_all(b"self").await.unwrap();
+                AsyncWriteExt::shutdown(&mut conn).await.unwrap();
+            });
+            let mut conn =
+                tokio::time::timeout(std::time::Duration::from_secs(5), stack.connect(address))
+                    .await
+                    .expect("connect in time")
+                    .unwrap();
+            let mut got = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                conn.read_to_end(&mut got),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("no answer from {address} in 5 s"))
+            .unwrap();
+            assert_eq!(got, b"self");
+            accept.await.unwrap();
+        }
+        switch.abort();
+    }
+
     /// A program on host A listens on an abstract name (as the shim does); a
     /// program on host B connects to the imported name. The bytes go through
     /// two stacks and a switch.
