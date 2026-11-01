@@ -40,6 +40,7 @@ pub mod nc;
 pub mod proxy;
 pub mod quic;
 pub mod register;
+pub mod route;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod tun;

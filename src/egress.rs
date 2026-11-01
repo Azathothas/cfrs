@@ -90,6 +90,11 @@ impl std::fmt::Display for Proxy {
 }
 
 impl Proxy {
+    /// The host of the proxy (no port, no credentials).
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     /// Read the proxy from the variables of [`PROXY_VARIABLES`]. Returns
     /// `None` when no variable is set. A value that cannot be parsed is
     /// skipped with a warning.

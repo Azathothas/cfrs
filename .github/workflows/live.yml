@@ -459,6 +459,31 @@ jobs:
           grep -q 'udp-dns ok' rawrun.out
           grep -q 'resolv.conf ok' rawrun.out
           grep -q '^ipv6 warp=on' rawrun.out
+      # Issue 77: with root, the whole host through WARP. The default routes
+      # are up for a few seconds only (the runner's own connections stall
+      # while they are up); stop puts back each route and the resolver.
+      - name: warp tun --default-route (root), then everything as before
+        timeout-minutes: 4
+        run: |
+          set -eu
+          run=/tmp/cfrs-run-root
+          sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv.before"
+          ip route > "$RUNNER_TEMP/routes.before"
+          sudo env CFRS_RUN_DIR="$run" target/release/cfrs warp --ephemeral tun --default-route --detach --name tun | tail -1 > tun.json
+          jq -e '.default_route == true' tun.json
+          ip route | grep 'dev cfrs0'
+          curl -fsS --max-time 15 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
+          s.sendto(bytes.fromhex('123401000001000000000000076578616d706c6503636f6d0000010001'), ('1.1.1.1', 53))
+          print('udp-dns', 'ok' if s.recv(512)[:2] == bytes.fromhex('1234') else 'bad')
+          " | grep 'udp-dns ok'
+          sudo env CFRS_RUN_DIR="$run" target/release/cfrs stop tun
+          sudo env CFRS_RUN_DIR="$run" target/release/cfrs logs tun | grep 'the routes and the resolver are as before'
+          ! ip route | grep -q 'dev cfrs0'
+          ip route | diff "$RUNNER_TEMP/routes.before" -
+          sudo cmp /etc/resolv.conf "$RUNNER_TEMP/resolv.before"
       - name: WARP run
         timeout-minutes: 3
         run: |

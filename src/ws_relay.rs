@@ -144,6 +144,11 @@ impl Relay {
         )
     }
 
+    /// The host of the relay.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     /// The base URL, with no token.
     pub fn url(&self) -> String {
         let scheme = if self.tls { "https" } else { "http" };

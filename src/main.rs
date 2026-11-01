@@ -1092,6 +1092,7 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
         Command::Demo(args) => Some(&args.common.detach),
         Command::Warp(args) => match &args.command {
             WarpCommand::Proxy { detach, .. } => Some(detach),
+            WarpCommand::Tun { detach, .. } => Some(detach),
             _ => None,
         },
         Command::Net(args) => match &args.command {
@@ -2042,6 +2043,10 @@ enum WarpCommand {
         /// Seconds to wait for WARP to be ready.
         #[arg(long, default_value_t = 90)]
         ready_timeout: u64,
+        /// With CAP_NET_ADMIN: send the whole host through WARP with warp
+        /// tun --default-route (instance warp-tun), in place of the proxy.
+        #[arg(long, conflicts_with = "persist")]
+        tun: bool,
     },
     /// Stop what cfrs warp up started, and remove its env file and its
     /// block in ~/.bashrc and ~/.profile.
@@ -2086,7 +2091,15 @@ enum WarpCommand {
     Tun {
         /// The interface name.
         #[arg(long, default_value = "cfrs0")]
-        name: String,
+        interface: String,
+        /// Send the whole host through WARP (issue 77): host routes keep the
+        /// MASQUE connection outside, default routes go to the TUN (IPv4 and
+        /// IPv6), DNS goes to 1.1.1.1. The default routes go away while the
+        /// session is down; each change is put back at the end.
+        #[arg(long)]
+        default_route: bool,
+        #[command(flatten)]
+        detach: DetachArgs,
     },
     /// Run a program with all its traffic sent through WARP. No root and no
     /// TUN device are necessary (pod-netns).
@@ -2157,9 +2170,36 @@ async fn warp(args: WarpArgs) -> Result<()> {
     // These commands use the running instance of cfrs warp up.
     match &args.command {
         WarpCommand::Up {
+            tun: true,
+            ready_timeout,
+            ..
+        } => {
+            let mut argv = vec!["warp".to_string()];
+            if args.no_relay {
+                argv.push("--no-relay".into());
+            }
+            if let Some(path) = &args.identity {
+                argv.push("--identity".into());
+                argv.push(path.display().to_string());
+            }
+            argv.extend([
+                "tun".to_string(),
+                "--default-route".into(),
+                "--detach".into(),
+                "--name".into(),
+                cfrs::warp::up::TUN_INSTANCE.into(),
+                "--ready-timeout".into(),
+                ready_timeout.to_string(),
+            ]);
+            let doc = cfrs::warp::up::start(&argv)?;
+            println!("{doc}");
+            return Ok(());
+        }
+        WarpCommand::Up {
             port,
             persist,
             ready_timeout,
+            ..
         } => return warp_up(&args, *port, *persist, *ready_timeout),
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
@@ -2362,7 +2402,11 @@ async fn warp(args: WarpArgs) -> Result<()> {
             }
         }
         #[cfg(target_os = "linux")]
-        WarpCommand::Tun { name } => {
+        WarpCommand::Tun {
+            interface: name,
+            default_route,
+            ..
+        } => {
             let address = client
                 .device()
                 .ipv4()
@@ -2398,9 +2442,57 @@ async fn warp(args: WarpArgs) -> Result<()> {
             println!(
                 "  ip route add {endpoint}/32 via <your gateway>   # keep the session outside"
             );
+            // --default-route (issue 77): the addresses of the MASQUE
+            // connection stay outside the tunnel.
+            let routes = if default_route {
+                let mut hosts: Vec<String> = Vec::new();
+                match cfrs::egress::proxy_for(&endpoint, 443) {
+                    Some(proxy) => hosts.push(proxy.host().to_string()),
+                    None => hosts.push(endpoint.clone()),
+                }
+                if !args.no_relay {
+                    if let Ok(relay) = cfrs::ws_relay::Relay::from_env(None) {
+                        hosts.push(relay.host().to_string());
+                    }
+                }
+                let mut exempt: Vec<std::net::Ipv4Addr> = Vec::new();
+                for host in hosts.iter().filter(|h| !h.is_empty()) {
+                    for ip in cfrs::resolve::resolve(host).await.unwrap_or_default() {
+                        if let std::net::IpAddr::V4(v4) = ip {
+                            if !exempt.contains(&v4) {
+                                exempt.push(v4);
+                            }
+                        }
+                    }
+                }
+                let routes = cfrs::warp::route::Routes::setup(
+                    &tun.name,
+                    exempt.clone(),
+                    client.device().ipv6().is_some(),
+                )
+                .fault(Fault::Unavailable)?;
+                println!(
+                    "cfrs: routes   the default routes go to {}; outside: {}",
+                    tun.name,
+                    exempt
+                        .iter()
+                        .map(|ip| ip.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                Some(std::sync::Mutex::new(routes))
+            } else {
+                None
+            };
+            cfrs::detach::ready(serde_json::json!({
+                "tun": tun.name,
+                "address": address.to_string(),
+                "default_route": default_route,
+            }));
             // The TUN stays; a session that ends is opened again (issue 75).
             let tun_ref = &tun;
             let client_ref = &client;
+            let routes_ref = &routes;
             let keep = async move {
                 let mut session = Some(session);
                 let mut delay = std::time::Duration::from_secs(1);
@@ -2421,8 +2513,18 @@ async fn warp(args: WarpArgs) -> Result<()> {
                             }
                         },
                     };
+                    // The default routes only while a session is up.
+                    if let Some(routes) = routes_ref {
+                        let up = routes.lock().unwrap_or_else(|e| e.into_inner()).up();
+                        if let Err(err) = up {
+                            tracing::warn!(error = %format!("{err:#}"), "the default routes on the TUN");
+                        }
+                    }
                     if let Err(err) = cfrs::warp::tun::run(tun_ref, current).await {
                         tracing::warn!(error = %format!("{err:#}"), "the WARP session ended; opening a new one");
+                    }
+                    if let Some(routes) = routes_ref {
+                        routes.lock().unwrap_or_else(|e| e.into_inner()).down();
                     }
                 }
             };
@@ -2430,6 +2532,8 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 _ = keep => {}
                 _ = shutdown_signal() => {}
             }
+            // Dropped: the routes and the resolver are put back.
+            drop(routes);
         }
         #[cfg(not(target_os = "linux"))]
         WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),

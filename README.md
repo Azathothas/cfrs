@@ -354,7 +354,7 @@ cfrs warp delete                  # remove the device and the saved file
 cfrs warp probe                   # test TCP connects through the tunnel
 cfrs warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
 cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace
-cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
+cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
 ```
 
 * The device and its key are in `warp.json` in the state directory: the
@@ -411,6 +411,16 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   with no WARP. `cfrs warp ssh-config [--host PATTERN]` prints the SSH
   config block and a `GIT_SSH_COMMAND`. SSH checks the host key as on a
   direct connection.
+* `cfrs warp tun --default-route` (CAP_NET_ADMIN) sends the whole host
+  through WARP: host routes through the gateway keep the MASQUE connection
+  (the proxy, the front door, the relay) outside the TUN; `0.0.0.0/1`,
+  `128.0.0.0/1`, `::/1` and `8000::/1` go to the TUN; DNS goes to 1.1.1.1
+  (`resolvectl` on the TUN, else `/etc/resolv.conf` with a copy kept). The
+  default routes go away while the session is down, so traffic fails fast.
+  The end (Ctrl-C, SIGTERM, `cfrs stop`) puts back each route and the
+  resolver. The changes are ioctls; no script runs as root.
+  `cfrs warp up --tun` starts it detached (instance `warp-tun`), and
+  `cfrs warp down` stops it.
 * `cfrs warp tun` makes a TUN interface with the tunnel address and moves its
   packets through WARP. It does not change the routes: add routes for the
   destinations to send through WARP, and keep a route for the MASQUE endpoint

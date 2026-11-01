@@ -18,6 +18,8 @@ use anyhow::{Context as _, Result};
 
 /// The name of the detached instance of `cfrs warp up`.
 pub const INSTANCE: &str = "warp";
+/// The name of the detached instance of `cfrs warp up --tun`.
+pub const TUN_INSTANCE: &str = "warp-tun";
 /// Set in a shell that `cfrs warp shell` started, so that the hook does not
 /// start it again.
 pub const SHELL_VARIABLE: &str = "CFRS_WARP_SHELL";
@@ -264,9 +266,11 @@ pub fn persist(env: &Path) -> Result<Vec<PathBuf>> {
 /// the blocks.
 pub fn down() -> Result<()> {
     let dir = crate::instances::run_dir()?;
-    if crate::instances::read(&dir, INSTANCE).is_some() {
-        crate::detach::stop(&dir, INSTANCE, std::time::Duration::from_secs(10))?;
-        println!("cfrs: warp down: stopped the instance {INSTANCE}");
+    for name in [INSTANCE, TUN_INSTANCE] {
+        if crate::instances::read(&dir, name).is_some() {
+            crate::detach::stop(&dir, name, std::time::Duration::from_secs(10))?;
+            println!("cfrs: warp down: stopped the instance {name}");
+        }
     }
     for path in [env_path()?, socket_path()?, ca_path()?] {
         if std::fs::remove_file(&path).is_ok() {
