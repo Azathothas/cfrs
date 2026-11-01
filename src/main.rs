@@ -2091,8 +2091,10 @@ enum WarpCommand {
     /// Run a program with all its traffic sent through WARP. No root and no
     /// TUN device are necessary (pod-netns).
     Run {
-        /// The pod-netns backend: auto, netns or seccomp. auto takes
-        /// seccomp first when it works, so that UDP goes through WARP too.
+        /// The backend: auto, netns-raw, netns or seccomp. netns-raw moves the
+        /// raw packets of a namespace through WARP (TCP, UDP, ICMP, IPv6; no
+        /// root). auto takes netns-raw when it works, else seccomp, so that
+        /// UDP goes through WARP too.
         #[arg(long, default_value = "auto")]
         backend: String,
         /// A pod-netns rule, repeatable: domain:NAME=PROXY,
@@ -2456,6 +2458,25 @@ async fn warp(args: WarpArgs) -> Result<()> {
             inbound_dir,
             program,
         } => {
+            // netns-raw (issue 79): the TUN of a namespace goes to WARP as
+            // raw packets: TCP, UDP, ICMP and IPv6 with no root. auto takes
+            // it when this host can make the namespace.
+            let raw = backend == "netns-raw"
+                || (backend == "auto" && rules.is_empty() && pod_netns::raw::available());
+            if raw {
+                match warp_run_raw(&client, &program, keep_proxy_env).await {
+                    Ok(code) => std::process::exit(code),
+                    Err(err) if backend == "auto" => {
+                        tracing::info!(error = %format!("{err:#}"), "the netns-raw backend cannot run here; the pod with a proxy runs");
+                    }
+                    Err(err) => return Err(cfrs::exit::fault(Fault::Unavailable, err)),
+                }
+            }
+            let backend = if backend == "netns-raw" {
+                "auto".to_string()
+            } else {
+                backend
+            };
             let socket =
                 std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
             let live = Arc::new(client)
@@ -2501,6 +2522,68 @@ async fn warp(args: WarpArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `cfrs warp run --backend netns-raw`: the program in a raw pod whose TUN
+/// packets go through WARP; a session that ends is opened again. Gives the
+/// exit code of the program.
+async fn warp_run_raw(
+    client: &cfrs::warp::WarpClient,
+    program: &[String],
+    keep_proxy_env: bool,
+) -> Result<i32> {
+    let v4 = client
+        .device()
+        .ipv4()
+        .context("the device has no IPv4 address")?;
+    let mut session = Some(client.connect_raw().await?);
+    let pod = pod_netns::raw::spawn(&pod_netns::raw::RawOptions {
+        program: program.to_vec(),
+        keep_proxy_env,
+        v4,
+        v6: client.device().ipv6(),
+        mtu: cfrs::warp::ip::TUNNEL_MTU,
+        nameserver: std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+    })?;
+    let pid = pod.pid;
+    let tun = cfrs::warp::tun::Tun::from_fd(pod.tun, "eth0")?;
+    tracing::info!(pid, "the program runs in a raw pod (netns-raw)");
+    let carry = async {
+        let mut delay = std::time::Duration::from_secs(1);
+        loop {
+            let current = match session.take() {
+                Some(s) => s,
+                None => match client.connect_raw().await {
+                    Ok(s) => {
+                        tracing::info!("a new WARP session is open");
+                        delay = std::time::Duration::from_secs(1);
+                        s
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %format!("{err:#}"), "a new WARP session failed");
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                        continue;
+                    }
+                },
+            };
+            if let Err(err) = cfrs::warp::tun::run(&tun, current).await {
+                tracing::warn!(error = %format!("{err:#}"), "the WARP session ended; opening a new one");
+            }
+        }
+    };
+    let exited = async {
+        loop {
+            if let Some(code) = pod_netns::raw::try_wait(pid) {
+                return code;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        code = exited => Ok(code),
+        _ = carry => unreachable!("the loop does not end"),
+    }
 }
 
 fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>) {

@@ -188,6 +188,40 @@ impl Drop for FdGuard {
 #[repr(C, align(8))]
 struct CmsgBuf([u8; 64]);
 
+/// [`send_fd`] that does not allocate, for a child after `fork()` in a
+/// multi-threaded process: 0, or -1 on an error.
+pub(crate) unsafe fn send_fd_raw(sock: RawFd, fd: RawFd) -> libc::c_int {
+    let mut byte = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: byte.as_mut_ptr() as *mut _,
+        iov_len: 1,
+    };
+    let mut cmsg = CmsgBuf([0u8; 64]);
+    let fd_len = std::mem::size_of::<RawFd>() as u32;
+    let mut msg: libc::msghdr = std::mem::zeroed();
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg.0.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = libc::CMSG_SPACE(fd_len) as _;
+    let hdr = libc::CMSG_FIRSTHDR(&msg);
+    if hdr.is_null() {
+        return -1;
+    }
+    (*hdr).cmsg_level = libc::SOL_SOCKET;
+    (*hdr).cmsg_type = libc::SCM_RIGHTS;
+    (*hdr).cmsg_len = libc::CMSG_LEN(fd_len) as _;
+    std::ptr::copy_nonoverlapping(
+        (&fd as *const RawFd).cast::<u8>(),
+        libc::CMSG_DATA(hdr),
+        fd_len as usize,
+    );
+    if libc::sendmsg(sock, &msg, 0) < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
 /// Send one fd over a unix socketpair with SCM_RIGHTS.
 pub(crate) fn send_fd(sock: RawFd, fd: RawFd) -> Result<()> {
     let mut byte = [0u8; 1];

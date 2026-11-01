@@ -32,6 +32,7 @@
 
 pub mod dns;
 pub mod listen;
+pub mod raw;
 pub mod socks;
 pub mod tailscale;
 pub mod upstream;

@@ -430,6 +430,35 @@ jobs:
           curl -fsS --max-time 30 "$url" | grep -q 'served by agent up'
           target/release/cfrs agent down
           target/release/cfrs ps --json | jq -e '.instances | length == 0'
+      # Issue 79: the raw IP pod. The runner limits unprivileged user
+      # namespaces with AppArmor: the step allows them first. In the pod:
+      # HTTPS through WARP, a UDP DNS query to 1.1.1.1, a name through the
+      # resolv.conf of the pod, and IPv6.
+      - name: WARP run with the netns-raw backend (TCP, UDP, IPv6, no root)
+        timeout-minutes: 4
+        run: |
+          set -eu
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          cat > "$RUNNER_TEMP/raw-check.sh" <<'CHECK'
+          set -eu
+          curl -fsS --max-time 20 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp='
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
+          q = bytes.fromhex('1234010000010000000000000765786d706c6503636f6d0000010001'.replace('65786d706c65', '6578616d706c65'))
+          s.sendto(q, ('1.1.1.1', 53)); a = s.recv(512)
+          print('udp-dns', 'ok' if a[:2] == b'\x12\x34' else 'bad')
+          "
+          getent hosts example.com > /dev/null && echo 'resolv.conf ok'
+          curl -fsS --max-time 20 'https://[2606:4700:4700::1111]/cdn-cgi/trace' | grep '^warp=' | sed 's/^/ipv6 /'
+          CHECK
+          sh scripts/live-run.sh rawrun timeout 120 target/release/cfrs warp run --backend netns-raw -- sh "$RUNNER_TEMP/raw-check.sh" ||
+            { tail -20 rawrun.err; exit 1; }
+          grep -q 'the program runs in a raw pod' rawrun.err
+          grep -q '^warp=on' rawrun.out
+          grep -q 'udp-dns ok' rawrun.out
+          grep -q 'resolv.conf ok' rawrun.out
+          grep -q '^ipv6 warp=on' rawrun.out
       - name: WARP run
         timeout-minutes: 3
         run: |

@@ -46,6 +46,29 @@ fn ifreq(name: &str) -> Result<libc::ifreq> {
     Ok(req)
 }
 
+impl Tun {
+    /// A TUN that another part made: the raw pod of `cfrs warp run
+    /// --backend netns-raw` (issue 79). The descriptor becomes non-blocking.
+    pub fn from_fd(fd: OwnedFd, name: &str) -> Result<Self> {
+        // SAFETY: fcntl on a descriptor that this value owns.
+        unsafe {
+            let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+            if flags < 0 || libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0
+            {
+                return Err(std::io::Error::last_os_error()).context("making the TUN non-blocking");
+            }
+        }
+        Ok(Self {
+            // SAFETY: the descriptor is owned by the AsyncFd and is not
+            // closed while it is registered.
+            fd: unsafe { AsyncFd::register(fd) }
+                .map_err(std::io::Error::from)
+                .context("registering the TUN")?,
+            name: name.to_string(),
+        })
+    }
+}
+
 /// `struct in6_ifreq` of linux/ipv6.h (SIOCSIFADDR on an AF_INET6 socket).
 #[repr(C)]
 struct In6Ifreq {
