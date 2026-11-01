@@ -26,16 +26,16 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-CARGO_HOME=${CARGO_HOME:-/workspace/.cargo-home}
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$root/target}
-export CARGO_HOME CARGO_TARGET_DIR
+export CARGO_TARGET_DIR
+mkdir -p "$CARGO_TARGET_DIR"
 
 recorded_only=0
 [ "${1:-}" = "--recorded-only" ] && recorded_only=1
 
 # Pick a scratch directory that can actually execute a file.
 scratch=""
-for candidate in "${CF_ORACLE_TMP:-}" "$CARGO_TARGET_DIR" "$root/target" /workspace /tmp; do
+for candidate in "${CF_ORACLE_TMP:-}" "$CARGO_TARGET_DIR" "${TMPDIR:-}" /tmp; do
     [ -n "$candidate" ] || continue
     probe="$candidate/.cfrs-exec-probe.$$"
     # A noexec mount refuses execution whatever the file mode is. Thus run a
@@ -71,7 +71,7 @@ EOF
     cat >"$work/main.go" <<'GOEOF'
 package main
 
-// Verbatim from cloudflared connection/header.go (master).
+// Verbatim from cloudflared connection/header.go (release 2026.10.7, src/cloudflare/cloudflared-pin.txt).
 import (
 	"bufio"
 	"encoding/base64"
@@ -170,7 +170,7 @@ host,cf-connecting-ip|example.com,1.2.3.4
 a,b,c|y,z,w
 IN
 
-    cargo run --quiet --example dump_headers 2>/dev/null >"$work/ours.txt"
+    cargo run --locked --quiet --example dump_headers >"$work/ours.txt"
 
     if diff -u "$work/oracle.txt" "$work/ours.txt"; then
         echo "PASS: header encoding matches cloudflared's SerializeHeaders (5 live cases)"
@@ -183,7 +183,7 @@ else
 fi
 
 ours=$(mktemp "$work/ours.XXXXXX")
-cargo run --quiet --example dump_headers 2>/dev/null >"$ours"
+cargo run --locked --quiet --example dump_headers >"$ours"
 
 if diff -u tools/header-oracle.txt "$ours"; then
     echo "PASS: header encoding still matches the recorded Go oracle"
