@@ -37,18 +37,19 @@ proxy refuses DoH by IP address. The test suite of cfrs runs here.
 
 ### A GitHub runner, ubuntu-24.04 (2026-10-31 and 2026-11-01)
 
-The tools: `.github/workflows/live.yml`, `release.yml` (`release-short.sh`).
+The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
+(`release-short.sh`).
 
 | Fact | Result | Mark |
 | --- | --- | --- |
 | QUIC on UDP 7844 | Registers | measured |
 | HTTP/2 on TCP 7844 | Registers | measured |
 | QUIC inside WARP MASQUE on TCP 443 | Registers | measured |
-| UDP 7844 dropped (`iptables DROP`) | `--protocol auto` registers over HTTP/2 after the 2 s stagger | measured |
-| UDP and TCP 7844 dropped | `--protocol auto` registers over `quic+warp` | inferred |
+| UDP 7844 dropped (`iptables DROP`) | `--protocol auto` registers over HTTP/2 after 2.4 s (the 2 s stagger) | measured |
+| UDP and TCP 7844 dropped | `--protocol auto` registers over `quic+warp` after 6.7 s (two 2 s staggers and the WARP setup) | measured |
 | No system resolver | Names come from DoH by IP address at `1.1.1.1` | measured |
-| No system resolver, `1.1.1.1` and `1.0.0.1` blocked | Names come from DoH by IP address at Google | inferred |
-| A local `CONNECT` proxy in `HTTPS_PROXY` | The API, DoH and the HTTP/2 edge leg go through it | measured |
+| No system resolver, `1.1.1.1` and `1.0.0.1` blocked | Names come from DoH by IP address at Google (`8.8.8.8`) | measured |
+| A local `CONNECT` proxy in `HTTPS_PROXY` | DoH by IP (`1.1.1.1:443`), the API, the HTTP/2 edge leg (`:7844`) and the fetch of the public URL go through it; no QUIC is tried | measured |
 | Unprivileged user namespaces | AppArmor limits them: a namespace can be made, but `lo` cannot come up | measured |
 | `cfrs warp run --backend seccomp` | Works (`warp=on`) | measured |
 
