@@ -450,6 +450,9 @@ cfrs man --json               # the tables, for a program
 cfrs status                   # one JSON line about this host; no network
 cfrs ports --json             # the listening TCP ports, as one JSON object
 cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs
+cfrs -q tunnel ...            # warnings and errors only; -v debug, -vv trace
+cfrs --log-format json ...    # the log as one JSON object for each line
+cfrs --color never ...        # colours: auto (a terminal, no NO_COLOR), always, never
 ```
 
 With `--json`, `cfrs tunnel`, `serve`, `share` and `demo` write JSON lines on

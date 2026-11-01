@@ -43,6 +43,20 @@ struct Cli {
     /// adds to it. TLS still checks the name of the certificate.
     #[arg(long, global = true, value_name = "HOST=IP")]
     resolve: Option<String>,
+    /// Log warnings and errors only.
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
+    /// Log more: -v for debug, -vv for trace. RUST_LOG takes priority.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+    /// Colours in the log: auto (only on a terminal, and not with NO_COLOR),
+    /// always or never.
+    #[arg(long, global = true, default_value = "auto", value_parser = ["auto", "always", "never"])]
+    color: String,
+    /// The form of the log on stderr: text, or json (one object for each
+    /// line).
+    #[arg(long, global = true, default_value = "text", value_parser = ["text", "json"])]
+    log_format: String,
 
     #[command(subcommand)]
     command: Command,
@@ -362,17 +376,33 @@ fn main() {
         eprintln!("{}", cfrs::report::error_line(&err));
         std::process::exit(cfrs::exit::code_of(&err));
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cfrs=info")),
-        )
-        .with_writer(cfrs::report::TeeStderr)
-        // Colours only on a terminal: a log file or a pipe gets plain text.
-        .with_ansi(
+    let level = if cli.quiet {
+        "cfrs=warn"
+    } else {
+        match cli.verbose {
+            0 => "cfrs=info",
+            1 => "cfrs=debug",
+            _ => "cfrs=trace",
+        }
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    // Colours only on a terminal: a log file or a pipe gets plain text.
+    let ansi = match cli.color.as_str() {
+        "always" => true,
+        "never" => false,
+        _ => {
             std::io::IsTerminal::is_terminal(&std::io::stderr())
-                && std::env::var_os("NO_COLOR").is_none(),
-        )
-        .init();
+                && std::env::var_os("NO_COLOR").is_none()
+        }
+    };
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(cfrs::report::TeeStderr);
+    if cli.log_format == "json" {
+        builder.json().with_ansi(false).init();
+    } else {
+        builder.with_ansi(ansi).init();
+    }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

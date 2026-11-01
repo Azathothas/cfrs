@@ -464,3 +464,46 @@ fn bad_flag_values_are_usage_errors() {
         );
     }
 }
+
+/// --log-format json writes one JSON object for each log line; -q drops
+/// the info and debug lines; -v adds the debug lines.
+#[test]
+fn log_controls() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\n\r\nno");
+        }
+    });
+    let url = format!("http://localhost:{port}");
+    let run = |flags: &[&str]| {
+        let mut args = vec!["--no-proxy"];
+        args.extend_from_slice(flags);
+        args.extend_from_slice(&["tunnel", "--hello-world", "--service-url", &url]);
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(&args)
+            .env_remove("RUST_LOG")
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let json = run(&["--log-format", "json", "-v"]);
+    let lines: Vec<&str> = json.lines().filter(|l| l.starts_with('{')).collect();
+    assert!(!lines.is_empty(), "{json}");
+    for line in lines {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(value["level"].is_string(), "{line}");
+    }
+    assert!(run(&["-v"]).contains("DEBUG"));
+    let quiet = run(&["-q"]);
+    assert!(
+        !quiet.contains("DEBUG") && !quiet.contains(" INFO "),
+        "{quiet}"
+    );
+    assert!(quiet.contains("HTTP 403"), "the error line stays: {quiet}");
+}
