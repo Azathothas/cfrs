@@ -235,8 +235,10 @@ impl ShareApp {
             ensure_dir(&config.dest)?;
         }
         if let Some(file) = &config.file {
-            if !file.is_file() {
-                bail!("file to share does not exist: {}", file.display());
+            match std::fs::metadata(file) {
+                Ok(meta) if meta.is_file() => {}
+                Ok(_) => bail!("--file {}: not a regular file", file.display()),
+                Err(err) => bail!("--file {}: {err}", file.display()),
             }
         }
         let control = Arc::new(ShareControl::default());

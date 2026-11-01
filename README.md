@@ -460,6 +460,22 @@ stdout in place of the text lines. A line with `"event": "ready"` gives
 `url`, `tunnel_id` and `locations` (and `pin` for `share`). A line with
 `"event": "verified"` comes after the fetch of the public URL.
 
+`--check` on `tunnel`, `serve`, `share` and `demo` checks the plan and stops.
+It tests the flags and the config file, each origin (a connection, and the
+TLS handshake for `https`; no request is sent), the files and the
+directories (`--dir`, `--spa` and its `index.html`, `--file`, the upload
+directory, `--warp-identity`, `--credentials-file`), `CFRS_EDGE` and the edge
+legs. It makes no Cloudflare API call and no edge connection, opens no
+listening socket and writes no file. It prints no token and no PIN. Exit 0:
+each check passed. Exit 1: a check failed. A bad command line (64) or a bad
+config file (78) stops before the check. With `--json`, the output is one
+document: `{"ok", "plan", "checks": [{"name", "status", "detail"}]}`.
+
+```sh
+cfrs serve --check --dir ./site --spa
+cfrs tunnel --check --json --config config.yml | jq -e .ok
+```
+
 The exit codes follow sysexits.h: 64 for a bad command line, 69 when a
 service or a network path is not available (no edge leg worked), 78 for a
 bad configuration (for example `CFRS_EDGE`). `cfrs man exit-status` gives all

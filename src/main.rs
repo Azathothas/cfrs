@@ -186,6 +186,13 @@ struct TunnelOpts {
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long, global = true)]
     run_for: Option<u64>,
+    /// Check the plan and stop: the flags, the config file, each origin (a
+    /// connection, and the TLS handshake for https, with no request), the
+    /// files and the directories, and the edge legs. No Cloudflare API call,
+    /// no edge connection, no file is written. Exit 0 when each check
+    /// passes, 1 when a check fails. With --json, one JSON document.
+    #[arg(long, global = true)]
+    check: bool,
 }
 
 /// How a tunnel command prints its state.
@@ -593,7 +600,32 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
         config.verify = false;
     }
 
+    if args.common.check {
+        return preflight(&config, args.common.show()).await;
+    }
     run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
+}
+
+/// `--check`: print the report of the check, and fail when a check failed.
+async fn preflight(config: &Config, show: Show) -> Result<()> {
+    let report = cfrs::preflight::check(config).await;
+    if show.json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.text());
+    }
+    let failed = report
+        .checks
+        .iter()
+        .filter(|c| c.status == cfrs::preflight::Status::Fail)
+        .count();
+    if failed > 0 {
+        bail!(
+            "the check failed ({failed} of {}); nothing was started",
+            report.checks.len()
+        );
+    }
+    Ok(())
 }
 
 fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
@@ -770,6 +802,9 @@ async fn serve(args: ServeArgs) -> Result<()> {
         spa: args.spa,
     });
     config = args.common.apply(config)?;
+    if args.common.check {
+        return preflight(&config, args.common.show()).await;
+    }
     run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
 }
 
@@ -785,7 +820,10 @@ async fn share(args: ShareArgs) -> Result<()> {
         }
         ModeArg::Proxy => {
             let port = args.port.context("proxy mode needs --port")?;
-            cfrs::ports::confirm_local_http(port).await?;
+            // A check sends no request to the origin: it only connects.
+            if !args.common.check {
+                cfrs::ports::confirm_local_http(port).await?;
+            }
             ShareConfig::proxy(format!("127.0.0.1:{port}"))
         }
     };
@@ -801,6 +839,9 @@ async fn share(args: ShareArgs) -> Result<()> {
     }
     config.ingress = Ingress::new().catch_all(Service::Share(share_config.clone()));
     config = args.common.apply(config)?;
+    if args.common.check {
+        return preflight(&config, args.common.show()).await;
+    }
 
     let pin = share_config.gate.pin_display().map(str::to_string);
     let path = share_config.url_path();
@@ -824,6 +865,9 @@ async fn demo(args: DemoArgs) -> Result<()> {
     }
     config.ingress = Ingress::new().catch_all(Service::HelloWorld);
     config = args.common.apply(config)?;
+    if args.common.check {
+        return preflight(&config, args.common.show()).await;
+    }
     let exit_on_verify = args.exit_on_verify;
     run_demo(
         config,

@@ -62,7 +62,7 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: FAILURE,
         name: "failure",
-        meaning: "A failure that has no other code.",
+        meaning: "A failure that has no other code. With --check: a check failed.",
     },
     ExitCode {
         code: NO_BACKEND,

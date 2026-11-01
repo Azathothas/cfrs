@@ -38,6 +38,7 @@ pub mod metrics;
 pub mod net;
 pub mod origin;
 pub mod ports;
+pub mod preflight;
 pub mod proxy;
 pub mod qr;
 pub mod quicktunnel;

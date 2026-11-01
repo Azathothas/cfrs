@@ -507,3 +507,113 @@ fn log_controls() {
     );
     assert!(quiet.contains("HTTP 403"), "the error line stays: {quiet}");
 }
+
+/// `--check` (issue 45): exit 0 or 1, no call to the API, no file written,
+/// no token in the output.
+#[test]
+fn check_mode() {
+    const TOKEN: &str = "eyJhIjogIjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwgInQiOiAiZmZkODZiZDUtMWJmZi00NTZiLThjMmMtNzVhMDE0Y2RjNGM4IiwgInMiOiAiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOD0ifQ==";
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let site = dir.path().join("site");
+    std::fs::create_dir(&site).unwrap();
+    // A stand-in for the quick-tunnel API: it must get no connection.
+    let api = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    api.set_nonblocking(true).unwrap();
+    let service_url = format!("http://{}", api.local_addr().unwrap());
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port().to_string()
+    };
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(args)
+            .args(["--service-url", &service_url])
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("CFRS_EDGE")
+            .env_remove("TUNNEL_TOKEN")
+            .env("CFRS_STATE_DIR", &state);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text, out.stdout)
+    };
+    let site_arg = site.to_str().unwrap();
+
+    let (code, text, _) = run(&["tunnel", "--check", "--port", &closed], &[]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains(&format!("127.0.0.1:{closed}")), "{text}");
+
+    let (code, text, _) = run(&["serve", "--check", "--dir", site_arg, "--spa"], &[]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("--spa needs an index.html"), "{text}");
+
+    let (code, text, stdout) = run(&["serve", "--check", "--json", "--dir", site_arg], &[]);
+    assert_eq!(code, Some(0), "{text}");
+    let doc: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(doc["ok"], true, "{doc}");
+    assert_eq!(doc["plan"]["tunnel"]["kind"], "quick");
+
+    for env in [&[("TUNNEL_TOKEN", TOKEN)][..], &[]] {
+        let mut args = vec!["demo", "--check", "--transport", "warp"];
+        if env.is_empty() {
+            args.extend(["--token", TOKEN]);
+        }
+        let (code, text, _) = run(&args, env);
+        assert_eq!(code, Some(0), "{text}");
+        assert!(
+            text.contains("ffd86bd5-1bff-456b-8c2c-75a014cdc4c8"),
+            "{text}"
+        );
+        assert!(
+            !text.contains(TOKEN) && !text.contains("AAECAwQF"),
+            "{text}"
+        );
+    }
+
+    let file = site.join("a.txt");
+    std::fs::write(&file, "x").unwrap();
+    let (code, text, _) = run(
+        &[
+            "share",
+            "--check",
+            "--mode",
+            "upload",
+            "--dir",
+            file.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("not a directory"), "{text}");
+
+    let config = dir.path().join("config.yml");
+    std::fs::write(
+        &config,
+        "credentails-file: /x\ningress:\n  - service: http_status:404\n",
+    )
+    .unwrap();
+    let (code, text, _) = run(
+        &["tunnel", "--check", "--config", config.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(code, Some(78), "{text}");
+    assert!(text.contains("did you mean credentials-file"), "{text}");
+
+    assert!(
+        api.accept().is_err(),
+        "a check connected to the quick-tunnel API"
+    );
+    assert_eq!(
+        std::fs::read_dir(&state).unwrap().count(),
+        0,
+        "a check wrote a file"
+    );
+}

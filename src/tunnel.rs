@@ -164,12 +164,14 @@ impl Tunnel {
         // quick tunnel is provisioned.
         edge_override()?;
 
+        // Build the services before the quick tunnel is provisioned: a bad
+        // --dir, a --spa with no index.html or a missing --file stops here.
+        let metrics = Metrics::new();
+        let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
+
         let (auth, tunnel_id, public_url) =
             resolve_credentials(&credentials, &service_url, &user_agent).await?;
         let account_tag = auth.account_tag.clone();
-
-        let metrics = Metrics::new();
-        let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
         let ingress = Arc::new(ingress);
 
         // The edge legs to try, in order. QUIC on UDP 7844 is the fastest.
@@ -525,7 +527,7 @@ pub fn leg_plan(protocol: Protocol, transport: Transport) -> Result<Vec<LegKind>
 }
 
 /// A name of the edge, for the choice of the proxy (`NO_PROXY` may name it).
-const EDGE_REGION_NAME: &str = "region1.v2.argotunnel.com";
+pub(crate) const EDGE_REGION_NAME: &str = "region1.v2.argotunnel.com";
 
 /// With a proxy, `--protocol auto` does not try QUIC on UDP 7844: no proxy
 /// carries UDP, so the packets go around the proxy or are lost. QUIC inside
@@ -586,7 +588,7 @@ async fn bounded<T>(
 
 /// Read `CFRS_EDGE`, a comma-separated `host:port` list that replaces edge
 /// discovery (as `cloudflared --edge` does).
-fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
+pub(crate) fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
     let Ok(list) = std::env::var("CFRS_EDGE") else {
         return Ok(None);
     };

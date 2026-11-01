@@ -93,6 +93,9 @@ pub fn path_and_query(dest: &str) -> String {
 }
 
 pub fn ensure_dir(path: &Path) -> Result<()> {
+    if path.exists() && !path.is_dir() {
+        anyhow::bail!("{}: not a directory", path.display());
+    }
     std::fs::create_dir_all(path)
         .map_err(|e| anyhow::anyhow!("creating {}: {e}", path.display()))?;
     Ok(())
