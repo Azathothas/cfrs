@@ -228,7 +228,7 @@ impl Tunnel {
                         connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
                     Ok((First::Quic(edges, endpoint, conn, control, location), None))
                 })),
-                LegKind::H2Direct => Box::pin(bounded(limited, async move {
+                LegKind::H2Direct | LegKind::H2Relay => Box::pin(bounded(limited, async move {
                     let edges = direct_targets().await?;
                     let options = rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
                     let leg = crate::edge_h2::connect(
@@ -528,6 +528,8 @@ pub enum LegKind {
     H2Direct,
     /// QUIC inside a WARP MASQUE tunnel on TCP 443.
     QuicWarp,
+    /// HTTP/2 to TCP 7844 in a WebSocket to a relay on TCP 443.
+    H2Relay,
 }
 
 impl std::fmt::Display for LegKind {
@@ -536,6 +538,7 @@ impl std::fmt::Display for LegKind {
             LegKind::QuicDirect => "quic",
             LegKind::H2Direct => "http2",
             LegKind::QuicWarp => "quic+warp",
+            LegKind::H2Relay => "http2+relay",
         })
     }
 }
@@ -554,6 +557,10 @@ pub fn leg_plan(protocol: Protocol, transport: Transport) -> Result<Vec<LegKind>
         (Transport::Auto, Protocol::Quic) => vec![QuicDirect, QuicWarp],
         (Transport::Auto, Protocol::Http2) => vec![H2Direct],
         (Transport::Auto, Protocol::Auto) => vec![QuicDirect, H2Direct, QuicWarp],
+        (Transport::Relay, Protocol::Quic) => {
+            bail!("the relay carries TCP only; use --protocol http2 or auto")
+        }
+        (Transport::Relay, _) => vec![H2Relay],
     })
 }
 
@@ -1146,5 +1153,8 @@ mod tests {
         );
         assert_eq!(plan(Protocol::Quic, Transport::Warp), vec![QuicWarp]);
         assert!(leg_plan(Protocol::Http2, Transport::Warp).is_err());
+        assert_eq!(plan(Protocol::Auto, Transport::Relay), vec![H2Relay]);
+        assert_eq!(plan(Protocol::Http2, Transport::Relay), vec![H2Relay]);
+        assert!(leg_plan(Protocol::Quic, Transport::Relay).is_err());
     }
 }

@@ -233,6 +233,7 @@ path.
 | `quic` | UDP 7844 | UDP to the edge is open. This is the fastest leg. |
 | `http2` | TCP 7844, directly or through the proxy | UDP is blocked and TCP 7844 is open. |
 | `quic+warp` | TCP 443 only (MASQUE) | Only TCP 443 is open. |
+| `http2+relay` | TCP 443 to a WebSocket relay | Only TCP 443 is open, and WARP does not work (the proxy terminates TLS or takes names only). Only with `--transport relay`. |
 
 With the default values (`--protocol auto --transport auto`), `cfrs` tries the
 legs in the order of the table, in a staggered race: the next leg starts when
@@ -249,6 +250,16 @@ attempt). Other values:
 | `auto` | `direct` | `quic`, `http2` |
 | `quic` | `direct` | `quic` |
 | `auto` or `quic` | `warp` | `quic+warp` |
+| `auto` or `http2` | `relay` | `http2+relay` |
+
+`--transport relay` sends the HTTP/2 leg in a WebSocket to a
+WebSocket-to-TCP relay on TCP 443 (`--relay URL`, or `CFRS_RELAY`; the
+default is `https://tcp.ssh.relay.ajam.dev`). The relay opens TCP to the
+edge on port 7844. The TLS to the edge is in the WebSocket, so the relay
+does not see the tunnel. `CFRS_RELAY_TOKEN` gives a relay token; without
+it, `cfrs` mints one. The relay carries IPv4 TCP only, and it ends a
+session after 64 MiB or 12 hours; then the tunnel connects again
+(`docs/protocol.md` section 3.4).
 
 `--warp-identity PATH` keeps the WARP device in a file. Without it, each run
 registers a new anonymous device. `CFRS_EDGE=ip:port,...` replaces edge

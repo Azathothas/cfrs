@@ -578,6 +578,19 @@ async fn connect_one(
 /// address at a time, or directly, with the attempt delay between the
 /// addresses. Gives the index of the address.
 async fn dial(addrs: &[SocketAddr]) -> Result<(usize, crate::net::BoxedIo)> {
+    if let Some(relay) = crate::ws_relay::active() {
+        // The relay has no IPv6 egress: IPv4 addresses only.
+        let mut last = None;
+        for (i, addr) in addrs.iter().enumerate().filter(|(_, a)| a.is_ipv4()) {
+            match relay.connect(*addr, DIAL_TIMEOUT).await {
+                Ok(io) => return Ok((i, io)),
+                Err(err) => {
+                    last = Some(err.context(format!("the edge at {addr} through the relay")))
+                }
+            }
+        }
+        return Err(last.unwrap_or_else(|| anyhow::anyhow!("no IPv4 edge address for the relay")));
+    }
     let first = addrs[0];
     if let Some(proxy) = crate::egress::proxy_for(&first.ip().to_string(), first.port()) {
         let mut last = None;

@@ -233,9 +233,14 @@ struct TunnelOpts {
     #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "quic", "http2", "h2"])]
     protocol: String,
     /// How to reach the edge: auto (try 7844, fall back to WARP on 443),
-    /// direct (port 7844) or warp (carried on TCP 443).
-    #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp"])]
+    /// direct (port 7844), warp (carried on TCP 443) or relay (HTTP/2 in a
+    /// WebSocket to the relay of --relay, on TCP 443).
+    #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp", "relay"])]
     transport: String,
+    /// The WebSocket-to-TCP relay of --transport relay. CFRS_RELAY_TOKEN
+    /// gives a token; without it, cfrs mints one.
+    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    relay: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.
     /// Without it, every run registers a new anonymous device.
     #[arg(long, value_name = "PATH", global = true)]
@@ -292,6 +297,11 @@ impl TunnelOpts {
         config.ha_connections = self.ha_connections.clamp(1, 8);
         config.protocol = Protocol::parse(&self.protocol)?;
         config.transport = Transport::parse(&self.transport)?;
+        if config.transport == Transport::Relay {
+            cfrs::ws_relay::set(
+                cfrs::ws_relay::Relay::from_env(Some(&self.relay)).fault(Fault::Usage)?,
+            );
+        }
         config.warp_identity = self.warp_identity.clone();
         config.verify = !self.no_verify;
         config.failover = cfrs::race::Failover::parse(&self.leg_failover)?;

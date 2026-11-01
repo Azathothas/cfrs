@@ -15,7 +15,7 @@ shift
 "$@" > "$name.out" 2> "$name.err"
 rc=$?
 cat "$name.out" "$name.err" |
-    grep -oE '[a-z0-9-]+\.trycloudflare\.com|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}' |
+    grep -oE '[a-z0-9-]+\.trycloudflare\.com|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}|ephm1\.[A-Za-z0-9._-]+' |
     grep -vxE 'api\.trycloudflare\.com' |
     sort -u |
     while read -r value; do

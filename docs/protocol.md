@@ -160,6 +160,39 @@ protocol. `cfrs` does not probe TCP 7844 to select a leg, because a firewall
 can close TCP 7844 and keep UDP 7844 open. Inside a leg, the HTTP/2 dial
 starts the next edge address 250 ms after the one before (RFC 8305).
 
+### 3.4 HTTP/2 through a WebSocket relay
+
+`--transport relay` (`src/ws_relay.rs`) has one leg, `http2+relay`. It is
+the HTTP/2 leg of section 3.2, with a different TCP dial:
+
+1. TCP to the relay on port 443 (through `HTTPS_PROXY` when it is set),
+   then TLS with ALPN `http/1.1` and the public roots.
+2. A WebSocket upgrade to `wss://RELAY/connect/IP/7844`, with the token in
+   the `X-Relay-Token` header. IP is an IPv4 edge address of discovery.
+3. Binary frames carry the TCP bytes both ways. cfrs sends frames of 16 KiB
+   or less; the relay writes at most 64 KiB to a Worker socket in one call.
+   An empty frame from the relay is a keepalive; cfrs skips it.
+4. In the WebSocket: TLS to the edge (SNI `h2.cftunnel.com`, the edge
+   roots), then HTTP/2 as in section 3.2.
+
+The token: `CFRS_RELAY_TOKEN`, or `POST /v1/mint` with the body `{}`, which
+gives `{token, expires}`. A minted token is minted again when it has less
+than 10 minutes. A 403 for a minted token mints a new one one time. A 403
+that names the ALLOW list is a policy refusal: a new token does not help.
+
+Limits of `tcp.ssh.relay.ajam.dev` (podssh measured them):
+
+| Limit | Value | Effect on the leg |
+| --- | --- | --- |
+| No payload | 180 s | The HTTP/2 PING each 30 s is payload. |
+| Bytes of a session | 64 MiB, both directions | The relay closes the session; the tunnel connects again. |
+| Time of a session | 12 h | The same. |
+| Egress | IPv4 TCP; Cloudflare addresses through the Workers VPC route | No QUIC; IPv6 edge addresses are skipped. |
+
+podssh measured TLS to `region1.v2.argotunnel.com:7844` through this relay
+(GitHub Actions run 41072705691). The live check of cfrs registers a quick
+tunnel through it with UDP and TCP 7844 dropped on the host.
+
 ## 4. Stream framing (QUIC)
 
 A visitor stream starts with a 6-byte signature (`0A 36 CD 12 A1 3E`), the

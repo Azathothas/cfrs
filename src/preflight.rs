@@ -169,6 +169,9 @@ pub async fn check(config: &Config) -> Report {
                     if let Some(note) = note {
                         detail.push_str(&format!("; {note}"));
                     }
+                    if let Some(relay) = crate::ws_relay::active() {
+                        detail.push_str(&format!("; relay {}", relay.url()));
+                    }
                     report.push("legs", Status::Pass, detail);
                     names
                 }

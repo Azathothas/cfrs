@@ -83,6 +83,16 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --proxy when the flag is not given. It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry.",
     },
     EnvVar {
+        names: &["CFRS_RELAY"],
+        used_by: "tunnel, serve, share, demo",
+        meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host). The default is https://tcp.ssh.relay.ajam.dev.",
+    },
+    EnvVar {
+        names: &["CFRS_RELAY_TOKEN"],
+        used_by: "tunnel, serve, share, demo",
+        meaning: "A token for the relay of --transport relay. It goes only in the X-Relay-Token header. Without it, cfrs mints a token with POST /v1/mint on the relay.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

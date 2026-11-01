@@ -146,6 +146,10 @@ pub enum Transport {
     /// only 443 without the caller having to know which network it is on.
     #[default]
     Auto,
+    /// Carry the HTTP/2 leg in a WebSocket to a relay on TCP 443, which opens
+    /// TCP to the edge (`crate::ws_relay`). For a host whose proxy carries
+    /// only port 443 and no WARP.
+    Relay,
 }
 
 impl Transport {
@@ -154,7 +158,8 @@ impl Transport {
             "auto" => Ok(Transport::Auto),
             "direct" => Ok(Transport::Direct),
             "warp" | "masque" | "warp+masque" => Ok(Transport::Warp),
-            other => bail!("unknown transport {other:?}; expected auto, direct or warp"),
+            "relay" => Ok(Transport::Relay),
+            other => bail!("unknown transport {other:?}; expected auto, direct, warp or relay"),
         }
     }
 }
@@ -165,6 +170,7 @@ impl std::fmt::Display for Transport {
             Transport::Auto => "auto",
             Transport::Direct => "direct",
             Transport::Warp => "warp",
+            Transport::Relay => "relay",
         })
     }
 }
@@ -596,6 +602,7 @@ mod tests {
             ("masque", Transport::Warp),
             ("WARP+MASQUE", Transport::Warp),
             ("  Direct ", Transport::Direct),
+            ("relay", Transport::Relay),
         ] {
             assert_eq!(Transport::parse(text.trim()).unwrap(), want, "{text:?}");
         }

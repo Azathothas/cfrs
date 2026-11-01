@@ -279,6 +279,23 @@ jobs:
             { tail -40 race.err; exit 1; }
           grep 'the leg won the race' race.err
           grep -q 'leg=quic+warp' race.err
+      # The WebSocket-to-TCP relay (--transport relay): UDP and TCP 7844 are
+      # dropped on the host, so the HTTP/2 leg must go in a WebSocket to the
+      # relay on TCP 443. cfrs mints the relay token itself; no log has it.
+      - name: Quick tunnel through the WebSocket relay (7844 dropped)
+        timeout-minutes: 5
+        run: |
+          set -eu
+          sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
+          trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
+          target/release/cfrs demo --check --transport relay | tee relay-check.out
+          grep -q 'http2+relay' relay-check.out
+          sh scripts/live-run.sh relay timeout 240 target/release/cfrs demo --exit-on-verify --transport relay ||
+            { tail -40 relay.err; exit 1; }
+          grep -q 'leg=http2+relay' relay.err
+          grep -q 'registered over HTTP/2' relay.err
+          ! grep -E 'ephm1\.' relay.out relay.err
       - name: WARP account and probe
         timeout-minutes: 4
         run: |
