@@ -39,14 +39,20 @@ The repository is a Cargo workspace:
 cfrs update --check              # say whether a newer release exists
 cfrs update                      # install it
 cfrs update --version v0.3.0-beta.1
+cfrs update --rollback           # put the binary before the update back
 ```
 
 `cfrs update` installs a release only after these checks: the certificate
 of `SHA256SUMS.sigstore.json` chains to the Fulcio roots of Sigstore and
 names `release.yml` of this repository at the tag, the signature over
 `SHA256SUMS` is valid, the SHA-256 of the binary is its line in
-`SHA256SUMS`, and the new binary runs and prints the version of the tag. cfrs
-does not check the inclusion proof of the Rekor log. A prerelease is
+`SHA256SUMS`, and the new binary runs `--version` in 10 seconds, with no
+stdin, exits 0 and prints the version of the tag. Then the binary before
+is kept as `cfrs.prev` beside it, and a rename puts the new binary in
+place. `cfrs update --rollback` puts `cfrs.prev` back (it must pass the
+same run first) and keeps the binary that was in place as `cfrs.prev`;
+it uses no network. cfrs does not check the inclusion proof of the Rekor
+log. A prerelease is
 installed only with `--version`, or when the current binary is a
 prerelease.
 

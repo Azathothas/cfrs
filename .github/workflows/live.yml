@@ -219,6 +219,16 @@ jobs:
           got=$("$RUNNER_TEMP/update/cfrs" --version)
           echo "$got"
           case "$got" in "cfrs 0.3.0-beta.1 (361d1d769d00041602d8e04a4860c11ca71288aa)") ;; *) exit 1 ;; esac
+          # The binary before is kept as cfrs.prev. beta.1 has no --rollback,
+          # so the test puts beta.1 in cfrs.prev and this build in cfrs; then
+          # --rollback (no network) swaps them.
+          d="$RUNNER_TEMP/update"
+          cmp "$d/cfrs.prev" target/release/cfrs
+          mv "$d/cfrs" "$d/cfrs.prev"
+          cp target/release/cfrs "$d/cfrs"
+          "$d/cfrs" update --rollback
+          "$d/cfrs" --version | grep -q 'cfrs 0.3.0-beta.1 (361d1d7'
+          cmp "$d/cfrs.prev" target/release/cfrs
       # cfrs autostart with a systemd user manager (issue 23): systemd starts
       # a quick tunnel, the URL answers, and no token is in the unit or in ps.
       - name: Autostart with a systemd user unit

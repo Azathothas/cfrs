@@ -206,6 +206,10 @@ struct UpdateArgs {
     /// release (a prerelease only when this binary is a prerelease).
     #[arg(long, value_name = "TAG")]
     version: Option<String>,
+    /// Put the binary before the last update (cfrs.prev) back, with no
+    /// network. A second --rollback goes forward again.
+    #[arg(long, conflicts_with_all = ["check", "version"])]
+    rollback: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -600,6 +604,18 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Share(args) => share(args).await,
         Command::Connect(args) => connect(args).await,
+        Command::Update(args) if args.rollback => {
+            let path = std::env::current_exe()
+                .and_then(|p| p.canonicalize())
+                .context("finding this binary")?;
+            let now = cfrs::update::rollback(&path).fault(Fault::Unavailable)?;
+            println!(
+                "{}: {now} (put back from {})",
+                path.display(),
+                cfrs::update::previous_of(&path).display()
+            );
+            Ok(())
+        }
         Command::Update(args) => {
             use cfrs::update::Outcome;
             match cfrs::update::run(args.version.as_deref(), args.check)

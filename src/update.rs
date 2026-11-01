@@ -371,9 +371,102 @@ pub async fn run(tag: Option<&str>, check: bool) -> Result<Outcome> {
     })
 }
 
+/// How long the new binary may take to print its version.
+pub const TRIAL_LIMIT: Duration = Duration::from_secs(10);
+
+/// The kept binary beside `path`: `cfrs.prev` for `cfrs`.
+pub fn previous_of(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".prev");
+    path.with_file_name(name)
+}
+
+/// Run `path --version` with no stdin, for at most `limit`. It must exit 0,
+/// and its first line must start with `want`. A text file that is busy
+/// (ETXTBSY, just after the write) is tried again.
+pub fn trial(path: &Path, want: &str, limit: Duration) -> Result<()> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    const TEXT_BUSY: i32 = 26;
+    let mut tries = 0;
+    let mut child = loop {
+        match Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => break child,
+            Err(err) if err.raw_os_error() == Some(TEXT_BUSY) && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => return Err(err).with_context(|| format!("running {}", path.display())),
+        }
+    };
+    // Read stdout in a thread, so a long answer cannot block the child.
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut out);
+        out
+    });
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "{} did not answer --version in {} s",
+                path.display(),
+                limit.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let out = reader.join().unwrap_or_default();
+    if !status.success() {
+        bail!("{} --version exits with {status}", path.display());
+    }
+    let text = String::from_utf8_lossy(&out);
+    let first = text.lines().next().unwrap_or("");
+    if !first.starts_with(want) {
+        bail!("{} prints {:?}, not {want}…", path.display(), first.trim());
+    }
+    Ok(())
+}
+
+/// Sync the directory, so a rename stays after a power loss.
+fn sync_dir(dir: &Path) {
+    if let Ok(dir) = std::fs::File::open(dir) {
+        let _ = dir.sync_all();
+    }
+}
+
+/// Keep a copy of `path` as `previous`: a hard link, or a copy when a link
+/// is not possible, put in place with a rename.
+fn keep(path: &Path, previous: &Path) -> Result<()> {
+    let tmp = previous.with_file_name(format!(".cfrs-prev-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    if std::fs::hard_link(path, &tmp).is_err() {
+        std::fs::copy(path, &tmp)
+            .with_context(|| format!("keeping a copy of {}", path.display()))?;
+    }
+    std::fs::rename(&tmp, previous).with_context(|| format!("writing {}", previous.display()))
+}
+
 /// Put `binary` in place of `path`: a new file beside it (mode 0755), which
-/// must run and print the version of `tag`, then a rename.
+/// must pass [`trial`] for `tag`; then the binary before is kept as
+/// [`previous_of`], and a rename puts the new file in place.
 pub fn install(path: &Path, binary: &[u8], tag: &str) -> Result<()> {
+    install_with(path, binary, tag, TRIAL_LIMIT)
+}
+
+fn install_with(path: &Path, binary: &[u8], tag: &str, limit: Duration) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().context("the binary has no directory")?;
@@ -388,16 +481,12 @@ pub fn install(path: &Path, binary: &[u8], tag: &str) -> Result<()> {
         file.write_all(binary)?;
         file.sync_all()?;
         drop(file);
-        let out = std::process::Command::new(&tmp)
-            .arg("--version")
-            .output()
-            .context("running the new binary")?;
-        let version = String::from_utf8_lossy(&out.stdout);
         let want = format!("cfrs {} ", tag.trim_start_matches('v'));
-        if !version.starts_with(&want) {
-            bail!("the new binary prints {:?}, not {want}…", version.trim());
-        }
-        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+        trial(&tmp, &want, limit).context("the new binary")?;
+        keep(path, &previous_of(path))?;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        sync_dir(dir);
+        Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -405,9 +494,132 @@ pub fn install(path: &Path, binary: &[u8], tag: &str) -> Result<()> {
     result
 }
 
+/// Put the kept binary ([`previous_of`]) back in place of `path`, with no
+/// network. The kept binary must pass [`trial`] first. The binary that was
+/// in place becomes the kept binary, so a second rollback goes forward
+/// again. Gives the first line of `--version` of the binary now in place.
+pub fn rollback(path: &Path) -> Result<String> {
+    rollback_with(path, TRIAL_LIMIT)
+}
+
+fn rollback_with(path: &Path, limit: Duration) -> Result<String> {
+    let previous = previous_of(path);
+    if !previous.exists() {
+        bail!(
+            "no kept binary at {}: cfrs update keeps one from 0.3.0-beta.5 on",
+            previous.display()
+        );
+    }
+    trial(&previous, "cfrs ", limit).context("the kept binary")?;
+    let dir = path.parent().context("the binary has no directory")?;
+    let held = dir.join(format!(".cfrs-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_file(&held);
+    if std::fs::hard_link(path, &held).is_err() {
+        std::fs::copy(path, &held).with_context(|| format!("keeping {}", path.display()))?;
+    }
+    std::fs::rename(&previous, path).with_context(|| format!("replacing {}", path.display()))?;
+    std::fs::rename(&held, &previous).with_context(|| format!("writing {}", previous.display()))?;
+    sync_dir(dir);
+    let out = std::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shell script in the place of a cfrs binary.
+    fn fake(version_line: &str, extra: &str) -> Vec<u8> {
+        format!("#!/bin/sh\n{extra}\necho '{version_line}'\n").into_bytes()
+    }
+
+    fn put(path: &Path, body: &[u8]) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn version_of(path: &Path) -> String {
+        let out = std::process::Command::new(path)
+            .arg("--version")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// An update keeps the binary before as cfrs.prev; a rollback puts it
+    /// back, and a second rollback goes forward again.
+    #[test]
+    fn install_keeps_the_binary_before_and_rollback_swaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfrs");
+        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
+        install(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""), "v0.3.0-beta.5").unwrap();
+        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.5 (new)");
+        assert_eq!(version_of(&previous_of(&path)), "cfrs 0.3.0-beta.4 (old)");
+        assert_eq!(rollback(&path).unwrap(), "cfrs 0.3.0-beta.4 (old)");
+        assert_eq!(version_of(&previous_of(&path)), "cfrs 0.3.0-beta.5 (new)");
+        assert_eq!(rollback(&path).unwrap(), "cfrs 0.3.0-beta.5 (new)");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2, "no temporary file stays: {names:?}");
+    }
+
+    /// The trial refuses a binary that exits with an error, that prints
+    /// another version, or that does not answer in time. The binary in
+    /// place does not change, and no file stays.
+    #[test]
+    fn a_bad_new_binary_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfrs");
+        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
+        let cases = [
+            fake("cfrs 0.3.0-beta.5 (new)", "exit 3"),
+            fake("cfrs 0.3.0-beta.5 (new)", "")
+                .into_iter()
+                .chain(b"exit 1\n".iter().copied())
+                .collect(),
+            fake("cfrs 0.2.0 (other)", ""),
+            fake("cfrs 0.3.0-beta.5 (new)", "sleep 30"),
+        ];
+        for body in cases {
+            let err = install_with(&path, &body, "v0.3.0-beta.5", Duration::from_millis(500))
+                .expect_err("a bad binary is refused");
+            assert!(format!("{err:#}").contains("new binary"), "{err:#}");
+            assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
+            assert!(!previous_of(&path).exists());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    /// A rollback with no kept binary, or with a kept binary that fails its
+    /// trial, changes nothing.
+    #[test]
+    fn rollback_needs_a_kept_binary_that_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfrs");
+        put(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""));
+        assert!(format!("{:#}", rollback(&path).unwrap_err()).contains("no kept binary"));
+        put(
+            &previous_of(&path),
+            &fake("cfrs 0.3.0-beta.4 (old)", "exit 2"),
+        );
+        assert!(rollback_with(&path, Duration::from_millis(500)).is_err());
+        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.5 (new)");
+    }
 
     const SUMS: &[u8] = include_bytes!("../tests/data/v0.3.0-beta.1.SHA256SUMS");
     const BUNDLE: &[u8] = include_bytes!("../tests/data/v0.3.0-beta.1.SHA256SUMS.sigstore.json");
