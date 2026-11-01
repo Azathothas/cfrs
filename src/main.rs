@@ -1444,6 +1444,7 @@ async fn net(args: NetArgs) -> Result<()> {
                 println!("\ncfrsnet: ready");
             } else {
                 println!("\ncfrsnet: not ready");
+                println!("cfrsnet: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
             }
             Ok(())
         }

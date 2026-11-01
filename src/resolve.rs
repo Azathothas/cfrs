@@ -56,6 +56,38 @@ pub const DOH_SERVERS: &[DohServer] = &[
     },
 ];
 
+/// The DoH servers by name. cfrs asks them only through a proxy, which
+/// resolves the name: some proxies refuse a CONNECT to an IP address. With
+/// no proxy, the name would need the chain that it is part of.
+pub const DOH_SERVERS_BY_NAME: &[DohServer] = &[
+    DohServer {
+        operator: "Cloudflare",
+        url: "https://cloudflare-dns.com/dns-query",
+    },
+    DohServer {
+        operator: "Google",
+        url: "https://dns.google/resolve",
+    },
+];
+
+/// The DoH servers to ask, in order: by IP address, then by name when a
+/// proxy carries the request.
+pub fn doh_servers() -> Vec<DohServer> {
+    let mut servers = DOH_SERVERS.to_vec();
+    for server in DOH_SERVERS_BY_NAME {
+        let host = server
+            .url
+            .trim_start_matches("https://")
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        if crate::egress::proxy_for(host, 443).is_some() {
+            servers.push(*server);
+        }
+    }
+    servers
+}
+
 static PINS: OnceLock<HashMap<String, Vec<IpAddr>>> = OnceLock::new();
 
 /// Set the pins of `--resolve`. Call it before the first dial; a later call
@@ -163,7 +195,7 @@ fn dedup(mut ips: Vec<IpAddr>) -> Vec<IpAddr> {
 /// server that answered.
 async fn doh_addresses(name: &str) -> Result<(Vec<IpAddr>, &'static str)> {
     let mut last = None;
-    for server in DOH_SERVERS {
+    for server in &doh_servers() {
         let a = doh_query_at(server, name, "A").await;
         let aaaa = doh_query_at(server, name, "AAAA").await;
         match (a, aaaa) {
@@ -223,7 +255,7 @@ pub struct DohRecord {
 /// other, until one answers. An NXDOMAIN answer is an answer.
 pub async fn doh_query(name: &str, rtype: &str) -> Result<DohAnswer> {
     let mut failures = Vec::new();
-    for server in DOH_SERVERS {
+    for server in &doh_servers() {
         match doh_query_at(server, name, rtype).await {
             Ok(answer) => return Ok(answer),
             Err(err) => failures.push(format!("{}: {err:#}", server.url)),
@@ -260,6 +292,20 @@ mod tests {
         for bad in ["noequals", "=1.2.3.4", "h=notanip"] {
             assert!(parse_pins(bad).is_err(), "{bad}");
         }
+    }
+
+    /// The servers by name come after the servers by IP address, and only
+    /// through a proxy.
+    #[test]
+    fn the_servers_by_name_need_a_proxy() {
+        let servers = doh_servers();
+        assert!(servers.len() >= DOH_SERVERS.len());
+        for (i, s) in DOH_SERVERS.iter().enumerate() {
+            assert_eq!(servers[i].url, s.url);
+        }
+        let by_name = servers.len() - DOH_SERVERS.len();
+        let proxied = crate::egress::proxy_for("cloudflare-dns.com", 443).is_some();
+        assert_eq!(by_name > 0, proxied);
     }
 
     #[test]

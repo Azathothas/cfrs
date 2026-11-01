@@ -475,6 +475,8 @@ handle.shutdown().await;
 * [`docs/protocol.md`](docs/protocol.md): the edge protocol and the WARP protocol.
 * [`docs/virtual-network.md`](docs/virtual-network.md): the shim, the stack and switch mode.
 * [`crates/pod-netns/README.md`](crates/pod-netns/README.md): pod-netns.
+* [`docs/target-environment.md`](docs/target-environment.md): the measured
+  hosts, the other host conditions, and the rules of cfrs for them.
 * [`SECURITY.md`](SECURITY.md): how to report a vulnerability, what
   Cloudflare can see, what listens, where secrets are kept.
 

@@ -276,6 +276,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
     if probes[3].ok && !any {
         println!("pod-netns: note: descendant ptrace works, so a ptrace backend could run here");
     }
+    println!("pod-netns: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
     if any {
         0
     } else {
