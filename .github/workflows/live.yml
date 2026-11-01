@@ -97,6 +97,20 @@ jobs:
         if: always()
         timeout-minutes: 1
         run: sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP || true
+      # The UDP probe (issue 12): the edge answers it; a REJECT rule makes it
+      # refused, and then --protocol auto does not try QUIC on UDP 7844.
+      - name: UDP probe, answered and refused
+        timeout-minutes: 4
+        run: |
+          set -eu
+          target/release/cfrs net doctor | tee doctor.out
+          grep -E '^UDP egress .* OK +answered' doctor.out
+          sudo iptables -I OUTPUT -p udp --dport 7844 -j REJECT
+          trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j REJECT' EXIT
+          target/release/cfrs net doctor | grep -E '^UDP egress .* FAIL +refused'
+          sh scripts/live-run.sh udpreject target/release/cfrs demo --exit-on-verify
+          grep 'the UDP probe was refused' udpreject.err
+          grep -q 'leg=http2' udpreject.err
       # Each connection of cfrs goes through a local CONNECT proxy, which
       # counts its targets.
       - name: Quick tunnel through a local CONNECT proxy

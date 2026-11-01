@@ -73,6 +73,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
     },
     EnvVar {
+        names: &["CFRS_UDP"],
+        used_by: "tunnel, serve, share, demo, net doctor",
+        meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78).",
+    },
+    EnvVar {
         names: &["CFRS_ERROR_PROGRAM"],
         used_by: "all commands",
         meaning: "A program that gets a JSON report on its stdin when cfrs fails (exit code not 0). It runs with no shell and no arguments, for at most 30 s. The report has the version, the system, the command, the exit code and the last 64 log lines, with credentials masked.",

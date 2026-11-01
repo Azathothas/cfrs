@@ -15,6 +15,8 @@ pub enum ProbeResult {
     Ok(String),
     /// The operation was refused; the string is the errno.
     Fail(String),
+    /// The probe had no answer: the operation may work or not.
+    Unknown(String),
     /// The probe does not apply on this platform.
     Unsupported,
 }
@@ -28,6 +30,7 @@ impl ProbeResult {
         match self {
             Self::Ok(value) => format!("OK   {value}"),
             Self::Fail(value) => format!("FAIL {value}"),
+            Self::Unknown(value) => format!("?    {value}"),
             Self::Unsupported => "n/a  unsupported on this platform".to_string(),
         }
     }
@@ -68,6 +71,30 @@ pub fn render(probes: &[Probe]) -> String {
     }
     out
 }
+
+/// The UDP egress probe (QUIC to the edge on 7844) as a probe line:
+/// answered is OK, refused is FAIL, no answer is `?`.
+pub fn udp_probe(target: std::net::SocketAddr) -> Probe {
+    use crate::udp::Egress;
+    let result = match crate::udp::probe(target, crate::udp::DOCTOR_DEADLINE) {
+        Egress::Answered(d) => ProbeResult::Ok(format!("answered: {d}")),
+        Egress::Refused(d) => ProbeResult::Fail(format!("refused: {d}")),
+        Egress::Unknown(d) => ProbeResult::Unknown(format!("unknown: {d}")),
+    };
+    Probe {
+        name: "UDP egress (QUIC, edge 7844)",
+        result,
+    }
+}
+
+/// Which commands need which listener, and what a UDP result does.
+pub const NEEDS: &str = "\
+listen(AF_INET): warp proxy --listen tcp://, connect -L tcp://, net proxy
+listen(AF_UNIX): warp proxy --listen unix:, connect -L unix://
+no listener: tunnel, serve, share and demo (the edge carries each request)
+UDP egress: refused makes --protocol auto skip QUIC on UDP 7844; ? keeps the
+  order (the next leg starts after 2 s); CFRS_UDP=off|on|probe sets it
+";
 
 /// True when the core requirements hold: no `AF_INET` bind, `AF_UNIX` binds
 /// work, and a C compiler can build the shim.
@@ -122,6 +149,41 @@ mod linux {
             libc::EOPNOTSUPP => "EOPNOTSUPP".into(),
             other => format!("errno {other}"),
         }
+    }
+
+    /// The result of `bind`, and for a stream socket the result of
+    /// `listen(fd, 1)` after it. A `listen` that returns 0 counts only when
+    /// the kernel reports `SO_ACCEPTCONN` = 1. The socket accepts nothing
+    /// and is closed at once.
+    type Bound = (ProbeResult, Option<ProbeResult>);
+
+    /// SAFETY: `fd` is an open socket of this process; it is closed here.
+    unsafe fn finish(fd: i32, rc: i32, stream: bool) -> Bound {
+        let bound = errno(rc);
+        let listened = if !stream {
+            None
+        } else if rc != 0 {
+            Some(ProbeResult::Fail("not tested: bind was refused".into()))
+        } else if libc::listen(fd, 1) != 0 {
+            Some(errno(-1))
+        } else {
+            let mut value: libc::c_int = 0;
+            let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+            let got = libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                &mut value as *mut libc::c_int as *mut libc::c_void,
+                &mut len,
+            );
+            Some(if got == 0 && value == 1 {
+                ProbeResult::Ok("allowed (SO_ACCEPTCONN=1)".into())
+            } else {
+                ProbeResult::Fail(format!("listen returned 0, but SO_ACCEPTCONN is {value}"))
+            })
+        };
+        libc::close(fd);
+        (bound, listened)
     }
 
     fn unshare_probe(name: &'static str, flag: i32) -> Probe {
@@ -189,12 +251,12 @@ mod linux {
         }
     }
 
-    fn bind_v4(host: [u8; 4]) -> ProbeResult {
+    fn bind_v4(host: [u8; 4], kind: i32) -> Bound {
         // SAFETY: a fresh socket and a fully initialised sockaddr_in.
         unsafe {
-            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+            let fd = libc::socket(libc::AF_INET, kind, 0);
             if fd < 0 {
-                return errno(-1);
+                return (errno(-1), None);
             }
             let mut addr: libc::sockaddr_in = std::mem::zeroed();
             addr.sin_family = libc::AF_INET as libc::sa_family_t;
@@ -205,18 +267,19 @@ mod linux {
                 &addr as *const libc::sockaddr_in as *const libc::sockaddr,
                 size_of::<libc::sockaddr_in>() as libc::socklen_t,
             );
-            let result = errno(rc);
-            libc::close(fd);
-            result
+            finish(fd, rc, kind == libc::SOCK_STREAM)
         }
     }
 
-    fn bind_v6_loopback() -> ProbeResult {
+    fn bind_v6_loopback() -> Bound {
         // SAFETY: a fresh socket and a fully initialised sockaddr_in6.
         unsafe {
             let fd = libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0);
             if fd < 0 {
-                return errno(-1);
+                return (
+                    errno(-1),
+                    Some(ProbeResult::Fail("not tested: no socket".into())),
+                );
             }
             let mut addr: libc::sockaddr_in6 = std::mem::zeroed();
             addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
@@ -227,18 +290,19 @@ mod linux {
                 &addr as *const libc::sockaddr_in6 as *const libc::sockaddr,
                 size_of::<libc::sockaddr_in6>() as libc::socklen_t,
             );
-            let result = errno(rc);
-            libc::close(fd);
-            result
+            finish(fd, rc, true)
         }
     }
 
-    fn bind_unix_path(path: &std::path::Path) -> ProbeResult {
+    fn bind_unix_path(path: &std::path::Path) -> Bound {
         // SAFETY: a fresh socket and a sun_path built from a bounded path.
         unsafe {
             let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
             if fd < 0 {
-                return errno(-1);
+                return (
+                    errno(-1),
+                    Some(ProbeResult::Fail("not tested: no socket".into())),
+                );
             }
             let mut addr: libc::sockaddr_un = std::mem::zeroed();
             addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
@@ -252,18 +316,19 @@ mod linux {
                 &addr as *const libc::sockaddr_un as *const libc::sockaddr,
                 (size_of::<libc::sa_family_t>() + take + 1) as libc::socklen_t,
             );
-            let result = errno(rc);
-            libc::close(fd);
-            result
+            finish(fd, rc, true)
         }
     }
 
-    fn bind_unix_abstract(name: &[u8]) -> ProbeResult {
+    fn bind_unix_abstract(name: &[u8]) -> Bound {
         // SAFETY: a fresh socket and an abstract sun_path (leading NUL).
         unsafe {
             let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
             if fd < 0 {
-                return errno(-1);
+                return (
+                    errno(-1),
+                    Some(ProbeResult::Fail("not tested: no socket".into())),
+                );
             }
             let mut addr: libc::sockaddr_un = std::mem::zeroed();
             addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
@@ -276,9 +341,7 @@ mod linux {
                 &addr as *const libc::sockaddr_un as *const libc::sockaddr,
                 (size_of::<libc::sa_family_t>() + 1 + take) as libc::socklen_t,
             );
-            let result = errno(rc);
-            libc::close(fd);
-            result
+            finish(fd, rc, true)
         }
     }
 
@@ -398,18 +461,44 @@ mod linux {
             unshare_probe("unshare(CLONE_NEWUSER)", libc::CLONE_NEWUSER),
             unshare_probe("unshare(CLONE_NEWNET)", libc::CLONE_NEWNET),
             unshare_probe("unshare(CLONE_NEWNS)", libc::CLONE_NEWNS),
-            Probe {
-                name: "bind(AF_INET, 127.0.0.1:0)",
-                result: bind_v4([127, 0, 0, 1]),
-            },
-            Probe {
-                name: "bind(AF_INET, 127.0.0.2:0)",
-                result: bind_v4([127, 0, 0, 2]),
-            },
-            Probe {
-                name: "bind(AF_INET6, [::1]:0)",
-                result: bind_v6_loopback(),
-            },
+        ];
+        let pair = |probes: &mut Vec<Probe>, bind: &'static str, listen: &'static str, b: Bound| {
+            probes.push(Probe {
+                name: bind,
+                result: b.0,
+            });
+            if let Some(result) = b.1 {
+                probes.push(Probe {
+                    name: listen,
+                    result,
+                });
+            }
+        };
+        pair(
+            &mut probes,
+            "bind(AF_INET, 127.0.0.1:0)",
+            "listen(AF_INET, 127.0.0.1:0)",
+            bind_v4([127, 0, 0, 1], libc::SOCK_STREAM),
+        );
+        pair(
+            &mut probes,
+            "bind(AF_INET, 127.0.0.2:0)",
+            "listen(AF_INET, 127.0.0.2:0)",
+            bind_v4([127, 0, 0, 2], libc::SOCK_STREAM),
+        );
+        pair(
+            &mut probes,
+            "bind(AF_INET, UDP 0.0.0.0:0)",
+            "",
+            bind_v4([0, 0, 0, 0], libc::SOCK_DGRAM),
+        );
+        pair(
+            &mut probes,
+            "bind(AF_INET6, [::1]:0)",
+            "listen(AF_INET6, [::1]:0)",
+            bind_v6_loopback(),
+        );
+        probes.extend([
             Probe {
                 name: "bind(AF_VSOCK, CID_ANY:0)",
                 result: bind_vsock(),
@@ -418,18 +507,22 @@ mod linux {
                 name: "bind(AF_NETLINK, ...)",
                 result: bind_netlink(),
             },
-        ];
+        ]);
         let path = std::env::temp_dir().join(format!("cfrsnet-probe-{}.sock", std::process::id()));
         let path_result = bind_unix_path(&path);
         let _ = std::fs::remove_file(&path);
-        probes.push(Probe {
-            name: "bind(AF_UNIX, path)",
-            result: path_result,
-        });
-        probes.push(Probe {
-            name: "bind(AF_UNIX, \\0abstract)",
-            result: bind_unix_abstract(format!("cfrsnet-probe-{}", std::process::id()).as_bytes()),
-        });
+        pair(
+            &mut probes,
+            "bind(AF_UNIX, path)",
+            "listen(AF_UNIX, path)",
+            path_result,
+        );
+        pair(
+            &mut probes,
+            "bind(AF_UNIX, \\0abstract)",
+            "listen(AF_UNIX, \\0abstract)",
+            bind_unix_abstract(format!("cfrsnet-probe-{}", std::process::id()).as_bytes()),
+        );
         probes.push(option(
             "/dev/net/tun",
             std::path::Path::new("/dev/net/tun").exists(),

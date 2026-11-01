@@ -149,8 +149,22 @@ pub async fn check(config: &Config) -> Report {
     let legs = match crate::tunnel::leg_plan(config.protocol, config.transport) {
         Ok(plan) => {
             let proxy = crate::egress::proxy_for(crate::tunnel::EDGE_REGION_NAME, 7844);
-            let (plan, note) =
+            let (plan, mut note) =
                 crate::tunnel::plan_with_proxy(plan, config.protocol, proxy.as_ref());
+            // The check sends no UDP probe: only CFRS_UDP=off applies here.
+            let udp = crate::udp::Choice::from_env().map_err(|e| format!("{e:#}"));
+            let plan = match udp.and_then(|u| {
+                crate::tunnel::plan_with_udp(plan, u, None).map_err(|e| format!("{e:#}"))
+            }) {
+                Ok((plan, udp_note)) => {
+                    note = note.or(udp_note);
+                    plan
+                }
+                Err(err) => {
+                    report.push("legs", Status::Fail, err);
+                    Vec::new()
+                }
+            };
             let names: Vec<String> = plan.iter().map(ToString::to_string).collect();
             let failover = match config.failover {
                 crate::race::Failover::Staggered(d) => format!("staggered by {}s", d.as_secs()),

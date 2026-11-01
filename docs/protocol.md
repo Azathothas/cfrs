@@ -123,6 +123,16 @@ WARP (section 5). The attempts are real registrations, in a staggered race
 `--leg-failover serial` starts a leg only after the one before failed, with
 a time limit of 8 seconds for each attempt when another leg can follow.
 
+UDP (`CFRS_UDP`, `src/udp.rs`): with `probe` (the default) and
+`--protocol auto`, cfrs sends one QUIC packet with a reserved version (RFC
+9000 section 15) to an edge address on UDP 7844 while the quick tunnel is
+provisioned. The result is answered (a datagram came back), refused (the send
+failed, or an ICMP error came back on the connected socket) or unknown (no
+answer in 150 ms). Only refused removes the QUIC leg; unknown and answered
+keep the order. A bind alone never gives answered. `CFRS_UDP=off` removes the
+QUIC leg; `CFRS_UDP=on` sends no probe. `cfrs net doctor` sends the same
+packet with a deadline of 3 s.
+
 The stagger is not a probe: each leg is a full attempt on its own port and
 protocol. `cfrs` does not probe TCP 7844 to select a leg, because a firewall
 can close TCP 7844 and keep UDP 7844 open. Inside a leg, the HTTP/2 dial

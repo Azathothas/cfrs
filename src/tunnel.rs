@@ -169,6 +169,18 @@ impl Tunnel {
         let metrics = Metrics::new();
         let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
 
+        // CFRS_UDP: the UDP probe runs while the quick tunnel is provisioned.
+        let udp = crate::udp::Choice::from_env()?;
+        let udp_probe = (udp == crate::udp::Choice::Probe
+            && protocol == Protocol::Auto
+            && leg_plan(protocol, transport).is_ok_and(|p| p.contains(&LegKind::QuicDirect)))
+        .then(|| {
+            let target = crate::udp::probe_target();
+            tokio::task::spawn_blocking(move || {
+                crate::udp::probe(target, crate::udp::START_DEADLINE)
+            })
+        });
+
         let (auth, tunnel_id, public_url) =
             resolve_credentials(&credentials, &service_url, &user_agent).await?;
         let account_tag = auth.account_tag.clone();
@@ -186,6 +198,14 @@ impl Tunnel {
         let plan = leg_plan(protocol, transport)?;
         let proxy = crate::egress::proxy_for(EDGE_REGION_NAME, 7844);
         let (plan, note) = plan_with_proxy(plan, protocol, proxy.as_ref());
+        if let Some(note) = note {
+            info!("{note}");
+        }
+        let egress = match udp_probe {
+            Some(task) => task.await.ok(),
+            None => None,
+        };
+        let (plan, note) = plan_with_udp(plan, udp, egress.as_ref())?;
         if let Some(note) = note {
             info!("{note}");
         }
@@ -554,6 +574,48 @@ pub fn plan_with_proxy(
             "a proxy is set ({proxy}); no proxy carries UDP, so cfrs does not try QUIC on UDP 7844"
         )),
     )
+}
+
+/// Apply `CFRS_UDP` and the result of the UDP probe to the plan. `off`
+/// removes QUIC on UDP 7844. With `probe`, a refused probe removes it; an
+/// unknown or answered probe keeps the order. The probe runs only for
+/// `--protocol auto`, so `egress` is `None` for an explicit protocol.
+pub fn plan_with_udp(
+    plan: Vec<LegKind>,
+    udp: crate::udp::Choice,
+    egress: Option<&crate::udp::Egress>,
+) -> Result<(Vec<LegKind>, Option<String>)> {
+    use crate::udp::{Choice, Egress};
+    if !plan.contains(&LegKind::QuicDirect) {
+        return Ok((plan, None));
+    }
+    let why = match (udp, egress) {
+        (Choice::Off, _) => "CFRS_UDP=off".to_string(),
+        (Choice::Probe, Some(Egress::Refused(detail))) => {
+            format!("the UDP probe was refused ({detail})")
+        }
+        (Choice::Probe, Some(other)) => {
+            tracing::debug!(result = other.name(), detail = other.detail(), "UDP probe");
+            return Ok((plan, None));
+        }
+        _ => return Ok((plan, None)),
+    };
+    let kept: Vec<LegKind> = plan
+        .into_iter()
+        .filter(|k| *k != LegKind::QuicDirect)
+        .collect();
+    if kept.is_empty() {
+        return Err(crate::exit::fault(
+            crate::exit::Fault::Config,
+            anyhow::anyhow!(
+                "{why}, and the only leg is QUIC on UDP 7844: use --protocol auto or http2"
+            ),
+        ));
+    }
+    Ok((
+        kept,
+        Some(format!("{why}: cfrs does not try QUIC on UDP 7844")),
+    ))
 }
 
 /// The first registered leg.
@@ -964,6 +1026,32 @@ impl Drop for TunnelHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cfrs_udp_and_the_probe_shape_the_plan() {
+        use crate::udp::{Choice, Egress};
+        use LegKind::*;
+        let all = || vec![QuicDirect, H2Direct, QuicWarp];
+        let plan = |udp, egress: Option<Egress>| plan_with_udp(all(), udp, egress.as_ref());
+        assert_eq!(plan(Choice::Off, None).unwrap().0, vec![H2Direct, QuicWarp]);
+        assert_eq!(plan(Choice::On, None).unwrap().0, all());
+        let refused = Egress::Refused("EPERM".into());
+        let (kept, note) = plan(Choice::Probe, Some(refused.clone())).unwrap();
+        assert_eq!(kept, vec![H2Direct, QuicWarp]);
+        assert!(note.unwrap().contains("refused"));
+        // No answer, or an answer, keeps the order.
+        for egress in [Egress::Unknown("x".into()), Egress::Answered("x".into())] {
+            assert_eq!(plan(Choice::Probe, Some(egress)).unwrap().0, all());
+        }
+        // CFRS_UDP=off with QUIC on UDP 7844 as the only leg is an error.
+        let err = plan_with_udp(vec![QuicDirect], Choice::Off, None).unwrap_err();
+        assert_eq!(crate::exit::code_of(&err), crate::exit::CONFIG);
+        assert_eq!(
+            plan_with_udp(vec![H2Direct], Choice::Off, None).unwrap().0,
+            vec![H2Direct]
+        );
+        let _ = refused;
+    }
 
     #[test]
     fn the_leg_plan_tries_quic_then_http2_then_warp() {

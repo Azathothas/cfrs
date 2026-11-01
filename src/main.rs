@@ -1619,8 +1619,15 @@ async fn net(args: NetArgs) -> Result<()> {
             Ok(())
         }
         NetCommand::Doctor => {
-            let probes = cfrs::vnet::doctor::run();
+            let mut probes = cfrs::vnet::doctor::run();
+            let target = cfrs::udp::probe_target();
+            probes.push(
+                tokio::task::spawn_blocking(move || cfrs::vnet::doctor::udp_probe(target))
+                    .await
+                    .context("the UDP probe")?,
+            );
             print!("{}", cfrs::vnet::doctor::render(&probes));
+            print!("\n{}", cfrs::vnet::doctor::NEEDS);
             if cfrs::vnet::doctor::ready(&probes) {
                 println!("\ncfrsnet: ready");
             } else {

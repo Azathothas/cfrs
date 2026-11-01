@@ -24,7 +24,8 @@ The tools: `cfrs status`, `pod-netns doctor --json`, `cfrs net doctor`,
 | `CONNECT` to an IP address (`1.1.1.1:443`) | The proxy resets the connection | measured |
 | `CONNECT` to `cloudflare-dns.com:443` | Works (HTTP 200 from DoH) | measured |
 | `CONNECT` to the edge (`198.41.200.x:7844`) | The proxy resets the connection | measured |
-| QUIC on UDP 7844, no proxy | No answer (the handshake times out) | measured |
+| QUIC on UDP 7844, no proxy | No answer (the handshake times out); `cfrs net doctor`: `UDP egress ... ? unknown` | measured |
+| `listen(2)` after `bind(2)` (AF_INET, AF_UNIX) | Allowed (`SO_ACCEPTCONN=1`) | measured |
 | DNS on UDP 53 to `1.1.1.1` | An answer | measured |
 | `unshare(CLONE_NEWUSER)`, `unshare(CLONE_NEWNET)` | Allowed | measured |
 | `bind(AF_INET6, [::1]:0)` | `EAFNOSUPPORT` | measured |
@@ -66,6 +67,8 @@ The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
 | The proxy answers 407 | The error names each scheme of `Proxy-Authenticate`; cfrs sends Basic only | measured (test) | `tests/egress.rs` `a_407_names_the_schemes` |
 | No `/proc` | The seccomp backend of `cfrs pod` cannot read the memory of the program; `pod-netns doctor` reports it | inferred | `crates/pod-netns/src/seccomp.rs` |
 | The clock is wrong | A certificate error gives the clock of the host | measured (test) | `tests/tls.rs` `an_expired_certificate_names_the_host_clock` |
+| `bind` is allowed and `listen` is refused | `cfrs net doctor` gives `listen(...) FAIL`; only `warp proxy`, `connect` and `net proxy` need a listener | measured (test) | `src/vnet/doctor.rs`; `tests/cli.rs` `doctor_tells_listen_from_bind` |
+| Outbound UDP is refused (EPERM, ICMP) | `--protocol auto` does not try QUIC on UDP 7844 | measured (test) | `src/udp.rs`; `tunnel::plan_with_udp` |
 | No IPv6 (`EAFNOSUPPORT`) | Direct dials alternate the families and go on to the next address after 250 ms | inferred | `src/egress.rs` `dial_addrs` |
 
 ## Rules of cfrs

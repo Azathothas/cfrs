@@ -617,3 +617,78 @@ fn check_mode() {
         "a check wrote a file"
     );
 }
+
+/// `net doctor` under a seccomp filter that refuses listen(2) and sendto(2)
+/// with EPERM: each bind stays OK, each listen line is FAIL, and the UDP line
+/// is refused (issue 12).
+#[test]
+fn doctor_tells_listen_from_bind() {
+    use std::os::unix::process::CommandExt;
+    fn deny_listen_and_sendto() -> std::io::Result<()> {
+        const RET_ALLOW: u32 = 0x7fff_0000;
+        const RET_ERRNO: u32 = 0x0005_0000;
+        let deny = RET_ERRNO | libc::EPERM as u32;
+        let stmt = |code: u16, k: u32| libc::sock_filter {
+            code,
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        let jeq = |k: u32, jt: u8, jf: u8| libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt,
+            jf,
+            k,
+        };
+        let filter = [
+            // Load the syscall number (offset 0 of seccomp_data).
+            stmt((libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16, 0),
+            jeq(libc::SYS_listen as u32, 2, 0),
+            jeq(libc::SYS_sendto as u32, 1, 0),
+            stmt((libc::BPF_RET | libc::BPF_K) as u16, RET_ALLOW),
+            stmt((libc::BPF_RET | libc::BPF_K) as u16, deny),
+        ];
+        let prog = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr() as *mut libc::sock_filter,
+        };
+        // SAFETY: prctl with valid arguments; `prog` lives for the call.
+        unsafe {
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &prog as *const libc::sock_fprog,
+                ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    cmd.args(["net", "doctor"])
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .env_remove("CFRS_EDGE")
+        .env("CC", "/nonexistent-cc");
+    // SAFETY: the closure calls only prctl, which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(deny_listen_and_sendto);
+    }
+    let out = cmd.output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = |name: &str| {
+        text.lines()
+            .find(|l| l.starts_with(name))
+            .unwrap_or_else(|| panic!("no line {name}:\n{text}"))
+            .to_string()
+    };
+    for (bind, listen) in [
+        ("bind(AF_INET, 127.0.0.1:0)", "listen(AF_INET, 127.0.0.1:0)"),
+        ("bind(AF_UNIX, path)", "listen(AF_UNIX, path)"),
+    ] {
+        assert!(line(bind).contains("OK   allowed"), "{text}");
+        assert!(line(listen).contains("FAIL EPERM"), "{text}");
+    }
+    assert!(line("UDP egress").contains("FAIL refused"), "{text}");
+}

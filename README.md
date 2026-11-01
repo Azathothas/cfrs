@@ -376,6 +376,13 @@ cfrs net switch --listen unix:/tmp/cfrsnet.switch   # connect stacks
 cfrs net proxy --switch unix:/tmp/cfrsnet.switch --address 10.66.0.3
 ```
 
+`cfrs net doctor` calls `bind` and then `listen` for each stream socket
+(a policy can allow one and refuse the other; `SO_ACCEPTCONN` confirms the
+listen), and sends one QUIC packet to the edge on UDP 7844: answered, refused
+or `?` (no answer in 3 s). It prints the commands that need each listener.
+`CFRS_UDP=off` makes a tunnel use no QUIC on UDP 7844; `CFRS_UDP=on` skips
+the probe at start.
+
 See [`docs/virtual-network.md`](docs/virtual-network.md).
 
 ## Tailscale on a sealed host
