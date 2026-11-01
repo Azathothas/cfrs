@@ -502,6 +502,15 @@ jobs:
           set -eu
           sh scripts/live-run.sh warprun timeout 120 target/release/cfrs warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace
           grep -q '^warp=on' warprun.out
+          # Issue 84: UDP of the seccomp pod goes to warp proxy as frames on
+          # the unix control connection (no kernel UDP socket).
+          sh scripts/live-run.sh warpudp timeout 120 target/release/cfrs warp run --backend seccomp -v -- python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
+          s.sendto(bytes.fromhex('123401000001000000000000076578616d706c6503636f6d0000010001'), ('1.1.1.1', 53))
+          print('udp-dns', 'ok' if s.recv(512)[:2] == bytes.fromhex('1234') else 'bad')
+          "
+          grep -q 'udp-dns ok' warpudp.out
       - name: WARP proxy
         timeout-minutes: 4
         run: |

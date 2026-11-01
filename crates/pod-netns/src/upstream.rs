@@ -47,6 +47,11 @@ pub struct Proxy {
 }
 
 impl Proxy {
+    /// Whether the proxy is reached over an `AF_UNIX` socket.
+    pub fn is_unix(&self) -> bool {
+        self.unix_path.is_some()
+    }
+
     pub fn parse(spec: &str) -> Result<Self> {
         if spec == "direct" {
             return Ok(Self {
@@ -430,6 +435,85 @@ where
     }
     let relay = read_socks_addr(&mut stream, head[3]).await?;
     Ok((stream, relay))
+}
+
+/// The SOCKS5 command of a UDP association on the control connection
+/// itself (issue 84): after the reply, each datagram in each direction is a
+/// frame of a 2-byte length (big endian) and a SOCKS5 UDP datagram (header
+/// and payload). No UDP socket is necessary at either end, so a host that
+/// refuses AF_INET sockets keeps UDP. cfrs (warp proxy, pod) serves it; a
+/// server that does not know it answers 0x07.
+pub const CMD_UDP_IN_STREAM: u8 = 0x83;
+
+/// The reply code of a SOCKS5 server for a command that it does not know.
+pub const REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
+
+/// Ask for a UDP association in the stream ([`CMD_UDP_IN_STREAM`]). An
+/// error with [`UdpInStreamRefused`] in it: the server does not know the
+/// command (the caller can use `UDP ASSOCIATE`).
+pub async fn socks5_udp_in_stream<S>(stream: S, proxy: &Proxy) -> Result<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = socks5_handshake(stream, proxy).await?;
+    stream
+        .write_all(&[0x05, CMD_UDP_IN_STREAM, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).await?;
+    if head[1] == REPLY_COMMAND_NOT_SUPPORTED {
+        return Err(anyhow::Error::new(UdpInStreamRefused));
+    }
+    if head[1] != 0x00 {
+        bail!("SOCKS5 UDP in the stream failed: code {}", head[1]);
+    }
+    read_socks_addr(&mut stream, head[3]).await?;
+    Ok(stream)
+}
+
+/// The server does not know [`CMD_UDP_IN_STREAM`].
+#[derive(Debug)]
+pub struct UdpInStreamRefused;
+
+impl std::fmt::Display for UdpInStreamRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the proxy does not know the UDP-in-the-stream command")
+    }
+}
+
+impl std::error::Error for UdpInStreamRefused {}
+
+/// Write one frame of a UDP association in the stream.
+pub async fn write_udp_frame<W>(w: &mut W, datagram: &[u8]) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let len = u16::try_from(datagram.len())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "datagram too large"))?;
+    let mut frame = Vec::with_capacity(2 + datagram.len());
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.extend_from_slice(datagram);
+    w.write_all(&frame).await
+}
+
+/// Read one frame of a UDP association in the stream; none at the end of
+/// the stream.
+pub async fn read_udp_frame<R>(r: &mut R) -> std::io::Result<Option<Vec<u8>>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut len = [0u8; 2];
+    match r.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err),
+    }
+    let mut datagram = vec![0u8; u16::from_be_bytes(len) as usize];
+    r.read_exact(&mut datagram).await?;
+    Ok(Some(datagram))
 }
 
 async fn http_connect<S>(mut stream: S, proxy: &Proxy, target: &str) -> Result<S>

@@ -421,12 +421,34 @@ pub(crate) fn notif_continue(lfd: RawFd, id: u64) -> Result<()> {
     Ok(())
 }
 
-/// A live SOCKS5 UDP association: the relay socket, its address, and the TCP
-/// control connection that must stay open for the association to live.
-pub(crate) struct UdpRelay {
-    pub(crate) udp: Arc<tokio::net::UdpSocket>,
-    pub(crate) relay_addr: SocketAddr,
-    pub(crate) _control: Upstream,
+/// A live SOCKS5 UDP association.
+pub(crate) enum UdpRelay {
+    /// `UDP ASSOCIATE`: the relay socket, its address, and the control
+    /// connection that must stay open for the association to live.
+    Socket {
+        udp: Arc<tokio::net::UdpSocket>,
+        relay_addr: SocketAddr,
+        _control: Upstream,
+    },
+    /// The datagrams go as frames on the control connection (issue 84):
+    /// no kernel UDP socket. A writer task owns the write half.
+    Stream {
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    },
+}
+
+/// The offset of the payload in a SOCKS5 UDP datagram, if it is whole.
+fn udp_payload_offset(datagram: &[u8]) -> Option<usize> {
+    if datagram.len() < 4 {
+        return None;
+    }
+    let off = match datagram[3] {
+        0x01 => 10,
+        0x03 => 4 + 1 + *datagram.get(4)? as usize + 2,
+        0x04 => 22,
+        _ => return None,
+    };
+    (datagram.len() >= off).then_some(off)
 }
 
 /// A listening socket inside the sandbox. Connections arrive on a unix
@@ -1107,6 +1129,48 @@ pub(crate) async fn ensure_udp_relay(
     if proxy.kind != ProxyKind::Socks5 {
         bail!("UDP relay needs a SOCKS5 proxy");
     }
+    // Issue 84: a proxy on a unix socket (warp proxy, a pod front door)
+    // carries the datagrams on the control connection, so no kernel UDP
+    // socket is necessary. A server that does not know the command gets
+    // UDP ASSOCIATE.
+    if proxy.is_unix() {
+        let control = within_timeout("udp in the stream dial", dial_proxy(proxy)).await?;
+        // On an error (0x07, or a server that closes on a command that it
+        // does not know): UDP ASSOCIATE below.
+        if let Ok(control) = within_timeout(
+            "udp in the stream",
+            crate::upstream::socks5_udp_in_stream(control, proxy),
+        )
+        .await
+        {
+            {
+                let (mut read, mut write) = tokio::io::split(control);
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                tokio::spawn(async move {
+                    while let Some(datagram) = rx.recv().await {
+                        if crate::upstream::write_udp_frame(&mut write, &datagram)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    while let Ok(Some(datagram)) = crate::upstream::read_udp_frame(&mut read).await
+                    {
+                        if let Some(off) = udp_payload_offset(&datagram) {
+                            let _ = pair.send(&datagram[off..]).await;
+                        }
+                    }
+                });
+                if let Some(Sock::Datagram { relay, .. }) = map.get_mut(&fd) {
+                    *relay = Some(UdpRelay::Stream { tx });
+                }
+                return Ok(());
+            }
+        }
+    }
     let control = within_timeout("udp associate dial", dial_proxy(proxy)).await?;
     let (control, relay_addr) =
         within_timeout("udp associate", socks5_udp_associate(control, proxy)).await?;
@@ -1118,23 +1182,13 @@ pub(crate) async fn ensure_udp_relay(
             let Ok((n, _)) = reader.recv_from(&mut buf).await else {
                 break;
             };
-            if n < 4 {
-                continue;
+            if let Some(off) = udp_payload_offset(&buf[..n]) {
+                let _ = pair.send(&buf[off..n]).await;
             }
-            let off = match buf[3] {
-                0x01 => 10,
-                0x03 => 4 + 1 + buf[4] as usize + 2,
-                0x04 => 22,
-                _ => continue,
-            };
-            if n < off {
-                continue;
-            }
-            let _ = pair.send(&buf[off..n]).await;
         }
     });
     if let Some(Sock::Datagram { relay, .. }) = map.get_mut(&fd) {
-        *relay = Some(UdpRelay {
+        *relay = Some(UdpRelay::Socket {
             udp,
             relay_addr,
             _control: control,
@@ -1155,8 +1209,26 @@ pub(crate) async fn relay_datagram(
 ) -> Result<()> {
     ensure_udp_relay(map, fd, proxy, pair).await?;
     let wrapped = wrap_udp(payload, ip, port);
-    if let Some(Sock::Datagram { relay: Some(r), .. }) = map.get(&fd) {
-        r.udp.send_to(&wrapped, r.relay_addr).await?;
+    match map.get(&fd) {
+        Some(Sock::Datagram {
+            relay: Some(UdpRelay::Socket {
+                udp, relay_addr, ..
+            }),
+            ..
+        }) => {
+            udp.send_to(&wrapped, *relay_addr).await?;
+        }
+        Some(Sock::Datagram {
+            relay: Some(UdpRelay::Stream { tx }),
+            ..
+        }) if tx.send(wrapped).is_err() => {
+            // The association ended: the next datagram opens a new one.
+            if let Some(Sock::Datagram { relay, .. }) = map.get_mut(&fd) {
+                *relay = None;
+            }
+            bail!("the UDP association in the stream ended");
+        }
+        _ => {}
     }
     Ok(())
 }

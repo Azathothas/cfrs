@@ -369,6 +369,72 @@ int main(void) {
 }
 "#;
 
+/// Issue 84: a proxy on a unix socket that knows only the UDP association
+/// in the stream (0x83) and refuses UDP ASSOCIATE. The datagram of the
+/// program goes as a frame on the control connection, and the answer comes
+/// back the same way: the supervisor needs no kernel UDP socket.
+#[test]
+fn seccomp_backend_relays_udp_in_the_stream() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-udp-stream-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (commands, seen) = mpsc::channel::<u8>();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let mut c = match conn {
+                Ok(c) => c,
+                Err(_) => break,
+            };
+            let commands = commands.clone();
+            std::thread::spawn(move || {
+                let Some((cmd, _host, _port)) = read_request(&mut c) else {
+                    return;
+                };
+                let _ = commands.send(cmd);
+                if cmd != 0x83 {
+                    let _ = c.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
+                    return;
+                }
+                let _ = c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+                loop {
+                    let mut len = [0u8; 2];
+                    if c.read_exact(&mut len).is_err() {
+                        return;
+                    }
+                    let mut datagram = vec![0u8; u16::from_be_bytes(len) as usize];
+                    if c.read_exact(&mut datagram).is_err() {
+                        return;
+                    }
+                    // An IPv4 header: 10 bytes; the answer comes from the
+                    // same address.
+                    if datagram.len() < 10 || datagram[3] != 1 {
+                        continue;
+                    }
+                    let mut answer = datagram[..10].to_vec();
+                    answer.extend_from_slice(b"ECHO:");
+                    answer.extend_from_slice(&datagram[10..]);
+                    let mut frame = (answer.len() as u16).to_be_bytes().to_vec();
+                    frame.extend_from_slice(&answer);
+                    if c.write_all(&frame).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let program = build_program(&dir, "udp-stream-client", UDP_CLIENT, false);
+    let stdout = run(&dir, &[&sock], &program);
+    assert!(stdout.contains("UDP:9:ECHO:PING"), "{stdout:?}");
+    let commands: Vec<u8> = seen.try_iter().collect();
+    assert_eq!(commands, vec![0x83], "no UDP ASSOCIATE: {commands:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn seccomp_backend_proxies_a_static_and_a_dynamic_binary() {
     if !have_compiler() || !seccomp_available() {

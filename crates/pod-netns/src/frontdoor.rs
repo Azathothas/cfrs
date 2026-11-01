@@ -79,6 +79,9 @@ pub(crate) async fn serve_one(
             if cmd == 0x03 {
                 return serve_udp_associate(reader, chain, verbose).await;
             }
+            if cmd == crate::upstream::CMD_UDP_IN_STREAM {
+                return serve_udp_in_stream(reader, chain).await;
+            }
             let target = format!("{}:{}", request.host, request.port);
             let selected = select_chain(rules, chain, &target);
             if verbose {
@@ -141,6 +144,42 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     crate::socks::socks5_read_command(stream).await
+}
+
+/// Answer a UDP association in the stream (issue 84) with the same
+/// association of the first upstream: the frames are the same on both
+/// connections, so the bytes are copied. An upstream that does not know the
+/// command gives 0x07 to the client, which then can use `UDP ASSOCIATE`.
+pub(crate) async fn serve_udp_in_stream(
+    mut control: tokio::io::BufReader<Upstream>,
+    chain: &[Proxy],
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let refuse = [0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+    let proxy = match chain.first() {
+        Some(proxy) if proxy.kind == ProxyKind::Socks5 => proxy,
+        _ => {
+            control.write_all(&refuse).await?;
+            bail!("UDP in the stream needs a SOCKS5 upstream");
+        }
+    };
+    let upstream = async {
+        let up = dial_proxy(proxy).await?;
+        crate::upstream::socks5_udp_in_stream(up, proxy).await
+    };
+    let mut up = match within_timeout("udp in the stream", upstream).await {
+        Ok(up) => up,
+        Err(err) => {
+            let _ = control.write_all(&refuse).await;
+            return Err(err);
+        }
+    };
+    control
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    control.flush().await?;
+    let _ = tokio::io::copy_bidirectional(&mut control, &mut up).await;
+    Ok(())
 }
 
 /// Answer `UDP ASSOCIATE` by relaying through the first upstream proxy's own

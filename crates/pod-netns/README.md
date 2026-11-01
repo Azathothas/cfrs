@@ -81,6 +81,25 @@ TCP and DNS. It does not carry other UDP.
   SOCKS5 UDP ASSOCIATE. `sendmmsg` sends all messages when the supervisor can
   write `msg_len` into the child. Else it sends one message and returns 1, and
   the caller sends the others.
+* With a proxy on a unix socket, UDP goes on the control connection first
+  (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
+  kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A
+  proxy that answers `0x07`, or closes, gets UDP ASSOCIATE.
+
+### UDP in the stream (SOCKS5 command `0x83`)
+
+The request is a SOCKS5 request with the command `0x83` and the address
+`0.0.0.0:0`. The reply is a SOCKS5 reply. After a reply of `0x00`, each
+datagram in each direction is one frame on the same connection:
+
+| Bytes | Field |
+| --- | --- |
+| 2 | The length of the datagram, big endian |
+| N | A SOCKS5 UDP datagram (RFC 1928, section 7): header and payload |
+
+The association ends when the connection closes. `cfrs warp proxy` and
+`pod-netns --serve` serve the command. A server that does not know it
+answers `0x07`.
 * `io_uring` is refused with `EPERM`, because its operations do not go through
   the filter.
 * `getsockname` and `getpeername` give the logical address when the supervisor

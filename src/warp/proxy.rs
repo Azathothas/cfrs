@@ -131,6 +131,13 @@ where
                     bail!("UDP ASSOCIATE is not available");
                 }
             },
+            pod_netns::upstream::CMD_UDP_IN_STREAM => match udp {
+                Some(stack) => return udp_in_stream(stream, stack).await,
+                None => {
+                    socks::socks5_reply(&mut stream, 0x07, None).await?;
+                    bail!("UDP in the stream is not available");
+                }
+            },
             other => {
                 socks::socks5_reply(&mut stream, 0x07, None).await?;
                 bail!("SOCKS5 command {other} is not supported");
@@ -253,6 +260,60 @@ where
         _ = to_tunnel => {}
         _ = from_tunnel => {}
         _ = control_closed => {}
+    }
+    Ok(())
+}
+
+/// Serve one UDP association in the stream (issue 84,
+/// [`pod_netns::upstream::CMD_UDP_IN_STREAM`]): each datagram in each
+/// direction is a frame on the control connection, so no UDP socket of the
+/// host is necessary. The association ends when the connection closes.
+async fn udp_in_stream<S>(mut control: S, stack: Arc<WarpStack>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use pod_netns::upstream::{read_udp_frame, wrap_udp, write_udp_frame};
+    let tunnel = stack.udp_bind().await?;
+    socks::socks5_reply(&mut control, 0x00, None).await?;
+    let (mut read, mut write) = tokio::io::split(control);
+    let to_tunnel = {
+        let tunnel = tunnel.clone();
+        let stack = stack.clone();
+        async move {
+            while let Ok(Some(datagram)) = read_udp_frame(&mut read).await {
+                let Some((host, port, payload)) = socks::socks5_udp_unwrap(&datagram) else {
+                    continue;
+                };
+                let ip = match host {
+                    ProxyHost::Ip(ip) => ip,
+                    ProxyHost::Domain(name) => match resolve(&stack, &name).await {
+                        Ok(ip) => ip,
+                        Err(err) => {
+                            debug!(%name, error = %err, "UDP name not resolved");
+                            continue;
+                        }
+                    },
+                };
+                let _ = tunnel
+                    .send_to(payload.to_vec(), SocketAddr::new(ip, port))
+                    .await;
+            }
+        }
+    };
+    let from_tunnel = async move {
+        loop {
+            let Ok((data, from)) = tunnel.recv_from(65_536).await else {
+                return;
+            };
+            let framed = wrap_udp(&data, from.ip(), from.port());
+            if write_udp_frame(&mut write, &framed).await.is_err() {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        _ = to_tunnel => {}
+        _ = from_tunnel => {}
     }
     Ok(())
 }
