@@ -1,0 +1,10 @@
+# The facts of the test box: the sandbox of docs/target-environment.md
+# (2026-11-01), with the MASQUE front door allowed by address. One line for
+# each probe of scripts/box/probe.py: NAME EXPECTED.
+direct-tcp refused
+udp-dns refused
+system-dns refused
+proxy-name-443 200
+proxy-ip-literal 403_not_a_public_host
+proxy-edge-7844 403_not_on_the_egress_allowlist
+proxy-masque 200

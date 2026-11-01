@@ -304,6 +304,16 @@ jobs:
           out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
           echo "$out" | grep -E '^(warp|colo|tls)='
           echo "$out" | grep -q '^warp=on'
+      # The test box (issue 21): a user whose only egress is a policy proxy.
+      - name: The test box
+        timeout-minutes: 15
+        run: sh scripts/test_in_box.sh target/release/cfrs
+      - name: The test box fails with a binary that exits 3
+        timeout-minutes: 3
+        run: |
+          if BOX_PLANT=exit3 sh scripts/test_in_box.sh target/release/cfrs; then
+            echo "the box passed a planted binary"; exit 1
+          fi
       - name: Remove the WARP device
         if: always()
         timeout-minutes: 2

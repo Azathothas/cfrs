@@ -55,6 +55,28 @@ The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
 | Unprivileged user namespaces | AppArmor limits them: a namespace can be made, but `lo` cannot come up | measured |
 | `cfrs warp run --backend seccomp` | Works (`warp=on`) | measured |
 
+### The test box (a GitHub runner, from 2026-11-01)
+
+`scripts/test_in_box.sh` copies the sandbox above onto a runner, with no
+Podman box: `iptables -m owner` lets the user `cfrsbox` reach only
+`scripts/box/proxy.py` (names on 443, the MASQUE address, the refusal
+texts of the sandbox) and a fault stand-in. No UDP, no direct TCP, no
+DNS, no IPv6. `scripts/box/probe.py` checks the box against
+`scripts/box/report.txt` first, and a proxy that allows each target must
+fail that check. The steps:
+
+| Step | Expected |
+| --- | --- |
+| `cfrs --version` | runs (a binary that exits 3 makes the box exit 1) |
+| probe, then a planted wrong policy | the box matches; the planted policy fails |
+| `cfrs doctor` | `quic` and `http2` refused, `quic+warp` ok |
+| `demo --transport direct` (negative control) | fails |
+| `demo` | registers on `quic+warp` through the proxy, and the URL answers |
+| `demo` with the MASQUE address refused (negative control) | fails |
+| an edge that accepts and says nothing | the HTTP/2 leg fails in its limit, no hang |
+
+`.github/workflows/live.yml` runs it on each push and each day.
+
 ## Other host conditions
 
 | Condition | What cfrs does | Mark | Code or test |
