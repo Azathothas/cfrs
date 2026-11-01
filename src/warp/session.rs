@@ -39,14 +39,21 @@ pub const SEND_RESERVE: usize = 256 * 1024;
 pub const STREAM_WINDOW: u32 = 4 << 20;
 pub const CONNECTION_WINDOW: u32 = 8 << 20;
 
-/// The budget of h2 for the framing overhead of small DATA frames (each
-/// frame under 256 bytes takes 256 bytes less its size until it is read).
+/// The smallest DATA frame that the front door sends: a capsule header
+/// (2 bytes) and an IPv4 header (20 bytes).
+pub const MIN_DATA_FRAME: usize = 22;
+
+/// The budget of h2 for the framing overhead of small DATA frames. Each
+/// frame under 256 bytes takes 256 bytes less its size until it is read.
 /// The front door sends one DATA frame for each IP packet, and most are
-/// small (QUIC and TCP ACKs). The default (half the window of 64 KiB) holds
-/// about 170 of them: when the receive task fell behind during a large
-/// transfer, h2 closed the connection with ENHANCE_YOUR_CALM
-/// (too_many_data_frames). This budget holds about 40000.
-pub const DATA_FRAME_BUDGET: usize = 8 << 20;
+/// small (QUIC and TCP ACKs). The receive task can fall behind during a
+/// large transfer; then a full stream window of small frames waits in h2.
+/// The budget holds that worst case: a window of frames of
+/// [`MIN_DATA_FRAME`] bytes. A smaller budget closes the connection with
+/// ENHANCE_YOUR_CALM (too_many_data_frames, issue 32). There is one stream
+/// (the CONNECT-IP stream), so the stream window is the bound.
+pub const DATA_FRAME_BUDGET: usize =
+    STREAM_WINDOW as usize / MIN_DATA_FRAME * (256 - MIN_DATA_FRAME);
 
 /// The HTTP/2 client settings of the MASQUE session.
 pub fn h2_builder() -> h2::client::Builder {
@@ -425,9 +432,10 @@ mod tests {
     use super::*;
 
     /// The front door sends one small DATA frame for each packet (ACKs).
-    /// 20000 frames of 60 bytes, with a reader that waits before it reads:
-    /// the session must not close with ENHANCE_YOUR_CALM (issue 32, live
-    /// run 41272142304: too_many_data_frames after 4 MiB).
+    /// A full stream window of 59-byte frames, with a reader that waits
+    /// before it reads: the session must not close with ENHANCE_YOUR_CALM
+    /// (issue 32, live run 41272142304: too_many_data_frames after 4 MiB).
+    /// The budget of 8 MiB before held about 42000 of these frames.
     #[tokio::test]
     async fn many_small_data_frames_do_not_close_the_session() {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
@@ -440,7 +448,7 @@ mod tests {
                 let mut frame = BytesMut::new();
                 capsule::put_capsule(&mut frame, capsule::CAPSULE_DATA, &[0x45; 57]);
                 let frame = frame.freeze();
-                for _ in 0..20_000 {
+                for _ in 0..STREAM_WINDOW as usize / frame.len() {
                     send.reserve_capacity(frame.len());
                     while send.capacity() < frame.len() {
                         futures::future::poll_fn(|cx| send.poll_capacity(cx))
@@ -481,7 +489,7 @@ mod tests {
         while let Some(_packet) = rx.recv_packet().await.unwrap() {
             packets += 1;
         }
-        assert_eq!(packets, 20_000);
+        assert_eq!(packets, STREAM_WINDOW as usize / 59);
         server.abort();
     }
 
