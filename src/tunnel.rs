@@ -157,6 +157,7 @@ impl Tunnel {
             reconnect,
             ingress,
             verify,
+            failover,
         } = self.config;
 
         // A bad CFRS_EDGE is a configuration error: check it before the
@@ -176,7 +177,10 @@ impl Tunnel {
         // inside a MASQUE tunnel on TCP 443, for hosts that reach only 443.
         //
         // Do not probe TCP 7844 to choose: a firewall can close TCP 7844 and
-        // keep UDP 7844 open. Each direct attempt is real and has a time limit.
+        // keep UDP 7844 open. Each attempt is a real registration. With the
+        // staggered failover (the default), the next leg starts when the one
+        // before has not registered in 2 s, or at once when it fails; the
+        // first leg that registers stays.
         let plan = leg_plan(protocol, transport)?;
         let proxy = crate::egress::proxy_for(EDGE_REGION_NAME, 7844);
         let (plan, note) = plan_with_proxy(plan, protocol, proxy.as_ref());
@@ -186,75 +190,78 @@ impl Tunnel {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (legs, stopped) = Legs::new();
         let mut tasks = Vec::new();
-        let mut warp_keepalive = None;
-        let mut chosen = None;
-        let mut failures = Vec::new();
+        type Kept = Option<(crate::warp::WarpStack, quinn::Endpoint)>;
+        let limited = plan.len() > 1 && failover == crate::race::Failover::Serial;
+        let mut attempts: Vec<futures::future::BoxFuture<'_, Result<(First, Kept)>>> = Vec::new();
         for kind in &plan {
-            let attempt = match kind {
-                LegKind::QuicDirect => match direct_targets().await {
-                    Ok(edges) => {
-                        let endpoint = quic_dial::build_endpoint()?;
-                        bounded(
-                            plan.len() > 1,
-                            connect_once(&endpoint, &auth, tunnel_id, 0, false, &edges),
-                        )
-                        .await
-                        .map(|(conn, control, location)| {
-                            First::Quic(edges, endpoint, conn, control, location)
-                        })
-                    }
-                    Err(err) => Err(err),
-                },
-                LegKind::H2Direct => match direct_targets().await {
-                    Ok(edges) => {
-                        let options =
-                            rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
-                        bounded(
-                            plan.len() > 1,
-                            crate::edge_h2::connect(
-                                &edges,
-                                &auth,
-                                tunnel_id,
-                                0,
-                                &options,
-                                runtime.clone(),
-                                ingress.clone(),
-                            ),
-                        )
-                        .await
-                        .map(|leg| First::H2(edges, leg))
-                    }
-                    Err(err) => Err(err),
-                },
-                LegKind::QuicWarp => match warp_targets(warp_identity.as_deref()).await {
-                    Ok((edges, stack, endpoint)) => {
-                        connect_once(&endpoint, &auth, tunnel_id, 0, false, &edges)
-                            .await
-                            .map(|(conn, control, location)| {
-                                warp_keepalive = Some((stack, endpoint.clone()));
-                                First::Quic(edges, endpoint, conn, control, location)
-                            })
-                    }
-                    Err(err) => Err(err),
-                },
+            let auth = &auth;
+            let runtime = runtime.clone();
+            let ingress = ingress.clone();
+            let warp_identity = warp_identity.clone();
+            let attempt: futures::future::BoxFuture<'_, Result<(First, Kept)>> = match kind {
+                LegKind::QuicDirect => Box::pin(bounded(limited, async move {
+                    let edges = direct_targets().await?;
+                    let endpoint = quic_dial::build_endpoint()?;
+                    let (conn, control, location) =
+                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
+                    Ok((First::Quic(edges, endpoint, conn, control, location), None))
+                })),
+                LegKind::H2Direct => Box::pin(bounded(limited, async move {
+                    let edges = direct_targets().await?;
+                    let options = rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
+                    let leg = crate::edge_h2::connect(
+                        &edges, auth, tunnel_id, 0, &options, runtime, ingress,
+                    )
+                    .await?;
+                    Ok((First::H2(edges, leg), None))
+                })),
+                LegKind::QuicWarp => Box::pin(async move {
+                    let (edges, stack, endpoint) = warp_targets(warp_identity.as_deref()).await?;
+                    let (conn, control, location) =
+                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
+                    let kept = Some((stack, endpoint.clone()));
+                    Ok((First::Quic(edges, endpoint, conn, control, location), kept))
+                }),
             };
-            match attempt {
-                Ok(first) => {
-                    chosen = Some((*kind, first));
-                    break;
-                }
-                Err(err) => {
-                    warn!(leg = %kind, error = %err, "edge leg failed; trying the next one");
-                    failures.push(format!("{kind}: {err:#}"));
-                }
-            }
+            attempts.push(attempt);
         }
-        let Some((kind, first)) = chosen else {
-            return Err(crate::exit::fault(
-                crate::exit::Fault::Unavailable,
-                anyhow::anyhow!("no edge leg worked: {}", failures.join("; ")),
-            ));
+        // A loser that also registered: unregister it, then close it.
+        let close = |index: usize,
+                     (first, _kept): (First, Kept)|
+         -> futures::future::BoxFuture<'static, ()> {
+            Box::pin(async move {
+                info!(attempt = index, "closing a second registered leg");
+                match first {
+                    First::Quic(_, _, conn, control, _) => {
+                        control.shutdown_graceful(Duration::from_secs(2)).await;
+                        conn.close(0u32.into(), b"another leg won");
+                    }
+                    First::H2(_, leg) => {
+                        leg.control.shutdown_graceful(Duration::from_secs(2)).await;
+                        leg.serve.abort();
+                    }
+                }
+            })
         };
+        let won = match crate::race::race(attempts, failover, close).await {
+            Ok(won) => won,
+            Err(failed) => {
+                let text: Vec<String> = failed
+                    .iter()
+                    .map(|(i, err)| format!("{}: {err:#}", plan[*i]))
+                    .collect();
+                return Err(crate::exit::fault(
+                    crate::exit::Fault::Unavailable,
+                    anyhow::anyhow!("no edge leg worked: {}", text.join("; ")),
+                ));
+            }
+        };
+        for (i, err) in &won.failures {
+            warn!(leg = %plan[*i], error = %format!("{err:#}"), "edge leg failed");
+        }
+        let kind = plan[won.index];
+        info!(leg = %kind, after = ?won.after, "the leg won the race");
+        let (first, warp_keepalive) = won.value;
         metrics.connection_opened();
 
         let location = match first {

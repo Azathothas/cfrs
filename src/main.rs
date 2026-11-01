@@ -143,6 +143,11 @@ struct TunnelOpts {
     /// Without it, every run registers a new anonymous device.
     #[arg(long, value_name = "PATH", global = true)]
     warp_identity: Option<PathBuf>,
+    /// How the next edge leg starts: staggered (when the leg before has not
+    /// registered in 2 s, or at once when it fails) or serial (only after the
+    /// leg before failed).
+    #[arg(long, global = true, default_value = "staggered", env = "CFRS_LEG_FAILOVER", value_parser = ["staggered", "serial"])]
+    leg_failover: String,
     /// Do not fetch the public URL to prove reachability.
     #[arg(long, global = true)]
     no_verify: bool,
@@ -185,6 +190,7 @@ impl TunnelOpts {
         config.transport = Transport::parse(&self.transport)?;
         config.warp_identity = self.warp_identity.clone();
         config.verify = !self.no_verify;
+        config.failover = cfrs::race::Failover::parse(&self.leg_failover)?;
         Ok(config)
     }
 }

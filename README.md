@@ -209,8 +209,11 @@ path.
 | `quic+warp` | TCP 443 only (MASQUE) | Only TCP 443 is open. |
 
 With the default values (`--protocol auto --transport auto`), `cfrs` tries the
-legs in the order of the table. Each attempt has a time limit of 8 seconds when
-another leg can follow. Other values:
+legs in the order of the table, in a staggered race: the next leg starts when
+the leg before has not registered in 2 seconds, or at once when it fails, and
+the first leg that registers stays (`docs/protocol.md` section 3.3).
+`--leg-failover serial` waits for each failure (8 seconds at most for each
+attempt). Other values:
 
 | `--protocol` | `--transport` | Legs |
 | --- | --- | --- |

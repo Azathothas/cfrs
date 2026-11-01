@@ -109,9 +109,24 @@ Go function `SerializeHeaders` of cloudflared.
 ### 3.3 Leg order
 
 `--protocol auto --transport auto` tries QUIC, then HTTP/2, then QUIC through
-WARP (section 5). Each attempt has a time limit of 8 seconds when another leg
-can follow, because a filtered port does not answer. `cfrs` does not probe TCP
-7844 to select a leg: a firewall can close TCP 7844 and keep UDP 7844 open.
+WARP (section 5). The attempts are real registrations, in a staggered race
+(`src/race.rs`, `--leg-failover staggered`, the default):
+
+* The next leg starts when the leg before has not registered in 2 seconds,
+  or at once when it fails. A filtered port does not answer, so a host that
+  drops UDP and TCP 7844 starts WARP after about 4 seconds, not 16.
+* The first leg that registers stays. When two legs register in the same
+  turn, the earlier leg of the order stays. Each other leg that registered
+  gets the unregister call, and then its connection closes. The legs that
+  still run are cancelled.
+
+`--leg-failover serial` starts a leg only after the one before failed, with
+a time limit of 8 seconds for each attempt when another leg can follow.
+
+The stagger is not a probe: each leg is a full attempt on its own port and
+protocol. `cfrs` does not probe TCP 7844 to select a leg, because a firewall
+can close TCP 7844 and keep UDP 7844 open. Inside a leg, the HTTP/2 dial
+starts the next edge address 250 ms after the one before (RFC 8305).
 
 ## 4. Stream framing (QUIC)
 

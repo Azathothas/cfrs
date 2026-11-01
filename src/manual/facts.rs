@@ -58,6 +58,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The candidates of the state directory, and of the directory of a shim (a directory that is not noexec). cfrs reads the home from HOME only, not from the user database.",
     },
     EnvVar {
+        names: &["CFRS_LEG_FAILOVER"],
+        used_by: "tunnel, serve, share, demo",
+        meaning: "The value of --leg-failover when the flag is not given: staggered or serial.",
+    },
+    EnvVar {
         names: &["CFRS_EDGE"],
         used_by: "tunnel",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",

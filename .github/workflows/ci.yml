@@ -175,6 +175,17 @@ jobs:
           grep -E 'NotValidForName|not valid for' pin.log
       - name: Quick tunnel, QUIC through WARP (TCP 443)
         run: timeout 240 target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
+      # A host that drops UDP and TCP 7844 with no answer: the staggered race
+      # starts WARP after two 2 s steps, not after two 8 s time limits.
+      - name: Quick tunnel with UDP and TCP 7844 dropped (staggered legs)
+        run: |
+          set -eu
+          sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
+          trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
+          timeout 240 target/release/cfrs demo --exit-on-verify 2> race.log || { tail -40 race.log; exit 1; }
+          grep 'the leg won the race' race.log
+          grep -q 'leg=quic+warp' race.log
       - name: WARP account and probe
         run: |
           target/release/cfrs warp register

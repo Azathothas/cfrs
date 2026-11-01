@@ -269,6 +269,8 @@ pub struct Config {
     pub reconnect: ReconnectPolicy,
     pub ingress: Ingress,
     pub verify: bool,
+    /// How the next edge leg starts (`--leg-failover`).
+    pub failover: crate::race::Failover,
 }
 
 impl Default for Config {
@@ -284,6 +286,7 @@ impl Default for Config {
             reconnect: ReconnectPolicy::default(),
             ingress: Ingress::default(),
             verify: false,
+            failover: crate::race::Failover::Staggered(crate::race::LEG_STAGGER),
         }
     }
 }

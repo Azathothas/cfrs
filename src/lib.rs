@@ -40,6 +40,7 @@ pub mod ports;
 pub mod proxy;
 pub mod qr;
 pub mod quicktunnel;
+pub mod race;
 pub mod relay;
 pub mod report;
 pub mod resolve;
