@@ -489,9 +489,19 @@ fn upload_page(token: &str, max_bytes: u64) -> String {
          background:#4f7cff;color:#fff;font-size:1rem}}input[type=file]{{width:100%}}\
          p{{color:#9aa7c7;font-size:.9rem}}</style></head><body><main>\
          <h1>Send files</h1><p>Max {} per file.</p>\
-         <form method=\"post\" action=\"/s/{token}/upload\" enctype=\"multipart/form-data\">\
+         <form id=\"f\" method=\"post\" action=\"/s/{token}/upload\" enctype=\"multipart/form-data\">\
          <input type=\"file\" name=\"files\" multiple required>\
-         <button type=\"submit\">Upload</button></form></main></body></html>",
+         <button type=\"submit\">Upload</button></form>\
+         <progress id=\"bar\" max=\"100\" value=\"0\" hidden style=\"width:100%;margin-top:1rem\"></progress>\
+         <p id=\"state\"></p></main><script>\
+         var f=document.getElementById('f'),bar=document.getElementById('bar'),st=document.getElementById('state');\
+         f.addEventListener('submit',function(e){{e.preventDefault();var x=new XMLHttpRequest();\
+         x.open('POST',f.action);bar.hidden=false;\
+         x.upload.onprogress=function(p){{if(p.lengthComputable){{bar.value=100*p.loaded/p.total;\
+         st.textContent=Math.round(bar.value)+' %';}}}};\
+         x.onload=function(){{document.open();document.write(x.responseText);document.close();}};\
+         x.onerror=function(){{st.textContent='The upload failed.';}};\
+         x.send(new FormData(f));}});</script></body></html>",
         human_bytes(max_bytes)
     )
 }
@@ -568,18 +578,64 @@ async fn download_file(
         return response;
     }
     state.control.touch();
-    let file = match tokio::fs::File::open(&state.file).await {
+    let mut file = match tokio::fs::File::open(&state.file).await {
         Ok(file) => file,
         Err(err) => {
             return (StatusCode::NOT_FOUND, format!("cannot open file: {err}")).into_response()
         }
     };
-    let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let meta = file.metadata().await.ok();
+    let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mtime = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let etag = format!("\"{len:x}-{mtime:x}\"");
+    let header_text = |name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    if header_text(header::IF_NONE_MATCH).is_some_and(|v| v.split(',').any(|t| t.trim() == etag)) {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, &etag)
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    // One range (a resume). An If-Range that is not this ETag, and more than
+    // one range, give the whole file.
+    let range_ok = header_text(header::IF_RANGE).is_none_or(|v| v.trim() == etag);
+    let range = match header_text(header::RANGE).filter(|_| range_ok) {
+        Some(value) => match parse_range(&value, len) {
+            Ok(range) => range,
+            Err(()) => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            }
+        },
+        None => None,
+    };
+    let (start, end) = range.unwrap_or((0, len.saturating_sub(1)));
+    let count = if len == 0 { 0 } else { end - start + 1 };
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
     let disposition = format!("attachment; filename=\"{}\"", state.name.replace('"', ""));
-    let stream = tokio_util::io::ReaderStream::new(file);
-    // --stop-after: the session ends when the last byte of a GET has gone
-    // out. A HEAD request, and a client that closes early, do not end it.
-    let body = if state.stop_after && method != http::Method::HEAD {
+    let stream = tokio_util::io::ReaderStream::new(tokio::io::AsyncReadExt::take(file, count));
+    // --stop-after: the session ends when the last byte of the file has gone
+    // out in a GET. A HEAD request, a range that stops before the end, and a
+    // client that closes early, do not end it.
+    let to_the_end = len == 0 || end + 1 == len;
+    let body = if state.stop_after && method != http::Method::HEAD && to_the_end {
         use futures::StreamExt;
         let control = state.control.clone();
         let done = futures::stream::once(async move {
@@ -591,13 +647,57 @@ async fn download_file(
     } else {
         Body::from_stream(stream)
     };
-    Response::builder()
-        .status(StatusCode::OK)
+    let mut response = Response::builder()
+        .status(if range.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        })
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_LENGTH, len)
+        .header(header::CONTENT_LENGTH, count)
         .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ETAG, &etag);
+    if range.is_some() {
+        response = response.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"));
+    }
+    response
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Parse a Range header for a file of `len` bytes: `Ok(Some((start, end)))`
+/// for one satisfiable range (end included), `Ok(None)` for a header to
+/// ignore (more than one range, another unit), `Err` for an unsatisfiable
+/// range.
+fn parse_range(value: &str, len: u64) -> std::result::Result<Option<(u64, u64)>, ()> {
+    let Some(spec) = value.trim().strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if spec.contains(',') {
+        return Ok(None);
+    }
+    let (a, b) = spec.split_once('-').ok_or(())?;
+    let (a, b) = (a.trim(), b.trim());
+    let range = if a.is_empty() {
+        let n: u64 = b.parse().map_err(|_| ())?;
+        if n == 0 || len == 0 {
+            return Err(());
+        }
+        (len.saturating_sub(n), len - 1)
+    } else {
+        let start: u64 = a.parse().map_err(|_| ())?;
+        let end = if b.is_empty() {
+            len.saturating_sub(1)
+        } else {
+            b.parse::<u64>().map_err(|_| ())?.min(len.saturating_sub(1))
+        };
+        if start >= len || start > end {
+            return Err(());
+        }
+        (start, end)
+    };
+    Ok(Some(range))
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -682,6 +782,94 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), control.wait_stop())
             .await
             .expect("wait_stop sees an earlier stop");
+    }
+
+    /// The upload page shows a progress bar, and its script is whole.
+    #[test]
+    fn the_upload_page_has_progress() {
+        let page = upload_page("abc", 1 << 20);
+        assert!(page.contains("upload.onprogress") && page.contains("<progress"));
+        let script = page
+            .split("<script>")
+            .nth(1)
+            .unwrap()
+            .split("</script>")
+            .next()
+            .unwrap();
+        assert_eq!(script.matches('{').count(), script.matches('}').count());
+        assert_eq!(script.matches('(').count(), script.matches(')').count());
+    }
+
+    #[test]
+    fn ranges() {
+        assert_eq!(parse_range("bytes=0-4", 10), Ok(Some((0, 4))));
+        assert_eq!(parse_range("bytes=5-", 10), Ok(Some((5, 9))));
+        assert_eq!(parse_range("bytes=-3", 10), Ok(Some((7, 9))));
+        assert_eq!(parse_range("bytes=8-99", 10), Ok(Some((8, 9))));
+        assert_eq!(parse_range("bytes=0-1,4-5", 10), Ok(None));
+        assert_eq!(parse_range("items=0-1", 10), Ok(None));
+        assert_eq!(parse_range("bytes=10-", 10), Err(()));
+        assert_eq!(parse_range("bytes=5-2", 10), Err(()));
+        assert_eq!(parse_range("bytes=x-1", 10), Err(()));
+    }
+
+    /// A resume: 206 with Content-Range; 304 for the same ETag; 416 for a
+    /// range past the end; --stop-after only after the end of the file.
+    #[tokio::test]
+    async fn downloads_resume() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ten.txt");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let config = ShareConfig::download(&file).stop_after(true);
+        let path = format!("/s/{}/file", config.token);
+        let app = ShareApp::new(config).unwrap();
+        let control = app.control();
+        let get = |extra: Vec<(&'static str, String)>| {
+            let mut b = http::Request::builder().uri(&path);
+            for (k, v) in extra {
+                b = b.header(k, v);
+            }
+            app.router()
+                .oneshot(b.body(axum::body::Body::empty()).unwrap())
+        };
+        let full = get(vec![]).await.unwrap();
+        let etag = full.headers()[header::ETAG].to_str().unwrap().to_string();
+        assert_eq!(full.headers()[header::ACCEPT_RANGES], "bytes");
+        drop(full);
+
+        let part = get(vec![("range", "bytes=2-4".into())]).await.unwrap();
+        assert_eq!(part.status(), 206);
+        assert_eq!(part.headers()[header::CONTENT_RANGE], "bytes 2-4/10");
+        let body = axum::body::to_bytes(part.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"234");
+        assert!(!control.stop_requested(), "a part ended the session");
+
+        let not_modified = get(vec![("if-none-match", etag.clone())]).await.unwrap();
+        assert_eq!(not_modified.status(), 304);
+        let past = get(vec![("range", "bytes=50-".into())]).await.unwrap();
+        assert_eq!(past.status(), 416);
+        let stale = get(vec![
+            ("range", "bytes=2-4".into()),
+            ("if-range", "\"old\"".into()),
+        ])
+        .await
+        .unwrap();
+        assert_eq!(stale.status(), 200);
+        drop(stale);
+        assert!(!control.stop_requested());
+
+        let rest = get(vec![("range", "bytes=5-".into())]).await.unwrap();
+        let body = axum::body::to_bytes(rest.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"56789");
+        assert!(
+            control.stop_requested(),
+            "the end of the file ends the session"
+        );
     }
 
     /// Twelve uploads of one name at the same time: twelve files, each with
