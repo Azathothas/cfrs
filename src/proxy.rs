@@ -191,11 +191,13 @@ async fn serve_request(
             target,
             gate,
             control,
+            stop_after,
         } => {
             share_proxy(
                 target,
                 gate,
                 control,
+                *stop_after,
                 &request,
                 &host,
                 reader,
@@ -421,6 +423,7 @@ async fn share_proxy(
     target: &str,
     gate: &crate::gate::Gate,
     control: &ShareControl,
+    stop_after: bool,
     request: &cqstream::ConnectRequest,
     _host: &str,
     mut reader: EdgeReader,
@@ -497,7 +500,7 @@ async fn share_proxy(
 
     control.touch();
     let service = Service::Http(format!("http://{target}"));
-    forward_http(
+    let result = forward_http(
         &service,
         &OriginOptions::default(),
         request,
@@ -505,7 +508,13 @@ async fn share_proxy(
         writer,
         metrics,
     )
-    .await
+    .await;
+    // --stop-after: the first request that the origin answered in full
+    // ends the session. A HEAD request does not count.
+    if stop_after && result.is_ok() && !method.eq_ignore_ascii_case("HEAD") {
+        control.request_stop();
+    }
+    result
 }
 
 fn headers_from_request(request: &cqstream::ConnectRequest) -> HeaderMap {

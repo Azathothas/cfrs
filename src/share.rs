@@ -146,6 +146,7 @@ impl ShareConfig {
 pub struct ShareControl {
     last: Mutex<Instant>,
     stop: Notify,
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Default for ShareControl {
@@ -153,6 +154,7 @@ impl Default for ShareControl {
         Self {
             last: Mutex::new(Instant::now()),
             stop: Notify::new(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -172,11 +174,27 @@ impl ShareControl {
     }
 
     pub fn request_stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
         self.stop.notify_waiters();
     }
 
+    /// True after [`request_stop`](Self::request_stop).
+    pub fn stop_requested(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Ready after [`request_stop`](Self::request_stop), also when the stop
+    /// came before this call.
     pub async fn wait_stop(&self) {
-        self.stop.notified().await;
+        loop {
+            let notified = self.stop.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.stop_requested() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -371,23 +389,31 @@ async fn upload_receive(
             continue;
         };
         let name = sanitize_filename(&original);
-        if state.used_files.load(Ordering::Relaxed) >= state.max_files {
+        // Reserve a slot of the file limit first: two uploads at the same
+        // time cannot both take the last one.
+        let reserved = state
+            .used_files
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < state.max_files).then_some(n + 1)
+            });
+        if reserved.is_err() {
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("session file limit reached ({} files)", state.max_files),
             )
                 .into_response();
         }
+        let release = || state.used_files.fetch_sub(1, Ordering::SeqCst);
 
-        let path = unique_path(&state.dest, &name);
-        let mut file = match tokio::fs::File::create(&path).await {
-            Ok(file) => file,
+        let (path, mut file) = match create_unique(&state.dest, &name).await {
+            Ok(created) => created,
             Err(err) => {
+                release();
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("cannot create file: {err}"),
                 )
-                    .into_response()
+                    .into_response();
             }
         };
         let mut field = field;
@@ -397,6 +423,7 @@ async fn upload_receive(
                 Ok(Some(chunk)) => {
                     written += chunk.len() as u64;
                     if written > state.max_bytes {
+                        release();
                         let _ = tokio::fs::remove_file(&path).await;
                         return (
                             StatusCode::PAYLOAD_TOO_LARGE,
@@ -405,6 +432,7 @@ async fn upload_receive(
                             .into_response();
                     }
                     if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+                        release();
                         let _ = tokio::fs::remove_file(&path).await;
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -415,6 +443,7 @@ async fn upload_receive(
                 }
                 Ok(None) => break,
                 Err(err) => {
+                    release();
                     let _ = tokio::fs::remove_file(&path).await;
                     return (StatusCode::BAD_REQUEST, format!("upload aborted: {err}"))
                         .into_response();
@@ -422,7 +451,6 @@ async fn upload_receive(
             }
         }
         let _ = tokio::io::AsyncWriteExt::flush(&mut file).await;
-        state.used_files.fetch_add(1, Ordering::Relaxed);
         state.used_bytes.fetch_add(written, Ordering::Relaxed);
         total += written;
         saved.push((name, written));
@@ -532,6 +560,7 @@ async fn download_landing(
 
 async fn download_file(
     State(state): State<Arc<DownloadState>>,
+    method: http::Method,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
@@ -546,11 +575,22 @@ async fn download_file(
         }
     };
     let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-    if state.stop_after {
-        state.control.request_stop();
-    }
     let disposition = format!("attachment; filename=\"{}\"", state.name.replace('"', ""));
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    let stream = tokio_util::io::ReaderStream::new(file);
+    // --stop-after: the session ends when the last byte of a GET has gone
+    // out. A HEAD request, and a client that closes early, do not end it.
+    let body = if state.stop_after && method != http::Method::HEAD {
+        use futures::StreamExt;
+        let control = state.control.clone();
+        let done = futures::stream::once(async move {
+            control.request_stop();
+            None::<std::io::Result<bytes::Bytes>>
+        })
+        .filter_map(|item| async move { item });
+        Body::from_stream(stream.chain(done))
+    } else {
+        Body::from_stream(stream)
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -562,22 +602,35 @@ async fn download_file(
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-fn unique_path(dir: &std::path::Path, name: &str) -> PathBuf {
-    let mut candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
+/// Make a new file for `name` in `dir`: `name`, else `stem-1.ext`,
+/// `stem-2.ext` and so on. Each try uses `create_new`, so two uploads at
+/// the same time never get the same file.
+async fn create_unique(
+    dir: &std::path::Path,
+    name: &str,
+) -> std::io::Result<(PathBuf, tokio::fs::File)> {
     let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) => (stem, format!(".{ext}")),
-        None => (name, String::new()),
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
+        _ => (name.to_string(), String::new()),
     };
-    for index in 1..10_000 {
-        candidate = dir.join(format!("{stem}-{index}{ext}"));
-        if !candidate.exists() {
-            return candidate;
+    for index in 0..10_000u32 {
+        let candidate = if index == 0 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{stem}-{index}{ext}"))
+        };
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+            .await
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
         }
     }
-    candidate
+    Err(std::io::Error::other("no free file name"))
 }
 
 fn html_escape(value: &str) -> String {
@@ -592,15 +645,77 @@ fn html_escape(value: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unique_names() {
-        let dir = std::env::temp_dir().join(format!("cfrs-test-{}", crate::util::random_token()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let second = unique_path(&dir, "a.txt");
-        assert_ne!(second.file_name().unwrap(), "a.txt");
-        assert!(second.to_string_lossy().ends_with("a-1.txt"));
-        std::fs::remove_dir_all(&dir).ok();
+    /// --stop-after: a HEAD does not end the session; the end of a GET body
+    /// does.
+    #[tokio::test]
+    async fn stop_after_needs_a_full_get() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ten.txt");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let config = ShareConfig::download(&file).stop_after(true);
+        let path = format!("/s/{}/file", config.token);
+        let app = ShareApp::new(config).unwrap();
+        let control = app.control();
+        let request = |method: &str| {
+            http::Request::builder()
+                .method(method)
+                .uri(&path)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let head = app.router().oneshot(request("HEAD")).await.unwrap();
+        assert_eq!(head.status(), 200);
+        let _ = axum::body::to_bytes(head.into_body(), 1 << 20).await;
+        assert!(!control.stop_requested(), "HEAD ended the session");
+
+        let get = app.router().oneshot(request("GET")).await.unwrap();
+        assert!(
+            !control.stop_requested(),
+            "the session ended before the body"
+        );
+        let body = axum::body::to_bytes(get.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"0123456789");
+        assert!(control.stop_requested());
+        tokio::time::timeout(std::time::Duration::from_secs(1), control.wait_stop())
+            .await
+            .expect("wait_stop sees an earlier stop");
+    }
+
+    /// Twelve uploads of one name at the same time: twelve files, each with
+    /// its own body.
+    #[tokio::test]
+    async fn concurrent_names_do_not_collide() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tasks = Vec::new();
+        for i in 0..12 {
+            let dir = dir.path().to_path_buf();
+            tasks.push(tokio::spawn(async move {
+                let (path, mut file) = create_unique(&dir, "race.txt").await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut file, format!("race-{i}").as_bytes())
+                    .await
+                    .unwrap();
+                path
+            }));
+        }
+        let mut paths = Vec::new();
+        for t in tasks {
+            paths.push(t.await.unwrap());
+        }
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 12);
+        let mut bodies: Vec<String> = paths
+            .iter()
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        bodies.sort();
+        bodies.dedup();
+        assert_eq!(bodies.len(), 12);
+        assert!(dir.path().join("race.txt").exists());
+        assert!(dir.path().join("race-1.txt").exists());
     }
 
     async fn send(router: &Router, method: &str, path: &str, body: &str) -> (u16, Option<String>) {

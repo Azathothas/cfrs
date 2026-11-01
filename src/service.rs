@@ -31,6 +31,9 @@ pub enum Built {
         target: String,
         gate: Gate,
         control: Arc<ShareControl>,
+        /// Stop the session after the first request that the origin
+        /// answered (`--stop-after`).
+        stop_after: bool,
     },
 }
 
@@ -63,6 +66,7 @@ impl ServiceRuntime {
                             .unwrap_or_else(|| "127.0.0.1:80".to_string()),
                         gate: config.gate.clone(),
                         control: Arc::new(ShareControl::default()),
+                        stop_after: config.stop_after,
                     },
                     _ => Built::Share(ShareApp::new(config.clone())?),
                 },
