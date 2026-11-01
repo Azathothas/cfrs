@@ -317,23 +317,136 @@ struct RawConfig {
     ha_connections: Option<u8>,
 }
 
-/// Load a cloudflared-style YAML config. `tunnel:` is treated as a named-tunnel
-/// token when present; otherwise `credentials-file:` is read.
+/// The top-level keys of a cloudflared config.yml. cfrs reads `tunnel`,
+/// `credentials-file`, `ingress`, `protocol` and `ha-connections`, and
+/// ignores the others. A key outside this list is a typo: an error.
+pub const CLOUDFLARED_KEYS: &[&str] = &[
+    "tunnel",
+    "credentials-file",
+    "ingress",
+    "protocol",
+    "ha-connections",
+    "originRequest",
+    "warp-routing",
+    "loglevel",
+    "transport-loglevel",
+    "logfile",
+    "log-directory",
+    "metrics",
+    "no-autoupdate",
+    "autoupdate-freq",
+    "edge-ip-version",
+    "edge-bind-address",
+    "region",
+    "retries",
+    "grace-period",
+    "pidfile",
+    "post-quantum",
+    "management-diagnostics",
+    "tag",
+    "url",
+    "hello-world",
+    "origincert",
+    "token",
+];
+
+/// The nearest key of [`CLOUDFLARED_KEYS`] (by edit distance), for an error.
+fn nearest_key(key: &str) -> Option<&'static str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut prev = row[0];
+            row[0] = i + 1;
+            for (j, cb) in b.iter().enumerate() {
+                let cur = row[j + 1];
+                row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+                prev = cur;
+            }
+        }
+        row[b.len()]
+    }
+    CLOUDFLARED_KEYS
+        .iter()
+        .map(|k| (distance(key, k), *k))
+        .min()
+        .filter(|(d, _)| *d <= 3)
+        .map(|(_, k)| k)
+}
+
+/// Load a cloudflared-style YAML config.
+///
+/// * With `credentials-file:`, the file gives the credentials, and
+///   `tunnel:` is the name or the UUID of the tunnel, as in cloudflared. A
+///   UUID must be the TunnelID of the file.
+/// * With `tunnel:` only, it is a named-tunnel token.
+/// * With neither, cfrs starts a quick tunnel, and says so.
+/// * A top-level key that cloudflared does not know is an error.
+/// * The last ingress rule must match each request (no hostname, no path).
 pub fn load_file(path: &std::path::Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let raw: RawConfig = crate::yaml::parse(&text)
-        .and_then(|value| Ok(serde_json::from_value(value)?))
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let value = crate::yaml::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
+    if let Some(map) = value.as_object() {
+        for key in map.keys() {
+            if !CLOUDFLARED_KEYS.contains(&key.as_str()) {
+                let hint = nearest_key(key)
+                    .map(|k| format!("; did you mean {k}?"))
+                    .unwrap_or_default();
+                bail!(
+                    "{}: the key {key:?} is not a key of a cloudflared config{hint}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let raw: RawConfig =
+        serde_json::from_value(value).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut config = Config::default();
     if !raw.ingress.is_empty() {
+        if let Some(last) = raw.ingress.last() {
+            if last.hostname.is_some() || last.path.is_some() {
+                bail!(
+                    "{}: the last ingress rule must match each request (no hostname and no path), for example `- service: http_status:404`",
+                    path.display()
+                );
+            }
+        }
         config.ingress = crate::ingress::ingress_from_raw(raw.ingress)?;
     }
-    if let Some(token) = raw.tunnel {
-        config.credentials = parse_token(&token)?;
-    } else if let Some(file) = raw.credentials_file {
-        config.credentials = parse_credentials_file(&file)?;
+    match (raw.tunnel, raw.credentials_file) {
+        (tunnel, Some(file)) => {
+            let credentials = parse_credentials_file(&file)?;
+            if let (Some(tunnel), Credentials::Explicit { tunnel_id, .. }) = (&tunnel, &credentials)
+            {
+                if let Ok(uuid) = Uuid::parse_str(tunnel.trim()) {
+                    if uuid != *tunnel_id {
+                        bail!(
+                            "{}: tunnel: {uuid} is not the TunnelID of {} ({tunnel_id})",
+                            path.display(),
+                            file.display()
+                        );
+                    }
+                }
+            }
+            config.credentials = credentials;
+        }
+        (Some(tunnel), None) => {
+            if Uuid::parse_str(tunnel.trim()).is_ok() || !tunnel.trim().starts_with("ey") {
+                bail!(
+                    "{}: tunnel: names a tunnel ({tunnel}); give its credentials-file:, or a tunnel token",
+                    path.display()
+                );
+            }
+            config.credentials = parse_token(&tunnel)?;
+        }
+        (None, None) => {
+            tracing::info!(
+                "{} has no tunnel: and no credentials-file:; cfrs starts a quick tunnel",
+                path.display()
+            );
+        }
     }
     if let Some(protocol) = raw.protocol {
         config.protocol = Protocol::parse(&protocol)?;
@@ -389,6 +502,62 @@ mod tests {
             ..policy
         };
         assert!(matches!(capped.next(3, &net), Next::Stop(_)));
+    }
+
+    /// The cloudflared forms of tunnel: and credentials-file:, a typo in a
+    /// key, and a last rule that is not a catch-all.
+    #[test]
+    fn load_file_follows_cloudflared() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join("creds.json");
+        std::fs::write(
+            &creds,
+            r#"{"AccountTag":"0123456789abcdef","TunnelID":"ffd86bd5-1bff-456b-8c2c-75a014cdc4c8","TunnelSecret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}"#,
+        )
+        .unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |text: String| {
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map_err(|e| format!("{e:#}"))
+        };
+        let c = creds.display();
+        let catch_all = "ingress:\n  - service: http://127.0.0.1:1\n";
+
+        // A UUID, or a name, with credentials-file:.
+        for tunnel in ["ffd86bd5-1bff-456b-8c2c-75a014cdc4c8", "my-tunnel"] {
+            let config = load(format!(
+                "tunnel: {tunnel}\ncredentials-file: {c}\n{catch_all}"
+            ))
+            .unwrap();
+            assert!(matches!(config.credentials, Credentials::Explicit { .. }));
+        }
+        let err = load(format!(
+            "tunnel: 00000000-1bff-456b-8c2c-75a014cdc4c8\ncredentials-file: {c}\n{catch_all}"
+        ))
+        .unwrap_err();
+        assert!(err.contains("is not the TunnelID"), "{err}");
+
+        let err = load(format!("tunnel: my-tunnel\n{catch_all}")).unwrap_err();
+        assert!(err.contains("give its credentials-file:"), "{err}");
+
+        let err = load(format!("credentails-file: {c}\n{catch_all}")).unwrap_err();
+        assert!(
+            err.contains("\"credentails-file\" is not a key")
+                && err.contains("did you mean credentials-file?"),
+            "{err}"
+        );
+
+        let err = load(format!(
+            "credentials-file: {c}\ningress:\n  - hostname: a.example.com\n    service: http://127.0.0.1:1\n"
+        ))
+        .unwrap_err();
+        assert!(
+            err.contains("the last ingress rule must match each request"),
+            "{err}"
+        );
+
+        // Keys of cloudflared that cfrs does not use are accepted.
+        load(format!("credentials-file: {c}\nmetrics: localhost:2000\nno-autoupdate: true\nwarp-routing:\n  enabled: true\n{catch_all}")).unwrap();
     }
 
     #[test]

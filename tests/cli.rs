@@ -391,3 +391,25 @@ fn warp_status_registers_no_device() {
         assert!(!path.exists(), "{command} made a file");
     }
 }
+
+/// Each completion script names the commands and the flags; the bash script
+/// is valid bash.
+#[test]
+fn completion_scripts() {
+    for shell in ["bash", "zsh", "fish"] {
+        let out = cfrs(&["completions", shell]);
+        assert_eq!(out.status.code(), Some(0), "{shell}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        for word in ["tunnel", "warp", "update", "leg-failover"] {
+            assert!(text.contains(word), "{shell}: no {word}");
+        }
+        if shell == "bash" {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfrs.bash");
+            std::fs::write(&path, &text).unwrap();
+            let check = Command::new("bash").arg("-n").arg(&path).status().unwrap();
+            assert!(check.success(), "bash -n failed");
+        }
+    }
+    assert_eq!(cfrs(&["completions", "tcsh"]).status.code(), Some(64));
+}

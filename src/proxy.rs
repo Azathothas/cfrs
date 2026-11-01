@@ -41,7 +41,7 @@ pub async fn serve_stream(
     metrics.stream_started();
     if let Err(err) = serve_inner(&runtime, &ingress, send, recv).await {
         metrics.error();
-        tracing::warn!(error = %err, "stream failed");
+        tracing::warn!(error = %format!("{err:#}"), "stream failed");
     }
     metrics.stream_finished();
 }
@@ -72,12 +72,30 @@ pub async fn serve_decoded(
     metrics.stream_started();
     if let Err(err) = serve_request(&runtime, &ingress, request, reader, writer).await {
         metrics.error();
-        tracing::warn!(error = %err, "stream failed");
+        tracing::warn!(error = %format!("{err:#}"), "stream failed");
     }
     metrics.stream_finished();
 }
 
 async fn serve_request(
+    runtime: &ServiceRuntime,
+    ingress: &Ingress,
+    request: cqstream::ConnectRequest,
+    reader: EdgeReader,
+    writer: EdgeWriter,
+) -> Result<()> {
+    // A failure that a visitor sees names its request in the log.
+    let what = format!(
+        "{} {}",
+        request.meta(HTTP_METHOD_KEY).unwrap_or("-"),
+        crate::report::clean(&request.dest)
+    );
+    serve_request_inner(runtime, ingress, request, reader, writer)
+        .await
+        .with_context(|| what)
+}
+
+async fn serve_request_inner(
     runtime: &ServiceRuntime,
     ingress: &Ingress,
     request: cqstream::ConnectRequest,
@@ -249,6 +267,7 @@ async fn forward_http(
     }
     if !leftover.is_empty() {
         futures_write_all(&mut writer, &leftover).await?;
+        futures::io::AsyncWriteExt::flush(&mut writer).await?;
         metrics.add_out(leftover.len() as u64);
     }
     let resp_len = headers_value(&headers, "content-length").and_then(|v| v.parse::<u64>().ok());
@@ -862,6 +881,9 @@ where
             bail!("origin EOF with {remaining} response bytes still expected");
         }
         futures::io::AsyncWriteExt::write_all(dst, &buf[..n]).await?;
+        // Flush each read: a small write of the origin (an SSE event, the
+        // start of a page) goes to the visitor at once.
+        futures::io::AsyncWriteExt::flush(dst).await?;
         metrics.add_out(n as u64);
         remaining -= n as u64;
     }
@@ -881,6 +903,9 @@ where
             break;
         }
         futures::io::AsyncWriteExt::write_all(dst, &buf[..n]).await?;
+        // Flush each read: a small write of the origin (an SSE event, the
+        // start of a page) goes to the visitor at once.
+        futures::io::AsyncWriteExt::flush(dst).await?;
         metrics.add_out(n as u64);
         total += n as u64;
     }
@@ -959,6 +984,84 @@ pub use crate::connect::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer that keeps the bytes until a flush, like a buffered edge
+    /// stream. `committed` holds what a flush passed on.
+    struct HoldUntilFlush {
+        held: Vec<u8>,
+        committed: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl futures::io::AsyncWrite for HoldUntilFlush {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.held.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let held = std::mem::take(&mut self.held);
+            self.committed.lock().unwrap().extend_from_slice(&held);
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.poll_flush(cx)
+        }
+    }
+
+    /// A small write of the origin reaches the edge before the origin
+    /// writes more (an SSE event), with a length and to the end of the
+    /// stream.
+    #[tokio::test]
+    async fn small_writes_go_out_at_once() {
+        for with_length in [true, false] {
+            let committed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut dst = HoldUntilFlush {
+                held: Vec::new(),
+                committed: committed.clone(),
+            };
+            let (mut origin, mut src) = tokio::io::duplex(1 << 16);
+            let copy = tokio::spawn(async move {
+                if with_length {
+                    copy_tokio_to_futures_n(&mut src, &mut dst, 20, &Metrics::new())
+                        .await
+                        .map(|_| ())
+                } else {
+                    copy_tokio_to_futures_eof(&mut src, &mut dst, &Metrics::new())
+                        .await
+                        .map(|_| ())
+                }
+            });
+            tokio::io::AsyncWriteExt::write_all(&mut origin, b"data: event-1\n\n")
+                .await
+                .unwrap();
+            let start = std::time::Instant::now();
+            while committed.lock().unwrap().len() < 15 {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(2),
+                    "the event was held"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut origin, b"12345")
+                .await
+                .unwrap();
+            drop(origin);
+            copy.await.unwrap().unwrap();
+            assert_eq!(
+                committed.lock().unwrap().as_slice(),
+                b"data: event-1\n\n12345"
+            );
+        }
+    }
 
     /// The payload of each chunk, with no framing; an extension and a
     /// trailer are dropped; the last chunk ends the body while the origin

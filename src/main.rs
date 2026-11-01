@@ -60,6 +60,15 @@ enum Command {
     Connect(ConnectArgs),
     /// List local TCP ports that are listening.
     Ports(PortsArgs),
+    /// Print a completion script for a shell: bash, zsh, fish or elvish.
+    ///
+    /// Bash: cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs.
+    /// Zsh: cfrs completions zsh > ~/.zfunc/_cfrs (with ~/.zfunc in fpath).
+    /// Fish: cfrs completions fish > ~/.config/fish/completions/cfrs.fish.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     /// Replace this binary with the binary of a release, after checking its
     /// signature (cosign, release.yml at the tag) and its SHA-256.
     Update(UpdateArgs),
@@ -450,6 +459,12 @@ async fn async_main(cli: Cli) -> Result<()> {
                     )
                 }
             }
+            Ok(())
+        }
+        Command::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "cfrs", &mut std::io::stdout());
             Ok(())
         }
         Command::Ports(args) => {

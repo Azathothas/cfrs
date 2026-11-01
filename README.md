@@ -163,7 +163,7 @@ All built-in origins run in the process. They do not open a TCP listener.
 `cfrs tunnel --config` reads a cloudflared YAML file:
 
 ```yaml
-tunnel: <named-tunnel-token>          # optional; without it, a quick tunnel
+tunnel: my-tunnel                      # the name or the UUID of the tunnel
 credentials-file: /etc/cfrs/creds.json
 ha-connections: 2
 protocol: auto
@@ -177,13 +177,21 @@ ingress:
   - service: http_status:404
 ```
 
-The last rule must match all requests.
+* The last rule must match all requests (no `hostname`, no `path`). cfrs
+  refuses a file where it does not.
+* With `credentials-file:`, `tunnel:` is the name or the UUID of the tunnel,
+  as in cloudflared. A UUID must be the `TunnelID` of the file. With
+  `tunnel:` only, it is a tunnel token. With neither, cfrs starts a quick
+  tunnel.
+* cfrs ignores the cloudflared keys that it does not use (`metrics`,
+  `loglevel`, `warp-routing`, ...). Another key is an error, with the
+  nearest key.
 
 cfrs reads the YAML with its own reader (`src/yaml.rs`). The reader accepts
 block mappings, block sequences, plain and quoted scalars on one line, and
 comments. It refuses anchors, aliases, tags, block scalars (`|`, `>`), flow
 collections that are not empty, tabs in the indentation and duplicate keys,
-and gives the line number. cfrs ignores keys that it does not use.
+and gives the line number.
 
 ### Named tunnels
 
@@ -441,6 +449,7 @@ cfrs man --roff > cfrs.1      # a man(7) page (also a release asset)
 cfrs man --json               # the tables, for a program
 cfrs status                   # one JSON line about this host; no network
 cfrs ports --json             # the listening TCP ports, as one JSON object
+cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs
 ```
 
 With `--json`, `cfrs tunnel`, `serve`, `share` and `demo` write JSON lines on
