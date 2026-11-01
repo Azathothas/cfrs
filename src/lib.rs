@@ -31,6 +31,8 @@ pub mod egress;
 pub mod exit;
 pub mod feature;
 pub mod fetch;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod gate;
 pub mod hop;
 pub mod ingress;

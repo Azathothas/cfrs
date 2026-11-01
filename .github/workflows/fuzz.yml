@@ -1,0 +1,82 @@
+name: fuzz
+
+# The fuzz targets of fuzz/ (cargo-fuzz, libFuzzer), each week and by hand.
+# Each target runs for `seconds` with a malloc limit of 64 MiB. A crash, a
+# timeout or a large allocation fails the job, and the input is kept as an
+# artifact. Rule: a crash input becomes a unit test first, then the fix
+# (example: capnp.rs fuzz_a_zero_size_struct_list_is_charged).
+#
+# libFuzzer needs glibc: the runner is ubuntu-24.04, not musl. The nightly is
+# pinned: nightly-2026-10-31 cannot compile ssh-key 0.7.0-rc.11 (a query
+# cycle of async drop).
+
+on:
+  schedule:
+    - cron: "41 4 * * 3"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "the run time of each target, in seconds"
+        required: false
+        default: "120"
+
+permissions:
+  contents: read
+
+env:
+  NIGHTLY: nightly-2026-10-15
+  CARGO_FUZZ: "0.13.1"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SECONDS_EACH: ${{ inputs.seconds || '120' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain and cargo-fuzz
+        timeout-minutes: 15
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$NIGHTLY" --profile minimal
+          sh scripts/retry.sh cargo +"$NIGHTLY" install cargo-fuzz --locked --version "$CARGO_FUZZ"
+      - name: Seeds
+        timeout-minutes: 15
+        working-directory: fuzz
+        run: cargo +"$NIGHTLY" run --locked --bin seed -- corpus
+      - name: A planted pointer loop ends
+        timeout-minutes: 15
+        working-directory: fuzz
+        run: |
+          set -eu
+          # One segment of two words: the root struct, and its pointer to itself.
+          printf '\000\000\000\000\002\000\000\000\000\000\000\000\000\000\001\000\374\377\377\377\000\000\001\000' > loop.bin
+          timeout 600 cargo +"$NIGHTLY" fuzz run capnp_message loop.bin -- -runs=1 -timeout=5
+      - name: Each target
+        timeout-minutes: 60
+        working-directory: fuzz
+        run: |
+          set -u
+          failed=""
+          for target in $(cargo +"$NIGHTLY" fuzz list | grep -vx seed); do
+            echo "::group::$target"
+            if ! cargo +"$NIGHTLY" fuzz run "$target" "corpus/$target" -- \
+                -max_total_time="$SECONDS_EACH" -malloc_limit_mb=64 -rss_limit_mb=2048 -timeout=10; then
+              failed="$failed $target"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "the targets that failed:$failed"
+            exit 1
+          fi
+      - name: Keep the inputs of a failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

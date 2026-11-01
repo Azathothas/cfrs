@@ -448,7 +448,7 @@ impl<W: AsyncWrite + Unpin> Session<W> {
     }
 }
 
-fn exception_reason(ret: &StructReader<'_>) -> Result<String> {
+pub(crate) fn exception_reason(ret: &StructReader<'_>) -> Result<String> {
     Ok(ret
         .get_struct(0)?
         .map(|e| e.get_text(0).unwrap_or_default())
@@ -456,7 +456,7 @@ fn exception_reason(ret: &StructReader<'_>) -> Result<String> {
 }
 
 /// The `Payload` of a `Return` with results.
-fn payload<'a>(message: &'a Message) -> Result<StructReader<'a>> {
+pub(crate) fn payload<'a>(message: &'a Message) -> Result<StructReader<'a>> {
     message
         .root()?
         .get_struct(0)?
@@ -466,14 +466,14 @@ fn payload<'a>(message: &'a Message) -> Result<StructReader<'a>> {
 }
 
 /// The content struct of the results.
-fn results_struct(message: &Message) -> Result<StructReader<'_>> {
+pub(crate) fn results_struct(message: &Message) -> Result<StructReader<'_>> {
     payload(message)?
         .get_struct(0)?
         .context("the results have no content")
 }
 
 /// The import id of the capability in the results of a bootstrap.
-fn imported_capability(message: &Message) -> Result<u32> {
+pub(crate) fn imported_capability(message: &Message) -> Result<u32> {
     let payload = payload(message)?;
     let index = payload
         .get_capability(0)?
@@ -501,7 +501,7 @@ fn finish(question: u32, release_result_caps: bool) -> Builder {
 }
 
 /// The answer to a `Bootstrap` of the edge: our capability, export 0.
-fn our_bootstrap_return(question: u32) -> Builder {
+pub(crate) fn our_bootstrap_return(question: u32) -> Builder {
     let mut b = Builder::new();
     let root = b.init_root(1, 1);
     b.set_u16(root, 0, MSG_RETURN);
@@ -519,7 +519,7 @@ fn our_bootstrap_return(question: u32) -> Builder {
 }
 
 /// A `Return` with an `unimplemented` exception for `question`.
-fn exception_return(question: u32, reason: &str) -> Builder {
+pub(crate) fn exception_return(question: u32, reason: &str) -> Builder {
     let mut b = Builder::new();
     let root = b.init_root(1, 1);
     b.set_u16(root, 0, MSG_RETURN);

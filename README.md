@@ -69,6 +69,24 @@ CC_x86_64_unknown_linux_musl=clang cargo build --release --target x86_64-unknown
 The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
 `clang`). The other commands do not.
 
+### Fuzz
+
+`fuzz/` has a libFuzzer target for each parser of bytes from the network
+(Cap'n Proto, the RPC of the edge, capsules, proxy URLs and answers, SRV
+and DoH, ACL rules, ingress rules, YAML, HTTP/2 headers, vnet frames). It
+needs a nightly toolchain and glibc. `.github/workflows/fuzz.yml` runs each
+target each week. A crash input becomes a unit test before the fix.
+
+```sh
+cargo +nightly-2026-10-15 install cargo-fuzz --locked --version 0.13.1
+cd fuzz
+cargo +nightly-2026-10-15 run --bin seed -- corpus
+cargo +nightly-2026-10-15 fuzz run capnp_message corpus/capnp_message -- -max_total_time=60 -malloc_limit_mb=64
+```
+
+`cargo test` runs each target on its seeds and on 2000 fixed mutations
+(`fuzzing::tests::each_target_survives_mutations`).
+
 ## Release binaries
 
 Each [release](https://github.com/Azathothas/cfrs/releases) has static

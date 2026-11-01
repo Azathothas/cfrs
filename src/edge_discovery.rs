@@ -210,7 +210,7 @@ async fn query(name: &str, rtype: &str) -> Result<crate::resolve::DohAnswer> {
 }
 
 /// Parse an SRV `data` field: `priority weight port target`.
-fn parse_srv(data: &str) -> Option<(String, u16)> {
+pub(crate) fn parse_srv(data: &str) -> Option<(String, u16)> {
     let mut parts = data.split_whitespace();
     let _priority = parts.next()?;
     let _weight = parts.next()?;

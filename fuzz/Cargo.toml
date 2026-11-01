@@ -1,0 +1,137 @@
+# The fuzz targets of cfrs (cargo-fuzz, libFuzzer). This is its own
+# workspace: the main workspace excludes it, and it needs a nightly
+# toolchain and glibc (libFuzzer does not run on musl).
+#
+#   cargo +nightly fuzz run capnp_message -- -max_total_time=60
+#
+# Each target calls one function of cfrs::fuzzing. .github/workflows/fuzz.yml
+# runs each target each week.
+
+[package]
+name = "cfrs-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "0BSD"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cfrs = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "seed"
+path = "src/seed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capnp_message"
+path = "fuzz_targets/capnp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpc_message"
+path = "fuzz_targets/rpc_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "register_response"
+path = "fuzz_targets/register_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connect_request"
+path = "fuzz_targets/connect_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capsule"
+path = "fuzz_targets/capsule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proxy_url"
+path = "fuzz_targets/proxy_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "no_proxy"
+path = "fuzz_targets/no_proxy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connect_response_head"
+path = "fuzz_targets/connect_response_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srv_record"
+path = "fuzz_targets/srv_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "doh_json"
+path = "fuzz_targets/doh_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "acl_rule"
+path = "fuzz_targets/acl_rule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ingress_rule"
+path = "fuzz_targets/ingress_rule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_yaml"
+path = "fuzz_targets/config_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h2_header_block"
+path = "fuzz_targets/h2_header_block.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vnet_frame"
+path = "fuzz_targets/vnet_frame.rs"
+test = false
+doc = false
+bench = false

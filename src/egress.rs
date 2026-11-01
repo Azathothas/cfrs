@@ -939,7 +939,7 @@ async fn read_head(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>>
 }
 
 /// Parse `HTTP/1.1 200 Connection established`.
-fn parse_status(head: &[u8]) -> Result<u16> {
+pub(crate) fn parse_status(head: &[u8]) -> Result<u16> {
     let text = String::from_utf8_lossy(head);
     let line = text
         .lines()

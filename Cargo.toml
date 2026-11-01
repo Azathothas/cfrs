@@ -13,6 +13,7 @@ categories = ["network-programming", "command-line-utilities"]
 
 [workspace]
 members = [".", "crates/pod-netns"]
+exclude = ["fuzz"]
 default-members = [".", "crates/pod-netns"]
 
 [workspace.package]

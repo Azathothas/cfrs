@@ -674,6 +674,12 @@ impl<'a> StructReader<'a> {
                 let size = usize::from(data) + usize::from(ptrs);
                 self.msg
                     .check_range(segment, start + 1, (count * size) as u64)?;
+                // An element of 0 words reads no word: charge one word for
+                // each, as the reference implementation does, so a short
+                // message cannot make a long list.
+                if size == 0 {
+                    self.msg.spend(count as u64)?;
+                }
                 (0..count)
                     .map(|i| self.child(segment, start + 1 + i * size, data, ptrs))
                     .collect()
@@ -693,13 +699,17 @@ impl<'a> StructReader<'a> {
                 count,
                 ..
             } => {
+                if count > u64::from(u16::MAX) {
+                    bail!("a text list of {count} elements");
+                }
+                self.msg.check_range(segment, start, count)?;
                 let list = StructReader {
                     msg: self.msg,
                     segment,
                     data: start,
                     data_words: 0,
                     ptrs: start,
-                    ptr_count: count.min(u64::from(u16::MAX)) as u16,
+                    ptr_count: count as u16,
                     depth: self.depth + 1,
                 };
                 (0..list.ptr_count).map(|i| list.get_text(i)).collect()
@@ -712,6 +722,93 @@ impl<'a> StructReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One segment of `words`, framed.
+    fn framed(words: &[u64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(words.len() as u32).to_le_bytes());
+        for w in words {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+
+    /// A struct pointer at `at` to a struct at `target`.
+    fn struct_ptr(at: usize, target: usize, data: u16, ptrs: u16) -> u64 {
+        let offset = (target as i64 - at as i64 - 1) as u32 & 0x3fff_ffff;
+        ((offset as u64) << 2) | ((data as u64) << 32) | ((ptrs as u64) << 48)
+    }
+
+    /// A struct whose one pointer points to the struct itself: a reader
+    /// that follows it again and again stops with an error (the depth
+    /// limit or the read budget) and does not hang.
+    #[test]
+    fn a_pointer_loop_ends_with_an_error() {
+        // Word 0: the root pointer to the struct at word 1 (0 data, 1 ptr).
+        // Word 1: the pointer of that struct, to word 1 again.
+        let bytes = framed(&[struct_ptr(0, 1, 0, 1), struct_ptr(1, 1, 0, 1)]);
+        let (message, _) = Message::parse(&bytes).unwrap().unwrap();
+        let mut s = message.root().unwrap();
+        let mut steps = 0;
+        let end = loop {
+            steps += 1;
+            assert!(steps < 10_000, "the loop does not end");
+            match s.get_struct(0) {
+                Ok(Some(child)) => s = child,
+                Ok(None) => panic!("the loop has a null pointer"),
+                Err(e) => break e,
+            }
+        };
+        assert!(steps <= MAX_DEPTH as usize + 1, "{steps} steps");
+        let text = format!("{end:#}");
+        assert!(
+            text.contains("deep") || text.contains("limit") || text.contains("depth"),
+            "{text}"
+        );
+    }
+
+    /// A list pointer with a count far above the size of the message is
+    /// refused before any allocation of that size.
+    #[test]
+    fn a_huge_list_count_is_refused() {
+        // A byte list (element size 2) of 2^29 - 1 elements in a 2-word
+        // message, and the same count of 8-byte elements (size 5).
+        for elem in [2u64, 5] {
+            let list = 1 | (elem << 32) | (((1u64 << 29) - 1) << 35);
+            let bytes = framed(&[struct_ptr(0, 1, 0, 1), list]);
+            let (message, _) = Message::parse(&bytes).unwrap().unwrap();
+            let root = message.root().unwrap();
+            assert!(root.get_data(0).is_err());
+            assert!(root.get_text_list(0).is_err());
+            assert!(root.get_struct_list(0).is_err());
+        }
+        // A segment table that claims 4 GiB is refused by the framing.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Message::parse(&bytes).is_err());
+    }
+
+    /// Found by the fuzz target capnp_message: a composite list of
+    /// zero-size structs with a huge count. Each element reads no word, so
+    /// the range check passed, and the reader made one reader for each of
+    /// the 2^24 elements (an allocation of 80 MiB for 96 bytes).
+    #[test]
+    fn fuzz_a_zero_size_struct_list_is_charged() {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode("AAAAAA0AAAAAAAAAAQACAAAAAAAAAAAABQAAAJIAAAANAAAAFwAAAGh0dHA6Ly9sb2NhbGhvc3QvAAAAAAAAAAADAAQAAAAAAAAAAFoAAAAJAAAAIgAAAEh0dHBNZXRob2QAAAAAAABHRVQAAAAAAA==")
+            .unwrap();
+        crate::fuzzing::capnp_message(&bytes);
+        // The same shape, made by hand: a tag of 2^29 - 1 elements of 0 words.
+        let list = 1 | (7u64 << 32); // composite, 0 words
+        let tag = ((1u64 << 29) - 1) << 2;
+        let bytes = framed(&[struct_ptr(0, 1, 0, 1), list, tag]);
+        let (message, _) = Message::parse(&bytes).unwrap().unwrap();
+        let err = message.root().unwrap().get_struct_list(0).unwrap_err();
+        assert!(format!("{err:#}").contains("read limit"), "{err:#}");
+    }
 
     #[test]
     fn a_struct_round_trips() {
