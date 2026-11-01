@@ -75,13 +75,19 @@ pub fn identity(tag: &str) -> String {
     format!("https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{tag}")
 }
 
-/// GET `url`, and follow up to 5 redirects.
-async fn get(url: &str, timeout: Duration) -> Result<Vec<u8>> {
+/// The largest release binary that `cfrs update` downloads. The binaries are
+/// about 14 MB; [`crate::fetch::MAX_BODY`] (16 MiB) is too near.
+pub const MAX_BINARY: usize = 128 << 20;
+
+/// GET `url` with a body of at most `max_body` bytes, and follow up to 5
+/// redirects.
+async fn get(url: &str, timeout: Duration, max_body: usize) -> Result<Vec<u8>> {
     let mut url = url.to_string();
     for _ in 0..6 {
         let response = crate::fetch::Request::new("GET", url.clone())
             .header("Accept", "application/octet-stream, application/json")
             .timeout(timeout)
+            .max_body(max_body)
             .send()
             .await?;
         match response.status {
@@ -106,6 +112,7 @@ pub async fn releases() -> Result<Vec<Release>> {
     let body = get(
         &format!("https://api.github.com/repos/{REPOSITORY}/releases?per_page=30"),
         Duration::from_secs(30),
+        crate::fetch::MAX_BODY,
     )
     .await
     .context("reading the list of releases")?;
@@ -336,16 +343,16 @@ pub async fn run(tag: Option<&str>, check: bool) -> Result<Outcome> {
         .asset("SHA256SUMS.sigstore.json")?
         .browser_download_url
         .clone();
-    let sums = get(&sums_url, Duration::from_secs(60))
+    let sums = get(&sums_url, Duration::from_secs(60), crate::fetch::MAX_BODY)
         .await
         .context("SHA256SUMS")?;
-    let bundle = get(&bundle_url, Duration::from_secs(60))
+    let bundle = get(&bundle_url, Duration::from_secs(60), crate::fetch::MAX_BODY)
         .await
         .context("SHA256SUMS.sigstore.json")?;
     verify_bundle(&bundle, &sums, &release.tag_name)
         .with_context(|| format!("checking the signature of {}", release.tag_name))?;
     let want = sum_of(&sums, &name)?;
-    let binary = get(&binary_url, Duration::from_secs(300))
+    let binary = get(&binary_url, Duration::from_secs(300), MAX_BINARY)
         .await
         .context(name.clone())?;
     let got = ring::digest::digest(&ring::digest::SHA256, &binary);

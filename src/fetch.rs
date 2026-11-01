@@ -6,7 +6,7 @@
 //! module), adds TLS with the roots of [`crate::trust`] for `https://`, and
 //! sends `Connection: close`. The body of the answer is read by
 //! `Content-Length`, by chunks, or to the end of the connection, up to
-//! [`MAX_BODY`] bytes.
+//! [`MAX_BODY`] bytes, or up to the limit of [`Request::max_body`].
 
 use std::time::Duration;
 
@@ -31,6 +31,8 @@ pub struct Request {
     pub timeout: Duration,
     /// A proxy for this request only, in place of the choice of the process.
     pub via: Option<Proxy>,
+    /// The largest body of the answer.
+    pub max_body: usize,
 }
 
 impl Request {
@@ -42,6 +44,7 @@ impl Request {
             body: None,
             timeout: Duration::from_secs(30),
             via: None,
+            max_body: MAX_BODY,
         }
     }
 
@@ -62,6 +65,12 @@ impl Request {
 
     pub fn via(mut self, proxy: Option<Proxy>) -> Self {
         self.via = proxy;
+        self
+    }
+
+    /// Set the largest body of the answer, in place of [`MAX_BODY`].
+    pub fn max_body(mut self, max: usize) -> Self {
+        self.max_body = max;
         self
     }
 
@@ -233,11 +242,15 @@ where
         .context("sending the request")?;
     io.write_all(body).await.context("sending the body")?;
     io.flush().await.context("sending the request")?;
-    read_response(&mut io, request.method == "HEAD").await
+    read_response(&mut io, request.method == "HEAD", request.max_body).await
 }
 
 /// Read one answer from `io`.
-async fn read_response<S: AsyncRead + Unpin>(io: &mut S, head_only: bool) -> Result<Response> {
+async fn read_response<S: AsyncRead + Unpin>(
+    io: &mut S,
+    head_only: bool,
+    max_body: usize,
+) -> Result<Response> {
     let mut buf = Vec::with_capacity(4096);
     let mut chunk = [0u8; 8192];
     let (status, headers, start) = loop {
@@ -286,11 +299,11 @@ async fn read_response<S: AsyncRead + Unpin>(io: &mut S, head_only: bool) -> Res
     let body = if head_only || status == 204 || status == 304 {
         Vec::new()
     } else if find("transfer-encoding").is_some_and(|v| v.contains("chunked")) {
-        read_chunked(io, rest).await?
+        read_chunked(io, rest, max_body).await?
     } else if let Some(len) = find("content-length") {
         let len: usize = len.parse().context("the Content-Length is not a number")?;
-        if len > MAX_BODY {
-            bail!("the body has {len} bytes, more than {MAX_BODY}");
+        if len > max_body {
+            bail!("the body has {len} bytes, more than {max_body}");
         }
         while rest.len() < len {
             let n = read_some(io, &mut chunk).await?;
@@ -306,14 +319,15 @@ async fn read_response<S: AsyncRead + Unpin>(io: &mut S, head_only: bool) -> Res
         rest
     } else {
         loop {
+            // The bytes that came with the head count too.
+            if rest.len() > max_body {
+                bail!("the body is larger than {max_body} bytes");
+            }
             let n = read_some(io, &mut chunk).await?;
             if n == 0 {
                 break rest;
             }
             rest.extend_from_slice(&chunk[..n]);
-            if rest.len() > MAX_BODY {
-                bail!("the body is larger than {MAX_BODY} bytes");
-            }
         }
     };
     Ok(Response {
@@ -333,7 +347,11 @@ async fn read_some<S: AsyncRead + Unpin>(io: &mut S, buf: &mut [u8]) -> Result<u
     }
 }
 
-async fn read_chunked<S: AsyncRead + Unpin>(io: &mut S, mut buf: Vec<u8>) -> Result<Vec<u8>> {
+async fn read_chunked<S: AsyncRead + Unpin>(
+    io: &mut S,
+    mut buf: Vec<u8>,
+    max_body: usize,
+) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut pos = 0;
@@ -356,8 +374,8 @@ async fn read_chunked<S: AsyncRead + Unpin>(io: &mut S, mut buf: Vec<u8>) -> Res
         if size == 0 {
             return Ok(body);
         }
-        if body.len() + size > MAX_BODY {
-            bail!("the body is larger than {MAX_BODY} bytes");
+        if body.len() + size > max_body {
+            bail!("the body is larger than {max_body} bytes");
         }
         while buf.len() < pos + size + 2 {
             let n = read_some(io, &mut chunk).await?;
@@ -397,7 +415,25 @@ mod tests {
 
     async fn parse(raw: &[u8]) -> Result<Response> {
         let mut io = raw;
-        read_response(&mut io, false).await
+        read_response(&mut io, false, MAX_BODY).await
+    }
+
+    #[tokio::test]
+    async fn the_body_limit_is_set_for_each_request() {
+        let sized = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789";
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\n0123456789\r\n0\r\n\r\n";
+        let to_end = b"HTTP/1.1 200 OK\r\n\r\n0123456789";
+        for raw in [&sized[..], &chunked[..], &to_end[..]] {
+            let mut io = raw;
+            assert!(read_response(&mut io, false, 9).await.is_err());
+            let mut io = raw;
+            let answer = read_response(&mut io, false, 10).await.unwrap();
+            assert_eq!(answer.body, b"0123456789");
+        }
+        let request = Request::new("GET", "https://example.com/");
+        assert_eq!(request.max_body, MAX_BODY);
+        assert_eq!(request.max_body(1 << 30).max_body, 1 << 30);
     }
 
     #[tokio::test]
