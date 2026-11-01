@@ -197,10 +197,9 @@ impl Tun {
 }
 
 /// Move packets between `tun` and `session` until one of them ends.
-pub async fn run(tun: Tun, session: MasqueSession) -> Result<()> {
+pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
     let (mut tx, mut rx) = session.split();
     info!(interface = %tun.name, "the TUN interface is connected to WARP");
-    let tun = &tun;
     let outbound = async {
         let mut buf = vec![0u8; 65_536];
         let mut keepalive = tokio::time::interval(KEEPALIVE);

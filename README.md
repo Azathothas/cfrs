@@ -374,6 +374,12 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   packets through WARP. It does not change the routes: add routes for the
   destinations to send through WARP, and keep a route for the MASQUE endpoint
   outside the interface. The command prints examples.
+* `cfrs warp proxy`, `cfrs warp run` and `cfrs warp tun` open a new MASQUE
+  session when the session ends (a network change, the front door, the
+  limit of a relay): at once, then with a backoff of 1 s doubled to 30 s.
+  A new client takes the new session; a client that comes while the
+  session is down waits for it (20 s at most). `warp tun` keeps its
+  interface. The log has `a new WARP session is open` for each.
 * The registration API calls and the MASQUE connection use the proxy (see
   "Proxies and DNS"). A proxy that terminates TLS cannot carry the MASQUE
   connection, because the connection uses a client certificate.

@@ -1941,8 +1941,11 @@ async fn warp(args: WarpArgs) -> Result<()> {
             listen, run_for, ..
         } => {
             let listen = cfrs::vnet::proxy::ProxyListen::parse(&listen)?;
-            let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
-            let proxy = cfrs::warp::proxy::serve(stack, listen).await?;
+            let live = Arc::new(client)
+                .connect_live()
+                .await
+                .fault(Fault::Unavailable)?;
+            let proxy = cfrs::warp::proxy::serve(live, listen).await?;
             match &proxy.listen {
                 cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
                     println!("cfrs: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
@@ -1991,8 +1994,36 @@ async fn warp(args: WarpArgs) -> Result<()> {
             println!(
                 "  ip route add {endpoint}/32 via <your gateway>   # keep the session outside"
             );
+            // The TUN stays; a session that ends is opened again (issue 75).
+            let tun_ref = &tun;
+            let client_ref = &client;
+            let keep = async move {
+                let mut session = Some(session);
+                let mut delay = std::time::Duration::from_secs(1);
+                loop {
+                    let current = match session.take() {
+                        Some(s) => s,
+                        None => match client_ref.connect_raw().await {
+                            Ok(s) => {
+                                tracing::info!("a new WARP session is open");
+                                delay = std::time::Duration::from_secs(1);
+                                s
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %format!("{err:#}"), next_try_s = delay.as_secs(), "a new WARP session failed");
+                                tokio::time::sleep(delay).await;
+                                delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                                continue;
+                            }
+                        },
+                    };
+                    if let Err(err) = cfrs::warp::tun::run(tun_ref, current).await {
+                        tracing::warn!(error = %format!("{err:#}"), "the WARP session ended; opening a new one");
+                    }
+                }
+            };
             tokio::select! {
-                result = cfrs::warp::tun::run(tun, session) => result?,
+                _ = keep => {}
                 _ = shutdown_signal() => {}
             }
         }
@@ -2001,9 +2032,12 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Run { backend, program } => {
             let socket =
                 std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
-            let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
+            let live = Arc::new(client)
+                .connect_live()
+                .await
+                .fault(Fault::Unavailable)?;
             let proxy = cfrs::warp::proxy::serve(
-                stack,
+                live,
                 cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()),
             )
             .await?;

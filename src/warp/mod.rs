@@ -35,6 +35,7 @@
 pub mod capsule;
 pub mod identity;
 pub mod ip;
+pub mod live;
 pub mod proxy;
 pub mod quic;
 pub mod register;
@@ -44,6 +45,7 @@ pub mod tun;
 
 pub use identity::Identity;
 pub use ip::{StackConfig, TcpConn, UdpConn, WarpStack};
+pub use live::{Closable, Live};
 pub use register::Device;
 pub use session::{MasqueRx, MasqueSession, MasqueTx};
 

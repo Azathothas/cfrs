@@ -338,10 +338,10 @@ jobs:
           sh scripts/live-run.sh warprun timeout 120 target/release/cfrs warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace
           grep -q '^warp=on' warprun.out
       - name: WARP proxy
-        timeout-minutes: 3
+        timeout-minutes: 4
         run: |
           set -eu
-          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 90 > warpproxy.log 2>&1 &
+          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 150 > warpproxy.log 2>&1 &
           # The proxy listens after the WARP registration: wait for it.
           i=0
           until nc -z 127.0.0.1 40000 2> /dev/null; do
@@ -356,6 +356,21 @@ jobs:
           out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
           echo "$out" | grep -E '^(warp|colo|tls)='
           echo "$out" | grep -q '^warp=on'
+          # Issue 75: the MASQUE connection is killed (ss -K); the proxy
+          # opens a new session, and a new client goes through it.
+          sudo ss -K dst 162.159.198.0/24 dport = 443 || true
+          i=0
+          until grep -q 'a new WARP session is open' warpproxy.log; do
+            i=$((i + 1))
+            if [ "$i" -gt 40 ]; then
+              sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' warpproxy.log | tail -30
+              echo "no new WARP session after 40 s"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
+          grep 'a new WARP session is open' warpproxy.log
       # The test box (issue 21): a user whose only egress is a policy proxy.
       - name: The test box
         timeout-minutes: 15

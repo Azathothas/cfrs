@@ -16,7 +16,7 @@ use pod_netns::listen::ProxyListen;
 use pod_netns::socks::{self, ProxyHost, ProxyRequest};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::ip::{TcpConn, WarpStack};
 
@@ -44,8 +44,10 @@ impl WarpProxy {
     }
 }
 
-/// Accept proxy clients on `listen` and connect them through `stack`.
-pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpProxy> {
+/// Accept proxy clients on `listen` and connect them through the WARP
+/// session of `live`. Each client takes the session of the time it comes;
+/// after a reconnect (issue 75), new clients take the new session.
+pub async fn serve(live: Arc<super::Live<WarpStack>>, listen: ProxyListen) -> Result<WarpProxy> {
     let task = match &listen {
         ProxyListen::Tcp(addr) => {
             let listener = tokio::net::TcpListener::bind(addr)
@@ -53,8 +55,16 @@ pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpPro
                 .with_context(|| format!("binding tcp://{addr}"))?;
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
-                    let stack = stack.clone();
+                    let live = live.clone();
                     tokio::spawn(async move {
+                        // The session of now: a new one after a reconnect.
+                        let stack = match live.get().await {
+                            Ok(stack) => stack,
+                            Err(err) => {
+                                warn!(error = %format!("{err:#}"), "WARP proxy client refused");
+                                return;
+                            }
+                        };
                         let udp = Some(stack.clone());
                         let dial = move |host, port| dial(stack.clone(), host, port);
                         if let Err(err) = handle_client(stream, dial, udp).await {
@@ -70,8 +80,16 @@ pub async fn serve(stack: Arc<WarpStack>, listen: ProxyListen) -> Result<WarpPro
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
-                    let stack = stack.clone();
+                    let live = live.clone();
                     tokio::spawn(async move {
+                        // The session of now: a new one after a reconnect.
+                        let stack = match live.get().await {
+                            Ok(stack) => stack,
+                            Err(err) => {
+                                warn!(error = %format!("{err:#}"), "WARP proxy client refused");
+                                return;
+                            }
+                        };
                         let udp = Some(stack.clone());
                         let dial = move |host, port| dial(stack.clone(), host, port);
                         if let Err(err) = handle_client(stream, dial, udp).await {
