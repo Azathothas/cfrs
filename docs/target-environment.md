@@ -49,6 +49,7 @@ The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
 | QUIC inside WARP MASQUE on TCP 443 | Registers | measured |
 | UDP 7844 dropped (`iptables DROP`) | `--protocol auto` registers over HTTP/2 after 2.4 s (the 2 s stagger) | measured |
 | UDP and TCP 7844 dropped | `--protocol auto` registers over `quic+warp` after 6.7 s (two 2 s staggers and the WARP setup) | measured |
+| UDP and TCP 7844 dropped, `--transport relay` | `http2+relay` registers through `tcp.ssh.relay.ajam.dev` in 0.74 s (ord02); the public URL answers 200 (run 41303368779) | measured |
 | No system resolver | Names come from DoH by IP address at `1.1.1.1` | measured |
 | No system resolver, `1.1.1.1` and `1.0.0.1` blocked | Names come from DoH by IP address at Google (`8.8.8.8`) | measured |
 | A local `CONNECT` proxy in `HTTPS_PROXY` | DoH by IP (`1.1.1.1:443`), the API, the HTTP/2 edge leg (`:7844`) and the fetch of the public URL go through it; no QUIC is tried | measured |

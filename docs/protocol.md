@@ -191,7 +191,10 @@ Limits of `tcp.ssh.relay.ajam.dev` (podssh measured them):
 
 podssh measured TLS to `region1.v2.argotunnel.com:7844` through this relay
 (GitHub Actions run 41072705691). The live check of cfrs registers a quick
-tunnel through it with UDP and TCP 7844 dropped on the host.
+tunnel through it with UDP and TCP 7844 dropped on the host. Measured
+2026-11-01 (live run 41303368779): `http2+relay` registered at ord02 in
+743 ms, the second connection registered at ord02, and the public URL
+answered 200.
 
 ## 4. Stream framing (QUIC)
 
