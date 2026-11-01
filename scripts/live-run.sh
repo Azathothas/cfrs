@@ -1,6 +1,8 @@
 #!/bin/sh
 # Run a command of the live check and print its output with the tunnel
-# hosts, the UUIDs and the WARP device ids masked: the log of CI is public.
+# hosts (not api.trycloudflare.com), the UUIDs and the WARP device ids
+# masked: the log of CI is public. Do not send the stdout of this script to
+# /dev/null: it holds the ::add-mask:: commands.
 #
 #   sh scripts/live-run.sh NAME COMMAND [ARGUMENT...]
 #
@@ -14,6 +16,7 @@ shift
 rc=$?
 cat "$name.out" "$name.err" |
     grep -oE '[a-z0-9-]+\.trycloudflare\.com|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}' |
+    grep -vxE 'api\.trycloudflare\.com' |
     sort -u |
     while read -r value; do
         echo "::add-mask::$value"

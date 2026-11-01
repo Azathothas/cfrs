@@ -54,6 +54,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The ::add-mask:: commands of scripts/live-run.sh are on its stdout.
+      - name: No step drops the masks
+        timeout-minutes: 1
+        run: |
+          if grep -nE 'live-run\.sh .*>[ ]*/dev/null' .github/workflows/live.yml; then
+            echo "a step sends the output of live-run.sh to /dev/null: the masks are lost"
+            exit 1
+          fi
       - name: Toolchain
         timeout-minutes: 5
         run: |
@@ -130,13 +138,13 @@ jobs:
           sudo rm -f /etc/resolv.conf
           echo "nameserver 192.0.2.1" | sudo tee /etc/resolv.conf > /dev/null
           if timeout 15 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
-          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 > /dev/null 2>&1 ||
+          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 ||
             { tail -40 dns.err; exit 1; }
           grep 'cfrs::resolve' dns.err | head -10 || true
           grep -q 'step="doh"' dns.err
           sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
           sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
-          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns2 timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 > /dev/null 2>&1 ||
+          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns2 timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 ||
             { tail -40 dns2.err; exit 1; }
           grep 'cfrs::resolve' dns2.err | head -10 || true
           grep -q 'server="https://8\.8\.' dns2.err
@@ -174,7 +182,7 @@ jobs:
           sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
-          sh scripts/live-run.sh race timeout 240 target/release/cfrs demo --exit-on-verify > /dev/null 2>&1 ||
+          sh scripts/live-run.sh race timeout 240 target/release/cfrs demo --exit-on-verify ||
             { tail -40 race.err; exit 1; }
           grep 'the leg won the race' race.err
           grep -q 'leg=quic+warp' race.err
