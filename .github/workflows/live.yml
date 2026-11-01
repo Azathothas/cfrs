@@ -226,8 +226,18 @@ jobs:
         timeout-minutes: 3
         run: |
           set -eu
-          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 60 > warpproxy.log 2>&1 &
-          sleep 15
+          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 90 > warpproxy.log 2>&1 &
+          # The proxy listens after the WARP registration: wait for it.
+          i=0
+          until nc -z 127.0.0.1 40000 2> /dev/null; do
+            i=$((i + 1))
+            if [ "$i" -gt 60 ]; then
+              sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' warpproxy.log | tail -30
+              echo "the WARP proxy does not listen after 60 s"
+              exit 1
+            fi
+            sleep 1
+          done
           out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
           echo "$out" | grep -E '^(warp|colo|tls)='
           echo "$out" | grep -q '^warp=on'
