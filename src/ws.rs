@@ -288,7 +288,6 @@ mod tests {
 mod bench {
     use super::*;
     use std::time::{Duration, Instant};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::{TcpListener, TcpStream};
 
     /// One direction of a delay line: each chunk goes out `delay` after it came in.
