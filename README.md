@@ -528,6 +528,25 @@ read (for example `/etc/ssl/certs/ca-certificates.crt`), and the Mozilla
 roots compiled into cfrs. `cfrs status` shows the roots in `tls_roots`. See
 `SECURITY.md`.
 
+## One command for an agent sandbox: `cfrs agent up`
+
+```sh
+cfrs agent up --expose 3000      # test, start WARP if needed, expose port 3000
+cfrs agent status
+cfrs agent down                  # stop each part, put back each change
+```
+
+`cfrs agent up` runs the checks of `cfrs doctor --agent`. When direct
+networking does not do each task (git over HTTPS and SSH, the registries,
+UDP DNS), it starts `cfrs warp up` (`--persist` adds the shell block;
+`--warp` starts it also when direct networking works). For each
+`--expose PORT`, it starts a detached quick tunnel (instance
+`expose-PORT`), and tries `--transport relay` when the first try fails.
+It then runs the checks again and prints one JSON document: `mode`
+(`warp` or `direct`), the paths that work for each task, the URLs, and
+the commands to use (`eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`,
+`cfrs warp ssh-config`).
+
 ## Run in the background: `--detach`
 
 ```sh

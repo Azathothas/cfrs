@@ -152,6 +152,13 @@ enum Command {
     /// Start a cfrs command at boot and after a logout, with no root: a
     /// systemd user unit, else an @reboot line in the crontab.
     Autostart(AutostartArgs),
+    /// One command for a sandbox with basic networking (issue 87): test
+    /// what works, start WARP when it is needed, expose ports, and print
+    /// what works now and the commands to use.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// List the instances that run in the background (--detach).
     Ps {
         /// Print one JSON document: {"instances": [...]}.
@@ -232,6 +239,31 @@ enum AutostartCommand {
         #[arg(long)]
         dir: PathBuf,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentCommand {
+    /// Test the host (cfrs doctor --agent), start cfrs warp up when direct
+    /// networking does not do each task, start a detached quick tunnel for
+    /// each --expose PORT, and print one JSON document.
+    Up {
+        /// Also add the block of cfrs warp up --persist to the shell files.
+        #[arg(long)]
+        persist: bool,
+        /// A local port to expose with a quick tunnel (repeatable).
+        #[arg(long = "expose", value_name = "PORT")]
+        expose: Vec<u16>,
+        /// The TCP port of the WARP proxy on 127.0.0.1.
+        #[arg(long, default_value_t = 40000)]
+        port: u16,
+        /// Start WARP also when direct networking works.
+        #[arg(long)]
+        warp: bool,
+    },
+    /// Stop what cfrs agent up started and put back each change.
+    Down,
+    /// Print the state: the instances, cfrs warp up, and the doctor.
+    Status,
 }
 
 #[derive(Args, Debug)]
@@ -710,6 +742,144 @@ async fn shutdown_signal() -> std::io::Result<()> {
     }
 }
 
+/// Run `cfrs ARGS` and give its last line as JSON (the ready document of
+/// a detached start), with its stderr on this stderr.
+fn run_self_json(args: &[String]) -> Result<serde_json::Value> {
+    let exe = std::env::current_exe()?;
+    let out = std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        bail!("cfrs {} exited {}", args.join(" "), out.status);
+    }
+    let last = text.lines().last().unwrap_or("");
+    serde_json::from_str(last).with_context(|| format!("the output of cfrs {}", args.join(" ")))
+}
+
+/// `cfrs agent up`, `down` and `status`.
+async fn agent(command: AgentCommand) -> Result<()> {
+    let timeout = Duration::from_secs(4);
+    match command {
+        AgentCommand::Up {
+            persist,
+            expose,
+            port,
+            warp,
+        } => {
+            let before = cfrs::agent::run(timeout).await;
+            let direct_enough = before
+                .rows
+                .iter()
+                .all(|r| r.direct == cfrs::agent::Outcome::Ok)
+                && before.udp_dns.works();
+            let mut doc = serde_json::json!({});
+            let mut warp_doc = serde_json::Value::Null;
+            if warp || !direct_enough || before.warp_up {
+                let mut args = vec![
+                    "warp".to_string(),
+                    "up".into(),
+                    "--port".into(),
+                    port.to_string(),
+                ];
+                if persist {
+                    args.push("--persist".into());
+                }
+                match run_self_json(&args) {
+                    Ok(d) => warp_doc = d,
+                    Err(err) => {
+                        eprintln!("cfrs: agent up: cfrs warp up failed: {err:#}");
+                        doc["warp_error"] = format!("{err:#}").into();
+                    }
+                }
+            }
+            let mut exposed = Vec::new();
+            for p in &expose {
+                let name = format!("expose-{p}");
+                let base = vec![
+                    "tunnel".to_string(),
+                    "--port".into(),
+                    p.to_string(),
+                    "--detach".into(),
+                    "--name".into(),
+                    name.clone(),
+                ];
+                let result = run_self_json(&base).or_else(|first| {
+                    eprintln!("cfrs: agent up: the tunnel of port {p} failed ({first:#}); trying --transport relay");
+                    let mut relay = base.clone();
+                    relay.extend(["--transport".into(), "relay".into(), "--replace".into()]);
+                    run_self_json(&relay)
+                });
+                match result {
+                    Ok(d) => {
+                        exposed.push(serde_json::json!({"port": p, "name": name, "url": d["url"]}))
+                    }
+                    Err(err) => {
+                        exposed.push(serde_json::json!({"port": p, "error": format!("{err:#}")}))
+                    }
+                }
+            }
+            let after = cfrs::agent::run(timeout).await;
+            let mut works = serde_json::Map::new();
+            for row in &after.rows {
+                works.insert(
+                    row.task.to_string(),
+                    serde_json::to_value(row.working()).unwrap_or_default(),
+                );
+            }
+            let mode = if !warp_doc.is_null() {
+                "warp"
+            } else {
+                "direct"
+            };
+            let mut commands: Vec<String> = Vec::new();
+            if mode == "warp" {
+                commands
+                    .push("eval \"$(cfrs warp env)\"   # proxy variables for this shell".into());
+                commands.push(
+                    "cfrs warp exec -- CMD   # any program, also static binaries and UDP".into(),
+                );
+                commands.push(
+                    "cfrs warp ssh-config --host github.com >> ~/.ssh/config   # git over SSH"
+                        .into(),
+                );
+            }
+            commands.push("cfrs agent status".into());
+            commands.push("cfrs agent down".into());
+            doc["event"] = "agent".into();
+            doc["mode"] = mode.into();
+            doc["warp"] = warp_doc;
+            doc["exposed"] = exposed.into();
+            doc["works"] = works.into();
+            doc["udp_dns"] = after.udp_dns.works().into();
+            doc["ipv6"] = after.ipv6.works().into();
+            doc["commands"] = commands.into();
+            doc["advice"] = after.advice.clone().into();
+            println!("{doc}");
+            Ok(())
+        }
+        AgentCommand::Down => {
+            let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+            for entry in cfrs::instances::list(&dir) {
+                if entry.record.name.starts_with("expose-") {
+                    cfrs::detach::stop(&dir, &entry.record.name, Duration::from_secs(10))?;
+                    println!("cfrs: agent down: stopped {}", entry.record.name);
+                }
+            }
+            cfrs::warp::up::down()
+        }
+        AgentCommand::Status => {
+            instances_ps(false)?;
+            println!();
+            let report = cfrs::agent::run(timeout).await;
+            print!("{}", cfrs::agent::text(&report));
+            Ok(())
+        }
+    }
+}
+
 /// `cfrs ps`: the instances of the run directory.
 fn instances_ps(json: bool) -> Result<()> {
     let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
@@ -1005,6 +1175,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Agent { command } => agent(command).await,
         Command::Ps { json } => instances_ps(json),
         Command::Stop { name, all, timeout } => instances_stop(name, all, timeout),
         Command::Logs {
