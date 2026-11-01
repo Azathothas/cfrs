@@ -234,6 +234,17 @@ async fn forward_http(
 
     let (status, headers, leftover) = read_response_head(&mut io).await?;
     write_response_meta(&mut writer, status, &headers).await?;
+    // A chunked body: the edge frames the body itself, so send only the
+    // payload of the chunks. The last chunk ends the body, also when the
+    // origin keeps the connection open.
+    let chunked = headers_value(&headers, "transfer-encoding")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+    if chunked {
+        let mut source =
+            tokio::io::BufReader::new(tokio::io::AsyncReadExt::chain(&leftover[..], &mut io));
+        copy_chunked_to_futures(&mut source, &mut writer, metrics).await?;
+        return futures_close(&mut writer).await;
+    }
     if !leftover.is_empty() {
         futures_write_all(&mut writer, &leftover).await?;
         metrics.add_out(leftover.len() as u64);
@@ -867,6 +878,51 @@ where
     Ok(total)
 }
 
+/// Decode the chunked body of `src` and write its payload to `dst`. The
+/// trailer is read and dropped. A size line of more than 4096 bytes, a bad
+/// size or an early end is an error.
+async fn copy_chunked_to_futures<R, W>(src: &mut R, dst: &mut W, metrics: &Metrics) -> Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: futures::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let n = tokio::io::AsyncReadExt::take(&mut *src, 4096)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if n == 0 || !line.ends_with(b"\n") {
+            anyhow::bail!("the chunked body of the origin ends early");
+        }
+        let text = std::str::from_utf8(&line).context("a chunk size is not text")?;
+        let hex = text.split(';').next().unwrap_or("").trim();
+        let size = u64::from_str_radix(hex, 16)
+            .with_context(|| format!("a bad chunk size {hex:?} from the origin"))?;
+        if size == 0 {
+            // The trailer: header lines up to an empty line.
+            loop {
+                line.clear();
+                let n = tokio::io::AsyncReadExt::take(&mut *src, 8192)
+                    .read_until(b'\n', &mut line)
+                    .await?;
+                if n == 0 || line == b"\r\n" || line == b"\n" {
+                    return Ok(());
+                }
+            }
+        }
+        copy_tokio_to_futures_n(src, dst, size, metrics).await?;
+        line.clear();
+        tokio::io::AsyncReadExt::take(&mut *src, 2)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if line != b"\r\n" && line != b"\n" {
+            anyhow::bail!("a chunk of the origin has no line end after its data");
+        }
+    }
+}
+
 async fn futures_write_all<W>(dst: &mut W, bytes: &[u8]) -> Result<()>
 where
     W: futures::io::AsyncWrite + Unpin,
@@ -894,6 +950,57 @@ pub use crate::connect::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The payload of each chunk, with no framing; an extension and a
+    /// trailer are dropped; the last chunk ends the body while the origin
+    /// keeps the connection open.
+    #[tokio::test]
+    async fn a_chunked_body_is_decoded() {
+        let (mut origin, cfrs_side) = tokio::io::duplex(1 << 16);
+        let mut wire = Vec::new();
+        let mut want = Vec::new();
+        for i in 0..100u32 {
+            let chunk = format!("{}{i:04}", "c".repeat(1000));
+            wire.extend_from_slice(format!("{:x};ext=1\r\n{chunk}\r\n", chunk.len()).as_bytes());
+            want.extend_from_slice(chunk.as_bytes());
+        }
+        wire.extend_from_slice(b"0\r\nX-Trailer: 1\r\n\r\n");
+        // The origin writes, and does not close: the decoder must end at
+        // the last chunk.
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut origin, &wire)
+                .await
+                .unwrap();
+            origin
+        });
+        let mut source = tokio::io::BufReader::new(cfrs_side);
+        let mut out = futures::io::Cursor::new(Vec::new());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            copy_chunked_to_futures(&mut source, &mut out, &Metrics::new()),
+        )
+        .await
+        .expect("the decoder ends at the last chunk")
+        .unwrap();
+        assert_eq!(out.into_inner(), want);
+        drop(writer.await.unwrap());
+
+        for bad in [
+            &b"zz\r\nab\r\n0\r\n\r\n"[..],
+            b"5\r\nab",
+            b"2\r\nabXX0\r\n\r\n",
+        ] {
+            let mut source = tokio::io::BufReader::new(bad);
+            let mut out = futures::io::Cursor::new(Vec::new());
+            assert!(
+                copy_chunked_to_futures(&mut source, &mut out, &Metrics::new())
+                    .await
+                    .is_err(),
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
     use crate::cloudflare::stream::ConnectionType;
 
     fn req(dest: &str, metadata: Vec<(&str, &str)>) -> cqstream::ConnectRequest {

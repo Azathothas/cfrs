@@ -144,7 +144,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -u
-          if sh scripts/live-run.sh pin timeout 60 target/release/cfrs --resolve api.trycloudflare.com=1.1.1.1 demo --exit-on-verify; then
+          if sh scripts/live-run.sh pin timeout 60 target/release/cfrs --resolve api.trycloudflare.com=8.8.8.8 demo --exit-on-verify; then
             echo "a wrong pin was accepted"; exit 1
           fi
           grep -E 'NotValidForName|not valid for' pin.err
