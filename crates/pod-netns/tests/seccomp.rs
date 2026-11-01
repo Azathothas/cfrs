@@ -931,3 +931,117 @@ fn both_backends_find_a_program_in_path() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue 69: on the seccomp backend, an epoll listener wakes for an inbound
+/// connection and is not readable again after the accept; and a thread
+/// that blocks in accept does not stop the other system calls of the child.
+const EPOLL_SERVER: &str = r#"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+static int listen_on(int port, int flags){
+  int s=socket(AF_INET,SOCK_STREAM|flags,0);
+  struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET;
+  a.sin_port=htons(port); a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+  if(bind(s,(struct sockaddr*)&a,sizeof a)<0){perror("bind");return -1;}
+  if(listen(s,4)<0){perror("listen");return -1;}
+  return s;
+}
+static void *blocked(void *arg){
+  int c=accept(*(int*)arg,0,0);
+  if(c>=0){ if(write(c,"T\n",2)<0){} close(c); }
+  return 0;
+}
+int main(void){
+  int s=listen_on(8090,SOCK_NONBLOCK); if(s<0) return 1;
+  int ep=epoll_create1(0); struct epoll_event ev; memset(&ev,0,sizeof ev);
+  ev.events=EPOLLIN; ev.data.fd=s; epoll_ctl(ep,EPOLL_CTL_ADD,s,&ev);
+  int n=epoll_wait(ep,&ev,1,20000);
+  if(n!=1){ printf("no event\n"); return 2; }
+  int c=accept(s,0,0); if(c<0){ perror("accept"); return 3; }
+  if(write(c,"E\n",2)<0){} close(c);
+  printf("again %d\n", epoll_wait(ep,&ev,1,300));
+  int s2=listen_on(8091,0); if(s2<0) return 4;
+  pthread_t t; pthread_create(&t,0,blocked,&s2);
+  usleep(300000);
+  int u=socket(AF_INET,SOCK_DGRAM,0);
+  printf("socket while blocked %d\n", u>=0); fflush(stdout);
+  if(u>=0) close(u);
+  pthread_join(t,0);
+  printf("done\n");
+  return 0;
+}
+"#;
+
+#[test]
+fn seccomp_inbound_wakes_epoll_and_accept_does_not_block_the_child() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-epoll-{}", std::process::id()));
+    let inbound = dir.join("in");
+    std::fs::create_dir_all(&inbound).unwrap();
+    let proxy = dir.join("socks.sock");
+    let listener = UnixListener::bind(&proxy).unwrap();
+    let (tx, _rx) = mpsc::channel();
+    std::thread::spawn(move || socks5_proxy(listener, tx, false));
+    let server = build_program(&dir, "epoll-server", EPOLL_SERVER, false);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "--inbound-dir"])
+        .arg(&inbound)
+        .args(["-x"])
+        .arg(format!("unix:{}", proxy.display()))
+        .arg("--")
+        .arg(&server)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let fetch = |port: u16| {
+        let path = inbound.join(format!("{port}.sock"));
+        for _ in 0..200 {
+            if let Ok(mut c) = UnixStream::connect(&path) {
+                c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut buf = [0u8; 8];
+                let n = c.read(&mut buf).unwrap_or(0);
+                return String::from_utf8_lossy(&buf[..n]).into_owned();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("no inbound listener for port {port}");
+    };
+    assert_eq!(fetch(8090), "E\n", "epoll did not wake for the connection");
+    assert_eq!(fetch(8091), "T\n");
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            panic!("the child did not end in 20 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    assert!(status.success(), "{out}");
+    assert!(
+        out.contains("again 0"),
+        "the listener stayed readable: {out}"
+    );
+    assert!(out.contains("socket while blocked 1"), "{out}");
+    assert!(out.contains("done"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

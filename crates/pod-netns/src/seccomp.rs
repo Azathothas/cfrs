@@ -18,6 +18,9 @@ pub(crate) const SECCOMP_IOCTL_NOTIF_SEND: libc::c_ulong = 0xc018_2101;
 pub(crate) const SECCOMP_IOCTL_NOTIF_ADDFD: libc::c_ulong = 0x4018_2103;
 pub(crate) const SECCOMP_USER_NOTIF_FLAG_CONTINUE: u32 = 1;
 pub(crate) const SECCOMP_ADDFD_FLAG_SEND: u32 = 2;
+/// `SECCOMP_ADDFD_FLAG_SETFD`: install the fd at the number in `newfd`,
+/// in place of the fd that has that number.
+pub(crate) const SECCOMP_ADDFD_FLAG_SETFD: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -350,6 +353,37 @@ pub(crate) fn notif_addfd_send(lfd: RawFd, id: u64, srcfd: RawFd, newfd_flags: u
     Ok(r)
 }
 
+/// Install `srcfd` in the child at the number `target`, in place of the fd
+/// that has that number (the syscall is not answered).
+pub(crate) fn notif_addfd_setfd(
+    lfd: RawFd,
+    id: u64,
+    srcfd: RawFd,
+    target: i32,
+    newfd_flags: u32,
+) -> Result<i32> {
+    let req = SeccompNotifAddfd {
+        id,
+        flags: SECCOMP_ADDFD_FLAG_SETFD,
+        srcfd: srcfd as u32,
+        newfd: target as u32,
+        newfd_flags,
+    };
+    let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_ADDFD as _, &req) };
+    if r < 0 {
+        return Err(std::io::Error::last_os_error()).context("NOTIF_ADDFD (SETFD)");
+    }
+    Ok(r)
+}
+
+/// The file status flags of the fd `fd` of the task `pid`
+/// (`/proc/<pid>/fdinfo/<fd>`, the line `flags:` in octal).
+pub(crate) fn child_fd_flags(pid: u32, fd: i32) -> Option<i32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}")).ok()?;
+    let value = text.lines().find_map(|l| l.strip_prefix("flags:"))?;
+    i32::from_str_radix(value.trim(), 8).ok()
+}
+
 pub(crate) fn notif_respond(lfd: RawFd, id: u64, val: i64, error: i32) -> Result<()> {
     let resp = SeccompNotifResp {
         id,
@@ -398,8 +432,16 @@ pub(crate) struct UdpRelay {
 /// A listening socket inside the sandbox. Connections arrive on a unix
 /// listener (the only bind a sealed host permits) and are handed to the child's
 /// `accept` as injected socketpair ends.
+/// The queue of a listener of the child. The child's listener fd is one end
+/// of a socketpair: for each queued connection the reader task writes one
+/// byte to the other end, so poll, select and epoll on the listener wake.
+/// Each accept takes one byte back through `drain` (a copy of the child's
+/// end), so the listener is readable while a connection waits, and only
+/// then.
 pub(crate) struct Inbound {
-    pub(crate) rx: tokio::sync::mpsc::UnboundedReceiver<tokio::net::UnixStream>,
+    pub(crate) rx:
+        Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<tokio::net::UnixStream>>>,
+    pub(crate) drain: Arc<std::os::unix::net::UnixStream>,
 }
 
 pub(crate) enum Sock {
@@ -611,9 +653,17 @@ pub(crate) async fn supervise_seccomp(
         } else if nr == libc::SYS_bind as i32 {
             handle_bind(lfd, id, a, mem, &mut map)
         } else if nr == libc::SYS_listen as i32 {
-            handle_listen(lfd, id, a, &mut map, &inbound_dir).await
+            handle_listen(lfd, id, a, &mut map, &inbound_dir, req.pid).await
         } else if nr == SYS_ACCEPT as i32 || nr == libc::SYS_accept4 as i32 {
-            handle_accept(lfd, id, a, &mut map, nr == libc::SYS_accept4 as i32).await
+            handle_accept(
+                lfd,
+                id,
+                a,
+                &mut map,
+                nr == libc::SYS_accept4 as i32,
+                req.pid,
+            )
+            .await
         } else if nr == libc::SYS_getsockname as i32 || nr == libc::SYS_getpeername as i32 {
             handle_sockname(lfd, id, a, mem, mem_writable, &mut map)
         } else {
@@ -1096,13 +1146,15 @@ pub(crate) fn handle_bind(
 
 /// `listen` creates the real listener the sandbox can have: a unix socket named
 /// after the port. A reader task turns accepted connections into a queue that
-/// `accept` draws from.
+/// `accept` draws from, and makes the child's listener fd readable while a
+/// connection waits (see [`Inbound`]).
 pub(crate) async fn handle_listen(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
     map: &mut HashMap<i32, Sock>,
     inbound_dir: &std::path::Path,
+    pid: u32,
 ) -> Result<()> {
     let fd = a[0] as i32;
     let Some(Sock::Stream {
@@ -1118,16 +1170,46 @@ pub(crate) async fn handle_listen(
     let _ = std::fs::remove_file(&path);
     let listener = crate::listen::bind_private(&path)
         .with_context(|| format!("bind inbound listener {}", path.display()))?;
+
+    // The new listener fd of the child: one end of a socketpair, with the
+    // O_NONBLOCK and close-on-exec of the old fd.
+    let flags = child_fd_flags(pid, fd).unwrap_or(0);
+    let (signal, child_end) = std::os::unix::net::UnixStream::pair()?;
+    if flags & libc::O_NONBLOCK != 0 {
+        set_nonblocking(child_end.as_raw_fd())?;
+    }
+    let drain = child_end.try_clone()?;
+    let newfd_flags = if flags & libc::O_CLOEXEC != 0 {
+        libc::O_CLOEXEC as u32
+    } else {
+        0
+    };
+    notif_addfd_setfd(lfd, id, child_end.as_raw_fd(), fd, newfd_flags)?;
+    drop(child_end);
+    set_nonblocking(signal.as_raw_fd())?;
+    let mut signal = tokio::net::UnixStream::from_std(signal)?;
+
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Ok((conn, _)) = listener.accept().await {
+            // The byte first: when accept finds the connection, its byte is
+            // there to take.
+            if tokio::io::AsyncWriteExt::write_all(&mut signal, &[1])
+                .await
+                .is_err()
+            {
+                break;
+            }
             if tx.send(conn).is_err() {
                 break;
             }
         }
     });
     if let Some(Sock::Stream { inbound, .. }) = map.get_mut(&fd) {
-        *inbound = Some(Inbound { rx });
+        *inbound = Some(Inbound {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            drain: Arc::new(drain),
+        });
     }
     notif_respond(lfd, id, 0, 0)?;
     // The listener is a real unix socket; say where it is.
@@ -1138,35 +1220,30 @@ pub(crate) async fn handle_listen(
     Ok(())
 }
 
-pub(crate) async fn handle_accept(
+/// Take the byte of one queued connection from the child's listener.
+fn drain_one(drain: &std::os::unix::net::UnixStream) {
+    let mut byte = [0u8; 1];
+    unsafe {
+        libc::recv(
+            drain.as_raw_fd(),
+            byte.as_mut_ptr() as *mut libc::c_void,
+            1,
+            libc::MSG_DONTWAIT,
+        )
+    };
+}
+
+/// Give the connection `conn` to the child as the answer of `accept`.
+fn install_accepted(
     lfd: RawFd,
     id: u64,
-    a: [u64; 6],
-    map: &mut HashMap<i32, Sock>,
-    accept4: bool,
+    conn: tokio::net::UnixStream,
+    nonblocking: bool,
+    newfd_flags: u32,
 ) -> Result<()> {
-    let fd = a[0] as i32;
-    // The caller's flags are on accept4 only; ADDFD takes just O_CLOEXEC.
-    let flags = if accept4 { a[3] as i32 } else { 0 };
-    let mut newfd_flags = 0u32;
-    if flags & libc::SOCK_CLOEXEC != 0 {
-        newfd_flags |= libc::O_CLOEXEC as u32;
-    }
-    let conn = {
-        let Some(Sock::Stream {
-            inbound: Some(inc), ..
-        }) = map.get_mut(&fd)
-        else {
-            return notif_continue(lfd, id);
-        };
-        match inc.rx.recv().await {
-            Some(c) => c,
-            None => return notif_respond(lfd, id, -1, libc::EINVAL),
-        }
-    };
     let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
     set_nonblocking(ours.as_raw_fd())?;
-    if flags & libc::SOCK_NONBLOCK != 0 {
+    if nonblocking {
         set_nonblocking(theirs.as_raw_fd())?;
     }
     // ADDFD with SEND already answers the syscall with the installed fd.
@@ -1176,6 +1253,61 @@ pub(crate) async fn handle_accept(
     let mut conn = conn;
     spawn_relay(async move {
         let _ = tokio::io::copy_bidirectional(&mut ours, &mut conn).await;
+    });
+    Ok(())
+}
+
+/// `accept` takes a queued connection at once. With none queued, a
+/// non-blocking listener gets EAGAIN, and a blocking accept waits in its own
+/// task: the other system calls of the child go on (before, one accept that
+/// waited stopped each other call of the child).
+pub(crate) async fn handle_accept(
+    lfd: RawFd,
+    id: u64,
+    a: [u64; 6],
+    map: &mut HashMap<i32, Sock>,
+    accept4: bool,
+    pid: u32,
+) -> Result<()> {
+    let fd = a[0] as i32;
+    // The caller's flags are on accept4 only; ADDFD takes just O_CLOEXEC.
+    let flags = if accept4 { a[3] as i32 } else { 0 };
+    let mut newfd_flags = 0u32;
+    if flags & libc::SOCK_CLOEXEC != 0 {
+        newfd_flags |= libc::O_CLOEXEC as u32;
+    }
+    let nonblocking_conn = flags & libc::SOCK_NONBLOCK != 0;
+    let (rx, drain) = {
+        let Some(Sock::Stream {
+            inbound: Some(inc), ..
+        }) = map.get(&fd)
+        else {
+            return notif_continue(lfd, id);
+        };
+        (inc.rx.clone(), inc.drain.clone())
+    };
+    let queued = rx.try_lock().ok().and_then(|mut rx| rx.try_recv().ok());
+    if let Some(conn) = queued {
+        drain_one(&drain);
+        return install_accepted(lfd, id, conn, nonblocking_conn, newfd_flags);
+    }
+    let listener_nonblocking = child_fd_flags(pid, fd).is_some_and(|f| f & libc::O_NONBLOCK != 0);
+    if listener_nonblocking {
+        return notif_respond(lfd, id, -1, libc::EAGAIN);
+    }
+    tokio::spawn(async move {
+        let conn = rx.lock().await.recv().await;
+        match conn {
+            Some(conn) => {
+                drain_one(&drain);
+                // ENOENT: the child left the accept (a signal); the
+                // connection is closed.
+                let _ = install_accepted(lfd, id, conn, nonblocking_conn, newfd_flags);
+            }
+            None => {
+                let _ = notif_respond(lfd, id, -1, libc::EINVAL);
+            }
+        }
     });
     Ok(())
 }

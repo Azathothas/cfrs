@@ -24,7 +24,7 @@ pod-netns doctor --json
 | `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY` or `cidr:ADDR/PREFIX=PROXY`. The first rule that matches is used. |
 | `--map NAME=ADDR` | Resolve `NAME` to `ADDR`, with no upstream. |
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
-| `--inbound-dir DIR` | Where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). |
+| `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
 | `--serve LISTEN` | Serve SOCKS5, HTTP `CONNECT` and UDP ASSOCIATE on `unix:/path` or `tcp://host:port`, through the `-x` chain. |
 | `-v, --verbose` | Log each flow. |
 
@@ -66,7 +66,12 @@ TCP and DNS. It does not carry other UDP.
   supervisor reads the address from `/proc/<pid>/mem` of the calling task. It
   opens that file again for each notification, and it checks the notification
   with `SECCOMP_IOCTL_NOTIF_ID_VALID` after the open.
-* `bind`, `listen` and `accept` make a unix listener in `--inbound-dir`.
+* `bind`, `listen` and `accept` make a unix listener in `--inbound-dir`. The
+  listener fd of the program is readable while a connection waits, so
+  `poll`, `select` and `epoll` wake for it. A non-blocking `accept` with no
+  connection gets `EAGAIN`; a blocking `accept` waits without stopping the
+  other system calls of the program. The peer address of an accepted
+  connection is not known (the client is a unix socket).
 * UDP to port 53 is answered from the fake-IP pool. Other UDP goes through
   SOCKS5 UDP ASSOCIATE. `sendmmsg` sends all messages when the supervisor can
   write `msg_len` into the child. Else it sends one message and returns 1, and

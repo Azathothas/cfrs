@@ -150,6 +150,18 @@ pub fn main_with_args(argv: &[String]) -> i32 {
         }
     }
     warn_unreachable(&args.proxies);
+    // Inbound listeners exist on the seccomp backend only (issue 69).
+    if args.inbound_dir_given && matches!(args.backend, BackendKind::Netns) {
+        eprintln!("pod-netns: --inbound-dir works with --backend seccomp only");
+        return USAGE;
+    }
+    let warn_inbound = |backend: &str| {
+        if args.inbound_dir_given {
+            eprintln!(
+                "pod-netns: warning: the {backend} backend has no inbound listeners; --inbound-dir is not used (give --backend seccomp)"
+            );
+        }
+    };
     let result = match args.backend {
         BackendKind::Netns => run(args),
         BackendKind::Seccomp => run_seccomp(args),
@@ -159,6 +171,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
             if probe_unshare(libc::CLONE_NEWNET).ok
                 || probe_unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET).ok
             {
+                warn_inbound("netns");
                 run(args)
             } else {
                 run_seccomp(args)

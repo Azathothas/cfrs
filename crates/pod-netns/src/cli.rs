@@ -19,6 +19,8 @@ pub(crate) struct Args {
     pub(crate) doctor_json: bool,
     pub(crate) verbose: bool,
     pub(crate) inbound_dir: std::path::PathBuf,
+    /// `--inbound-dir` was given (the seccomp backend only uses it).
+    pub(crate) inbound_dir_given: bool,
     pub(crate) serve: Option<crate::listen::ProxyListen>,
     pub(crate) backend: BackendKind,
 }
@@ -45,6 +47,7 @@ OPTIONS:
         --map NAME=ADDR    Resolve NAME to ADDR locally, repeatable
         --backend NAME     auto (default), netns or seccomp
         --inbound-dir DIR  Where a bound port is exposed as a unix socket
+                           (seccomp backend only)
                            [default: /tmp/pod-netns-inbound]
         --serve LISTEN     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
                            unix:/path or tcp://host:port, forwarding through
@@ -68,6 +71,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
     let mut maps: Vec<(String, IpAddr)> = Vec::new();
     let mut backend = BackendKind::Auto;
     let mut inbound_dir = std::path::PathBuf::from("/tmp/pod-netns-inbound");
+    let mut inbound_dir_given = false;
     let mut serve: Option<crate::listen::ProxyListen> = None;
     let mut i = 0;
     while i < argv.len() {
@@ -150,6 +154,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
                 inbound_dir = std::path::PathBuf::from(
                     argv.get(i + 1).context("--inbound-dir needs a value")?,
                 );
+                inbound_dir_given = true;
                 i += 2;
             }
             "--backend" => {
@@ -198,6 +203,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
         doctor_json,
         verbose,
         inbound_dir,
+        inbound_dir_given,
         serve,
         backend,
     })
