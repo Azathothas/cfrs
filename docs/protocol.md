@@ -58,7 +58,10 @@ The edge addresses come from the SRV record
 * The edge certificate chains to Cloudflare roots that are not in public
   trust stores. The roots are in `src/cloudflare/cf-edge-roots.pem` (from
   `tlsconfig/cloudflare_ca.go`). Without them, TLS fails with `UnknownIssuer`.
-* Port 443 of the edge does not serve the tunnel service.
+* Port 443 of the edge does not serve the tunnel service: TLS there is
+  TLS 1.2, and its chain does not end at the edge roots (section 6). So
+  cfrs uses 7844 only, and carries the edge on TCP 443 inside WARP
+  (section 5.3).
 
 ### 3.1 QUIC
 
@@ -71,6 +74,21 @@ opens each later stream for one visitor request.
 `cfrs` also serves a `CloudflaredServer` bootstrap object on the control
 stream. The edge uses it as a liveness check. Without it, the edge marks the
 tunnel offline and visitors get HTTP 530.
+
+Registration features (`ClientInfo.features`): cfrs sends the default
+list of cloudflared 2026.10.7 (`features/features.go`), which is
+`support_datagram_v2` only (`schema::FEATURES`). cloudflared 2026.10.7
+removes `serialized_headers`, `quick_reconnects`, `allow_remote_config`,
+`support_quic_eof` and `management_logs` before it sends the list
+(TUN-10904: the edge supports them with no flag), and also
+`support_datagram_v3` and `support_datagram_v3_1`. cfrs does not send
+`postquantum` (it uses a classical key exchange, section 6) or
+`support_datagram_v3_2` (it carries no UDP or ICMP datagram of a visitor).
+The answers of HTTP/2 always carry the serialized header (section 3.2).
+
+cloudflared makes one connection for a quick tunnel (`ha-connections` is
+set to 1 in `quick_tunnel.go`) and four for a named tunnel. cfrs makes two
+by default for both (`--ha-connections`, 1 to 8).
 
 ### 3.2 HTTP/2
 
@@ -189,7 +207,25 @@ IPv6 address in `2606:4700:110::/48`).
 * One HTTP/2 extended `CONNECT` to `https://cloudflareaccess.com` with
   `cf-connect-proto: cf-connect-ip`.
 * The DATA frames of that stream carry capsules (RFC 9297). Each IP packet is
-  one capsule. The tunnel MTU is 1280.
+  one capsule of type 0. The value is the bare IP packet, with no context
+  ID before it (RFC 9484 puts a context ID of 0 there). cfrs writes and
+  reads no context ID (`capsule::tests::a_data_capsule_has_no_context_id`).
+  The tunnel MTU is 1280.
+* The request headers: `cf-connect-proto: cf-connect-ip`,
+  `capsule-protocol: ?1`, `pq-enabled: false` and an empty `user-agent`.
+  The front door accepts them (measured, podssh issue 63, a run of cfrs).
+* The server certificate is not publicly trusted: its root is
+  `CN=2024-02-27 Self-Signed Root, O=Cloudflare, Inc.` (measured, live run
+  41268348982, `cfrs doctor`). Its key is byte for byte the SPKI of the
+  `PATCH` answer, which is what cfrs pins (measured, podssh issue 63).
+* A client certificate that does not match the enrolled key gives a TLS
+  alert, not an HTTP status (measured, podssh issue 63). cfrs reports it as
+  "TLS alert from the peer" (`hop::tls_text`).
+* The `PATCH` answer lists the endpoint ports
+  `[443, 500, 1701, 4500, 4443, 8443, 8095]` (measured, podssh issue 63).
+  cfrs uses 443 only (`register::MASQUE_PORT`).
+* The newer L4 proxy mode of the front door is HTTP/3 only (read, podssh
+  issue 63). cfrs uses CONNECT-IP over HTTP/2.
 * `smoltcp` owns the tunnel address and runs TCP and UDP on it. This is
   `cfrs::warp::WarpStack`.
 
@@ -208,6 +244,65 @@ goes inside the MASQUE session. The host opens only TCP 443.
 * The WARP proxy of `cfrs` (`cfrs warp proxy`) carries TCP (SOCKS5 and HTTP
   `CONNECT`) and UDP (SOCKS5 UDP ASSOCIATE). It resolves names through the
   tunnel. The UDP relay socket of an association is on `127.0.0.1`.
+
+## 6. Edge, measured
+
+Each row has a mark: **measured** (a command ran, with its date and run),
+**read** (from the source of cloudflared 2026.10.7 or from a document) or
+**inferred**. The tool is `tools/edge-facts.sh`; `.github/workflows/live.yml`
+runs it on each push and each day (step "Edge facts"). The rows below are
+from run 41268348982 (2026-11-01, a GitHub runner, ubuntu-24.04), address
+198.41.192.107. Its exit code is 1 when one of the two facts that cfrs needs
+is not true (the rows marked *need*).
+
+| Fact | Result | Mark |
+| --- | --- | --- |
+| SRV `_v2-origintunneld._tcp.argotunnel.com` | `1 1 7844 region1.v2.argotunnel.com.` and `2 1 7844 region2.v2.argotunnel.com.` | measured |
+| Addresses of `region1.v2.argotunnel.com` | 10: 198.41.192.7, .27, .37, .47, .57, .67, .77, .107, .167, .227 | measured |
+| Addresses of `region2.v2.argotunnel.com` | 10: 198.41.200.13, .23, .33, .43, .53, .63, .73, .113, .193, .233 | measured |
+| *need*: TLS on TCP 7844, SNI `h2.cftunnel.com`, no ALPN | TLS 1.3, X25519, verified against `cf-edge-roots.pem`, 31 ms | measured |
+| SNI `probe.cftunnel.com`, `region1.v2.argotunnel.com`, or no SNI | Each: TLS 1.3, verified, 20 to 29 ms | measured |
+| ALPN `h2` offered | The edge selects no ALPN | measured |
+| Key group X25519 only; P-256 only | Both work; no post-quantum group is needed | measured |
+| Issuer of the edge certificate | `OU=CloudFlare Origin SSL ECC Certificate Authority, O=CloudFlare, Inc.` (`cfrs doctor`) | measured |
+| TCP 443 and 8443 of the edge address | TLS 1.2; the chain does not verify against the edge roots | measured |
+| TCP 80 of the edge address | Not TLS | measured |
+| *need*: the first bytes after the handshake on 7844 | `PRI * HTTP/2.0`: the edge is the HTTP/2 client | measured |
+| UDP 7844, one QUIC packet with a reserved version | A version negotiation of 27 bytes (`cfrs doctor`) | measured |
+| Latency from the runner to the edge, TCP | best 6.2 ms, median 7.2 ms (`cfrs doctor`, 9 samples) | measured |
+| cloudflared and `HTTPS_PROXY` | Two requests for a proxy for the edge, cloudflare/cloudflared#350 and #1025, are closed (2023-09-05). cfrs uses the proxy for each TCP connection (section 1, `src/egress.rs`) | read |
+| The prechecks of cloudflared | They use the name `probe.cftunnel.com` and test DNS, QUIC, TCP and TLS to both regions, and `api.cloudflare.com:443` | read (podssh design notes, cloudflared 2026.10.6) |
+
+`cfrs doctor` measures the same path on any host, through its proxy.
+
+## 7. Limits of quick tunnels
+
+From the Cloudflare page
+[Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+(read 2026-11-01):
+
+* Quick tunnels are for testing and development. For production, use a
+  named tunnel (`--token` or `--config` with `credentials-file:`).
+* No uptime guarantee.
+* At most 200 requests in flight for each quick tunnel. More get `429`.
+* No Server-Sent Events (SSE).
+
+cloudflared makes one edge connection for a quick tunnel (section 3.1).
+
+## 8. Terms
+
+These documents apply. This section gives facts, not legal advice.
+
+* Quick tunnels: the disclaimer of cloudflared 2026.10.7
+  (`cmd/cloudflared/tunnel/quick_tunnel.go`) says that account-less
+  tunnels "are subject to the Cloudflare Online Services Terms of Use
+  (https://www.cloudflare.com/website-terms/)", and that Cloudflare may
+  investigate the use of tunnels for violations of those terms.
+* WARP: the Application Terms of the WARP client license "the
+  Application", and forbid reverse engineering of it. Cloudflare may
+  "block certain kinds of usage" (read, podssh design notes). cfrs is a
+  separate program: it contains no code of the WARP application, and it
+  uses the public registration API of section 5.1.
 
 ## Failure causes
 

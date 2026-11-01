@@ -5,7 +5,7 @@
 | Tool | `cfrs` command |
 | --- | --- |
 | `cloudflared` quick tunnels and named tunnels | `cfrs tunnel`, `cfrs serve`, `cfrs share`, `cfrs connect` |
-| Try Cloudflare (`*.trycloudflare.com`) | `cfrs tunnel` with no account |
+| Try Cloudflare (`*.trycloudflare.com`) | `cfrs tunnel` with no account. A quick tunnel is for tests and development: no uptime guarantee, at most 200 requests in flight (more get `429`), no Server-Sent Events, and the Cloudflare Online Services Terms ([limits and terms](docs/protocol.md#7-limits-of-quick-tunnels)) |
 | The Cloudflare WARP client | `cfrs warp` |
 
 `cfrs` is made for hosts with strong limits. The table gives each limit, the
