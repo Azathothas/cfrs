@@ -212,7 +212,7 @@ impl Tunnel {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (legs, stopped) = Legs::new();
         let mut tasks = Vec::new();
-        type Kept = Option<(crate::warp::WarpStack, quinn::Endpoint)>;
+        type Kept = Option<Arc<WarpLink>>;
         let limited = plan.len() > 1 && failover == crate::race::Failover::Serial;
         let mut attempts: Vec<futures::future::BoxFuture<'_, Result<(First, Kept)>>> = Vec::new();
         for kind in &plan {
@@ -238,10 +238,10 @@ impl Tunnel {
                     Ok((First::H2(edges, leg), None))
                 })),
                 LegKind::QuicWarp => Box::pin(async move {
-                    let (edges, stack, endpoint) = warp_targets(warp_identity.as_deref()).await?;
+                    let (edges, link, endpoint) = warp_targets(warp_identity.as_deref()).await?;
                     let (conn, control, location) =
                         connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
-                    let kept = Some((stack, endpoint.clone()));
+                    let kept = Some(link);
                     Ok((First::Quic(edges, endpoint, conn, control, location), kept))
                 }),
             };
@@ -290,6 +290,10 @@ impl Tunnel {
             First::Quic(edges, endpoint, conn, control, location) => {
                 info!(leg = %kind, %location, "registered with the edge");
                 let edges = Arc::new(edges);
+                let source = match &warp_keepalive {
+                    Some(link) => EndpointSource::Warp(link.clone()),
+                    None => EndpointSource::Fixed(endpoint.clone()),
+                };
                 tasks.push(spawn_leg(
                     &legs,
                     reactor(
@@ -297,7 +301,7 @@ impl Tunnel {
                         ingress.clone(),
                         auth.clone(),
                         tunnel_id,
-                        endpoint.clone(),
+                        source.clone(),
                         conn,
                         control,
                         metrics.clone(),
@@ -312,12 +316,19 @@ impl Tunnel {
                     let runtime = runtime.clone();
                     let ingress = ingress.clone();
                     let auth = auth.clone();
-                    let endpoint = endpoint.clone();
+                    let source = source.clone();
                     let metrics = metrics.clone();
                     let shutdown_rx = shutdown_rx.clone();
                     let reconnect = reconnect.clone();
                     let edges = edges.clone();
                     tasks.push(spawn_leg(&legs, async move {
+                        let endpoint = match source.endpoint(1).await {
+                            Ok(endpoint) => endpoint,
+                            Err(err) => {
+                                warn!(conn_index = index, error = %format!("{err:#}"), "HA leg failed to register");
+                                return None;
+                            }
+                        };
                         match connect_once(&endpoint, &auth, tunnel_id, index, false, &edges).await
                         {
                             Ok((conn, control, location)) => {
@@ -328,7 +339,7 @@ impl Tunnel {
                                     ingress,
                                     auth,
                                     tunnel_id,
-                                    endpoint,
+                                    source,
                                     conn,
                                     control,
                                     metrics,
@@ -688,7 +699,7 @@ async fn direct_targets() -> Result<Vec<edge::EdgeAddr>> {
 
 async fn warp_targets(
     identity: Option<&std::path::Path>,
-) -> Result<(Vec<edge::EdgeAddr>, crate::warp::WarpStack, quinn::Endpoint)> {
+) -> Result<(Vec<edge::EdgeAddr>, Arc<WarpLink>, quinn::Endpoint)> {
     let discovered = match edge_override()? {
         Some(list) => list,
         None => crate::edge_discovery::discover(IpVersionFilter::V4Only)
@@ -717,7 +728,65 @@ async fn warp_targets(
         edge = %first.socket(),
         "the tunnel edge is reached through WARP on TCP 443"
     );
-    Ok((discovered, stack, endpoint))
+    let link = Arc::new(WarpLink {
+        client,
+        current: tokio::sync::Mutex::new((stack, endpoint.clone(), std::time::Instant::now())),
+    });
+    Ok((discovered, link, endpoint))
+}
+
+/// The WARP session of the `quic+warp` leg, and the QUIC endpoint in it.
+/// When the session closes, or a reconnect fails twice, the next reconnect
+/// opens a new session with the same device (no new registration).
+pub(crate) struct WarpLink {
+    client: WarpClient,
+    current: tokio::sync::Mutex<(crate::warp::WarpStack, quinn::Endpoint, std::time::Instant)>,
+}
+
+/// A new session at most this often for failed reconnects (an HA leg must
+/// not replace the session that another leg just opened).
+const WARP_REBUILD_GAP: Duration = Duration::from_secs(10);
+
+impl WarpLink {
+    async fn endpoint(&self, stale: bool) -> Result<quinn::Endpoint> {
+        let mut current = self.current.lock().await;
+        let closed = current.0.is_closed();
+        if closed || (stale && current.2.elapsed() >= WARP_REBUILD_GAP) {
+            warn!(
+                session_closed = closed,
+                "opening a new WARP session for the edge leg"
+            );
+            let stack = self
+                .client
+                .connect()
+                .await
+                .context("opening the WARP MASQUE tunnel on TCP 443 again")?;
+            let endpoint = crate::warp::quic::endpoint(&stack)
+                .await
+                .context("building the QUIC socket inside the new WARP session")?;
+            *current = (stack, endpoint, std::time::Instant::now());
+        }
+        Ok(current.1.clone())
+    }
+}
+
+/// Where the QUIC reactor gets its endpoint for each reconnect.
+#[derive(Clone)]
+enum EndpointSource {
+    /// A kernel UDP socket: always the same endpoint.
+    Fixed(quinn::Endpoint),
+    /// The WARP session: a new one when it closed (see [`WarpLink`]).
+    Warp(Arc<WarpLink>),
+}
+
+impl EndpointSource {
+    /// The endpoint for reconnect attempt `attempt` (1 for the first).
+    async fn endpoint(&self, attempt: u32) -> Result<quinn::Endpoint> {
+        match self {
+            EndpointSource::Fixed(endpoint) => Ok(endpoint.clone()),
+            EndpointSource::Warp(link) => link.endpoint(attempt >= 3).await,
+        }
+    }
 }
 
 async fn connect_once(
@@ -754,7 +823,7 @@ async fn reactor(
     ingress: Arc<Ingress>,
     auth: rpc::TunnelAuth,
     tunnel_id: Uuid,
-    endpoint: quinn::Endpoint,
+    source: EndpointSource,
     mut conn: quinn::Connection,
     mut control: rpc::ControlSession,
     metrics: Metrics,
@@ -815,7 +884,12 @@ async fn reactor(
                 }
             }
             attempt += 1;
-            match connect_once(&endpoint, &auth, tunnel_id, conn_index, true, &edges).await {
+            let result = async {
+                let endpoint = source.endpoint(attempt).await?;
+                connect_once(&endpoint, &auth, tunnel_id, conn_index, true, &edges).await
+            }
+            .await;
+            match result {
                 Ok((new_conn, new_control, location)) => {
                     info!(conn_index, attempt, %location, "reconnected");
                     metrics.reconnect();
@@ -904,7 +978,7 @@ pub struct TunnelHandle {
     verify: bool,
     /// Kept alive for the tunnel's lifetime: dropping either tears down the
     /// WARP session and the QUIC endpoint the edge connection rides on.
-    _warp: Option<(crate::warp::WarpStack, quinn::Endpoint)>,
+    _warp: Option<Arc<WarpLink>>,
 }
 
 impl TunnelHandle {

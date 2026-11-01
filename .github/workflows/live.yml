@@ -148,6 +148,11 @@ jobs:
           sh scripts/retry.sh sudo python3 -m pip install -q --break-system-packages websockets || true
           sh scripts/live-throughput.sh target/release/cfrs quic 16
           sh scripts/live-throughput.sh target/release/cfrs http2 16
+      # Issue 32: 1, 4 and 16 MiB over QUIC inside WARP, and the tunnel must
+      # still answer after them.
+      - name: Throughput through WARP, 1 to 16 MiB
+        timeout-minutes: 15
+        run: sh scripts/live-throughput.sh target/release/cfrs quic "1 4 16" warp
       # No system resolver: names come from DNS over HTTPS by IP address.
       # Then with Cloudflare's DoH addresses blocked, from Google's.
       - name: Quick tunnel with no system DNS, then with 1.1.1.1 blocked

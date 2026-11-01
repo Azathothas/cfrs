@@ -1,15 +1,17 @@
 """An HTTP/1.1 origin for the throughput test of scripts/live-throughput.sh.
 
-GET of any path gives the file; POST reads the body and gives its length.
+GET /N.bin gives N MiB of a fixed pattern; another GET gives "ok". POST
+reads the body and gives its length.
 
-    python3 -I scripts/origin-sink.py PORT FILE
+    python3 -I scripts/origin-sink.py PORT
 """
 
 import http.server
+import re
 import sys
 
 PORT = int(sys.argv[1])
-FILE = sys.argv[2]
+CHUNK = bytes(range(256)) * 256  # 64 KiB
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -19,13 +21,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        with open(FILE, "rb") as f:
-            data = f.read()
+        m = re.fullmatch(r"/(\d{1,4})\.bin", self.path)
+        if not m:
+            body = b"ok\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        size = int(m.group(1)) * 1048576
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(data)
+        left = size
+        while left > 0:
+            n = min(left, len(CHUNK))
+            self.wfile.write(CHUNK[:n])
+            left -= n
 
     def do_POST(self):
         left = int(self.headers.get("Content-Length", "0"))

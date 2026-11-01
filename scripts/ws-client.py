@@ -18,7 +18,7 @@ SIZE = int(sys.argv[2]) * 1048576
 async def main():
     async with websockets.connect(URL, max_size=None, compression=None) as ws:
         start = time.monotonic()
-        await ws.send(b"GET /big.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        await ws.send(f"GET /{SIZE // 1048576}.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".encode())
         got = 0
         while got < SIZE:
             message = await ws.recv()

@@ -27,6 +27,10 @@ use super::register::{CONNECT_URI, MASQUE_SNI};
 use crate::egress::Proxy;
 use crate::net::BoxedIo;
 
+/// The HTTP/2 send capacity that the MASQUE stream asks for: the most
+/// packet bytes that wait for the window of the front door.
+pub const SEND_RESERVE: usize = 256 * 1024;
+
 /// How long to wait for the TCP connect, TLS handshake and CONNECT response.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -127,6 +131,7 @@ pub struct MasqueTx {
     ping: Option<h2::PingPong>,
     send: h2::SendStream<Bytes>,
     closed: bool,
+    dropped: u64,
 }
 
 /// The read half of a session, moved to whatever task pumps inbound packets.
@@ -195,7 +200,7 @@ impl MasqueSession {
         let ping = connection.ping_pong();
         tokio::spawn(async move {
             if let Err(err) = connection.await {
-                tracing::debug!(%err, "MASQUE HTTP/2 connection closed");
+                tracing::warn!(%err, "the MASQUE HTTP/2 connection closed");
             }
         });
 
@@ -245,6 +250,7 @@ impl MasqueSession {
                 ping: self.ping,
                 send: self.send,
                 closed: self.closed,
+                dropped: 0,
             },
             MasqueRx {
                 recv: self.recv,
@@ -296,16 +302,38 @@ impl MasqueSession {
 
 impl MasqueTx {
     /// Send one IP packet through the tunnel.
+    ///
+    /// A packet goes out only when the stream has HTTP/2 send capacity for
+    /// it. Without capacity, the packet is dropped, as a full router queue
+    /// drops it: QUIC and TCP inside the tunnel then see a loss and slow
+    /// down. Before, each packet went into the unbounded buffer of h2, so a
+    /// large response filled it with no loss and no backpressure.
     pub fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         if self.closed {
             bail!("the MASQUE session is closed");
         }
         let mut buf = BytesMut::with_capacity(packet.len() + 3);
         capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet);
+        self.send.reserve_capacity(SEND_RESERVE);
+        if self.send.capacity() < buf.len() {
+            self.dropped += 1;
+            if self.dropped.is_power_of_two() {
+                tracing::debug!(
+                    dropped = self.dropped,
+                    "MASQUE send capacity is full; packets are dropped"
+                );
+            }
+            return Ok(());
+        }
         self.send
             .send_data(buf.freeze(), false)
             .context("writing a CONNECT-IP DATA capsule")?;
         Ok(())
+    }
+
+    /// The packets dropped for no send capacity.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
     }
 
     /// Send an HTTP/2 PING to keep the connection alive through idle periods.
@@ -363,5 +391,65 @@ impl MasqueRx {
 
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A front door that never reads the CONNECT-IP body: the stream window
+    /// fills, and then each packet is dropped (a loss for QUIC), not added
+    /// to an unbounded buffer. The sender gets no error.
+    #[tokio::test]
+    async fn a_full_window_drops_packets() {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let server = tokio::spawn(async move {
+            let mut conn = h2::server::Builder::new()
+                .initial_window_size(16 * 1024)
+                .initial_connection_window_size(16 * 1024)
+                .handshake::<_, Bytes>(server_io)
+                .await
+                .unwrap();
+            let (_request, mut respond) = conn.accept().await.unwrap().unwrap();
+            let response = http::Response::builder().status(200).body(()).unwrap();
+            let _send = respond.send_response(response, false).unwrap();
+            // Drive the connection, and never read the request body.
+            while let Some(next) = conn.accept().await {
+                drop(next);
+            }
+        });
+        let (client, connection) = h2::client::handshake(client_io).await.unwrap();
+        tokio::spawn(connection);
+        let mut client = client.ready().await.unwrap();
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(CONNECT_URI)
+            .body(())
+            .unwrap();
+        let (response, send) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+        let session = MasqueSession {
+            ping: None,
+            send,
+            recv: response.into_body(),
+            decoder: CapsuleDecoder::new(),
+            closed: false,
+        };
+        let (mut tx, _rx) = session.split();
+        let packet = vec![0x45u8; 1200];
+        // The first packets of a new stream go out at once (a QUIC Initial
+        // must not wait for a retransmission).
+        for _ in 0..8 {
+            tx.send_packet(&packet).unwrap();
+        }
+        assert_eq!(tx.dropped(), 0);
+        for _ in 0..2000 {
+            tx.send_packet(&packet).unwrap();
+            tokio::task::yield_now().await;
+        }
+        // 2000 packets are 2.4 MB; the window is 16 KiB.
+        assert!(tx.dropped() > 1900, "dropped {}", tx.dropped());
+        server.abort();
     }
 }

@@ -186,15 +186,21 @@ impl WarpStack {
 
         {
             let notify = notify.clone();
+            let closed = closed.clone();
             tokio::spawn(async move {
                 let mut tx = tx;
                 loop {
                     let packet = outbound.recv().await;
-                    if tx.send_packet(&packet).is_err() {
+                    if let Err(err) = tx.send_packet(&packet) {
+                        // The session cannot send again: mark the stack closed,
+                        // so that a new session replaces it.
+                        tracing::warn!(error = %format!("{err:#}"), "the MASQUE send loop ended");
                         break;
                     }
                     notify.notify_one();
                 }
+                closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                notify.notify_one();
             });
         }
 
@@ -212,7 +218,7 @@ impl WarpStack {
                         }
                         Ok(None) => break,
                         Err(err) => {
-                            tracing::debug!(%err, "MASQUE receive loop ended");
+                            tracing::warn!(error = %format!("{err:#}"), "the MASQUE receive loop ended");
                             break;
                         }
                     }
@@ -245,6 +251,12 @@ impl WarpStack {
             closed,
             local: config.local,
         })
+    }
+
+    /// True when the MASQUE session of this stack can no longer carry a
+    /// packet in one direction or the other.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn alive(&self) -> Result<()> {
