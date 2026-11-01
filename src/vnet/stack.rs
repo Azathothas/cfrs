@@ -1641,6 +1641,10 @@ async fn run(
 #[derive(Clone, Debug)]
 pub struct ProofReport {
     pub steps: Vec<String>,
+    /// The states when the response arrived.
+    pub server_exchange_state: String,
+    pub client_exchange_state: String,
+    /// The states after the teardown (the client closes first).
     pub server_state: String,
     pub client_state: String,
     /// The link layer the stack ran over: `"in-process loopback"` or `"a
@@ -1650,10 +1654,15 @@ pub struct ProofReport {
 }
 
 impl ProofReport {
+    /// The handshake and the exchange completed with both sockets
+    /// ESTABLISHED, and the teardown ended them: the server (the passive
+    /// closer) CLOSED, the client TIME-WAIT or CLOSED.
     pub fn passed(&self) -> bool {
-        self.server_state == "ESTABLISHED"
-            && self.client_state == "ESTABLISHED"
+        self.server_exchange_state == "ESTABLISHED"
+            && self.client_exchange_state == "ESTABLISHED"
             && self.bytes_received > 0
+            && self.server_state == "CLOSED"
+            && matches!(self.client_state.as_str(), "TIME-WAIT" | "CLOSED")
     }
 
     pub fn render(&self) -> String {
@@ -1670,17 +1679,19 @@ impl ProofReport {
              \x20     syscalls; tests/af_inet_kernel.rs measures the kernel side by socket inode.\n",
         );
         out.push_str(&format!(
-            "server socket final state: {}\n",
-            self.server_state
+            "states at the exchange: server {}, client {}\n",
+            self.server_exchange_state, self.client_exchange_state
         ));
         out.push_str(&format!(
-            "client socket final state: {}\n",
-            self.client_state
+            "states after the teardown: server {}, client {}\n",
+            self.server_state, self.client_state
         ));
         if self.passed() {
-            out.push_str("PROOF: userspace TCP handshake + request/response complete\n");
+            out.push_str(
+                "PROOF: userspace TCP handshake, request/response and teardown complete\n",
+            );
         } else {
-            out.push_str("FAIL: the handshake did not complete\n");
+            out.push_str("FAIL: the handshake, the exchange or the teardown did not complete\n");
         }
         out
     }
@@ -1785,10 +1796,43 @@ pub fn loopback_proof() -> ProofReport {
             break;
         }
     }
+    let server_exchange_state = sockets.get::<tcp::Socket>(server).state().to_string();
+    let client_exchange_state = sockets.get::<tcp::Socket>(client).state().to_string();
+
+    // The teardown: the client closes (FIN); the server closes when it sees
+    // the end of the client's data. Before, the proof stopped here, and the
+    // final states were ESTABLISHED (issue 53).
+    sockets.get_mut::<tcp::Socket>(client).close();
+    steps.push("client CLOSE (FIN)".into());
+    let mut server_closed = false;
+    let start = 20_001i64;
+    for tick in start..start + 30_000 {
+        let now = SmolInstant::from_millis(tick);
+        let _ = iface.poll(now, &mut device, &mut sockets);
+        let socket = sockets.get_mut::<tcp::Socket>(server);
+        if !server_closed && !socket.may_recv() {
+            server_closed = true;
+            socket.close();
+            steps.push(format!("server saw EOF; CLOSE (state={})", socket.state()));
+        }
+        let server_state = sockets.get::<tcp::Socket>(server).state();
+        let client_state = sockets.get::<tcp::Socket>(client).state();
+        if server_state == tcp::State::Closed
+            && matches!(client_state, tcp::State::TimeWait | tcp::State::Closed)
+        {
+            steps.push(format!(
+                "teardown done after {} ms: server {server_state}, client {client_state}",
+                tick - start + 1
+            ));
+            break;
+        }
+    }
     let server_state = sockets.get::<tcp::Socket>(server).state().to_string();
     let client_state = sockets.get::<tcp::Socket>(client).state().to_string();
     ProofReport {
         steps,
+        server_exchange_state,
+        client_exchange_state,
         server_state,
         client_state,
         link_layer: "in-process loopback".to_string(),
@@ -1851,6 +1895,15 @@ mod tests {
         );
         assert!(report.bytes_received > 20);
         assert!(report.render().contains("PROOF"));
+        // Issue 53: the teardown ran.
+        assert_eq!(report.server_exchange_state, "ESTABLISHED");
+        assert_eq!(report.server_state, "CLOSED", "{}", report.render());
+        assert!(
+            matches!(report.client_state.as_str(), "TIME-WAIT" | "CLOSED"),
+            "{}",
+            report.render()
+        );
+        assert!(report.render().contains("states after the teardown"));
     }
 
     #[test]
