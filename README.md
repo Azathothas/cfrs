@@ -501,10 +501,19 @@ cfrs --no-proxy tunnel --url http://127.0.0.1:8080
 * Without `--proxy` and `--no-proxy`, cfrs reads `HTTPS_PROXY`,
   `https_proxy`, `ALL_PROXY` and `all_proxy`. `NO_PROXY` names the targets
   that do not use the proxy.
+* When no proxy variable is set, cfrs takes the proxy of the first tool
+  config that names one: `~/.gitconfig` and `~/.config/git/config`
+  (`http.proxy`), `~/.npmrc` (`https-proxy`, else `proxy`),
+  `~/.config/pip/pip.conf` and `~/.pip/pip.conf` (`proxy`),
+  `/etc/gitconfig`, `/etc/pip.conf`, and `/etc/environment`. The log names
+  the file. `--no-proxy` turns it off.
 * With a proxy, `--protocol auto` does not try QUIC on UDP 7844 (no proxy
   carries UDP), and cfrs prints one line that says so.
-* A proxy that answers 407 gets a message with the schemes that it asks
-  for. cfrs sends Basic only.
+* With a user and a password, cfrs sends Basic. A proxy that answers 407
+  with a Digest challenge (RFC 7616: MD5, MD5-sess, SHA-256,
+  SHA-256-sess, `qop=auth`) gets the Digest answer on a new connection.
+  Another 407 gets a message with the schemes that the proxy asks for. No
+  NTLM.
 
 A direct connection resolves the name with this chain: a pin of
 `--resolve HOST=IP` or `CFRS_RESOLVE`, the system resolver, then DNS over

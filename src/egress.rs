@@ -200,7 +200,44 @@ impl Proxy {
                 .await
                 .with_context(|| format!("connecting to the proxy {self}"))?;
             match self.kind {
-                ProxyKind::Http => self.http_connect(&mut stream, host, port, timeout).await?,
+                ProxyKind::Http => {
+                    let basic = self.auth.as_ref().map(|(user, pass)| {
+                        let raw = format!("{user}:{pass}");
+                        format!(
+                            "Basic {}",
+                            base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+                        )
+                    });
+                    if let Some(challenge) = self
+                        .http_connect(&mut stream, host, port, timeout, basic)
+                        .await?
+                    {
+                        // A Digest proxy (issue 83): answer the challenge on
+                        // a new connection.
+                        let (user, pass) =
+                            self.auth.as_ref().expect("a challenge needs credentials");
+                        let authority = authority_of(host, port);
+                        let value = crate::proxy_auth::authorization(
+                            &challenge,
+                            user,
+                            pass,
+                            "CONNECT",
+                            &authority,
+                            &crate::proxy_auth::cnonce(),
+                            1,
+                        );
+                        stream = dial_direct(&self.host, self.port, timeout)
+                            .await
+                            .with_context(|| format!("connecting to the proxy {self} again"))?;
+                        if self
+                            .http_connect(&mut stream, host, port, timeout, Some(value))
+                            .await?
+                            .is_some()
+                        {
+                            bail!("the proxy {self} refused the Digest answer (407)");
+                        }
+                    }
+                }
                 ProxyKind::Socks5 { remote_dns } => {
                     self.socks5_connect(&mut stream, host, port, remote_dns, timeout)
                         .await?
@@ -213,25 +250,26 @@ impl Proxy {
             .map_err(|e| crate::hop::at(crate::hop::Hop::Proxy, e))
     }
 
+    /// One CONNECT with `authorization` (the value of
+    /// `Proxy-Authorization`). Gives the Digest challenge of a 407 when the
+    /// first try was not Digest and credentials are there.
     async fn http_connect(
         &self,
         stream: &mut TcpStream,
         host: &str,
         port: u16,
         timeout: Duration,
-    ) -> Result<()> {
-        let authority = if host.contains(':') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
+        authorization: Option<String>,
+    ) -> Result<Option<crate::proxy_auth::Challenge>> {
+        let authority = authority_of(host, port);
+        let digest_tried = authorization
+            .as_deref()
+            .is_some_and(|a| a.starts_with("Digest "));
         let mut request = format!(
             "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: keep-alive\r\n"
         );
-        if let Some((user, pass)) = &self.auth {
-            let raw = format!("{user}:{pass}");
-            let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
-            request.push_str(&format!("Proxy-Authorization: Basic {encoded}\r\n"));
+        if let Some(value) = &authorization {
+            request.push_str(&format!("Proxy-Authorization: {value}\r\n"));
         }
         request.push_str("\r\n");
         tokio::time::timeout(timeout, stream.write_all(request.as_bytes()))
@@ -241,6 +279,19 @@ impl Proxy {
 
         let head = read_head(stream, timeout).await?;
         let status = parse_status(&head)?;
+        if status == 407 && self.auth.is_some() && !digest_tried {
+            let text = String::from_utf8_lossy(&head).to_string();
+            let challenge = text.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("proxy-authenticate")
+                    .then(|| crate::proxy_auth::parse_challenge(value))
+                    .flatten()
+            });
+            if challenge.is_some() {
+                return Ok(challenge);
+            }
+        }
         if status == 407 {
             return Err(Refusal {
                 status,
@@ -256,7 +307,7 @@ impl Proxy {
             }
             .into());
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn socks5_connect(
@@ -701,6 +752,37 @@ fn in_net(ip: IpAddr, net: IpAddr, prefix: u8) -> bool {
     }
 }
 
+/// `host:port`, or `[host]:port` for an IPv6 address.
+fn authority_of(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// The proxy of the tool configs of this host (issue 83), read one time:
+/// used when no proxy variable is set.
+fn detected_proxy() -> Option<Proxy> {
+    static DETECTED: OnceLock<Option<Proxy>> = OnceLock::new();
+    DETECTED
+        .get_or_init(|| {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let (spec, path) = crate::proxy_auth::detect(home.as_deref())?;
+            match Proxy::parse(&spec) {
+                Ok(proxy) => {
+                    tracing::info!(proxy = %proxy, from = %path.display(), "no proxy variable; the proxy of a tool config is used (--no-proxy turns it off)");
+                    Some(proxy)
+                }
+                Err(err) => {
+                    tracing::warn!(from = %path.display(), error = %err, "a tool config names a proxy that cannot be parsed");
+                    None
+                }
+            }
+        })
+        .clone()
+}
+
 /// How cfrs reaches the network.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ProxyChoice {
@@ -732,7 +814,7 @@ pub fn proxy_for(host: &str, port: u16) -> Option<Proxy> {
     let proxy = match choice() {
         ProxyChoice::Direct => return None,
         ProxyChoice::Via(proxy) => proxy,
-        ProxyChoice::FromEnvironment => Proxy::from_env()?,
+        ProxyChoice::FromEnvironment => Proxy::from_env().or_else(detected_proxy)?,
     };
     (!NoProxy::from_env().matches(host, port)).then_some(proxy)
 }
@@ -957,6 +1039,76 @@ pub(crate) fn parse_status(head: &[u8]) -> Result<u16> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue 83: a proxy that asks for Digest. The first CONNECT (Basic)
+    /// gets 407 with a challenge; the second connection carries the Digest
+    /// answer, and the proxy checks it.
+    #[tokio::test]
+    async fn a_digest_proxy_takes_the_answer() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let read_head = |mut s: tokio::net::TcpStream| async move {
+                let mut head = Vec::new();
+                let mut b = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    s.read_exact(&mut b).await.unwrap();
+                    head.push(b[0]);
+                }
+                (s, String::from_utf8(head).unwrap())
+            };
+            let (first, _) = listener.accept().await.unwrap();
+            let (mut first, head) = read_head(first).await;
+            assert!(head.contains("Proxy-Authorization: Basic "), "{head}");
+            first
+                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Digest realm=\"cfrs-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            drop(first);
+            let (second, _) = listener.accept().await.unwrap();
+            let (mut second, head) = read_head(second).await;
+            let line = head
+                .lines()
+                .find(|l| l.starts_with("Proxy-Authorization: Digest "))
+                .expect("a Digest answer")
+                .to_string();
+            let field = |name: &str| {
+                let start = line.find(&format!("{name}=")).unwrap() + name.len() + 1;
+                let rest = &line[start..];
+                let rest = rest.trim_start_matches('"');
+                rest[..rest.find(['"', ',']).unwrap_or(rest.len())].to_string()
+            };
+            let challenge = crate::proxy_auth::parse_challenge(
+                "Digest realm=\"cfrs-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5",
+            )
+            .unwrap();
+            let want = crate::proxy_auth::authorization(
+                &challenge,
+                "user",
+                "pa:ss",
+                "CONNECT",
+                "example.test:443",
+                &field("cnonce"),
+                1,
+            );
+            assert_eq!(&line["Proxy-Authorization: ".len()..], want);
+            second
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+            second.write_all(b"through").await.unwrap();
+        });
+        let proxy = super::Proxy::parse(&format!("http://user:pa%3Ass@{addr}")).unwrap();
+        let mut io = proxy
+            .connect("example.test", 443, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        let mut got = [0u8; 7];
+        io.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"through");
+        server.await.unwrap();
+    }
+
     use super::*;
 
     #[test]

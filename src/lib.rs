@@ -73,6 +73,7 @@ pub mod origin;
 pub mod ports;
 pub mod preflight;
 pub mod proxy;
+pub mod proxy_auth;
 pub mod qr;
 pub mod quicktunnel;
 pub mod race;
