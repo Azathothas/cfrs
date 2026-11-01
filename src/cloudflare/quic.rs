@@ -137,15 +137,21 @@ pub async fn dial_any(
     anyhow::bail!("no edge answered: {}", failures.join("; "))
 }
 
+/// A QUIC connection in memory for tests: a local server (in the place of
+/// the edge) and a client with the edge transport config of cfrs.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
 
-    /// A local QUIC server opens 200 streams to the client and keeps them
-    /// open, as the edge does with 200 requests at the same time. With the
-    /// default of quinn (100), the stream after the 100th waits.
-    #[tokio::test]
-    async fn the_edge_can_open_200_streams_at_the_same_time() {
+    pub struct Pair {
+        /// The connection on the side of the edge.
+        pub edge: quinn::Connection,
+        /// The connection on the side of cfrs.
+        pub client: quinn::Connection,
+        _endpoints: (Endpoint, Endpoint),
+    }
+
+    pub async fn local_pair() -> Pair {
         crate::init_crypto();
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = rcgen::CertificateParams::new(vec!["edge.test".to_string()])
@@ -165,34 +171,51 @@ mod tests {
         )
         .unwrap();
         let addr = server.local_addr().unwrap();
+        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"cfrs-test"]).unwrap();
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+        let mut config = ClientConfig::new(Arc::new(crypto));
+        config.transport_config(Arc::new(transport_config(1252)));
+        let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let connecting = client.connect_with(config, addr, "edge.test").unwrap();
+        let (edge, client_conn) = tokio::join!(
+            async { server.accept().await.unwrap().await.unwrap() },
+            async { connecting.await.unwrap() }
+        );
+        Pair {
+            edge,
+            client: client_conn,
+            _endpoints: (server, client),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local QUIC server opens 200 streams to the client and keeps them
+    /// open, as the edge does with 200 requests at the same time. With the
+    /// default of quinn (100), the stream after the 100th waits.
+    #[tokio::test]
+    async fn the_edge_can_open_200_streams_at_the_same_time() {
+        let pair = testing::local_pair().await;
+        let edge = pair.edge.clone();
         let opener = tokio::spawn(async move {
-            let conn = server.accept().await.unwrap().await.unwrap();
             let mut streams = Vec::new();
             for i in 0..200 {
-                let (mut send, recv) = tokio::time::timeout(Duration::from_secs(5), conn.open_bi())
+                let (mut send, recv) = tokio::time::timeout(Duration::from_secs(5), edge.open_bi())
                     .await
                     .unwrap_or_else(|_| panic!("stream {i} waits for the limit of the client"))
                     .unwrap();
                 send.write_all(b"x").await.unwrap();
                 streams.push((send, recv));
             }
-            (server, conn, streams)
+            streams
         });
-
-        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"cfrs-test"]).unwrap();
-        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
-        let mut config = ClientConfig::new(Arc::new(crypto));
-        config.transport_config(Arc::new(transport_config(1252)));
-        let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
-        let conn = client
-            .connect_with(config, addr, "edge.test")
-            .unwrap()
-            .await
-            .unwrap();
         let accept = async {
             let mut accepted = Vec::new();
             for _ in 0..200 {
-                let (send, mut recv) = conn.accept_bi().await.unwrap();
+                let (send, mut recv) = pair.client.accept_bi().await.unwrap();
                 let mut byte = [0u8; 1];
                 recv.read_exact(&mut byte).await.unwrap();
                 accepted.push((send, recv));
@@ -200,8 +223,7 @@ mod tests {
             accepted
         };
         let (accepted, opened) = tokio::join!(accept, opener);
-        let (_server, _conn, streams) = opened.unwrap();
-        assert_eq!((accepted.len(), streams.len()), (200, 200));
+        assert_eq!((accepted.len(), opened.unwrap().len()), (200, 200));
     }
 
     #[test]

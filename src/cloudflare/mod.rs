@@ -66,6 +66,10 @@ pub const CF_EDGE_ROOTS_PEM: &[u8] = include_bytes!("cf-edge-roots.pem");
 /// The six-byte preamble on a data stream, from `tunnelrpc/quic/protocol.go`.
 pub const DATA_STREAM_SIGNATURE: [u8; 6] = [0x0A, 0x36, 0xCD, 0x12, 0xA1, 0x3E];
 
+/// The six-byte preamble on an RPC stream that the edge opens to call the
+/// connector, from `tunnelrpc/quic/protocol.go`.
+pub const RPC_STREAM_SIGNATURE: [u8; 6] = [0x52, 0xBB, 0x82, 0x5C, 0xDB, 0x65];
+
 /// The protocol version that follows the data-stream signature.
 pub const DATA_STREAM_VERSION: &[u8] = b"01";
 

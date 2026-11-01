@@ -34,25 +34,45 @@ pub type EdgeWriter = std::pin::Pin<Box<dyn futures::io::AsyncWrite + Send>>;
 pub async fn serve_stream(
     runtime: std::sync::Arc<ServiceRuntime>,
     ingress: std::sync::Arc<Ingress>,
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
 ) {
+    let mut signature = [0u8; 6];
+    if let Err(err) = recv.read_exact(&mut signature).await {
+        tracing::debug!(error = %err, "the edge closed a stream before its signature");
+        return;
+    }
+    if signature == crate::cloudflare::RPC_STREAM_SIGNATURE {
+        // The edge calls the connector (a configuration push). cfrs serves
+        // no RPC on such a stream: reset it, so the edge gets an answer at
+        // once.
+        tracing::debug!("the edge opened an RPC stream; it is reset");
+        let _ = recv.stop(RPC_STREAM_REFUSED.into());
+        let _ = send.reset(RPC_STREAM_REFUSED.into());
+        return;
+    }
     let metrics = runtime.metrics().clone();
     metrics.stream_started();
-    if let Err(err) = serve_inner(&runtime, &ingress, send, recv).await {
+    if let Err(err) = serve_inner(&runtime, &ingress, signature, send, recv).await {
         metrics.error();
         tracing::warn!(error = %format!("{err:#}"), "stream failed");
     }
     metrics.stream_finished();
 }
 
+/// The QUIC error code of a reset RPC stream.
+pub const RPC_STREAM_REFUSED: u32 = 0;
+
 async fn serve_inner(
     runtime: &ServiceRuntime,
     ingress: &Ingress,
+    signature: [u8; 6],
     send: quinn::SendStream,
     recv: quinn::RecvStream,
 ) -> Result<()> {
+    use tokio::io::AsyncReadExt as _;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    let recv = std::io::Cursor::new(signature).chain(recv);
     let mut reader: EdgeReader = Box::pin(recv.compat());
     let writer: EdgeWriter = Box::pin(send.compat_write());
     let request = cqstream::read_connect_request(&mut reader).await?;
@@ -997,6 +1017,75 @@ pub use crate::connect::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a QUIC connection in memory: a stream with the RPC signature is
+    /// reset at once, and a data stream after it is served (the signature
+    /// that cfrs read first goes back in front of the request).
+    #[tokio::test]
+    async fn an_rpc_stream_is_reset_and_a_data_stream_is_served() {
+        use crate::cloudflare::schema::ConnectionType;
+        use std::sync::Arc;
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+        let pair = crate::cloudflare::quic::testing::local_pair().await;
+        let ingress = Arc::new(Ingress::new().catch_all(Service::HelloWorld));
+        let runtime = Arc::new(ServiceRuntime::build(&ingress, Metrics::new()).unwrap());
+        let client = pair.client.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((send, recv)) = client.accept_bi().await {
+                tokio::spawn(serve_stream(runtime.clone(), ingress.clone(), send, recv));
+            }
+        });
+
+        let (mut send, mut recv) = pair.edge.open_bi().await.unwrap();
+        send.write_all(&crate::cloudflare::RPC_STREAM_SIGNATURE)
+            .await
+            .unwrap();
+        send.write_all(b"01 a call").await.unwrap();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), recv.read_to_end(1024))
+            .await
+            .expect("an answer to the RPC stream")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                quinn::ReadToEndError::Read(quinn::ReadError::Reset(code))
+                    if code == quinn::VarInt::from_u32(RPC_STREAM_REFUSED)
+            ),
+            "{err:?}"
+        );
+
+        let (send, recv) = pair.edge.open_bi().await.unwrap();
+        let mut writer = send.compat_write();
+        let mut reader = recv.compat();
+        let request = cqstream::ConnectRequest {
+            dest: "http://x.trycloudflare.com/".into(),
+            conn_type: ConnectionType::Http,
+            metadata: vec![
+                (HTTP_METHOD_KEY.into(), "GET".into()),
+                (HTTP_HOST_KEY.into(), "x.trycloudflare.com".into()),
+            ],
+        };
+        cqstream::write_connect_request(&mut writer, &request)
+            .await
+            .unwrap();
+        futures::io::AsyncWriteExt::close(&mut writer)
+            .await
+            .unwrap();
+        let (error, meta) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cqstream::read_connect_response(&mut reader),
+        )
+        .await
+        .expect("an answer to the data stream")
+        .unwrap();
+        assert_eq!(error, "");
+        assert!(
+            meta.iter()
+                .any(|(k, v)| k == cqstream::HTTP_STATUS_KEY && v == "200"),
+            "{meta:?}"
+        );
+        server.abort();
+    }
 
     /// A writer that keeps the bytes until a flush, like a buffered edge
     /// stream. `committed` holds what a flush passed on.
