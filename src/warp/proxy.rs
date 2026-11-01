@@ -200,6 +200,7 @@ where
     let local = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
     let tunnel = stack.udp_bind().await?;
     socks::socks5_reply(&mut control, 0x00, Some(local.local_addr()?)).await?;
+    debug!(relay = %local.local_addr()?, "a UDP ASSOCIATE");
     let client: Arc<std::sync::Mutex<Option<SocketAddr>>> = Arc::default();
 
     let to_tunnel = {
@@ -275,6 +276,7 @@ where
     use pod_netns::upstream::{read_udp_frame, wrap_udp, write_udp_frame};
     let tunnel = stack.udp_bind().await?;
     socks::socks5_reply(&mut control, 0x00, None).await?;
+    debug!("a UDP association in the stream (no UDP socket of the host)");
     let (mut read, mut write) = tokio::io::split(control);
     let to_tunnel = {
         let tunnel = tunnel.clone();

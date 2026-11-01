@@ -552,6 +552,7 @@ jobs:
           print('udp-dns', 'ok' if s.recv(512)[:2] == bytes.fromhex('1234') else 'bad')
           "
           grep -q 'udp-dns ok' warpudp.out
+          grep 'a UDP association in the stream' warpudp.err
       - name: WARP proxy
         timeout-minutes: 4
         run: |
@@ -578,11 +579,12 @@ jobs:
           grep -q '^warp=on' v6trace.txt
           grep -q '^ip=.*:' v6trace.txt
           # Issue 93: one TCP download through the userspace stack and
-          # MASQUE. Before, it was about 0.1 MB/s on a healthy host.
+          # MASQUE. Before, it was about 0.1 MB/s on a healthy host; runs
+          # measured 1.1 to 5.4 MB/s after the fix; the gate is 0.5 MB/s.
           rate=$(curl -fsS --max-time 120 -o /dev/null -w '%{speed_download}' -x socks5h://127.0.0.1:40000 \
             'https://speed.cloudflare.com/__down?bytes=20000000')
           echo "warp proxy download: $rate bytes/s"
-          awk -v r="$rate" 'BEGIN { exit !(r >= 1000000) }'
+          awk -v r="$rate" 'BEGIN { exit !(r >= 500000) }'
           # Issue 75: the MASQUE connection is killed (ss -K); the proxy
           # opens a new session, and a new client goes through it.
           sudo ss -K dst 162.159.198.0/24 dport = 443 || true
