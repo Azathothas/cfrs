@@ -27,7 +27,11 @@ use crate::vnet::device::LinkDevice;
 /// client uses; anything larger is dropped by the front door.
 pub const TUNNEL_MTU: usize = 1280;
 
-const TCP_BUFFER: usize = 128 * 1024;
+/// The send and receive buffers of each TCP connection (issue 93: 128 KiB
+/// was at most 2.8 MB/s at an RTT of 46 ms).
+const TCP_BUFFER: usize = 512 * 1024;
+/// The most packets in the outbound queue of the tunnel device.
+const OUTBOUND_PACKETS: usize = 512;
 const UDP_PACKETS: usize = 64;
 const UDP_PAYLOAD: usize = 64 * 1024;
 
@@ -167,7 +171,9 @@ impl WarpStack {
         rx: super::session::MasqueRx,
         config: StackConfig,
     ) -> Result<Self> {
-        let mut device = LinkDevice::tunnel(config.mtu);
+        // The packets that wait for the MASQUE sender (issue 93): about
+        // 600 KB at the MTU; a full queue drops, so TCP and QUIC see a loss.
+        let mut device = LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS);
         let inbound = device.inbound();
         let outbound = device.outbound();
 
@@ -213,7 +219,7 @@ impl WarpStack {
                 let mut tx = tx;
                 loop {
                     let packet = outbound.recv().await;
-                    if let Err(err) = tx.send_packet(&packet) {
+                    if let Err(err) = tx.send_packet(&packet).await {
                         // The session cannot send again: mark the stack closed,
                         // so that a new session replaces it.
                         tracing::warn!(error = %format!("{err:#}"), "the MASQUE send loop ended");
@@ -443,10 +449,16 @@ impl Driver {
 
             let now = Self::now();
             self.iface.poll(now, &mut self.device, &mut self.sockets);
-            self.progress();
+            let moved = self.progress();
 
             if closed.load(std::sync::atomic::Ordering::Relaxed) && self.pending.is_empty() {
                 break;
+            }
+            // A read or a write changed a window: poll again at once, so
+            // that the window update goes out now (issue 93).
+            if moved {
+                tokio::task::yield_now().await;
+                continue;
             }
 
             let delay = self
@@ -625,7 +637,9 @@ impl Driver {
         }
     }
 
-    fn progress(&mut self) {
+    /// Complete each pending operation that can complete. True when one did.
+    fn progress(&mut self) -> bool {
+        let before = self.pending.len();
         let mut still_waiting = VecDeque::with_capacity(self.pending.len());
         while let Some(op) = self.pending.pop_front() {
             match op {
@@ -740,6 +754,8 @@ impl Driver {
                 }
             }
         }
+        let moved = still_waiting.len() < before;
         self.pending = still_waiting;
+        moved
     }
 }

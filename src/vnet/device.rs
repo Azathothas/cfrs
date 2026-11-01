@@ -227,6 +227,14 @@ impl LinkDevice {
         Self::new(mtu, false)
     }
 
+    /// A tunnel device whose outbound queue holds at most `packets`: a
+    /// further packet is dropped, as a full router queue drops it.
+    pub fn tunnel_bounded(mtu: usize, packets: usize) -> Self {
+        let mut device = Self::new(mtu, false);
+        device.tx = PacketQueue::bounded(packets);
+        device
+    }
+
     fn new(mtu: usize, loopback: bool) -> Self {
         Self {
             rx: PacketQueue::unbounded(),

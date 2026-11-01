@@ -291,7 +291,7 @@ pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
                         debug!(n, "dropped a packet larger than the tunnel MTU");
                         continue;
                     }
-                    tx.send_packet(&buf[..n])?;
+                    tx.send_packet(&buf[..n]).await?;
                 }
                 _ = keepalive.tick() => {
                     if let Err(err) = tx.keepalive() {

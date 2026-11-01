@@ -28,7 +28,7 @@ const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest time for a TCP connect through the tunnel.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The size of each read from a tunnel connection.
-const CHUNK: usize = 16 * 1024;
+const CHUNK: usize = 64 * 1024;
 
 /// A running proxy.
 pub struct WarpProxy {

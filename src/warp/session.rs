@@ -163,7 +163,7 @@ pub struct MasqueTx {
     ping: Option<h2::PingPong>,
     send: h2::SendStream<Bytes>,
     closed: bool,
-    dropped: u64,
+    waits: u64,
 }
 
 /// The read half of a session, moved to whatever task pumps inbound packets.
@@ -306,7 +306,7 @@ impl MasqueSession {
                 ping: self.ping,
                 send: self.send,
                 closed: self.closed,
-                dropped: 0,
+                waits: 0,
             },
             MasqueRx {
                 recv: self.recv,
@@ -359,27 +359,33 @@ impl MasqueSession {
 impl MasqueTx {
     /// Send one IP packet through the tunnel.
     ///
-    /// A packet goes out only when the stream has HTTP/2 send capacity for
-    /// it. Without capacity, the packet is dropped, as a full router queue
-    /// drops it: QUIC and TCP inside the tunnel then see a loss and slow
-    /// down. Before, each packet went into the unbounded buffer of h2, so a
-    /// large response filled it with no loss and no backpressure.
-    pub fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
+    /// The packet waits for the HTTP/2 send capacity of the stream, and h2
+    /// holds at most [`SEND_RESERVE`] bytes for the window of the front
+    /// door. Before (issue 93), a packet with no capacity at that moment was
+    /// dropped: the pure ACKs and the window updates of a download too, and
+    /// the far sender stalled. A full queue in front of this call drops
+    /// packets in its place (the device queue, the TUN queue of the kernel).
+    pub async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         if self.closed {
             bail!("the MASQUE session is closed");
         }
         let mut buf = BytesMut::with_capacity(packet.len() + 3);
         capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet);
         self.send.reserve_capacity(SEND_RESERVE);
-        if self.send.capacity() < buf.len() {
-            self.dropped += 1;
-            if self.dropped.is_power_of_two() {
-                tracing::debug!(
-                    dropped = self.dropped,
-                    "MASQUE send capacity is full; packets are dropped"
-                );
+        while self.send.capacity() < buf.len() {
+            self.waits += 1;
+            match std::future::poll_fn(|cx| self.send.poll_capacity(cx)).await {
+                Some(Ok(_)) => {}
+                Some(Err(err)) => {
+                    self.closed = true;
+                    return Err(anyhow::Error::new(err).context("waiting for MASQUE send capacity"));
+                }
+                None => {
+                    self.closed = true;
+                    bail!("the MASQUE stream has no send capacity any more");
+                }
             }
-            return Ok(());
+            self.send.reserve_capacity(SEND_RESERVE);
         }
         self.send
             .send_data(buf.freeze(), false)
@@ -387,9 +393,9 @@ impl MasqueTx {
         Ok(())
     }
 
-    /// The packets dropped for no send capacity.
-    pub fn dropped(&self) -> u64 {
-        self.dropped
+    /// How many times a packet waited for send capacity.
+    pub fn waits(&self) -> u64 {
+        self.waits
     }
 
     /// Send an HTTP/2 PING to keep the connection alive through idle periods.
@@ -517,10 +523,10 @@ mod tests {
     }
 
     /// A front door that never reads the CONNECT-IP body: the stream window
-    /// fills, and then each packet is dropped (a loss for QUIC), not added
-    /// to an unbounded buffer. The sender gets no error.
+    /// fills, and then the sender waits (issue 93: no packet is dropped
+    /// here, and h2 holds no unbounded buffer).
     #[tokio::test]
-    async fn a_full_window_drops_packets() {
+    async fn a_full_window_makes_the_sender_wait() {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let server = tokio::spawn(async move {
             let mut conn = h2::server::Builder::new()
@@ -559,15 +565,32 @@ mod tests {
         // The first packets of a new stream go out at once (a QUIC Initial
         // must not wait for a retransmission).
         for _ in 0..8 {
-            tx.send_packet(&packet).unwrap();
+            tx.send_packet(&packet).await.unwrap();
         }
-        assert_eq!(tx.dropped(), 0);
-        for _ in 0..2000 {
-            tx.send_packet(&packet).unwrap();
-            tokio::task::yield_now().await;
-        }
-        // 2000 packets are 2.4 MB; the window is 16 KiB.
-        assert!(tx.dropped() > 1900, "dropped {}", tx.dropped());
+        assert_eq!(tx.waits(), 0);
+        // 16 KiB of window: after it, a packet waits, and no error comes.
+        let mut sent = 8;
+        let full = loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                tx.send_packet(&packet),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result.unwrap();
+                    sent += 1;
+                    assert!(sent < 2000, "the sender never waited");
+                }
+                Err(_) => break sent,
+            }
+        };
+        assert!(tx.waits() > 0);
+        // The window and SEND_RESERVE bound what went out.
+        assert!(
+            full * 1203 <= 16 * 1024 + SEND_RESERVE + 1203,
+            "sent {full}"
+        );
         server.abort();
     }
 }
