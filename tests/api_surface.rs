@@ -64,7 +64,7 @@ fn identity_example() -> anyhow::Result<()> {
 async fn raw_session_example(addr: SocketAddr, pinned_spki: Vec<u8>) -> anyhow::Result<()> {
     let identity = Identity::generate()?;
     let _session: MasqueSession =
-        MasqueSession::connect(addr, &identity, pinned_spki, None).await?;
+        MasqueSession::connect(addr, &identity, pinned_spki, cfrs::warp::Dial::default()).await?;
     Ok(())
 }
 

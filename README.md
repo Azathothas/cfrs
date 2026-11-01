@@ -380,6 +380,14 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A new client takes the new session; a client that comes while the
   session is down waits for it (20 s at most). `warp tun` keeps its
   interface. The log has `a new WARP session is open` for each.
+* When the direct MASQUE path fails (a proxy that refuses CONNECT to an
+  IP address, or that answers and carries nothing), cfrs opens the same
+  MASQUE TLS through the WebSocket relay of `--relay` (default
+  `https://tcp.ssh.relay.ajam.dev`, see "Edge protocol and transport"). The
+  client certificate and the pinned key stay end to end. The path that
+  worked goes first at the next session. `--no-relay` turns this off.
+  `--masque-endpoint IP:PORT` and `--masque-sni NAME` replace the front
+  door and its TLS name.
 * The registration API calls and the MASQUE connection use the proxy (see
   "Proxies and DNS"). A proxy that terminates TLS cannot carry the MASQUE
   connection, because the connection uses a client certificate.

@@ -173,17 +173,28 @@ pub struct MasqueRx {
     closed: bool,
 }
 
+/// How the TCP connection to the MASQUE front door is made.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Dial<'a> {
+    /// The proxy of the egress (a CONNECT pipe), or none.
+    pub proxy: Option<&'a Proxy>,
+    /// A WebSocket-to-TCP relay in place of the egress (issue 76).
+    pub relay: Option<&'a crate::ws_relay::Relay>,
+    /// The SNI in place of [`MASQUE_SNI`].
+    pub sni: Option<&'a str>,
+}
+
 impl MasqueSession {
     /// Dial the MASQUE front door over TCP and open the CONNECT-IP tunnel.
     pub async fn connect(
         endpoint: std::net::SocketAddr,
         identity: &Identity,
         pinned_spki: Vec<u8>,
-        proxy: Option<&Proxy>,
+        dial: Dial<'_>,
     ) -> Result<Self> {
         tokio::time::timeout(
             CONNECT_TIMEOUT,
-            Self::connect_inner(endpoint, identity, pinned_spki, proxy),
+            Self::connect_inner(endpoint, identity, pinned_spki, dial),
         )
         .await
         .context("MASQUE connect timed out")?
@@ -193,22 +204,34 @@ impl MasqueSession {
         endpoint: std::net::SocketAddr,
         identity: &Identity,
         pinned_spki: Vec<u8>,
-        proxy: Option<&Proxy>,
+        dial: Dial<'_>,
     ) -> Result<Self> {
         // A sealed host permits no direct TCP. The proxy is the egress, and the
         // TLS handshake runs inside its CONNECT pipe exactly as it would over a
-        // direct socket.
-        let tcp: BoxedIo = crate::egress::dial(
-            &endpoint.ip().to_string(),
-            endpoint.port(),
-            proxy,
-            CONNECT_TIMEOUT,
-        )
-        .await
-        .with_context(|| format!("TCP to the MASQUE front door {endpoint}"))?;
+        // direct socket. Through a relay, the TLS runs inside the WebSocket:
+        // the relay sees TLS bytes only.
+        let tcp: BoxedIo = match dial.relay {
+            Some(relay) => relay
+                .connect(endpoint, CONNECT_TIMEOUT)
+                .await
+                .with_context(|| {
+                    format!(
+                        "the MASQUE front door {endpoint} through the relay {}",
+                        relay.url()
+                    )
+                })?,
+            None => crate::egress::dial(
+                &endpoint.ip().to_string(),
+                endpoint.port(),
+                dial.proxy,
+                CONNECT_TIMEOUT,
+            )
+            .await
+            .with_context(|| format!("TCP to the MASQUE front door {endpoint}"))?,
+        };
 
         let config = tls_config(identity, pinned_spki)?;
-        let server_name = ServerName::try_from(MASQUE_SNI)
+        let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())
             .context("invalid MASQUE SNI")?
             .to_owned();
         let tls = TlsConnector::from(config)

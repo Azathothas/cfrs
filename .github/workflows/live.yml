@@ -331,6 +331,18 @@ jobs:
           sh scripts/live-run.sh register target/release/cfrs warp register
           sh scripts/live-run.sh status target/release/cfrs warp status
           sh scripts/live-run.sh probe timeout 120 target/release/cfrs warp probe
+      # Issue 76: TCP 443 to the MASQUE front doors is dropped; the WARP
+      # client falls back to the WebSocket relay, with the same pinned key.
+      - name: WARP probe through the WebSocket relay (MASQUE TCP dropped)
+        timeout-minutes: 4
+        run: |
+          set -eu
+          sudo iptables -A OUTPUT -p tcp -d 162.159.198.0/24 --dport 443 -j DROP
+          trap 'sudo iptables -D OUTPUT -p tcp -d 162.159.198.0/24 --dport 443 -j DROP' EXIT
+          sh scripts/live-run.sh warprelay timeout 180 target/release/cfrs warp probe ||
+            { tail -30 warprelay.err; exit 1; }
+          grep -q 'MASQUE goes through the WebSocket relay' warprelay.err
+          ! grep -E 'ephm1\.' warprelay.out warprelay.err
       - name: WARP run
         timeout-minutes: 3
         run: |

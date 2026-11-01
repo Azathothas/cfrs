@@ -1723,6 +1723,18 @@ struct WarpArgs {
     /// Register a new device for this run only, and do not save it.
     #[arg(long, global = true, conflicts_with = "identity")]
     ephemeral: bool,
+    /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
+    /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
+    /// front door stays end to end in the WebSocket.
+    #[arg(long, global = true)]
+    no_relay: bool,
+    /// The MASQUE front door (IP:PORT) in place of the one of the device.
+    #[arg(long, value_name = "IP:PORT", global = true)]
+    masque_endpoint: Option<std::net::SocketAddr>,
+    /// The TLS name of the MASQUE front door in place of
+    /// consumer-masque.cloudflareclient.com.
+    #[arg(long, value_name = "NAME", global = true)]
+    masque_sni: Option<String>,
 
     #[command(subcommand)]
     command: WarpCommand,
@@ -1785,6 +1797,16 @@ enum WarpCommand {
 }
 
 async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
+    let masque = cfrs::warp::MasqueOptions {
+        no_relay: args.no_relay,
+        endpoint: args.masque_endpoint,
+        sni: args.masque_sni.clone(),
+    };
+    let (client, path) = warp_client_inner(args).await?;
+    Ok((client.with_masque(masque), path))
+}
+
+async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
     use cfrs::warp::WarpClient;
     if args.ephemeral {
         return Ok((

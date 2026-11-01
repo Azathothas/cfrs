@@ -47,6 +47,7 @@ pub use identity::Identity;
 pub use ip::{StackConfig, TcpConn, UdpConn, WarpStack};
 pub use live::{Closable, Live};
 pub use register::Device;
+pub use session::Dial;
 pub use session::{MasqueRx, MasqueSession, MasqueTx};
 
 use anyhow::{bail, Context, Result};
@@ -58,6 +59,22 @@ pub struct WarpClient {
     device: Device,
     identity: Identity,
     proxy: Option<Proxy>,
+    masque: MasqueOptions,
+    /// The relay of the fallback, made on first use.
+    relay: std::sync::OnceLock<Option<std::sync::Arc<crate::ws_relay::Relay>>>,
+    /// The last session went through the relay: try it first next time.
+    relay_first: std::sync::atomic::AtomicBool,
+}
+
+/// How cfrs reaches the MASQUE front door (issue 76).
+#[derive(Clone, Debug, Default)]
+pub struct MasqueOptions {
+    /// No WebSocket relay when the direct path fails.
+    pub no_relay: bool,
+    /// The front door in place of the one of the device record.
+    pub endpoint: Option<std::net::SocketAddr>,
+    /// The TLS name in place of `consumer-masque.cloudflareclient.com`.
+    pub sni: Option<String>,
 }
 
 impl WarpClient {
@@ -101,6 +118,9 @@ impl WarpClient {
             device: enrolled,
             identity,
             proxy,
+            masque: MasqueOptions::default(),
+            relay: std::sync::OnceLock::new(),
+            relay_first: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -111,7 +131,35 @@ impl WarpClient {
             device,
             identity,
             proxy: None,
+            masque: MasqueOptions::default(),
+            relay: std::sync::OnceLock::new(),
+            relay_first: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// How to reach the MASQUE front door: the relay fallback and the
+    /// overrides of the endpoint and the TLS name.
+    pub fn with_masque(mut self, masque: MasqueOptions) -> Self {
+        self.masque = masque;
+        self
+    }
+
+    /// The relay of the fallback: the relay of `--transport relay` when it
+    /// is set, else the relay of `CFRS_RELAY` or the default relay. None
+    /// with `--no-relay`.
+    fn relay(&self) -> Option<std::sync::Arc<crate::ws_relay::Relay>> {
+        if self.masque.no_relay {
+            return None;
+        }
+        self.relay
+            .get_or_init(|| match crate::ws_relay::Relay::from_env(None) {
+                Ok(relay) => Some(std::sync::Arc::new(relay)),
+                Err(err) => {
+                    tracing::warn!(error = %format!("{err:#}"), "no WebSocket relay for MASQUE");
+                    None
+                }
+            })
+            .clone()
     }
 
     /// Use this proxy for the registration calls and the MASQUE dial, or none
@@ -309,10 +357,59 @@ impl WarpClient {
     /// device record again and try with its key and endpoint, then once
     /// more after 1 s (a new connection may reach another server). A key
     /// that the API did not give is never accepted.
+    /// Open a session: direct (through the proxy of the egress), and when
+    /// that fails, through the WebSocket relay (issue 76). The path that
+    /// worked last goes first.
     async fn open_session(&self) -> Result<MasqueSession> {
+        use std::sync::atomic::Ordering;
+        let relay = self.relay();
+        let Some(relay) = relay else {
+            return self.open_on(None).await;
+        };
+        if self.relay_first.load(Ordering::SeqCst) {
+            match self.open_on(Some(&relay)).await {
+                Ok(session) => return Ok(session),
+                Err(err) => {
+                    tracing::warn!(error = %format!("{err:#}"), "MASQUE through the relay failed; trying the direct path");
+                    let session = self.open_on(None).await?;
+                    self.relay_first.store(false, Ordering::SeqCst);
+                    return Ok(session);
+                }
+            }
+        }
+        let direct = match self.open_on(None).await {
+            Ok(session) => return Ok(session),
+            Err(err) => err,
+        };
+        tracing::warn!(
+            error = %format!("{direct:#}"),
+            relay = %relay.url(),
+            "the direct MASQUE path failed; trying the WebSocket relay (--no-relay turns this off)"
+        );
+        match self.open_on(Some(&relay)).await {
+            Ok(session) => {
+                tracing::info!(relay = %relay.url(), "MASQUE goes through the WebSocket relay");
+                self.relay_first.store(true, Ordering::SeqCst);
+                Ok(session)
+            }
+            Err(through) => Err(direct.context(format!(
+                "and through the relay {}: {through:#}",
+                relay.url()
+            ))),
+        }
+    }
+
+    /// Open a session on one path; a key that is not the pinned key reads
+    /// the device record again (the front door changed its key).
+    async fn open_on(&self, relay: Option<&crate::ws_relay::Relay>) -> Result<MasqueSession> {
+        let dial = session::Dial {
+            proxy: self.proxy.as_ref(),
+            relay,
+            sni: self.masque.sni.as_deref(),
+        };
         let (endpoint, pinned) = Self::endpoint_and_pin(&self.device)?;
-        let first =
-            MasqueSession::connect(endpoint, &self.identity, pinned, self.proxy.as_ref()).await;
+        let endpoint = self.masque.endpoint.unwrap_or(endpoint);
+        let first = MasqueSession::connect(endpoint, &self.identity, pinned, dial).await;
         let err = match first {
             Ok(session) => return Ok(session),
             Err(err) if format!("{err:#}").contains(session::PIN_MISMATCH) => err,
@@ -323,18 +420,12 @@ impl WarpClient {
             .await
             .context("reading the device record again after a MASQUE key mismatch")?;
         let (endpoint, pinned) = Self::endpoint_and_pin(&fresh)?;
+        let endpoint = self.masque.endpoint.unwrap_or(endpoint);
         for attempt in 0..2 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
-            match MasqueSession::connect(
-                endpoint,
-                &self.identity,
-                pinned.clone(),
-                self.proxy.as_ref(),
-            )
-            .await
-            {
+            match MasqueSession::connect(endpoint, &self.identity, pinned.clone(), dial).await {
                 Ok(session) => return Ok(session),
                 Err(err) if attempt == 0 && format!("{err:#}").contains(session::PIN_MISMATCH) => {
                     tracing::warn!("the MASQUE key is still not the pinned key; trying once more");
