@@ -851,7 +851,30 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
 /// WARP options of this command line, then write the env file.
 fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
-    let mut argv: Vec<String> = Vec::new();
+    let argv = warp_up_args(args, port, &socket, ready_timeout);
+    let doc = cfrs::warp::up::start(&argv)?;
+    let env = cfrs::warp::up::write_env(port, &socket)?;
+    if persist {
+        for file in cfrs::warp::up::persist(&env)? {
+            eprintln!("cfrs: warp up: a block in {}", file.display());
+        }
+    }
+    let mut doc = doc;
+    doc["env"] = env.display().to_string().into();
+    doc["socket"] = socket.display().to_string().into();
+    doc["persist"] = persist.into();
+    println!("{doc}");
+    Ok(())
+}
+
+/// The command line of the `warp proxy --detach` of `cfrs warp up`.
+fn warp_up_args(
+    args: &WarpArgs,
+    port: u16,
+    socket: &std::path::Path,
+    ready_timeout: u64,
+) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["warp".into()];
     if let Some(path) = &args.identity {
         argv.push("--identity".into());
         argv.push(path.display().to_string());
@@ -882,19 +905,7 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
         "--ready-timeout".into(),
         ready_timeout.to_string(),
     ]);
-    let doc = cfrs::warp::up::start(&argv)?;
-    let env = cfrs::warp::up::write_env(port, &socket)?;
-    if persist {
-        for file in cfrs::warp::up::persist(&env)? {
-            eprintln!("cfrs: warp up: a block in {}", file.display());
-        }
-    }
-    let mut doc = doc;
-    doc["env"] = env.display().to_string().into();
-    doc["socket"] = socket.display().to_string().into();
-    doc["persist"] = persist.into();
-    println!("{doc}");
-    Ok(())
+    argv
 }
 
 /// The options of --detach of a command that can run in the background.
@@ -2978,6 +2989,29 @@ mod tests {
             text.contains("pod-netns"),
             "the pod section has the pod-netns usage"
         );
+    }
+
+    #[test]
+    fn the_warp_proxy_of_warp_up_parses() {
+        let cli =
+            Cli::try_parse_from(["cfrs", "warp", "--no-relay", "up", "--port", "40100"]).unwrap();
+        let Command::Warp(args) = cli.command else {
+            panic!("not warp")
+        };
+        let argv = warp_up_args(&args, 40100, std::path::Path::new("/r/warp.sock"), 30);
+        let parsed = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(argv)).unwrap();
+        let Command::Warp(inner) = parsed.command else {
+            panic!("not warp: the child command line")
+        };
+        assert!(inner.no_relay);
+        match inner.command {
+            WarpCommand::Proxy { listen, detach, .. } => {
+                assert_eq!(listen, ["tcp://127.0.0.1:40100", "unix:/r/warp.sock"]);
+                assert!(detach.detach);
+                assert_eq!(detach.name.as_deref(), Some("warp"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

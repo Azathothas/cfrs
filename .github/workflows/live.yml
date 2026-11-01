@@ -353,7 +353,9 @@ jobs:
           home="$RUNNER_TEMP/home-up"
           mkdir -p "$home"
           printf 'export KEEP=1\n' > "$home/.profile"
-          HOME="$home" target/release/cfrs warp up --port 40100 --persist | tail -1 > up.json
+          # The WARP device of the other steps, not a new one in $home.
+          ident="$HOME/.local/state/cfrs/warp.json"
+          HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 --persist | tail -1 > up.json
           jq -e '.name == "warp" and .persist == true' up.json
           grep -q '>>> cfrs warp up >>>' "$home/.profile" "$home/.bashrc"
           (
@@ -380,7 +382,7 @@ jobs:
           sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP
           target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
           # A second warp up is the same instance.
-          HOME="$home" target/release/cfrs warp up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
+          HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
           HOME="$home" target/release/cfrs warp down
           ! grep -q 'cfrs warp up' "$home/.profile" "$home/.bashrc"
           grep -q 'export KEEP=1' "$home/.profile"
