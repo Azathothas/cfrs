@@ -2373,6 +2373,14 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 .map(|e| e.ip().to_string())
                 .unwrap_or_default();
             println!("cfrs: tun      {} {address}/32 mtu 1280", tun.name);
+            if let Some(v6) = client.device().ipv6() {
+                match tun.add_ipv6(v6) {
+                    Ok(()) => println!("cfrs: tun      {} {v6}/128", tun.name),
+                    Err(err) => {
+                        tracing::warn!(error = %format!("{err:#}"), "the TUN has no IPv6 address")
+                    }
+                }
+            }
             println!(
                 "cfrs: masque   {endpoint} (do not route this address into {})",
                 tun.name

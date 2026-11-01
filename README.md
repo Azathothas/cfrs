@@ -363,6 +363,10 @@ cfrs warp tun --name cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   temporary directory. The file mode is 0600. cfrs checks the directory
   before it registers a device. Use `--identity PATH` for a different file,
   `--ephemeral` or `CFRS_STATE_DIR=none` to use a new device for one run.
+* IPv6: the stack has the IPv4 and the IPv6 address of the device. The
+  proxy asks for A and AAAA records through the tunnel and tries IPv4
+  first, then IPv6, so a host with only AAAA records works too.
+  `warp tun` adds the IPv6 address (/128) to the interface.
 * `cfrs warp proxy` listens on `tcp://127.0.0.1:40000` by default. Use
   `--listen unix:/path` on a host that refuses `AF_INET` binds. Names are
   resolved through the tunnel. SOCKS5 UDP ASSOCIATE is supported.

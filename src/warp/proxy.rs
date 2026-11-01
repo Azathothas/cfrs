@@ -260,41 +260,93 @@ where
 /// Connect to `host:port` through the tunnel. Return a local pipe end that
 /// carries the connection.
 pub async fn dial(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<DuplexStream> {
-    let ip = match host {
-        ProxyHost::Ip(ip) => ip,
-        ProxyHost::Domain(name) => resolve(&stack, &name).await?,
+    let addresses = match host {
+        ProxyHost::Ip(ip) => vec![ip],
+        ProxyHost::Domain(name) => resolve_all(&stack, &name).await?,
     };
-    let conn = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        stack.tcp_connect(SocketAddr::new(ip, port)),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("connect to {ip}:{port} through WARP timed out"))??;
-    let (local, remote) = tokio::io::duplex(4 * CHUNK);
-    tokio::spawn(bridge(conn, remote));
-    Ok(local)
+    // IPv4 first, then IPv6 (issue 81): a name with no A record (an IPv6
+    // only host) works through WARP too.
+    let mut last = None;
+    for ip in order(addresses) {
+        match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            stack.tcp_connect(SocketAddr::new(ip, port)),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => {
+                let (local, remote) = tokio::io::duplex(4 * CHUNK);
+                tokio::spawn(bridge(conn, remote));
+                return Ok(local);
+            }
+            Ok(Err(err)) => {
+                last = Some(err.context(format!("connect to {ip}:{port} through WARP")))
+            }
+            Err(_) => {
+                last = Some(anyhow::anyhow!(
+                    "connect to {ip}:{port} through WARP timed out"
+                ))
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no address to connect to")))
 }
 
-/// Resolve `name` to an IPv4 address with a DNS query through the tunnel.
-pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
-    if let Ok(ip) = name
-        .trim_matches(|c| c == '[' || c == ']')
-        .parse::<IpAddr>()
+/// The order of the dial: IPv4 addresses, then IPv6, each in the order of
+/// the answer, with no copy.
+pub fn order(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = Vec::new();
+    for ip in addresses
+        .iter()
+        .filter(|a| a.is_ipv4())
+        .chain(addresses.iter().filter(|a| a.is_ipv6()))
     {
-        return Ok(ip);
+        if !out.contains(ip) {
+            out.push(*ip);
+        }
     }
+    out
+}
+
+async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> {
     let udp = stack.udp_bind().await?;
-    let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7);
-    let query = pod_netns::dns::build_query(id, name, pod_netns::dns::TYPE_A)?;
+    let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;
+    let query = pod_netns::dns::build_query(id, name, kind)?;
     udp.send_to(query, TUNNEL_RESOLVER).await?;
     let (answer, _) = tokio::time::timeout(DNS_TIMEOUT, udp.recv_from(4096))
         .await
         .map_err(|_| anyhow::anyhow!("no DNS answer for {name} through WARP"))??;
-    let addresses = pod_netns::dns::parse_answers(&answer)?;
-    match addresses.into_iter().find(IpAddr::is_ipv4) {
-        Some(ip) => Ok(ip),
-        None => bail!("no IPv4 address for {name}"),
+    pod_netns::dns::parse_answers(&answer)
+}
+
+/// The A and the AAAA addresses of `name`, with DNS queries through the
+/// tunnel (issue 81).
+pub async fn resolve_all(stack: &WarpStack, name: &str) -> Result<Vec<IpAddr>> {
+    if let Ok(ip) = name
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
+        return Ok(vec![ip]);
     }
+    let (a, aaaa) = tokio::join!(
+        query(stack, name, pod_netns::dns::TYPE_A),
+        query(stack, name, pod_netns::dns::TYPE_AAAA)
+    );
+    let mut all: Vec<IpAddr> = a.unwrap_or_default();
+    all.extend(aaaa.unwrap_or_default());
+    if all.is_empty() {
+        bail!("no address for {name} through WARP");
+    }
+    Ok(order(all))
+}
+
+/// The first address of `name` (IPv4 first), with DNS through the tunnel.
+pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
+    resolve_all(stack, name)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no address for {name}"))
 }
 
 /// Copy bytes between a tunnel connection and a local pipe end.
@@ -386,6 +438,35 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    /// Issue 81: IPv4 first, then IPv6, no copy; an IPv6-only answer
+    /// stays.
+    #[test]
+    fn the_dial_order() {
+        let a: IpAddr = "1.2.3.4".parse().unwrap();
+        let b: IpAddr = "2606:4700::1".parse().unwrap();
+        let c: IpAddr = "5.6.7.8".parse().unwrap();
+        assert_eq!(order(vec![b, a, c, a]), vec![a, c, b]);
+        assert_eq!(order(vec![b]), vec![b]);
+    }
+
+    #[test]
+    fn the_stack_takes_the_ipv6_address_of_an_ipv4_tunnel() {
+        let v6: std::net::Ipv6Addr = "2606:4700:110:8a1::2".parse().unwrap();
+        let config =
+            super::super::StackConfig::new("172.16.0.2".parse().unwrap()).with_ipv6(Some(v6));
+        assert_eq!(config.local_v6, Some(v6));
+        let only_v6 = super::super::StackConfig::new(IpAddr::V6(v6)).with_ipv6(Some(v6));
+        assert_eq!(
+            only_v6.local_v6, None,
+            "no second address for an IPv6 tunnel"
+        );
     }
 }
 

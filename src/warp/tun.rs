@@ -46,6 +46,60 @@ fn ifreq(name: &str) -> Result<libc::ifreq> {
     Ok(req)
 }
 
+/// `struct in6_ifreq` of linux/ipv6.h (SIOCSIFADDR on an AF_INET6 socket).
+#[repr(C)]
+struct In6Ifreq {
+    addr: libc::in6_addr,
+    prefixlen: u32,
+    ifindex: libc::c_int,
+}
+
+impl Tun {
+    /// Add the IPv6 address of the tunnel (/128) to the interface (issue
+    /// 81). A host with no IPv6 refuses the AF_INET6 socket: the error
+    /// says so, and IPv4 still works.
+    pub fn add_ipv6(&self, address: std::net::Ipv6Addr) -> Result<()> {
+        // SAFETY: a socket call; the descriptor is owned below.
+        let control =
+            unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+        if control < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("an AF_INET6 socket (no IPv6 on this host?)");
+        }
+        // SAFETY: a descriptor that this function opened.
+        let control = unsafe { OwnedFd::from_raw_fd(control) };
+        let mut index = ifreq(&self.name)?;
+        ioctl(
+            control.as_raw_fd(),
+            libc::SIOCGIFINDEX,
+            &mut index,
+            "SIOCGIFINDEX",
+        )?;
+        // SAFETY: SIOCGIFINDEX wrote the index in the union.
+        let ifindex = unsafe { index.ifr_ifru.ifru_ifindex };
+        let mut req = In6Ifreq {
+            addr: libc::in6_addr {
+                s6_addr: address.octets(),
+            },
+            prefixlen: 128,
+            ifindex,
+        };
+        // SAFETY: an ioctl with a live in6_ifreq of the size that the
+        // kernel reads.
+        if unsafe {
+            libc::ioctl(
+                control.as_raw_fd(),
+                libc::SIOCSIFADDR as _,
+                &mut req as *mut In6Ifreq,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error()).context("SIOCSIFADDR (IPv6)");
+        }
+        Ok(())
+    }
+}
+
 fn ioctl(fd: RawFd, request: libc::c_ulong, req: &mut libc::ifreq, what: &str) -> Result<()> {
     if unsafe { libc::ioctl(fd, request as _, req as *mut libc::ifreq) } < 0 {
         return Err(std::io::Error::last_os_error()).with_context(|| what.to_string());

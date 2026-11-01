@@ -332,7 +332,11 @@ impl WarpClient {
         let session = self.open_session().await?;
         let local = self.local_address()?;
         let (tx, rx) = session.split();
-        WarpStack::start(tx, rx, StackConfig::new(local))
+        WarpStack::start(
+            tx,
+            rx,
+            StackConfig::new(local).with_ipv6(self.device.ipv6()),
+        )
     }
 
     /// Open the session without the userspace stack, for callers that only want

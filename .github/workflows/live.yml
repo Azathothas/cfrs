@@ -455,6 +455,12 @@ jobs:
           out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace)
           echo "$out" | grep -E '^(warp|colo|tls)='
           echo "$out" | grep -q '^warp=on'
+          # Issue 81: IPv6 through WARP: a host with AAAA records only, and
+          # an IPv6 literal.
+          curl -fsS --max-time 30 -o /dev/null -w 'ipv6-only host: %{http_code}\n' -x socks5h://127.0.0.1:40000 https://ipv6.google.com/
+          curl -fsS --max-time 30 -x socks5h://127.0.0.1:40000 'https://[2606:4700:4700::1111]/cdn-cgi/trace' | tee v6trace.txt | grep -E '^(ip|warp)=' | sed -E 's/^ip=.*/ip=<v6 address>/'
+          grep -q '^warp=on' v6trace.txt
+          grep -q '^ip=.*:' v6trace.txt
           # Issue 75: the MASQUE connection is killed (ss -K); the proxy
           # opens a new session, and a new client goes through it.
           sudo ss -K dst 162.159.198.0/24 dport = 443 || true

@@ -106,6 +106,9 @@ enum Pending {
 pub struct StackConfig {
     /// The address the tunnel assigned to us.
     pub local: IpAddr,
+    /// The IPv6 address of the tunnel too, when `local` is IPv4 (issue
+    /// 81): the stack then has both, and a default route for each.
+    pub local_v6: Option<std::net::Ipv6Addr>,
     /// The next hop for everything not on-link. The tunnel is point to point,
     /// so any address in the assigned subnet works; WARP uses `.1`.
     pub gateway: IpAddr,
@@ -124,9 +127,18 @@ impl StackConfig {
         };
         Self {
             local,
+            local_v6: None,
             gateway,
             mtu: TUNNEL_MTU,
         }
+    }
+
+    /// Add the IPv6 address of the tunnel.
+    pub fn with_ipv6(mut self, v6: Option<std::net::Ipv6Addr>) -> Self {
+        if self.local.is_ipv4() {
+            self.local_v6 = v6;
+        }
+        self
     }
 }
 
@@ -169,6 +181,11 @@ impl WarpStack {
                 IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6.into()), 128),
             };
             addrs.push(cidr).ok();
+            if let Some(v6) = config.local_v6 {
+                addrs
+                    .push(IpCidr::new(IpAddress::Ipv6(v6.into()), 128))
+                    .ok();
+            }
         });
         match config.gateway {
             IpAddr::V4(gw) => {
@@ -177,6 +194,11 @@ impl WarpStack {
             IpAddr::V6(gw) => {
                 iface.routes_mut().add_default_ipv6_route(gw.into()).ok();
             }
+        }
+        if let Some(v6) = config.local_v6 {
+            // The tunnel is point to point: the own address is a next hop
+            // that needs no neighbour discovery.
+            iface.routes_mut().add_default_ipv6_route(v6.into()).ok();
         }
 
         let sockets: SocketSet<'static> = SocketSet::new(Vec::new());
