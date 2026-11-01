@@ -31,6 +31,29 @@ use crate::net::BoxedIo;
 /// packet bytes that wait for the window of the front door.
 pub const SEND_RESERVE: usize = 256 * 1024;
 
+/// The HTTP/2 receive window of the MASQUE stream, and of the connection.
+pub const STREAM_WINDOW: u32 = 4 << 20;
+pub const CONNECTION_WINDOW: u32 = 8 << 20;
+
+/// The budget of h2 for the framing overhead of small DATA frames (each
+/// frame under 256 bytes takes 256 bytes less its size until it is read).
+/// The front door sends one DATA frame for each IP packet, and most are
+/// small (QUIC and TCP ACKs). The default (half the window of 64 KiB) holds
+/// about 170 of them: when the receive task fell behind during a large
+/// transfer, h2 closed the connection with ENHANCE_YOUR_CALM
+/// (too_many_data_frames). This budget holds about 40000.
+pub const DATA_FRAME_BUDGET: usize = 8 << 20;
+
+/// The HTTP/2 client settings of the MASQUE session.
+pub fn h2_builder() -> h2::client::Builder {
+    let mut builder = h2::client::Builder::new();
+    builder
+        .initial_window_size(STREAM_WINDOW)
+        .initial_connection_window_size(CONNECTION_WINDOW)
+        .data_frame_budget(DATA_FRAME_BUDGET);
+    builder
+}
+
 /// How long to wait for the TCP connect, TLS handshake and CONNECT response.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -192,7 +215,8 @@ impl MasqueSession {
                 )
             })?;
 
-        let (client, mut connection) = h2::client::handshake(tls)
+        let (client, mut connection) = h2_builder()
+            .handshake(tls)
             .await
             .context("HTTP/2 handshake with the MASQUE front door")?;
         // Grab the PING handle before the connection is moved to its task;
@@ -397,6 +421,67 @@ impl MasqueRx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The front door sends one small DATA frame for each packet (ACKs).
+    /// 20000 frames of 60 bytes, with a reader that waits before it reads:
+    /// the session must not close with ENHANCE_YOUR_CALM (issue 32, live
+    /// run 41272142304: too_many_data_frames after 4 MiB).
+    #[tokio::test]
+    async fn many_small_data_frames_do_not_close_the_session() {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let server = tokio::spawn(async move {
+            let mut conn = h2::server::handshake(server_io).await.unwrap();
+            let (_request, mut respond) = conn.accept().await.unwrap().unwrap();
+            let response = http::Response::builder().status(200).body(()).unwrap();
+            let mut send = respond.send_response(response, false).unwrap();
+            let sender = tokio::spawn(async move {
+                let mut frame = BytesMut::new();
+                capsule::put_capsule(&mut frame, capsule::CAPSULE_DATA, &[0x45; 57]);
+                let frame = frame.freeze();
+                for _ in 0..20_000 {
+                    send.reserve_capacity(frame.len());
+                    while send.capacity() < frame.len() {
+                        futures::future::poll_fn(|cx| send.poll_capacity(cx))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    }
+                    send.send_data(frame.clone(), false).unwrap();
+                }
+                send.send_data(Bytes::new(), true).unwrap();
+            });
+            while let Some(next) = conn.accept().await {
+                drop(next);
+            }
+            sender.await.unwrap();
+        });
+        let (client, connection) = h2_builder().handshake(client_io).await.unwrap();
+        tokio::spawn(connection);
+        let mut client = client.ready().await.unwrap();
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(CONNECT_URI)
+            .body(())
+            .unwrap();
+        let (response, send) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+        let session = MasqueSession {
+            ping: None,
+            send,
+            recv: response.into_body(),
+            decoder: CapsuleDecoder::new(),
+            closed: false,
+        };
+        let (_tx, mut rx) = session.split();
+        // A slow receive task: the frames pile up in h2 first.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let mut packets = 0;
+        while let Some(_packet) = rx.recv_packet().await.unwrap() {
+            packets += 1;
+        }
+        assert_eq!(packets, 20_000);
+        server.abort();
+    }
 
     /// A front door that never reads the CONNECT-IP body: the stream window
     /// fills, and then each packet is dropped (a loss for QUIC), not added
