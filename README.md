@@ -371,8 +371,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   first, then IPv6, so a host with only AAAA records works too.
   `warp tun` adds the IPv6 address (/128) to the interface.
 * `cfrs warp proxy` listens on `tcp://127.0.0.1:40000` by default. Use
-  `--listen unix:/path` on a host that refuses `AF_INET` binds. Names are
-  resolved through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
+  `--listen unix:/path` on a host that refuses `AF_INET` binds. Each
+  `--listen` is bound on its own: a listener that the host refuses is
+  reported, and the proxy starts with the others (`--strict` exits 69
+  instead). With no listener, the exit code is 69. Names are resolved
+  through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
 * `cfrs warp run --backend netns-raw` runs the program in a user and network
   namespace whose TUN goes to WARP as raw IP packets: TCP, UDP, ICMP and
   IPv6, with the kernel stack of the namespace and no root. The TUN has the
@@ -389,7 +392,9 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
 * `cfrs warp up [--port 40000] [--persist]` starts `warp proxy` in the
   background (instance `warp`, see "Run in the background") on
   `127.0.0.1:PORT` and on a unix socket, and writes an env file with the
-  proxy variables. Later shells join it:
+  proxy variables. When the host refuses the TCP listener, `warp up` starts
+  with the socket only: the env file has no proxy variables, `warp env` says
+  so, and `warp exec` and `warp shell` work. Later shells join it:
   * `eval "$(cfrs warp env)"`: `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`,
     `NO_PROXY` (and the lower-case forms), `CARGO_HTTP_PROXY` and the npm
     variables. The proxy also forwards `http://` URLs (for apt).
@@ -578,6 +583,8 @@ It then runs the checks again and prints one JSON document: `mode`
 (`warp` or `direct`), the paths that work for each task, the URLs, and
 the commands to use (`eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`,
 `cfrs warp ssh-config`).
+When WARP was needed and `cfrs warp up` failed, the document has
+`warp_error`, and the exit code is 69.
 
 ## Inbound access through the relay: `cfrs relay`
 

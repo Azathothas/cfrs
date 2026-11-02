@@ -44,64 +44,101 @@ impl WarpProxy {
     }
 }
 
-/// Accept proxy clients on `listen` and connect them through the WARP
-/// session of `live`. Each client takes the session of the time it comes;
-/// after a reconnect (issue 75), new clients take the new session.
-pub async fn serve(live: Arc<super::Live<WarpStack>>, listen: ProxyListen) -> Result<WarpProxy> {
-    let task = match &listen {
+/// A bound listener of the proxy, before the WARP session (issue 97: a
+/// bind that fails is known before cfrs waits for the network).
+pub enum Bound {
+    Tcp(tokio::net::TcpListener, ProxyListen),
+    Unix(tokio::net::UnixListener, ProxyListen),
+}
+
+impl Bound {
+    /// The address of the listener (the port that the kernel chose too).
+    pub fn listen(&self) -> &ProxyListen {
+        match self {
+            Bound::Tcp(_, listen) | Bound::Unix(_, listen) => listen,
+        }
+    }
+}
+
+/// Bind `listen`: a TCP listener, or a unix socket of mode 0600.
+pub async fn bind(listen: &ProxyListen) -> Result<Bound> {
+    match listen {
         ProxyListen::Tcp(addr) => {
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("binding tcp://{addr}"))?;
-            tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
-                    let live = live.clone();
-                    tokio::spawn(async move {
-                        // The session of now: a new one after a reconnect.
-                        let stack = match live.get().await {
-                            Ok(stack) => stack,
-                            Err(err) => {
-                                warn!(error = %format!("{err:#}"), "WARP proxy client refused");
-                                return;
-                            }
-                        };
-                        let udp = Some(stack.clone());
-                        let dial = move |host, port| dial(stack.clone(), host, port);
-                        if let Err(err) = handle_client(stream, dial, udp).await {
-                            debug!(error = %err, "WARP proxy client failed");
-                        }
-                    });
-                }
-            })
+            let actual = listener.local_addr().unwrap_or(*addr);
+            Ok(Bound::Tcp(listener, ProxyListen::Tcp(actual)))
         }
         ProxyListen::Unix(path) => {
             let _ = std::fs::remove_file(path);
             let listener = pod_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
-            tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
-                    let live = live.clone();
-                    tokio::spawn(async move {
-                        // The session of now: a new one after a reconnect.
-                        let stack = match live.get().await {
-                            Ok(stack) => stack,
-                            Err(err) => {
-                                warn!(error = %format!("{err:#}"), "WARP proxy client refused");
-                                return;
-                            }
-                        };
-                        let udp = Some(stack.clone());
-                        let dial = move |host, port| dial(stack.clone(), host, port);
-                        if let Err(err) = handle_client(stream, dial, udp).await {
-                            debug!(error = %err, "WARP proxy client failed");
-                        }
-                    });
-                }
-            })
+            Ok(Bound::Unix(listener, listen.clone()))
         }
+    }
+}
+
+/// Bind each of `listens` on its own: the listeners that work, and the
+/// error of each one that does not.
+pub async fn bind_all(listens: &[ProxyListen]) -> (Vec<Bound>, Vec<(ProxyListen, anyhow::Error)>) {
+    let mut bound = Vec::new();
+    let mut failed = Vec::new();
+    for listen in listens {
+        match bind(listen).await {
+            Ok(b) => bound.push(b),
+            Err(err) => failed.push((listen.clone(), err)),
+        }
+    }
+    (bound, failed)
+}
+
+/// Accept proxy clients on `bound` and connect them through the WARP
+/// session of `live`. Each client takes the session of the time it comes;
+/// after a reconnect (issue 75), new clients take the new session.
+pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound) -> WarpProxy {
+    let listen = bound.listen().clone();
+    let task = match bound {
+        Bound::Tcp(listener, _) => tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                client(live.clone(), stream);
+            }
+        }),
+        Bound::Unix(listener, _) => tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                client(live.clone(), stream);
+            }
+        }),
     };
     info!(?listen, "WARP proxy is listening");
-    Ok(WarpProxy { listen, task })
+    WarpProxy { listen, task }
+}
+
+/// Serve one client of the proxy on its own task.
+fn client<S>(live: Arc<super::Live<WarpStack>>, stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        // The session of now: a new one after a reconnect.
+        let stack = match live.get().await {
+            Ok(stack) => stack,
+            Err(err) => {
+                warn!(error = %format!("{err:#}"), "WARP proxy client refused");
+                return;
+            }
+        };
+        let udp = Some(stack.clone());
+        let dial = move |host, port| dial(stack.clone(), host, port);
+        if let Err(err) = handle_client(stream, dial, udp).await {
+            debug!(error = %err, "WARP proxy client failed");
+        }
+    });
+}
+
+/// [`bind`] and [`run`] for one listener.
+pub async fn serve(live: Arc<super::Live<WarpStack>>, listen: ProxyListen) -> Result<WarpProxy> {
+    Ok(run(live, bind(&listen).await?))
 }
 
 /// Read one SOCKS5 or HTTP `CONNECT` request, connect with `dial`, answer
@@ -536,6 +573,33 @@ mod order_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue 97: each listener is bound on its own. A TCP listener that the
+    /// host refuses (here: a port in use, and an address that is not on
+    /// this host) does not stop the unix socket, which takes clients.
+    #[tokio::test]
+    async fn a_refused_tcp_listener_does_not_stop_the_unix_socket() {
+        let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warp.sock");
+        let listens = vec![
+            ProxyListen::Tcp(taken.local_addr().unwrap()),
+            ProxyListen::Tcp("192.0.2.1:40000".parse().unwrap()),
+            ProxyListen::Unix(path.clone()),
+        ];
+        let (bound, failed) = bind_all(&listens).await;
+        assert_eq!(bound.len(), 1);
+        assert_eq!(failed.len(), 2);
+        assert!(format!("{:#}", failed[0].1).contains("binding tcp://"));
+        let Some(Bound::Unix(listener, _)) = bound.into_iter().next() else {
+            panic!("the unix socket is the listener that works");
+        };
+        let client = tokio::net::UnixStream::connect(&path);
+        let (accepted, connected) = tokio::join!(listener.accept(), client);
+        assert!(accepted.is_ok() && connected.is_ok());
+        let (bound, failed) = bind_all(&listens[..2]).await;
+        assert!(bound.is_empty() && failed.len() == 2);
+    }
 
     /// A dialer that answers with an echo server and records the target.
     fn echo_dial(

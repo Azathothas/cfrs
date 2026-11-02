@@ -905,7 +905,8 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 && before.udp_dns.works();
             let mut doc = serde_json::json!({});
             let mut warp_doc = serde_json::Value::Null;
-            if warp || !direct_enough || before.warp_up {
+            let warp_wanted = warp || !direct_enough || before.warp_up;
+            if warp_wanted {
                 let mut args = vec![
                     "warp".to_string(),
                     "up".into(),
@@ -963,7 +964,8 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 "direct"
             };
             let mut commands: Vec<String> = Vec::new();
-            if mode == "warp" {
+            let warp_tcp = warp_doc["tcp"].as_bool().unwrap_or(true);
+            if mode == "warp" && warp_tcp {
                 commands
                     .push("eval \"$(cfrs warp env)\"   # proxy variables for this shell".into());
                 commands.push(
@@ -984,8 +986,23 @@ async fn agent(command: AgentCommand) -> Result<()> {
             doc["udp_dns"] = after.udp_dns.works().into();
             doc["ipv6"] = after.ipv6.works().into();
             doc["commands"] = commands.into();
-            doc["advice"] = after.advice.clone().into();
+            let mut advice = after.advice.clone();
+            if let Some(err) = doc["warp_error"].as_str().map(str::to_string) {
+                // Issue 97: do not give the command that just failed as advice.
+                advice.retain(|line| !line.contains("cfrs warp up"));
+                advice.push(format!(
+                    "cfrs warp up failed ({err}); see cfrs net doctor, and use cfrs warp run -- CMD for one program"
+                ));
+            }
+            doc["advice"] = advice.into();
             println!("{doc}");
+            // Issue 97: WARP was needed and did not start: not a success.
+            if warp_wanted && !doc["warp_error"].is_null() {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("agent up: WARP was needed, and cfrs warp up failed"),
+                ));
+            }
             Ok(())
         }
         AgentCommand::Down => {
@@ -1156,7 +1173,20 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
     let socket = cfrs::warp::up::socket_path()?;
     let argv = warp_up_args(args, port, &socket, ready_timeout);
     let doc = cfrs::warp::up::start(&argv)?;
-    let env = cfrs::warp::up::write_env(port, &socket)?;
+    // Issue 97: the TCP listener or the socket can be refused by the host;
+    // the env file and the advice follow what came up.
+    let (tcp, socket_up) = cfrs::warp::up::listeners_of(&doc);
+    if tcp.is_none() {
+        eprintln!(
+            "cfrs: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables. Use: cfrs warp exec -- CMD (or cfrs warp shell)"
+        );
+    }
+    if !socket_up {
+        eprintln!(
+            "cfrs: warp up: the unix socket did not start; cfrs warp exec and cfrs warp shell do not work. Use the proxy variables: eval \"$(cfrs warp env)\""
+        );
+    }
+    let env = cfrs::warp::up::write_env(tcp, &socket)?;
     if persist {
         for file in cfrs::warp::up::persist(&env)? {
             eprintln!("cfrs: warp up: a block in {}", file.display());
@@ -1166,6 +1196,7 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
     doc["env"] = env.display().to_string().into();
     doc["socket"] = socket.display().to_string().into();
     doc["persist"] = persist.into();
+    doc["tcp"] = tcp.is_some().into();
     println!("{doc}");
     Ok(())
 }
@@ -2361,8 +2392,13 @@ enum WarpCommand {
     Proxy {
         /// Where to accept clients: tcp://host:port or unix:/path.
         /// Repeatable: each listener serves the same WARP session.
+        /// A listener that the host refuses is reported, and the proxy
+        /// starts with the others; with none, the exit code is 69.
         #[arg(long, default_value = "tcp://127.0.0.1:40000")]
         listen: Vec<String>,
+        /// Exit 69 when any listener does not start.
+        #[arg(long)]
+        strict: bool,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
@@ -2547,7 +2583,13 @@ async fn warp(args: WarpArgs) -> Result<()> {
         } => return warp_up(&args, *port, *persist, *ready_timeout),
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
-            print!("{}", cfrs::warp::up::env_text()?);
+            let text = cfrs::warp::up::env_text()?;
+            if !text.contains("ALL_PROXY") {
+                eprintln!(
+                    "cfrs: warp env: the TCP listener of cfrs warp up did not start, so there are no proxy variables; use: cfrs warp exec -- CMD"
+                );
+            }
+            print!("{text}");
             return Ok(());
         }
         WarpCommand::Exec { rules, program } => {
@@ -2716,21 +2758,45 @@ async fn warp(args: WarpArgs) -> Result<()> {
             }
         }
         WarpCommand::Proxy {
-            listen, run_for, ..
+            listen,
+            run_for,
+            strict,
+            ..
         } => {
             let listens = listen
                 .iter()
                 .map(|l| cfrs::vnet::proxy::ProxyListen::parse(l))
                 .collect::<Result<Vec<_>>>()
                 .fault(Fault::Usage)?;
+            // Issue 97: each listener is bound on its own, before the WARP
+            // session. A listener that the host refuses (EACCES on a TCP
+            // bind) is reported; the proxy starts with the others.
+            let (bound, failed) = cfrs::warp::proxy::bind_all(&listens).await;
+            for (listen, err) in &failed {
+                eprintln!(
+                    "cfrs: warp proxy: {} is not available: {err:#}",
+                    listen_doc(listen)["listen"].as_str().unwrap_or("?")
+                );
+            }
+            if bound.is_empty() || (strict && !failed.is_empty()) {
+                let list = failed
+                    .iter()
+                    .map(|(_, err)| format!("{err:#}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("warp proxy: a listener did not start: {list}"),
+                ));
+            }
             let live = Arc::new(client)
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
-            let mut proxies = Vec::new();
-            for listen in listens {
-                proxies.push(cfrs::warp::proxy::serve(live.clone(), listen).await?);
-            }
+            let proxies: Vec<_> = bound
+                .into_iter()
+                .map(|b| cfrs::warp::proxy::run(live.clone(), b))
+                .collect();
             for proxy in &proxies {
                 match &proxy.listen {
                     cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
@@ -2747,6 +2813,16 @@ async fn warp(args: WarpArgs) -> Result<()> {
             doc["listens"] = proxies
                 .iter()
                 .map(|p| listen_doc(&p.listen)["listen"].clone())
+                .collect::<Vec<_>>()
+                .into();
+            doc["failed"] = failed
+                .iter()
+                .map(|(listen, err)| {
+                    serde_json::json!({
+                        "listen": listen_doc(listen)["listen"],
+                        "error": format!("{err:#}"),
+                    })
+                })
                 .collect::<Vec<_>>()
                 .into();
             cfrs::detach::ready(doc);

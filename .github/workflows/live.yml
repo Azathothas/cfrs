@@ -398,6 +398,28 @@ jobs:
           ! grep -E 'ephm1\.' warprelay.out warprelay.err
       # Issue 78: one warp up; later shells join it with warp env, warp
       # exec and the --persist block; warp down removes each change.
+      # Issue 97: the host refuses the TCP listener of warp up (here a
+      # program holds the port: EADDRINUSE). warp up starts with the unix
+      # socket only; warp env names no proxy port; warp exec works.
+      - name: warp up with its TCP listener refused
+        timeout-minutes: 4
+        run: |
+          set -eu
+          export CFRS_RUN_DIR="$RUNNER_TEMP/run-up97"
+          ident="$HOME/.local/state/cfrs/warp.json"
+          python3 -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 40097)); s.listen(); time.sleep(240)" &
+          holder=$!
+          sleep 1
+          target/release/cfrs warp --identity "$ident" up --port 40097 2> up97.err | tail -1 > up97.json
+          jq -e '.tcp == false' up97.json
+          grep 'did not start' up97.err
+          target/release/cfrs warp env > env97.txt 2> env97.err
+          grep -q CFRS_WARP_SOCKET env97.txt
+          ! grep -q ALL_PROXY env97.txt
+          grep 'cfrs warp exec' env97.err
+          target/release/cfrs warp exec -- curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
+          target/release/cfrs warp down
+          kill "$holder"
       - name: warp up, env, exec, --persist and down
         timeout-minutes: 5
         run: |

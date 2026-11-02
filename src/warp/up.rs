@@ -67,11 +67,24 @@ pub fn start(argv: &[String]) -> Result<serde_json::Value> {
 }
 
 /// The text of the env file for a proxy on `127.0.0.1:port` and `socket`.
-pub fn env_file_text(port: u16, socket: &Path) -> String {
+/// With no port (issue 97: the host refused the TCP listener), the file has
+/// no proxy variables: a program goes through WARP with `cfrs warp exec`.
+pub fn env_file_text(port: Option<u16>, socket: &Path) -> String {
+    let mut out = String::from("# cfrs warp up: the proxy variables of the WARP proxy\n");
+    let Some(port) = port else {
+        out.push_str(
+            "# The host refused the TCP listener: there are no proxy variables.\n\
+             # Run a program through WARP with: cfrs warp exec -- CMD\n",
+        );
+        out.push_str(&format!(
+            "export CFRS_WARP_SOCKET={}\n",
+            quote(&socket.display().to_string())
+        ));
+        return out;
+    };
     let socks = format!("socks5h://127.0.0.1:{port}");
     let http = format!("http://127.0.0.1:{port}");
     let no_proxy = "localhost,127.0.0.1,::1";
-    let mut out = String::from("# cfrs warp up: the proxy variables of the WARP proxy\n");
     for (k, v) in [
         ("ALL_PROXY", socks.as_str()),
         ("all_proxy", socks.as_str()),
@@ -89,6 +102,22 @@ pub fn env_file_text(port: u16, socket: &Path) -> String {
         out.push_str(&format!("export {k}={}\n", quote(v)));
     }
     out
+}
+
+/// The TCP port and whether the unix socket is up, from the ready document
+/// of the `warp proxy` of `cfrs warp up` (its `listens`).
+pub fn listeners_of(doc: &serde_json::Value) -> (Option<u16>, bool) {
+    let listens: Vec<&str> = doc["listens"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let port = listens.iter().find_map(|l| {
+        l.strip_prefix("tcp://")
+            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+            .map(|a| a.port())
+    });
+    let socket = listens.iter().any(|l| l.starts_with("unix:"));
+    (port, socket)
 }
 
 /// The variables that name a bundle of TLS roots (issue 86).
@@ -168,7 +197,7 @@ pub fn ca_path() -> Result<PathBuf> {
 }
 
 /// Write the env file (mode 0600), with the CA fix when one is needed.
-pub fn write_env(port: u16, socket: &Path) -> Result<PathBuf> {
+pub fn write_env(port: Option<u16>, socket: &Path) -> Result<PathBuf> {
     let path = env_path()?;
     let mut text = env_file_text(port, socket);
     let system = SYSTEM_BUNDLES.iter().map(Path::new).find(|p| p.exists());
@@ -398,12 +427,28 @@ mod tests {
 
     #[test]
     fn the_env_file_has_the_proxy_variables() {
-        let text = env_file_text(40000, Path::new("/run/u/cfrs/run/warp.sock"));
+        let text = env_file_text(Some(40000), Path::new("/run/u/cfrs/run/warp.sock"));
         assert!(text.contains("export ALL_PROXY='socks5h://127.0.0.1:40000'\n"));
         assert!(text.contains("export HTTPS_PROXY='http://127.0.0.1:40000'\n"));
         assert!(text.contains("export http_proxy='http://127.0.0.1:40000'\n"));
         assert!(text.contains("export NO_PROXY='localhost,127.0.0.1,::1'\n"));
         assert!(text.contains("export CFRS_WARP_SOCKET='/run/u/cfrs/run/warp.sock'\n"));
+    }
+
+    /// Issue 97: with no TCP listener, the env file has no proxy variables
+    /// (they would name a port that does not listen), only the socket.
+    #[test]
+    fn with_no_tcp_listener_the_env_file_has_the_socket_only() {
+        let text = env_file_text(None, Path::new("/r/warp.sock"));
+        assert!(text.contains("export CFRS_WARP_SOCKET='/r/warp.sock'\n"));
+        for var in ["ALL_PROXY", "HTTPS_PROXY", "http_proxy", "CARGO_HTTP_PROXY"] {
+            assert!(!text.contains(var), "{var}: {text}");
+        }
+        assert!(text.contains("cfrs warp exec"));
+        let doc = serde_json::json!({"listens": ["unix:/r/warp.sock"]});
+        assert_eq!(listeners_of(&doc), (None, true));
+        let doc = serde_json::json!({"listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"]});
+        assert_eq!(listeners_of(&doc), (Some(40000), true));
     }
 
     #[test]
