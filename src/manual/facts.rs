@@ -118,6 +118,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The connect token of a pair, for the operator side of the reverse relay. It goes only in the X-Relay-Token header. Without it, cfrs reads the local pair file.",
     },
     EnvVar {
+        names: &["POD_NETNS_TEST_MEM"],
+        used_by: "pod (tests only)",
+        meaning: "A test hook of the seccomp backend: no-fd does not open the memory of the program for writing (process_vm_writev is used); none also does not use process_vm_writev (getsockname and getpeername fail with EOPNOTSUPP).",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

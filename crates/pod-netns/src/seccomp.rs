@@ -268,23 +268,80 @@ pub(crate) fn read_mem(mem: RawFd, addr: u64, len: usize) -> Result<Vec<u8>> {
 }
 
 /// Write `data` into the child at `addr`.
+/// The pid of the notification of now: [`open_mem`] sets it, and
+/// [`write_mem`] uses it for `process_vm_writev`. The supervisor handles one
+/// notification at a time.
+static MEM_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Write `data` at `addr` in the memory of the task of the notification:
+/// through `mem` (`/proc/<pid>/mem` opened for writing), else with
+/// `process_vm_writev` (issue 98: a host can refuse the write open of the
+/// file and allow the system call).
 pub(crate) fn write_mem(mem: RawFd, addr: u64, data: &[u8]) -> Result<()> {
     let mut off = 0;
     while off < data.len() {
-        let n = unsafe {
-            libc::pwrite(
-                mem,
-                data[off..].as_ptr() as *const _,
-                data.len() - off,
-                (addr as i64) + off as i64,
-            )
+        let n = if mem >= 0 {
+            unsafe {
+                libc::pwrite(
+                    mem,
+                    data[off..].as_ptr() as *const _,
+                    data.len() - off,
+                    (addr as i64) + off as i64,
+                )
+            }
+        } else {
+            -1
+        };
+        let n = if n > 0 {
+            n
+        } else {
+            let pid = MEM_PID.load(std::sync::atomic::Ordering::Relaxed);
+            let local = libc::iovec {
+                iov_base: data[off..].as_ptr() as *mut _,
+                iov_len: data.len() - off,
+            };
+            let remote = libc::iovec {
+                iov_base: (addr as usize + off) as *mut _,
+                iov_len: data.len() - off,
+            };
+            // SAFETY: the local buffer is valid for iov_len bytes; the kernel
+            // checks the remote range in the other process.
+            unsafe { libc::process_vm_writev(pid as i32, &local, 1, &remote, 1, 0) }
         };
         if n <= 0 {
-            bail!("pwrite(/proc/pid/mem): {}", std::io::Error::last_os_error());
+            bail!(
+                "writing the memory of the program: {}",
+                std::io::Error::last_os_error()
+            );
         }
         off += n as usize;
     }
     Ok(())
+}
+
+/// Whether `process_vm_writev` to `pid` passes the permission check: a
+/// write of one byte to address 1 (never mapped) gives EFAULT when the
+/// check passes.
+pub(crate) fn process_vm_writable(pid: u32) -> bool {
+    let byte = [0u8; 1];
+    let local = libc::iovec {
+        iov_base: byte.as_ptr() as *mut _,
+        iov_len: 1,
+    };
+    let remote = libc::iovec {
+        iov_base: std::ptr::dangling_mut::<u8>() as *mut _,
+        iov_len: 1,
+    };
+    // SAFETY: a one-byte local buffer; the remote address is never mapped.
+    let n = unsafe { libc::process_vm_writev(pid as i32, &local, 1, &remote, 1, 0) };
+    n >= 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EFAULT)
+}
+
+/// The test hook of the memory path (issue 98): `no-fd` skips the write open
+/// of `/proc/<pid>/mem`; `none` also skips `process_vm_writev`.
+fn mem_test_hook() -> &'static str {
+    static HOOK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::env::var("POD_NETNS_TEST_MEM").unwrap_or_default())
 }
 
 pub(crate) fn sockaddr_in(family: u16, ip: IpAddr, port: u16) -> Vec<u8> {
@@ -384,11 +441,17 @@ pub(crate) fn child_fd_flags(pid: u32, fd: i32) -> Option<i32> {
     i32::from_str_radix(value.trim(), 8).ok()
 }
 
+/// Answer the notification `id`: the system call returns `val`, or fails
+/// with the errno `error` (a positive errno, for example `libc::EPERM`).
 pub(crate) fn notif_respond(lfd: RawFd, id: u64, val: i64, error: i32) -> Result<()> {
     let resp = SeccompNotifResp {
         id,
         val,
-        error,
+        // The kernel takes a nonzero error as the return value of the system
+        // call, so it must be the negative errno. Before (issue 98), a
+        // positive errno was a positive return: getpeername returned 95
+        // (EOPNOTSUPP), connect returned 111 (ECONNREFUSED), as successes.
+        error: -error.abs(),
         flags: 0,
     };
     let r = unsafe { libc::ioctl(lfd, SECCOMP_IOCTL_NOTIF_SEND as _, &resp) };
@@ -746,15 +809,36 @@ pub(crate) const SECCOMP_IOCTL_NOTIF_ID_VALID: libc::c_ulong = 0x4008_2102;
 /// result into the child. Return the descriptor (or -1) and whether it is
 /// writable.
 pub(crate) fn open_mem(pid: u32) -> (RawFd, bool) {
+    MEM_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
     let Ok(path) = CString::new(format!("/proc/{pid}/mem")) else {
         return (-1, false);
     };
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    if fd >= 0 {
-        return (fd, true);
+    let hook = mem_test_hook();
+    if hook.is_empty() {
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        if fd >= 0 {
+            return (fd, true);
+        }
     }
     let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-    (fd, false)
+    // A read-only descriptor: writes go through process_vm_writev, when the
+    // host allows it (issue 98).
+    let writable = hook != "none" && process_vm_writable(pid);
+    if !writable {
+        warn_no_mem_write();
+    }
+    (fd, writable)
+}
+
+/// Once: the memory of the program cannot be written.
+fn warn_no_mem_write() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "pod-netns: warning: this host refuses writes to the memory of the program; \
+             getsockname and getpeername fail with EOPNOTSUPP, and QUIC clients (curl --http3) fail"
+        );
+    });
 }
 
 /// Return true while the notification `id` is still pending.
@@ -1475,9 +1559,10 @@ pub(crate) fn handle_sockname(
         return notif_continue(lfd, id);
     };
     if !writable {
-        // Cannot rewrite the caller's sockaddr; let the kernel answer (it will
-        // report the AF_UNIX socketpair).
-        return notif_continue(lfd, id);
+        // Issue 98: the caller's sockaddr cannot be written. The kernel answer
+        // would be the AF_UNIX socketpair (family 1), which programs take as
+        // an address and abort on (ngtcp2). A clean error in its place.
+        return notif_respond(lfd, id, -1, libc::EOPNOTSUPP);
     }
     // Answer with a plausible INET address so a program that checks it does not
     // see an AF_UNIX socketpair.
@@ -1491,7 +1576,8 @@ pub(crate) fn handle_sockname(
         libc::AF_INET6 as u16
     };
     let bytes = sockaddr_in(family, ip, port);
-    let out_len = (bytes.len() as u64).to_ne_bytes();
+    // socklen_t is 4 bytes (before, 8 bytes were written over it).
+    let out_len = (bytes.len() as u32).to_ne_bytes();
     write_mem(mem, a[2], &out_len)?;
     if a[1] != 0 {
         write_mem(mem, a[1], &bytes)?;

@@ -102,9 +102,15 @@ The association ends when the connection closes. `cfrs warp proxy` and
 answers `0x07`.
 * `io_uring` is refused with `EPERM`, because its operations do not go through
   the filter.
-* `getsockname` and `getpeername` give the logical address when the supervisor
-  can write into the child memory. Else the kernel answer (an `AF_UNIX`
-  address) is returned.
+* `getsockname` and `getpeername` give the logical address. The supervisor
+  writes it into the child memory through `/proc/<pid>/mem`, else with
+  `process_vm_writev`. When the host refuses both, the calls fail with
+  `EOPNOTSUPP` (not the `AF_UNIX` address of the socketpair), the pod prints
+  a warning once, and `pod doctor` shows the row `write program memory` as
+  `no`. A QUIC client (`curl --http3`) then fails; `curl --http3` falls back
+  to HTTP/2.
+* An errno of the supervisor is a failure of the system call (-1 and the
+  errno), for example `EPERM` for `io_uring_setup`.
 * After the child exits, the supervisor waits up to 3 seconds for the relays
   to finish.
 

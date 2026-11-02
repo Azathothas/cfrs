@@ -195,18 +195,30 @@ pub(crate) fn probe_mem_write() -> Probe {
     }
     let path = CString::new(format!("/proc/{pid}/mem")).unwrap();
     let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    // Issue 98: process_vm_writev is the second path of the supervisor.
     let (ok, detail) = if fd >= 0 {
         unsafe { libc::close(fd) };
         (true, "O_RDWR on /proc/<pid>/mem".to_string())
     } else {
-        (false, format!("{}", std::io::Error::last_os_error()))
+        let open_error = std::io::Error::last_os_error();
+        if crate::seccomp::process_vm_writable(pid as u32) {
+            (
+                true,
+                format!("process_vm_writev (the open gave: {open_error})"),
+            )
+        } else {
+            (
+                false,
+                format!("{open_error}; process_vm_writev is refused too: getsockname and getpeername fail with EOPNOTSUPP, QUIC clients fail"),
+            )
+        }
     };
     unsafe {
         libc::kill(pid, libc::SIGKILL);
         libc::waitpid(pid, std::ptr::null_mut(), 0);
     }
     Probe {
-        name: "write /proc/<pid>/mem",
+        name: "write program memory",
         ok,
         detail,
     }
@@ -267,10 +279,12 @@ pub(crate) fn doctor(json: bool) -> i32 {
     );
     println!(
         "pod-netns: backend seccomp: {}",
-        if seccomp_available {
+        if !seccomp_available {
+            "unavailable"
+        } else if probes[5].ok {
             "available"
         } else {
-            "unavailable"
+            "available (getsockname/getpeername: unavailable)"
         }
     );
     if probes[3].ok && !any {

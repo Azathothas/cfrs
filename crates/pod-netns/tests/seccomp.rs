@@ -1253,3 +1253,102 @@ fn seccomp_backend_resolves_ipv6_by_name() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const SOCKNAME_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+int main(void) {
+    alarm(10);
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in d; memset(&d, 0, sizeof d);
+    d.sin_family = AF_INET; d.sin_port = htons(123);
+    inet_pton(AF_INET, "162.159.200.1", &d.sin_addr);
+    if (connect(s, (struct sockaddr *)&d, sizeof d) < 0) { perror("connect"); return 1; }
+    /* A guard after the length: an 8-byte write over socklen_t breaks it. */
+    struct { struct sockaddr_in a; socklen_t len; unsigned guard; } p;
+    memset(&p, 0, sizeof p); p.len = sizeof p.a; p.guard = 0x5a5a5a5a;
+    int r = getpeername(s, (struct sockaddr *)&p.a, &p.len);
+    if (r < 0) { printf("PEER:-1:%s\n", errno == EOPNOTSUPP ? "EOPNOTSUPP" : strerror(errno)); return 0; }
+    char ip[32]; inet_ntop(AF_INET, &p.a.sin_addr, ip, sizeof ip);
+    printf("PEER:%d:%u:%s:%d:guard=%x\n", p.a.sin_family, (unsigned)p.len, ip, ntohs(p.a.sin_port), p.guard);
+    return 0;
+}
+"#;
+
+/// Issue 98: getpeername of a pod socket gives the AF_INET address, through
+/// /proc/<pid>/mem or through process_vm_writev; with no way to write the
+/// memory of the program, it fails with EOPNOTSUPP (not the AF_UNIX pair).
+#[test]
+fn getpeername_is_the_inet_address_or_eopnotsupp() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-sockname-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (tx, _rx) = mpsc::channel();
+    std::thread::spawn(move || socks5_proxy(listener, tx, false));
+    let program = build_program(&dir, "sockname", SOCKNAME_CLIENT, false);
+    let run_with = |hook: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+            .args(["--backend", "seccomp", "-x"])
+            .arg(format!("unix:{}", sock.display()))
+            .arg("--")
+            .arg(&program)
+            .env("POD_NETNS_TEST_MEM", hook)
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    };
+    let want = "PEER:2:16:162.159.200.1:123:guard=5a5a5a5a";
+    let (out, err) = run_with("");
+    assert!(out.contains(want), "{out:?} {err:?}");
+    let (out, err) = run_with("no-fd");
+    assert!(out.contains(want), "process_vm_writev: {out:?} {err:?}");
+    let (out, err) = run_with("none");
+    assert!(out.contains("PEER:-1:EOPNOTSUPP"), "{out:?} {err:?}");
+    assert!(err.contains("refuses writes to the memory"), "{err:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const IO_URING_CLIENT: &str = r#"
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+int main(void) {
+    char params[120]; memset(params, 0, sizeof params);
+    long r = syscall(SYS_io_uring_setup, 4, params);
+    printf("URING:%ld:%s\n", r, r < 0 && errno == EPERM ? "EPERM" : strerror(errno));
+    return 0;
+}
+"#;
+
+/// Issue 98: an errno of the supervisor is a failure of the system call
+/// (-1 and errno), not a positive return value. io_uring is refused with
+/// EPERM.
+#[test]
+fn a_refused_system_call_fails_with_its_errno() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-uring-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let _listener = UnixListener::bind(&sock).unwrap();
+    let program = build_program(&dir, "uring", IO_URING_CLIENT, false);
+    let stdout = run(&dir, &[&sock], &program);
+    assert!(stdout.contains("URING:-1:EPERM"), "{stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
