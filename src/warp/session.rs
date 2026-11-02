@@ -164,6 +164,8 @@ pub struct MasqueTx {
     send: h2::SendStream<Bytes>,
     closed: bool,
     waits: u64,
+    /// The longest wait for send capacity ([`SEND_STALL`]).
+    stall: Duration,
 }
 
 /// The read half of a session, moved to whatever task pumps inbound packets.
@@ -171,6 +173,70 @@ pub struct MasqueRx {
     recv: h2::RecvStream,
     decoder: CapsuleDecoder,
     closed: bool,
+    /// The count of DATA frames received: proof that the peer is alive.
+    progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The liveness check of a session (issue 104): an HTTP/2 PING when no data
+/// came in for an interval, and a dead session after `MAX_MISSED_PONGS`
+/// intervals with no pong and no data.
+pub struct Keepalive {
+    ping: h2::PingPong,
+    progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The intervals with no pong (and no data) that make a session dead.
+pub const MAX_MISSED_PONGS: u32 = 3;
+
+/// The longest wait for HTTP/2 send capacity: then the session is dead.
+pub const SEND_STALL: Duration = Duration::from_secs(30);
+
+impl Keepalive {
+    /// Ready with an error when the session is dead. Before (issue 104), a
+    /// second PING failed at each interval (h2 takes one PING at a time,
+    /// and the pong was never collected), and a stalled session was not
+    /// seen.
+    pub async fn run(mut self, every: Duration) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        let mut seen = self.progress.load(Ordering::Relaxed);
+        loop {
+            tick.tick().await;
+            let now = self.progress.load(Ordering::Relaxed);
+            if now != seen {
+                seen = now;
+                continue;
+            }
+            // Idle: one PING, kept across the ticks until its pong comes.
+            let pong = self.ping.ping(h2::Ping::opaque());
+            tokio::pin!(pong);
+            let mut missed = 0;
+            loop {
+                tokio::select! {
+                    result = &mut pong => {
+                        result.context("the HTTP/2 PING of the MASQUE session")?;
+                        break;
+                    }
+                    _ = tick.tick() => {
+                        if self.progress.load(Ordering::Relaxed) != seen {
+                            missed = 0;
+                        } else {
+                            missed += 1;
+                        }
+                        if missed >= MAX_MISSED_PONGS {
+                            bail!(
+                                "the MASQUE session gave no pong and no data in {} s",
+                                every.as_secs() * u64::from(missed + 1)
+                            );
+                        }
+                    }
+                }
+            }
+            seen = self.progress.load(Ordering::Relaxed);
+        }
+    }
 }
 
 /// How the TCP connection to the MASQUE front door is made.
@@ -307,11 +373,13 @@ impl MasqueSession {
                 send: self.send,
                 closed: self.closed,
                 waits: 0,
+                stall: SEND_STALL,
             },
             MasqueRx {
                 recv: self.recv,
                 decoder: self.decoder,
                 closed: self.closed,
+                progress: Default::default(),
             },
         )
     }
@@ -374,7 +442,15 @@ impl MasqueTx {
         self.send.reserve_capacity(SEND_RESERVE);
         while self.send.capacity() < buf.len() {
             self.waits += 1;
-            match std::future::poll_fn(|cx| self.send.poll_capacity(cx)).await {
+            let capacity = std::future::poll_fn(|cx| self.send.poll_capacity(cx));
+            let Ok(capacity) = tokio::time::timeout(self.stall, capacity).await else {
+                self.closed = true;
+                bail!(
+                    "the MASQUE session gave no send capacity in {} s",
+                    self.stall.as_secs()
+                );
+            };
+            match capacity {
                 Some(Ok(_)) => {}
                 Some(Err(err)) => {
                     self.closed = true;
@@ -398,18 +474,13 @@ impl MasqueTx {
         self.waits
     }
 
-    /// Send an HTTP/2 PING to keep the connection alive through idle periods.
-    pub fn keepalive(&mut self) -> Result<()> {
-        if self.closed {
-            bail!("the MASQUE session is closed");
-        }
-        match self.ping.as_mut() {
-            Some(ping) => ping
-                .send_ping(h2::Ping::opaque())
-                .context("sending an HTTP/2 PING")?,
-            None => bail!("HTTP/2 PING is unavailable on this connection"),
-        }
-        Ok(())
+    /// The liveness check of this session, with the progress of `rx`
+    /// (once: the PING handle moves to it).
+    pub fn keepalive(&mut self, rx: &MasqueRx) -> Option<Keepalive> {
+        self.ping.take().map(|ping| Keepalive {
+            ping,
+            progress: rx.progress.clone(),
+        })
     }
 
     /// Close the request body, which tears the tunnel down.
@@ -438,6 +509,8 @@ impl MasqueRx {
                 Some(Ok(data)) => {
                     let _ = self.recv.flow_control().release_capacity(data.len());
                     self.decoder.push(&data);
+                    self.progress
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Some(Err(err)) => {
                     self.closed = true;
@@ -525,6 +598,104 @@ mod tests {
     /// A front door that never reads the CONNECT-IP body: the stream window
     /// fills, and then the sender waits (issue 93: no packet is dropped
     /// here, and h2 holds no unbounded buffer).
+    /// A client with a PING handle, and a server that answers the request
+    /// and then drives its connection (`answer_pings`) or holds it still.
+    async fn keepalive_pair(
+        answer_pings: bool,
+    ) -> (
+        Keepalive,
+        tokio::task::JoinHandle<()>,
+        Box<dyn std::any::Any + Send>,
+    ) {
+        let (client_io, server_io) = tokio::io::duplex(1 << 16);
+        let server = tokio::spawn(async move {
+            let mut conn = h2::server::Builder::new()
+                .handshake::<_, Bytes>(server_io)
+                .await
+                .unwrap();
+            let (_request, mut respond) = conn.accept().await.unwrap().unwrap();
+            let response = http::Response::builder().status(200).body(()).unwrap();
+            let _send = respond.send_response(response, false).unwrap();
+            if answer_pings {
+                while let Some(next) = conn.accept().await {
+                    drop(next);
+                }
+            } else {
+                // The connection is not polled: no pong is sent.
+                std::future::pending::<()>().await;
+                drop(conn);
+            }
+        });
+        let (client, mut connection) = h2::client::handshake(client_io).await.unwrap();
+        let ping = connection.ping_pong().unwrap();
+        tokio::spawn(connection);
+        let mut client = client.ready().await.unwrap();
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(CONNECT_URI)
+            .body(())
+            .unwrap();
+        let (response, send) = client.send_request(request, false).unwrap();
+        let response = tokio::time::timeout(Duration::from_millis(500), response).await;
+        let keepalive = Keepalive {
+            ping,
+            progress: Default::default(),
+        };
+        // The client, the request stream and the response stay alive: the
+        // connection closes when they are dropped.
+        (keepalive, server, Box::new((client, send, response)))
+    }
+
+    /// Issue 104: many PINGs in a row (before, the second one failed: the
+    /// pong was never collected).
+    #[tokio::test]
+    async fn the_keepalive_pings_many_times() {
+        let (keepalive, server, _keep) = keepalive_pair(true).await;
+        let run = tokio::time::timeout(
+            Duration::from_millis(500),
+            keepalive.run(Duration::from_millis(20)),
+        )
+        .await;
+        assert!(run.is_err(), "the keepalive ended: {run:?}");
+        server.abort();
+    }
+
+    /// Issue 104: a peer that gives no pong and no data is a dead session.
+    #[tokio::test]
+    async fn no_pong_ends_the_session() {
+        let (keepalive, server, _keep) = keepalive_pair(false).await;
+        let run = tokio::time::timeout(
+            Duration::from_secs(5),
+            keepalive.run(Duration::from_millis(20)),
+        )
+        .await
+        .expect("the keepalive ends");
+        let err = run.unwrap_err().to_string();
+        assert!(err.contains("no pong and no data"), "{err}");
+        server.abort();
+    }
+
+    /// Data from the peer is proof of life: no PING is needed.
+    #[tokio::test]
+    async fn incoming_data_keeps_the_session_alive() {
+        let (keepalive, server, _keep) = keepalive_pair(false).await;
+        let progress = keepalive.progress.clone();
+        let feeder = tokio::spawn(async move {
+            loop {
+                progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        let run = tokio::time::timeout(
+            Duration::from_millis(500),
+            keepalive.run(Duration::from_millis(20)),
+        )
+        .await;
+        assert!(run.is_err(), "the keepalive ended: {run:?}");
+        feeder.abort();
+        server.abort();
+    }
+
     #[tokio::test]
     async fn a_full_window_makes_the_sender_wait() {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);

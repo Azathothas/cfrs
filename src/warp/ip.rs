@@ -30,6 +30,20 @@ pub const TUNNEL_MTU: usize = 1280;
 /// The send and receive buffers of each TCP connection (issue 93: 128 KiB
 /// was at most 2.8 MB/s at an RTT of 46 ms).
 const TCP_BUFFER: usize = 512 * 1024;
+/// The variable with the TCP window of the userspace stack, in segments of
+/// the MTU, or `none` for no limit (issue 100). For a measurement; the
+/// default is no limit.
+pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
+
+fn tcp_burst() -> Option<usize> {
+    match std::env::var(TCP_BURST_VARIABLE) {
+        Ok(v) if v.trim() != "none" && !v.trim().is_empty() => v.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// The interval of the liveness check of the MASQUE session.
+const KEEPALIVE: Duration = Duration::from_secs(15);
 /// The most packets in the outbound queue of the tunnel device.
 const OUTBOUND_PACKETS: usize = 512;
 const UDP_PACKETS: usize = 64;
@@ -173,7 +187,8 @@ impl WarpStack {
     ) -> Result<Self> {
         // The packets that wait for the MASQUE sender (issue 93): about
         // 600 KB at the MTU; a full queue drops, so TCP and QUIC see a loss.
-        let mut device = LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS);
+        let mut device =
+            LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS).with_max_burst(tcp_burst());
         let inbound = device.inbound();
         let outbound = device.outbound();
 
@@ -212,11 +227,25 @@ impl WarpStack {
         let notify = std::sync::Arc::new(Notify::new());
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+        // Issue 104: a session that gives no pong and no data is closed, so
+        // that Live opens a new one (before, a stalled session stayed).
+        let mut tx = tx;
+        if let Some(keepalive) = tx.keepalive(&rx) {
+            let notify = notify.clone();
+            let closed = closed.clone();
+            tokio::spawn(async move {
+                if let Err(err) = keepalive.run(KEEPALIVE).await {
+                    tracing::warn!(error = %format!("{err:#}"), "the MASQUE session is dead");
+                    closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    notify.notify_one();
+                }
+            });
+        }
+
         {
             let notify = notify.clone();
             let closed = closed.clone();
             tokio::spawn(async move {
-                let mut tx = tx;
                 loop {
                     let packet = outbound.recv().await;
                     if let Err(err) = tx.send_packet(&packet).await {

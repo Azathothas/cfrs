@@ -123,6 +123,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "A test hook of the seccomp backend: no-fd does not open the memory of the program for writing (process_vm_writev is used); none also does not use process_vm_writev (getsockname and getpeername fail with EOPNOTSUPP).",
     },
     EnvVar {
+        names: &["CFRS_WARP_TCP_BURST"],
+        used_by: "warp proxy, warp run, warp up, agent up",
+        meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU, or none (the default): for a measurement of throughput.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

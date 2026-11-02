@@ -70,6 +70,9 @@ smoltcp = { version = "=0.11.0", default-features = false, features = [
     "proto-ipv6",
     "socket-tcp",
     "socket-udp",
+    # 32 out-of-order ranges in a TCP receive buffer (the default is 4):
+    # a large window with loss keeps the data after a hole (issue 100).
+    "assembler-max-segment-count-32",
 ] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
     "connect",

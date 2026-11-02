@@ -198,6 +198,9 @@ pub struct LinkDevice {
     /// the inbound queue, not to the link (a switch drops a packet that
     /// comes back to its sender).
     local: Arc<std::sync::RwLock<Vec<std::net::IpAddr>>>,
+    /// The burst limit of smoltcp: it also clamps the TCP window that the
+    /// stack advertises to this many segments (issue 100). None: no limit.
+    max_burst: Option<usize>,
 }
 
 /// Alias kept for the protocol documentation's name.
@@ -244,7 +247,14 @@ impl LinkDevice {
             medium: Medium::Ip,
             loopback,
             local: Arc::new(std::sync::RwLock::new(Vec::new())),
+            max_burst: None,
         }
+    }
+
+    /// Set the burst limit (and thus the TCP window) in segments.
+    pub fn with_max_burst(mut self, max_burst: Option<usize>) -> Self {
+        self.max_burst = max_burst;
+        self
     }
 
     /// Add an address of this stack (see `local`).
@@ -298,12 +308,11 @@ impl Device for LinkDevice {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = self.medium;
         capabilities.max_transmission_unit = self.mtu;
-        // No burst limit (issue 100): smoltcp clamps the TCP window that
-        // it advertises to max_burst_size segments. Some(1) gave a window
-        // of one segment (about 10 KB with the window scale), so a
-        // download through WARP was 0.5 MB/s at an RTT of 40 ms. The queues
-        // of the device take a full window.
-        capabilities.max_burst_size = None;
+        // smoltcp clamps the TCP window that it advertises to
+        // max_burst_size segments (issue 100). Some(1) gave a window of one
+        // segment (about 10 KB with the window scale): 0.5 MB/s at an RTT
+        // of 40 ms. The default is no limit.
+        capabilities.max_burst_size = self.max_burst;
         capabilities
     }
 }

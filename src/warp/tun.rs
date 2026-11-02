@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tokio::io::unix::AsyncFd;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::ip::TUNNEL_MTU;
 use super::session::MasqueSession;
@@ -276,29 +276,23 @@ impl Tun {
 /// Move packets between `tun` and `session` until one of them ends.
 pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
     let (mut tx, mut rx) = session.split();
+    let keepalive = tx.keepalive(&rx);
     info!(interface = %tun.name, "the TUN interface is connected to WARP");
     let outbound = async {
         let mut buf = vec![0u8; 65_536];
-        let mut keepalive = tokio::time::interval(KEEPALIVE);
         loop {
-            tokio::select! {
-                read = tun.read(&mut buf) => {
-                    let n = read.context("reading the TUN interface")?;
-                    if n == 0 {
-                        continue;
-                    }
-                    if n > TUNNEL_MTU {
-                        debug!(n, "dropped a packet larger than the tunnel MTU");
-                        continue;
-                    }
-                    tx.send_packet(&buf[..n]).await?;
-                }
-                _ = keepalive.tick() => {
-                    if let Err(err) = tx.keepalive() {
-                        warn!(error = %err, "MASQUE keepalive failed");
-                    }
-                }
+            let n = tun
+                .read(&mut buf)
+                .await
+                .context("reading the TUN interface")?;
+            if n == 0 {
+                continue;
             }
+            if n > TUNNEL_MTU {
+                debug!(n, "dropped a packet larger than the tunnel MTU");
+                continue;
+            }
+            tx.send_packet(&buf[..n]).await?;
         }
         #[allow(unreachable_code)]
         Ok::<(), anyhow::Error>(())
@@ -311,9 +305,22 @@ pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
         }
         Ok::<(), anyhow::Error>(())
     };
+    // Issue 104: the liveness check is its own task, not a tick of the
+    // send loop (a wait for send capacity starved it). A dead session ends
+    // run, and the caller opens a new one.
+    let alive = async {
+        match keepalive {
+            Some(keepalive) => keepalive.run(KEEPALIVE).await,
+            None => std::future::pending().await,
+        }
+    };
     tokio::select! {
         result = outbound => result,
         result = inbound => {
+            result?;
+            bail!("the MASQUE session ended")
+        }
+        result = alive => {
             result?;
             bail!("the MASQUE session ended")
         }
