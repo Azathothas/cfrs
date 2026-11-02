@@ -40,30 +40,125 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run `cfrs ARGV` (a `warp proxy --detach`), print its lines, and give its
-/// ready document (the last line).
-pub fn start(argv: &[String]) -> Result<serde_json::Value> {
+/// Run `cfrs ARGV` (the command `label`, for example `cfrs warp proxy
+/// --detach`), print its lines, and give its ready document (the last line).
+/// The lines of stderr go to stderr at once and are kept for the text of a
+/// failure ([`failure_text`]).
+pub fn start(label: &str, argv: &[String]) -> Result<serde_json::Value> {
+    use std::io::{BufRead as _, BufReader};
     let exe = std::env::current_exe().context("the path of this binary")?;
-    let out = std::process::Command::new(&exe)
+    let mut child = std::process::Command::new(&exe)
         .args(argv)
         .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .context("starting cfrs warp proxy --detach")?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("starting {label}"))?;
+    let stderr = child.stderr.take();
+    let tee = std::thread::spawn(move || {
+        let mut kept = String::new();
+        if let Some(stderr) = stderr {
+            for line in BufReader::new(stderr).split(b'\n').map_while(Result::ok) {
+                let line = String::from_utf8_lossy(&line).into_owned();
+                eprintln!("{line}");
+                kept.push_str(&line);
+                kept.push('\n');
+            }
+        }
+        kept
+    });
+    let out = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for {label}"))?;
+    let stderr = tee.join().unwrap_or_default();
     let text = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
         let code = out.status.code().unwrap_or(1);
+        // SAFETY: geteuid() has no precondition.
+        let root = unsafe { libc::geteuid() } == 0;
         return Err(crate::exit::fault(
             match code {
                 crate::exit::USAGE => crate::exit::Fault::Usage,
                 crate::exit::CONFIG => crate::exit::Fault::Config,
                 _ => crate::exit::Fault::Unavailable,
             },
-            anyhow::anyhow!("cfrs warp proxy --detach exited {code}"),
+            anyhow::anyhow!(failure_text(label, code, &stderr, root)),
         ));
     }
     let last = text.lines().last().unwrap_or("");
     serde_json::from_str(last).with_context(|| format!("the ready document: {last:?}"))
+}
+
+/// Why `cfrs warp tun` could not run, when stderr says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TunFault {
+    /// No right to make the TUN (CAP_NET_ADMIN, or the mode of /dev/net/tun).
+    Privilege,
+    /// The host has no /dev/net/tun.
+    NoDevice,
+    /// `--default-route` needs an IPv4 default route.
+    NoDefaultRoute,
+}
+
+fn tun_fault(stderr: &str) -> Option<TunFault> {
+    if stderr.contains("no IPv4 default route") {
+        return Some(TunFault::NoDefaultRoute);
+    }
+    if !(stderr.contains("TUNSETIFF") || stderr.contains("/dev/net/tun")) {
+        return None;
+    }
+    if stderr.contains("No such file or directory") || stderr.contains("No such device") {
+        Some(TunFault::NoDevice)
+    } else if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
+        Some(TunFault::Privilege)
+    } else {
+        None
+    }
+}
+
+/// The last error line of the child (a line `cfrs: TEXT`), without the
+/// prefix. The log lines before it have no such prefix.
+fn cause_of(stderr: &str) -> Option<&str> {
+    stderr
+        .lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("cfrs: "))
+        .find(|l| !l.starts_with("--detach:"))
+}
+
+/// The text of the error when the command `label` exited with `code` and
+/// wrote `stderr`. The first line names the command and the cause. When the
+/// command is `warp tun` and stderr shows a refusal of the TUN, the next
+/// lines say what happened and the last lines name the recovery. `root` is
+/// whether this process runs as root (sudo does not help then).
+pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String {
+    let mut text = format!("{label} exited {code}");
+    if let Some(cause) = cause_of(stderr) {
+        text.push_str(": ");
+        text.push_str(cause);
+    }
+    if !label.contains("warp tun") {
+        return text;
+    }
+    let (why, sudo) = match tun_fault(stderr) {
+        Some(TunFault::Privilege) => (
+            "the host refused the TUN interface: this process has no CAP_NET_ADMIN",
+            !root,
+        ),
+        Some(TunFault::NoDevice) => ("the host has no /dev/net/tun", false),
+        Some(TunFault::NoDefaultRoute) => (
+            "warp up --tun needs an IPv4 default route; sudo does not add one",
+            false,
+        ),
+        None => return text,
+    };
+    text.push_str(&format!("\ncfrs: warp up --tun: {why}"));
+    if sudo {
+        text.push_str("\ncfrs: with root: sudo cfrs warp up --tun");
+    }
+    text.push_str("\ncfrs: with no root: cfrs warp up (proxy mode)");
+    text.push_str("\ncfrs: one command with no root: cfrs warp run -- CMD");
+    text
 }
 
 /// The text of the env file for a proxy on `127.0.0.1:port` and `socket`.
@@ -546,6 +641,82 @@ mod tests {
                 "git",
                 "fetch"
             ]
+        );
+    }
+
+    const TUN_LABEL: &str = "cfrs warp tun --default-route --detach";
+    const NOISE: &str =
+        "2026-11-02T10:00:00Z  INFO cfrs: the routes and the resolver are as before tun=cfrs0\n";
+
+    /// Issue 106, case A: the last line names the recovery, and the first
+    /// line names the real command (`warp tun`, not `warp proxy`).
+    #[test]
+    fn a_tun_refusal_names_the_command_and_the_recovery() {
+        let stderr =
+            format!("{NOISE}cfrs: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n");
+        let text = failure_text(TUN_LABEL, 69, &stderr, false);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            "cfrs warp tun --default-route --detach exited 69: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted"
+        );
+        assert!(!text.contains("warp proxy"), "{text}");
+        assert!(text.contains("sudo cfrs warp up --tun"), "{text}");
+        assert!(text.contains("cfrs warp up (proxy mode)"), "{text}");
+        assert_eq!(
+            *lines.last().unwrap(),
+            "cfrs: one command with no root: cfrs warp run -- CMD"
+        );
+    }
+
+    /// As root, sudo gives nothing: it is not advised.
+    #[test]
+    fn root_is_not_told_to_use_sudo() {
+        let stderr = "cfrs: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n";
+        let text = failure_text(TUN_LABEL, 69, stderr, true);
+        assert!(!text.contains("sudo"), "{text}");
+        assert!(text.contains("CAP_NET_ADMIN"), "{text}");
+        assert!(text.contains("cfrs warp run -- CMD"), "{text}");
+    }
+
+    /// Issue 106, case B: the route guard. sudo does not help.
+    #[test]
+    fn no_default_route_is_not_a_privilege_problem() {
+        let stderr = format!("{NOISE}cfrs: no IPv4 default route: cfrs cannot keep the MASQUE connection outside the tunnel\n");
+        let text = failure_text(TUN_LABEL, 69, &stderr, false);
+        assert!(text.contains("exited 69: no IPv4 default route"), "{text}");
+        assert!(text.contains("needs an IPv4 default route"), "{text}");
+        assert!(!text.contains("sudo cfrs"), "{text}");
+        assert!(text.ends_with("cfrs warp run -- CMD"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_tun_device_is_named() {
+        let stderr = "cfrs: opening /dev/net/tun: No such file or directory (os error 2)\n";
+        let text = failure_text(TUN_LABEL, 69, stderr, false);
+        assert!(text.contains("the host has no /dev/net/tun"), "{text}");
+        assert!(!text.contains("sudo cfrs"), "{text}");
+    }
+
+    /// A failure of the proxy, or a `warp tun` failure that is not a TUN
+    /// refusal, gets the command and the cause only.
+    #[test]
+    fn other_failures_get_no_recovery_lines() {
+        let proxy = failure_text(
+            "cfrs warp proxy --detach",
+            69,
+            "cfrs: the MASQUE endpoint did not answer\n",
+            false,
+        );
+        assert_eq!(
+            proxy,
+            "cfrs warp proxy --detach exited 69: the MASQUE endpoint did not answer"
+        );
+        let tun = failure_text(TUN_LABEL, 69, "cfrs: the device is not registered\n", false);
+        assert_eq!(tun.lines().count(), 1, "{tun}");
+        assert_eq!(
+            failure_text("cfrs warp proxy --detach", 1, "", false),
+            "cfrs warp proxy --detach exited 1"
         );
     }
 }

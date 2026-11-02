@@ -1182,7 +1182,7 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
 fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
     let argv = warp_up_args(args, port, &socket, ready_timeout);
-    let doc = cfrs::warp::up::start(&argv)?;
+    let doc = cfrs::warp::up::start("cfrs warp proxy --detach", &argv)?;
     // Issue 97: the TCP listener or the socket can be refused by the host;
     // the env file and the advice follow what came up.
     let (tcp, socket_up) = cfrs::warp::up::listeners_of(&doc);
@@ -2601,7 +2601,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 "--ready-timeout".into(),
                 ready_timeout.to_string(),
             ]);
-            let doc = cfrs::warp::up::start(&argv)?;
+            let doc = cfrs::warp::up::start("cfrs warp tun --default-route --detach", &argv)?;
             println!("{doc}");
             return Ok(());
         }

@@ -375,7 +375,7 @@ pub fn advice(report: &Report) -> Vec<String> {
         return out;
     }
     if report.warp_up {
-        out.push("cfrs warp up runs: in a new shell, eval \"$(cfrs warp env)\"; for a static binary or UDP, cfrs warp exec -- CMD".into());
+        out.push("cfrs warp up runs: in a new shell, eval \"$(cfrs warp env)\"; for a static binary or UDP, cfrs warp exec -- CMD (or cfrs warp shell, or cfrs warp run -- CMD)".into());
     } else if any_failing_everywhere || !report.udp_dns.works() {
         out.push(
             "start WARP for this sandbox: cfrs warp up (add --persist so that new shells use it)"
@@ -449,11 +449,19 @@ pub fn text(report: &Report) -> String {
         ));
     }
     out.push_str(&format!(
-        "\nUDP DNS (1.1.1.1:53): {}   IPv6: {}   localhost: {}\n\n",
+        "\nThis host, direct (no WARP): UDP DNS (1.1.1.1:53): {}   IPv6: {}   localhost: {}\n",
         mark(&report.udp_dns),
         mark(&report.ipv6),
         mark(&report.localhost)
     ));
+    if !report.udp_dns.works() {
+        out.push_str(if report.warp_up {
+            "  UDP fails for a program that runs on this host. Under WARP it has UDP: cfrs warp exec -- CMD, cfrs warp shell, or cfrs warp run -- CMD.\n"
+        } else {
+            "  UDP fails for a program that runs on this host. Under WARP it has UDP: cfrs warp run -- CMD, or start cfrs warp up and use cfrs warp exec -- CMD or cfrs warp shell.\n"
+        });
+    }
+    out.push('\n');
     for line in &report.advice {
         out.push_str(&format!("* {line}\n"));
     }
@@ -559,5 +567,36 @@ mod tests {
         assert_eq!(json["rows"][0]["proxy"], "intercepted");
         assert_eq!(json["rows"][0]["warp"], "not_tried");
         assert!(text(&r).contains("tls-intercepted"));
+    }
+
+    /// Issue 107: the UDP fail is for the host; the text names the commands
+    /// that give UDP through WARP.
+    #[test]
+    fn a_udp_fail_says_it_is_the_host_and_names_the_commands() {
+        let failed = || Outcome::Failed("no answer in 4 s".into());
+        let r = report(vec![], true, failed());
+        let t = text(&r);
+        let line = t.lines().find(|l| l.contains("UDP DNS")).unwrap();
+        assert!(line.starts_with("This host, direct (no WARP): UDP DNS (1.1.1.1:53): fail"));
+        for cmd in [
+            "cfrs warp exec -- CMD",
+            "cfrs warp shell",
+            "cfrs warp run -- CMD",
+        ] {
+            assert!(t.contains(cmd), "{cmd}: {t}");
+        }
+        // No cfrs warp up yet: it is named before exec and shell.
+        let t = text(&report(vec![], false, failed()));
+        assert!(
+            t.contains("start cfrs warp up and use cfrs warp exec"),
+            "{t}"
+        );
+        // The host UDP works: no note, the line keeps its fields.
+        let t = text(&report(vec![], false, Outcome::Ok));
+        assert!(t.contains("UDP DNS (1.1.1.1:53): ok"), "{t}");
+        assert!(!t.contains("UDP fails"), "{t}");
+        // The JSON names do not change.
+        let json = serde_json::to_value(report(vec![], true, failed())).unwrap();
+        assert!(json.get("udp_dns").is_some() && json.get("ipv6").is_some());
     }
 }

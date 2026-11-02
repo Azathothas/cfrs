@@ -419,6 +419,14 @@ jobs:
           rc=0; timeout 60 target/release/cfrs warp --identity "$ident" proxy --listen tcp://127.0.0.1:40102 2> proxy102.err || rc=$?
           echo "warp proxy (port held): exit $rc"; tail -1 proxy102.err
           test "$rc" = 69
+          # Issue 106: warp up --tun with no root names its command, the
+          # cause and the recovery.
+          rc=0; CFRS_RUN_DIR="$RUNNER_TEMP/run106" timeout 60 target/release/cfrs warp --identity "$ident" up --tun 2> up106.err || rc=$?
+          echo "warp up --tun (no root): exit $rc"; grep '^cfrs: ' up106.err | tail -5
+          test "$rc" = 69
+          grep -q 'cfrs warp tun --default-route --detach exited' up106.err
+          grep -q 'with root: sudo cfrs warp up --tun' up106.err
+          ! grep -q 'warp proxy --detach' up106.err
       # Issue 76: TCP 443 to the MASQUE front doors is dropped; the WARP
       # client falls back to the WebSocket relay, with the same pinned key.
       - name: WARP probe through the WebSocket relay (MASQUE TCP dropped)
