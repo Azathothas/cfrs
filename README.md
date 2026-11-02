@@ -309,8 +309,11 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
   request ends. A body with no data for 60 s gets 408 and leaves no file.
 * One upload request holds at most `--max-request` bytes (default
   100000000, the limit of the Cloudflare edge for one request body). A
-  larger `Content-Length` gets 413 before cfrs reads the body, and the page
-  refuses such a selection before it sends. To send more, use more uploads.
+  larger `Content-Length` gets 413 and saves nothing: cfrs reads the body
+  and drops it first (until its end, a pause of 5 s, or 120 s), because an
+  answer before the end of the upload does not reach the visitor reliably
+  through the edge. The page refuses such a selection before it sends. To
+  send more, use more uploads.
 * A download name that is not ASCII goes in `filename*=UTF-8''...` (RFC
   5987), with an ASCII `filename=`.
 * `--stop-after` stops the session after the first transfer. `--idle-secs`

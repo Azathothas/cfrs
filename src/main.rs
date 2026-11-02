@@ -553,8 +553,8 @@ struct ShareArgs {
     #[arg(long, default_value_t = 900)]
     idle_secs: u64,
     /// Upload mode: the most bytes of one upload request. A larger request
-    /// gets 413 before cfrs reads its body. The edge of Cloudflare takes at
-    /// most 100 MB in one request.
+    /// gets 413 and saves nothing (cfrs drops its body). The edge of
+    /// Cloudflare takes at most 100 MB in one request.
     #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST)]
     max_request: u64,
     /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of

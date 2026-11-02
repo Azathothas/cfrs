@@ -495,6 +495,28 @@ fn refuse(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
+/// The longest pause of a body that is read and dropped.
+const DROP_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
+/// The longest time to read and drop a body.
+const DROP_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Read the rest of a multipart body and drop it: until its end, a pause of
+/// [`DROP_IDLE`], or [`DROP_LIMIT`]. Gives the bytes dropped.
+async fn drop_body(multipart: &mut Multipart) -> u64 {
+    let mut dropped = 0u64;
+    let work = async {
+        while let Ok(Ok(Some(mut field))) =
+            tokio::time::timeout(DROP_IDLE, multipart.next_field()).await
+        {
+            while let Ok(Ok(Some(chunk))) = tokio::time::timeout(DROP_IDLE, field.chunk()).await {
+                dropped += chunk.len() as u64;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(DROP_LIMIT, work).await;
+    dropped
+}
+
 async fn upload_receive(
     State(state): State<Arc<UploadState>>,
     headers: HeaderMap,
@@ -505,7 +527,10 @@ async fn upload_receive(
         return response;
     }
     state.control.touch();
-    // Before the body: a request over the limit gets 413 at once (issue 92).
+    // A request over the limit (by its Content-Length, issue 92) gets 413
+    // and saves nothing. The body is read and dropped first: an answer
+    // before the end of the upload did not reach the visitor reliably
+    // through the edge (a 502 or a 520 in place of the 413).
     let length = headers
         .get(http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -516,6 +541,8 @@ async fn upload_receive(
             limit = state.max_request,
             "upload refused: the request is over --max-request"
         );
+        let dropped = drop_body(&mut multipart).await;
+        tracing::debug!(dropped, "the body of a refused upload was read and dropped");
         return refuse(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
@@ -1055,10 +1082,11 @@ mod tests {
         );
     }
 
-    /// Issue 92: a Content-Length over max_request gets 413 before cfrs
-    /// reads the body (a body that never comes), and saves nothing; the
-    /// landing page and a smaller upload still work.
-    #[tokio::test]
+    /// Issue 92: a request over max_request (by its Content-Length) is read
+    /// and dropped, then gets 413, and saves nothing; the landing page and a
+    /// smaller upload still work. A body that stops gets its 413 after the
+    /// pause of DROP_IDLE (the clock is paused here).
+    #[tokio::test(start_paused = true)]
     async fn a_content_length_over_max_request_gets_413_at_once() {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1067,17 +1095,18 @@ mod tests {
         let token = config.token.clone();
         let app = ShareApp::new(config).unwrap();
         let never = futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
-        let mut request = upload_request(&token, axum::body::Body::from_stream(never));
-        request
+        let mut stalled = upload_request(&token, axum::body::Body::from_stream(never));
+        stalled
             .headers_mut()
             .insert("content-length", "60000000".parse().unwrap());
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            app.router().oneshot(request),
-        )
-        .await
-        .expect("the 413 comes before the body")
-        .unwrap();
+        let response = app.router().oneshot(stalled).await.unwrap();
+        assert_eq!(response.status(), 413);
+        let body = multipart(&[("big.bin", 5000)]);
+        let mut request = upload_request(&token, axum::body::Body::from(body.clone()));
+        request
+            .headers_mut()
+            .insert("content-length", body.len().to_string().parse().unwrap());
+        let response = app.router().oneshot(request).await.unwrap();
         assert_eq!(response.status(), 413);
         let text = axum::body::to_bytes(response.into_body(), 4096)
             .await
