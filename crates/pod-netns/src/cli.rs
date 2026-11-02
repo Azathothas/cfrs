@@ -66,6 +66,7 @@ Options:
                              socks5://[user:pass@]host:port
                              http://[user:pass@]host:port
                              socks5://unix:/path     (unix-socket proxy)
+                             http://unix:/path       (HTTP CONNECT on a unix socket)
                              tailscale:/path/to/tailscaled.sock
                            Default: $ALL_PROXY, $HTTPS_PROXY or $HTTP_PROXY
   -r, --rule <SPEC>        Per-destination route; first match wins:

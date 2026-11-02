@@ -2870,9 +2870,13 @@ async fn warp(args: WarpArgs) -> Result<()> {
             let address = client
                 .device()
                 .ipv4()
-                .context("the device has no IPv4 address")?;
-            let tun = cfrs::warp::tun::Tun::create(&name, address, 1280)?;
-            let session = client.connect_raw().await?;
+                .context("the device has no IPv4 address")
+                .fault(Fault::Unavailable)?;
+            // Issue 102: a TUN that cannot be made, or a session that
+            // cannot open, is an unavailable path (69), as for warp up --tun.
+            let tun =
+                cfrs::warp::tun::Tun::create(&name, address, 1280).fault(Fault::Unavailable)?;
+            let session = client.connect_raw().await.fault(Fault::Unavailable)?;
             let endpoint = client
                 .device()
                 .masque_endpoint()

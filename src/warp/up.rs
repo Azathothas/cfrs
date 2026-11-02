@@ -54,10 +54,10 @@ pub fn start(argv: &[String]) -> Result<serde_json::Value> {
     if !out.status.success() {
         let code = out.status.code().unwrap_or(1);
         return Err(crate::exit::fault(
-            if code == crate::exit::USAGE {
-                crate::exit::Fault::Usage
-            } else {
-                crate::exit::Fault::Unavailable
+            match code {
+                crate::exit::USAGE => crate::exit::Fault::Usage,
+                crate::exit::CONFIG => crate::exit::Fault::Config,
+                _ => crate::exit::Fault::Unavailable,
             },
             anyhow::anyhow!("cfrs warp proxy --detach exited {code}"),
         ));

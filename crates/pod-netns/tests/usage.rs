@@ -12,6 +12,8 @@ fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
         &["-x", "socks4://127.0.0.1:1080"],
         &["-x", "http://"],
         &["-x", "socks5://"],
+        &["-x", "https://unix:/x"],
+        &["-x", "http://unix:"],
         &["-x", "socks5://127.0.0.1:1", "--rule", "bad"],
         &[
             "-x",

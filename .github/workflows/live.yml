@@ -403,6 +403,22 @@ jobs:
           sh scripts/live-run.sh register target/release/cfrs warp register
           sh scripts/live-run.sh status target/release/cfrs warp status
           sh scripts/live-run.sh probe timeout 120 target/release/cfrs warp probe
+      # Issue 102: an unavailable path exits 69 in each command: warp tun
+      # with no CAP_NET_ADMIN (no root here), and warp proxy whose only
+      # listener is refused (a program holds the port).
+      - name: Exit 69 for an unavailable path
+        timeout-minutes: 3
+        run: |
+          set -eu
+          ident="$HOME/.local/state/cfrs/warp.json"
+          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" tun 2> tun102.err || rc=$?
+          echo "warp tun (no root): exit $rc"; tail -1 tun102.err
+          test "$rc" = 69
+          python3 -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 40102)); s.listen(); time.sleep(60)" &
+          sleep 1
+          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" proxy --listen tcp://127.0.0.1:40102 2> proxy102.err || rc=$?
+          echo "warp proxy (port held): exit $rc"; tail -1 proxy102.err
+          test "$rc" = 69
       # Issue 76: TCP 443 to the MASQUE front doors is dropped; the WARP
       # client falls back to the WebSocket relay, with the same pinned key.
       - name: WARP probe through the WebSocket relay (MASQUE TCP dropped)

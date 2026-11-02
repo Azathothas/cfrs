@@ -101,19 +101,28 @@ impl Proxy {
             Some((s, r)) => (s, r),
             None => ("socks5", spec),
         };
-        // socks5://unix:/path — a SOCKS5 proxy reached over a unix socket.
+        // socks5://unix:/path or http://unix:/path: a proxy reached over a
+        // unix socket (issue 102: http:// gave a parse error of the port).
         if let Some(path) = rest.strip_prefix("unix:") {
-            if !path.is_empty() && (scheme == "socks5" || scheme == "socks5h" || scheme == "socks")
-            {
-                return Ok(Self {
-                    kind: ProxyKind::Socks5,
-                    host: String::new(),
-                    port: 0,
-                    user: None,
-                    pass: None,
-                    unix_path: Some(path.to_string()),
-                });
+            let path = path.trim_start_matches("//");
+            if path.is_empty() {
+                bail!("the unix proxy {spec:?} has no path");
             }
+            let kind = match scheme {
+                "socks5" | "socks5h" | "socks" => ProxyKind::Socks5,
+                "http" => ProxyKind::Http,
+                other => bail!(
+                    "{other}:// over a unix socket is not supported; use socks5://unix:/path or http://unix:/path"
+                ),
+            };
+            return Ok(Self {
+                kind,
+                host: String::new(),
+                port: 0,
+                user: None,
+                pass: None,
+                unix_path: Some(path.to_string()),
+            });
         }
         let kind = match scheme {
             "socks5" | "socks5h" | "socks" => ProxyKind::Socks5,
@@ -623,6 +632,53 @@ pub fn wrap_udp(payload: &[u8], ip: IpAddr, port: u16) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue 102: http://unix:/path is an HTTP CONNECT proxy on a unix
+    /// socket; another scheme over a unix socket names the forms that work.
+    #[test]
+    fn an_http_proxy_on_a_unix_socket_parses() {
+        let p = super::Proxy::parse("http://unix:/tmp/w.sock").unwrap();
+        assert_eq!(p.kind, super::ProxyKind::Http);
+        assert_eq!(p.unix_path.as_deref(), Some("/tmp/w.sock"));
+        let p = super::Proxy::parse("socks5://unix:///tmp/w.sock").unwrap();
+        assert_eq!(p.unix_path.as_deref(), Some("/tmp/w.sock"));
+        for bad in ["https://unix:/x", "ftp://unix:/x"] {
+            let err = super::Proxy::parse(bad).unwrap_err().to_string();
+            assert!(err.contains("over a unix socket"), "{bad}: {err}");
+        }
+        assert!(super::Proxy::parse("http://unix:").is_err());
+    }
+
+    /// The HTTP CONNECT of a unix-socket proxy reaches the proxy.
+    #[tokio::test]
+    async fn an_http_connect_goes_over_the_unix_socket() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut c, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                c.read_exact(&mut b).await.unwrap();
+                head.push(b[0]);
+            }
+            c.write_all(b"HTTP/1.1 200 OK\r\n\r\nhi").await.unwrap();
+            String::from_utf8(head).unwrap()
+        });
+        let proxy = super::Proxy::parse(&format!("http://unix:{}", path.display())).unwrap();
+        let mut up = super::connect_upstream_async(&[proxy], "example.com:80")
+            .await
+            .unwrap();
+        let mut two = [0u8; 2];
+        up.read_exact(&mut two).await.unwrap();
+        assert_eq!(&two, b"hi");
+        assert!(server
+            .await
+            .unwrap()
+            .starts_with("CONNECT example.com:80 HTTP/1.1"));
+    }
+
     #[test]
     fn domain_rules_match_a_name_or_a_suffix() {
         use super::domain_matches;
