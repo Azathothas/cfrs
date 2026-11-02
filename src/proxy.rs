@@ -396,7 +396,16 @@ async fn dispatch_axum(
         }
     }
 
-    let body = Body::from_stream(tokio_util::io::ReaderStream::new(reader.compat()));
+    // The body goes through a pump (issue 92): when the service answers
+    // before the end of the body (an early 413), the pump reads the rest and
+    // drops it for a time, so that the stream is not reset before the edge
+    // has the answer (a reset gave 502 to the visitor in place of the 413).
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(4);
+    tokio::spawn(pump_body(reader, tx));
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    let body = Body::from_stream(stream);
     let mut axum_request = builder.body(body)?;
     *axum_request.headers_mut() = headers;
 
@@ -406,6 +415,51 @@ async fn dispatch_axum(
         .map_err(|e| anyhow!("service error: {e}"))?;
 
     write_axum_response(&mut writer, response, metrics).await
+}
+
+/// The longest time that the rest of a body is read after an early answer.
+const DRAIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Move the request body from the edge to `tx`. When the receiver is gone
+/// (the service does not read more), read the rest and drop it, for at most
+/// [`DRAIN_LIMIT`].
+async fn pump_body(
+    reader: EdgeReader,
+    tx: tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>,
+) {
+    use tokio::io::AsyncReadExt as _;
+    let mut reader = reader.compat();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => return,
+            Ok(n) => {
+                if tx
+                    .send(Ok(bytes::Bytes::copy_from_slice(&buf[..n])))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(err) => {
+                let _ = tx.send(Err(err)).await;
+                return;
+            }
+        }
+    }
+    let drained = tokio::time::timeout(DRAIN_LIMIT, async {
+        let mut total = 0u64;
+        while let Ok(n) = reader.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+        }
+        total
+    })
+    .await;
+    tracing::debug!(?drained, "the rest of a request body after an early answer");
 }
 
 async fn write_axum_response(
@@ -1120,6 +1174,15 @@ mod tests {
             meta.contains(&(HTTP_STATUS_KEY.to_string(), "413".to_string())),
             "{meta:?}"
         );
+        // The rest of the body is read after the answer (it is not reset
+        // at once, which gave 502 at the edge): 2 MiB more go through.
+        let chunk = vec![1u8; 64 * 1024];
+        for _ in 0..32 {
+            writer
+                .write_all(&chunk)
+                .await
+                .expect("the stream takes the rest of the body");
+        }
         assert!(pair.client.close_reason().is_none());
         server.abort();
     }
