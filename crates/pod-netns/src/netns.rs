@@ -28,6 +28,10 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// RFC 2544 benchmarking range, used by proxychains and friends for fake IPs.
 pub(crate) const FAKE_IP_BASE: u32 = 0xC612_0000; // 198.18.0.0
 pub(crate) const FAKE_IP_COUNT: u32 = 1 << 17; // 198.18.0.0/15
+/// The first 96 bits of a fake IPv6 address: fd63:6672:7300::/96 (a ULA).
+pub(crate) const FAKE_IP6_PREFIX: [u8; 16] = [
+    0xfd, 0x63, 0x66, 0x72, 0x73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
 
 pub(crate) const TUNSETIFF: libc::c_ulong = 0x4004_54CA;
 pub(crate) const IFF_TUN: libc::c_int = 0x0001;

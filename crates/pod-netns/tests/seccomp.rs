@@ -1188,3 +1188,68 @@ fn seccomp_backend_sends_loopback_direct() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const DNS6_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+int main(int argc, char **argv) {
+    alarm(10);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET6; hints.ai_socktype = SOCK_STREAM;
+    int r = getaddrinfo("example.com", "80", &hints, &res);
+    if (r != 0) { printf("GAI6:%d\n", r); return 1; }
+    char ip[64] = {0};
+    inet_ntop(AF_INET6, &((struct sockaddr_in6 *)res->ai_addr)->sin6_addr, ip, sizeof ip);
+    int s = socket(AF_INET6, SOCK_STREAM, 0);
+    if (connect(s, res->ai_addr, res->ai_addrlen) < 0) { perror("connect"); return 1; }
+    char b[64] = {0};
+    int n = read(s, b, sizeof b - 1);
+    printf("DNS6:%s:%d:%s", ip, n, b);
+    return 0;
+}
+"#;
+
+/// Issue 99: AAAA gets a fake ULA address, and connect maps it to the name.
+#[test]
+fn seccomp_backend_resolves_ipv6_by_name() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-dns6-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || socks5_proxy(listener, tx, false));
+
+    let program = build_program(&dir, "client-dns6", DNS6_CLIENT, false);
+    let stdout = run(&dir, &[&sock], &program);
+    assert!(
+        stdout.contains("DNS6:fd63:6672:7300::c612:0:18:HELLO-FROM-TARGET"),
+        "{stdout:?}"
+    );
+    // The proxy gets the name, not the fake IPv6 address.
+    assert_eq!(rx.recv().unwrap(), "example.com:80");
+
+    // A name pinned to an IPv4 address has no AAAA: a clean EAI_NODATA, not
+    // EAI_SYSTEM.
+    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "--map", "example.com=1.2.3.4", "-x"])
+        .arg(format!("unix:{}", sock.display()))
+        .arg("--")
+        .arg(&program)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("GAI6:-5") || stdout.contains("GAI6:-2"),
+        "{stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

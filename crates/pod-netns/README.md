@@ -113,9 +113,13 @@ Needs: seccomp with `SECCOMP_RET_USER_NOTIF` (Linux 5.0 or newer).
 ## DNS
 
 Both backends answer A queries from the pool `198.18.0.0/15`. The same name
-always gets the same address. AAAA queries get an empty answer, so programs
-use IPv4. When the program connects to a pool address, the upstream gets the
-name (SOCKS5 `ATYP=3`, or the `CONNECT` host), so the upstream resolves it.
+always gets the same address. With the `seccomp` backend, AAAA queries get
+an address of the ULA prefix `fd63:6672:7300::/96` that holds the same pool
+address, so `getaddrinfo(AF_INET6)` works. The `netns` backend (IPv4 only)
+answers AAAA with no address. When the program connects to a pool address
+of either family, the upstream gets the name (SOCKS5 `ATYP=3`, or the
+`CONNECT` host), so the upstream resolves it. A name of `--map` gets no
+AAAA answer.
 
 ## Library
 

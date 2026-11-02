@@ -596,6 +596,7 @@ pub(crate) async fn supervise_seccomp(
 
     let mut map: HashMap<i32, Sock> = HashMap::new();
     let mut dns = FakeDns::new();
+    dns.v6 = true;
     for (name, ip) in &maps {
         dns.pin(name, *ip);
     }
@@ -886,12 +887,10 @@ pub(crate) async fn handle_connect(
         }
         return notif_respond(lfd, id, 0, 0);
     }
-    let target = match ip {
-        IpAddr::V4(v4) => match dns.name_for(v4) {
-            Some(name) => format!("{name}:{port}"),
-            None => format!("{v4}:{port}"),
-        },
-        IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+    let target = match (dns.name_for_ip(ip), ip) {
+        (Some(name), _) => format!("{name}:{port}"),
+        (None, IpAddr::V4(v4)) => format!("{v4}:{port}"),
+        (None, IpAddr::V6(v6)) => format!("[{v6}]:{port}"),
     };
     let connected = if ip.is_loopback() {
         // Loopback does not go to the proxy (issue 80): a listener of the
