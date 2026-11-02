@@ -131,6 +131,7 @@ pub fn child_begin() -> Result<()> {
             record.pid = std::process::id();
             record.state = "starting".into();
             instances::write(&dir, &record)?;
+            begin_log(&paths.log, &name);
             *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(ChildState {
                 dir,
                 record,
@@ -159,12 +160,31 @@ pub fn child_begin() -> Result<()> {
         restarts: 0,
     };
     instances::write(&dir, &record)?;
+    begin_log(&paths.log, &name);
     *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(ChildState {
         dir,
         record,
         _lock: lock,
     });
     Ok(())
+}
+
+/// The start of an instance in its log (issue 103): a separator line with
+/// the time and the pid, and from now on each log line goes to the log too
+/// (before, the lines before the ready went only to the starter, and the log
+/// showed the lines of an earlier run).
+fn begin_log(path: &Path, name: &str) {
+    use std::io::Write as _;
+    let Ok(mut file) = open_private(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "cfrs: ---- start {} pid {} name {name} ----",
+        crate::trust::imf_fixdate(std::time::SystemTime::now()),
+        std::process::id()
+    );
+    crate::report::set_log_tee(file);
 }
 
 /// The command is ready, with `doc` (a JSON object: `url`, or `listen`, and
@@ -194,6 +214,8 @@ pub fn ready(mut doc: serde_json::Value) {
     let _ = instances::write(&state.dir, &state.record);
     let line = format!("{READY}{doc}\n");
     let _ = std::io::stdout().flush();
+    // From the leave on, stderr is the log itself.
+    crate::report::clear_log_tee();
     if !unix::leave(log.as_ref(), line.as_bytes()) {
         std::process::exit(TEMPFAIL);
     }

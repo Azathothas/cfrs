@@ -489,3 +489,42 @@ fn a_child_goes_on_when_its_supervisor_is_killed() {
     );
     wait_until("the child ends", || !alive(child));
 }
+
+/// Issue 103: the log of an instance has its startup lines (before the
+/// ready) after a separator with its pid; a second start of the same name
+/// adds a second separator, and its lines come after it.
+#[test]
+fn the_log_has_the_startup_lines_of_this_start() {
+    let env = Env::new();
+    let switch = env.switch();
+    for run in 1..=2 {
+        let start = env.run(&[
+            "net", "switch", "--listen", &switch, "--detach", "--name", "l",
+        ]);
+        assert!(
+            start.status.success(),
+            "{}",
+            String::from_utf8_lossy(&start.stderr)
+        );
+        let pid = ready_doc(&start)["pid"].as_i64().unwrap();
+        let logs = env.run(&["logs", "l"]);
+        let text = String::from_utf8_lossy(&logs.stdout).into_owned();
+        assert_eq!(text.matches("---- start").count(), run, "{text}");
+        let lines: Vec<&str> = text.lines().collect();
+        let last = lines
+            .iter()
+            .rposition(|l| l.contains("---- start"))
+            .unwrap();
+        let tail = &lines[last..];
+        assert!(tail[0].contains(&format!("pid {pid} ")), "{text}");
+        let listening = tail
+            .iter()
+            .filter(|l| l.contains("switch is listening"))
+            .count();
+        assert_eq!(listening, 1, "the line of this start, one time: {text}");
+        assert!(!text.contains('\u{1b}'), "no colour codes: {text}");
+        let stop = env.run(&["stop", "l", "--timeout", "5"]);
+        assert!(stop.status.success());
+        wait_until("the instance ends", || !alive(pid as i32));
+    }
+}

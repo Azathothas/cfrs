@@ -31,14 +31,20 @@ pub const TUNNEL_MTU: usize = 1280;
 /// was at most 2.8 MB/s at an RTT of 46 ms).
 const TCP_BUFFER: usize = 512 * 1024;
 /// The variable with the TCP window of the userspace stack, in segments of
-/// the MTU, or `none` for no limit (issue 100). For a measurement; the
-/// default is no limit.
+/// the MTU, or `none` for no limit (issue 100). For a measurement.
 pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
+
+/// The default TCP window, in segments (issue 100). Live run 41378673046:
+/// a window of 1 segment carried 20 MB at 3.3 MB/s; 8, 32 and no limit
+/// stalled at about 10.5 MB. The cause of the stall is open; one segment
+/// is the default until it is known.
+const TCP_BURST_DEFAULT: usize = 1;
 
 fn tcp_burst() -> Option<usize> {
     match std::env::var(TCP_BURST_VARIABLE) {
-        Ok(v) if v.trim() != "none" && !v.trim().is_empty() => v.trim().parse().ok(),
-        _ => None,
+        Ok(v) if v.trim() == "none" => None,
+        Ok(v) => v.trim().parse().ok().or(Some(TCP_BURST_DEFAULT)),
+        Err(_) => Some(TCP_BURST_DEFAULT),
     }
 }
 

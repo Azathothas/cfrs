@@ -8,7 +8,9 @@
 //! * `NAME.lock`: the instance holds an exclusive `flock` on it while it
 //!   runs. An instance is alive when the lock is held; a pid alone is not a
 //!   proof (a pid can come again after a reboot).
-//! * `NAME.log`: stdout and stderr of the instance after it is ready.
+//! * `NAME.log`: for each start, a separator line (`---- start TIME pid PID
+//!   name NAME ----`), the log lines of the instance from its start, and
+//!   stdout and stderr after it is ready.
 //!
 //! `NAME.start` is a second lock: one start at a time for each name, so
 //! two starts at the same time give one instance.

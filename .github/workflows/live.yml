@@ -678,15 +678,16 @@ jobs:
           grep -q '^warp=on' v6trace.txt
           grep -q '^ip=.*:' v6trace.txt
           # Issues 93 and 100: one TCP download of 20 MB through the
-          # userspace stack and MASQUE, for each TCP window limit
-          # (CFRS_WARP_TCP_BURST, in segments; none is the default). A
-          # window of one segment gave 1.1 to 5.4 MB/s here; with no limit,
-          # one run stalled (12.5 MB in 120 s). The step prints each rate and
-          # needs 2 MB/s from the default.
+          # userspace stack and MASQUE, for each TCP window
+          # (CFRS_WARP_TCP_BURST, in segments; the default is 1). Run
+          # 41378673046: 1 segment gave 3.3 MB/s; 8, 32 and none stalled at
+          # about 10.5 MB. A stalled run prints its last warnings. The step
+          # needs 1 MB/s from the default.
           port=40200
-          for burst in 1 8 32 none; do
+          for burst in default 2 4 8 none; do
             port=$((port + 1))
-            CFRS_WARP_TCP_BURST=$burst target/release/cfrs warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$burst.log" 2>&1 &
+            if [ "$burst" = default ]; then unset CFRS_WARP_TCP_BURST; else export CFRS_WARP_TCP_BURST=$burst; fi
+            RUST_LOG=cfrs=debug target/release/cfrs warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$burst.log" 2>&1 &
             bp=$!
             i=0
             until nc -z 127.0.0.1 "$port" 2> /dev/null; do
@@ -696,11 +697,16 @@ jobs:
             rate=$(curl -sS --max-time 45 -o /dev/null -w '%{speed_download} %{size_download}' -x "socks5h://127.0.0.1:$port" \
               'https://speed.cloudflare.com/__down?bytes=20000000' || true)
             echo "warp proxy download, TCP window ${burst}: ${rate:-none} (bytes/s, bytes)"
+            case "$rate" in
+              *" 20000000") ;;
+              *) grep -E 'WARN|ERROR|closed|dead|stall|capacity' "burst-$burst.log" | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | tail -8 ;;
+            esac
             kill "$bp" 2> /dev/null || true
             wait "$bp" 2> /dev/null || true
-            if [ "$burst" = none ]; then default=${rate%% *}; fi
+            if [ "$burst" = default ]; then default=${rate%% *}; fi
           done
-          awk -v r="${default:-0}" 'BEGIN { exit !(r >= 2000000) }'
+          unset CFRS_WARP_TCP_BURST
+          awk -v r="${default:-0}" 'BEGIN { exit !(r >= 1000000) }'
           # Issue 75: the MASQUE connection is killed (ss -K); the proxy
           # opens a new session, and a new client goes through it.
           sudo ss -K dst 162.159.198.0/24 dport = 443 || true

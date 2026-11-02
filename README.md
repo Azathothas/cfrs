@@ -658,7 +658,10 @@ The instance keeps running when the shell or the terminal closes.
 * The files are in `$XDG_RUNTIME_DIR/cfrs/run/` (else `run` in the state
   directory, or `CFRS_RUN_DIR`), mode 0700: `NAME.json` (0600), `NAME.lock`
   (held while the instance runs) and `NAME.log` (0600, cut at 1 MiB; the
-  part before goes to `NAME.log.1`).
+  part before goes to `NAME.log.1`). Each start writes a line
+  `cfrs: ---- start TIME pid PID name NAME ----`, then its log lines from
+  the start (also the lines before the ready, which the start shows too).
+  The log has no colour codes.
 * A supervisor starts the instance again when it ends, with a backoff of
   1 s doubled to 30 s, but not after exit 64 or 78, and not before the first
   ready. After 5 quick failures in sequence it runs `cfrs.prev` (the binary

@@ -745,9 +745,11 @@ fn main() {
     let ansi = match cli.color.as_str() {
         "always" => true,
         "never" => false,
+        // A detached instance writes its log to a file (issue 103).
         _ => {
             std::io::IsTerminal::is_terminal(&std::io::stderr())
                 && std::env::var_os("NO_COLOR").is_none()
+                && !cfrs::detach::is_child()
         }
     };
     let builder = tracing_subscriber::fmt()

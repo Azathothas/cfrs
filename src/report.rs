@@ -208,11 +208,34 @@ pub fn record(line: &str) {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TeeStderr;
 
+/// The log of a detached instance before its ready (issue 103): the lines
+/// of the log go to stderr (the starter) and to this file.
+static LOG_TEE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+/// Write each log line to `file` too, until [`clear_log_tee`].
+pub fn set_log_tee(file: std::fs::File) {
+    *LOG_TEE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
+}
+
+/// Stop the copy of [`set_log_tee`] (at the ready, stderr is the log).
+pub fn clear_log_tee() {
+    *LOG_TEE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 impl Write for TeeStderr {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let written = std::io::stderr().write(buf)?;
-        for line in String::from_utf8_lossy(&buf[..written]).lines() {
+        let text = String::from_utf8_lossy(&buf[..written]);
+        for line in text.lines() {
             record(line);
+        }
+        if let Some(file) = LOG_TEE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            let mut out = String::new();
+            for line in text.lines() {
+                out.push_str(&mask(&strip_ansi(line)));
+                out.push('\n');
+            }
+            let _ = file.write_all(out.as_bytes());
         }
         Ok(written)
     }

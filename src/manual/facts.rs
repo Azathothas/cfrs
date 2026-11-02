@@ -125,7 +125,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["CFRS_WARP_TCP_BURST"],
         used_by: "warp proxy, warp run, warp up, agent up",
-        meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU, or none (the default): for a measurement of throughput.",
+        meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU (default 1), or none: for a measurement of throughput.",
     },
     EnvVar {
         names: &["CFRS_UDP"],
