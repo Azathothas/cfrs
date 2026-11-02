@@ -41,7 +41,8 @@ These rules apply to each session. Obey them before any other default.
 - Workspace: `cfrs` (root: CLI and library, with the edge client in
   `src/cloudflare/`), `crates/pod-netns` (library and CLI). Do not add a
   dependency for the edge protocol: it is implemented in `src/cloudflare/`.
-- Check before each push: `cargo fmt --all --check`,
+- Check before each push (`sh scripts/agent/check.sh` runs the three):
+  `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`. CI (`.github/workflows/ci.yml`) runs the same
   and builds static musl binaries.
@@ -50,7 +51,11 @@ These rules apply to each session. Obey them before any other default.
 - The debug `target/` can grow past 20 GB. Remove `target/debug` when the
   disk is full.
 - Documents: `README.md`, `docs/protocol.md`, `docs/virtual-network.md`,
-  `crates/pod-netns/README.md`.
+  `docs/target-environment.md`, `docs/maintenance.md`,
+  `crates/pod-netns/README.md`, `docs/releases/`.
+- At the start of a session, read `docs/maintenance.md`: the procedures,
+  the tools (`scripts/agent/`), the workflows, the release steps and the
+  open work. Keep its "Open work" section current.
 
 ## Decisions
 
