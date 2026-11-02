@@ -770,8 +770,10 @@ seconds more), `pin` (`--resolve`) or `none`. While the fetch fails, cfrs
 logs the first try and each fifth try at INFO, and each try after the tenth
 at WARN.
 
-Stop signals: after a server command is ready, SIGINT (Ctrl-C), SIGTERM
-and SIGHUP each start the clean shutdown, also with `--run-for`. The exit
+Stop signals: from the ready line (or the `ready` event) of a server
+command on, SIGINT (Ctrl-C), SIGTERM and SIGHUP each start the clean
+shutdown, also during the verify of the public URL and with `--run-for`.
+A stop before the `verified` event gives no `verified` event. The exit
 code is 0. A second signal during the shutdown stops cfrs at once. Before
 the ready, each signal has its default action. A detached instance ignores
 SIGHUP. When the parent ignores SIGHUP (`nohup`), cfrs ignores it too.

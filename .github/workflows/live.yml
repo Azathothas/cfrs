@@ -101,6 +101,25 @@ jobs:
           # Issue 94: the resolver step that resolves the new name.
           jq -r 'select(.event == "verified") | "verified dns=\(.dns)"' json.out
           jq -e 'select(.event == "verified") | .dns | test("^(system|doh|pin|none)$")' json.out
+      # Issue 101: a SIGTERM right after the ready line, during the verify
+      # of the public URL, is a clean stop (exit 0), not exit 143.
+      - name: SIGTERM between the ready line and the verify
+        timeout-minutes: 3
+        run: |
+          set -eu
+          target/release/cfrs tunnel --hello-world --run-for 60 --json > sig.out 2> sig.err &
+          pid=$!
+          i=0
+          until grep -q '"event":"ready"' sig.out; do
+            i=$((i + 1)); [ "$i" -lt 600 ] || { echo "no ready line"; exit 1; }
+            sleep 0.1
+          done
+          kill -TERM "$pid"
+          rc=0; wait "$pid" || rc=$?
+          echo "exit $rc"
+          grep -c '"event":"verified"' sig.out || true
+          test "$rc" = 0
+          grep 'SIGTERM: stopping' sig.err
       # --detach (issues 70-72): the start returns with the ready document,
       # the URL answers, the instance outlives the shell, and stop ends it.
       - name: Quick tunnel with --detach, ps, logs and stop

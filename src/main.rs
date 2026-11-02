@@ -855,6 +855,16 @@ async fn shutdown_signal() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `Some(out)` when `work` ends; `None` when a stop signal comes first
+/// (issue 101: the verify after the ready line can be stopped cleanly).
+async fn until_stop<T>(work: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = shutdown_signal() => None,
+        out = work => Some(out),
+    }
+}
+
 /// Ready after `run_for` seconds (when given), or on a stop signal.
 async fn sleep_or_signal(run_for: Option<u64>) {
     match run_for {
@@ -1894,7 +1904,11 @@ async fn run_tunnel(
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
     if verify {
-        if let (Some(check), Some(url)) = (handle.verify(None).await?, handle.url()) {
+        let Some(checked) = until_stop(handle.verify(None)).await else {
+            handle.shutdown().await;
+            return Ok(());
+        };
+        if let (Some(check), Some(url)) = (checked?, handle.url()) {
             verified(show, url, check.dns);
         }
     }
@@ -1919,6 +1933,8 @@ async fn run_share(
         .unwrap_or("https://<your-named-tunnel-hostname>")
         .to_string();
     let public = format!("{}{}", base.trim_end_matches('/'), path);
+    // Issue 101: from the ready line on, a stop signal is a clean stop.
+    cfrs::detach::arm_stop();
     if show.json {
         println!(
             "{}",
@@ -1948,8 +1964,11 @@ async fn run_share(
         print!("{}", cfrs::qr::render_terminal(&public)?);
     }
     if verify && handle.url().is_some() {
-        let check = handle.verify_url(&public, None).await?;
-        verified(show, &public, check.dns);
+        let Some(check) = until_stop(handle.verify_url(&public, None)).await else {
+            handle.shutdown().await;
+            return Ok(());
+        };
+        verified(show, &public, check?.dns);
     }
     let mut doc = tunnel_doc(&handle, Some(&public), verify);
     doc["pin"] = pin.clone().into();
@@ -1969,7 +1988,11 @@ async fn run_demo(
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
     if exit_on_verify {
-        let check = handle.verify(Some("Hello, world! (cfrs)")).await?;
+        let Some(check) = until_stop(handle.verify(Some("Hello, world! (cfrs)"))).await else {
+            handle.shutdown().await;
+            return Ok(());
+        };
+        let check = check?;
         if show.json {
             let dns = check.map(|c| c.dns).unwrap_or("none");
             verified(show, handle.url().unwrap_or(""), dns);
@@ -1982,7 +2005,11 @@ async fn run_demo(
         handle.shutdown().await;
         return Ok(());
     }
-    handle.verify(Some("Hello, world! (cfrs)")).await?;
+    let Some(check) = until_stop(handle.verify(Some("Hello, world! (cfrs)"))).await else {
+        handle.shutdown().await;
+        return Ok(());
+    };
+    check?;
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), true));
     serve_until(&handle, wait(run_for, vec![])).await?;
     handle.shutdown().await;
@@ -2205,6 +2232,9 @@ fn verified(show: Show, url: &str, dns: &str) {
 }
 
 fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
+    // Issue 101: from the ready line on, a stop signal is a clean stop
+    // (before, only after the verify).
+    cfrs::detach::arm_stop();
     if show.json {
         println!(
             "{}",
@@ -3707,6 +3737,36 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue 101: once the stop is armed (at the ready line), a SIGTERM
+    /// ends the work of `until_stop` (the verify) with `None`: a clean
+    /// stop, not the default action. The only test here that takes
+    /// signals: the stop request is global to the process.
+    #[test]
+    fn a_sigterm_after_the_ready_line_stops_the_verify_cleanly() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            install_signals();
+            cfrs::detach::arm_stop();
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                // SAFETY: kill() to this process.
+                unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            });
+            let out = tokio::time::timeout(
+                Duration::from_secs(10),
+                until_stop(std::future::pending::<()>()),
+            )
+            .await
+            .expect("the signal ends the wait");
+            assert!(out.is_none());
+            // The stop request stays: a later wait ends at once.
+            assert!(until_stop(async { 1 }).await.is_none());
+        });
+    }
 
     /// warp probe targets (issue 67): a name, an IPv4 and an IPv6 address
     /// with a port; no port, port 0 or an empty host is refused.
