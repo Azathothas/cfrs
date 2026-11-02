@@ -602,6 +602,37 @@ jobs:
           ! ip route | grep -q 'dev cfrs0'
           ip route | diff "$RUNNER_TEMP/routes.before" -
           sudo cmp /etc/resolv.conf "$RUNNER_TEMP/resolv.before"
+      # Issue 105: warp tun --default-route on a host with no default route,
+      # whose only way out is a CONNECT proxy on a connected subnet. A
+      # network namespace stands for that host (the runner keeps its own
+      # routes): a veth pair, no default route in the namespace, the proxy
+      # on the host side of the pair.
+      - name: warp tun --default-route with no default route (proxy only)
+        timeout-minutes: 4
+        run: |
+          set -eu
+          sudo ip netns add r105
+          trap 'sudo ip netns del r105 2> /dev/null || true; sudo ip link del v105a 2> /dev/null || true' EXIT
+          sudo ip link add v105a type veth peer name v105b
+          sudo ip link set v105b netns r105
+          sudo ip addr add 10.105.0.1/24 dev v105a
+          sudo ip link set v105a up
+          sudo ip netns exec r105 ip addr add 10.105.0.2/24 dev v105b
+          sudo ip netns exec r105 ip link set v105b up
+          sudo ip netns exec r105 ip link set lo up
+          ! sudo ip netns exec r105 ip route | grep -q '^default'
+          python3 -I scripts/connect-proxy.py 3128 "$RUNNER_TEMP/connect105.log" 10.105.0.1 &
+          sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
+          sudo ip netns exec r105 env HTTPS_PROXY=http://10.105.0.1:3128 CFRS_RUN_DIR=/tmp/cfrs-run-105 \
+            timeout 120 target/release/cfrs warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out
+          tail -1 tun105.out > tun105.json
+          jq -e '.default_route == true' tun105.json
+          grep 'outside: none needed' tun105.out
+          sudo ip netns exec r105 ip route | grep 'dev cfrs0'
+          sudo ip netns exec r105 curl -fsS --max-time 20 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
+          sudo ip netns exec r105 env CFRS_RUN_DIR=/tmp/cfrs-run-105 target/release/cfrs stop tun105
+          ! sudo ip netns exec r105 ip route | grep -q 'dev cfrs0'
+          sudo cmp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
       - name: WARP run
         timeout-minutes: 3
         run: |

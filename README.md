@@ -420,8 +420,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   config block and a `GIT_SSH_COMMAND`. SSH checks the host key as on a
   direct connection.
 * `cfrs warp tun --default-route` (CAP_NET_ADMIN) sends the whole host
-  through WARP: host routes through the gateway keep the MASQUE connection
-  (the proxy, the front door, the relay) outside the TUN; `0.0.0.0/1`,
+  through WARP: a host route keeps each address of the MASQUE connection
+  (the proxy, the front door, the relay) outside the TUN when the TUN
+  would capture it. An address on loopback or on a connected subnet needs
+  none, so a host with no default route works when its proxy is there; an
+  address with no route at all is refused with its name. `0.0.0.0/1`,
   `128.0.0.0/1`, `::/1` and `8000::/1` go to the TUN; DNS goes to 1.1.1.1
   (`resolvectl` on the TUN, else `/etc/resolv.conf` with a copy kept). The
   default routes go away while the session is down, so traffic fails fast.

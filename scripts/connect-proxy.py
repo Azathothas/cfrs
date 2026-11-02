@@ -2,7 +2,9 @@
 """An HTTP CONNECT proxy for the live check. It writes the target of each
 CONNECT to LOG (one line each) and relays the bytes.
 
-  python3 -I scripts/connect-proxy.py PORT LOG
+  python3 -I scripts/connect-proxy.py PORT LOG [BIND]
+
+BIND is the address to listen on (default 127.0.0.1).
 """
 
 import socket
@@ -68,7 +70,7 @@ def main() -> int:
     lock = threading.Lock()
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", port))
+    listener.bind((sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1", port))
     listener.listen(64)
     while True:
         client, _ = listener.accept()

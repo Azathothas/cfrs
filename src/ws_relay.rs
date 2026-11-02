@@ -144,6 +144,11 @@ impl Relay {
         )
     }
 
+    /// The TCP port of the relay.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// The host of the relay.
     pub fn host(&self) -> &str {
         &self.host

@@ -2916,9 +2916,15 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 }
                 if !args.no_relay {
                     if let Ok(relay) = cfrs::ws_relay::Relay::from_env(None) {
-                        hosts.push(relay.host().to_string());
+                        // Issue 105: a relay that is reached through the
+                        // proxy needs no route of its own.
+                        match cfrs::egress::proxy_for(relay.host(), relay.port()) {
+                            Some(proxy) => hosts.push(proxy.host().to_string()),
+                            None => hosts.push(relay.host().to_string()),
+                        }
                     }
                 }
+                hosts.dedup();
                 let mut exempt: Vec<std::net::Ipv4Addr> = Vec::new();
                 for host in hosts.iter().filter(|h| !h.is_empty()) {
                     for ip in cfrs::resolve::resolve(host).await.unwrap_or_default() {
@@ -2935,14 +2941,20 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     client.device().ipv6().is_some(),
                 )
                 .fault(Fault::Unavailable)?;
+                let outside = routes
+                    .exempted()
+                    .iter()
+                    .map(|ip| ip.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 println!(
                     "cfrs: routes   the default routes go to {}; outside: {}",
                     tun.name,
-                    exempt
-                        .iter()
-                        .map(|ip| ip.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    if outside.is_empty() {
+                        "none needed (the MASQUE connection goes through loopback or a connected subnet)".to_string()
+                    } else {
+                        outside
+                    }
                 );
                 Some(std::sync::Mutex::new(routes))
             } else {
