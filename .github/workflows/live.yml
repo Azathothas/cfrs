@@ -726,12 +726,26 @@ jobs:
           # Issue 75: the MASQUE connection is killed (ss -K); the proxy
           # opens a new session, and a new client goes through it.
           sudo ss -K dst 162.159.198.0/24 dport = 443 || true
+          # Run 41552624692: on some runner kernels ss -K fails ("RTNETLINK
+          # answers: Invalid argument") and the connection stays. Then a
+          # TCP reset rule closes it, until the proxy sees the dead session.
+          if ss -Htn state established dst 162.159.198.0/24 dport = 443 | grep -q .; then
+            echo "ss -K did not close the MASQUE connection; a TCP reset rule closes it"
+            rule="OUTPUT -d 162.159.198.0/24 -p tcp --dport 443 -j REJECT --reject-with tcp-reset"
+            sudo iptables -I $rule
+            i=0
+            until grep -qE 'MASQUE (send|receive) loop ended|the MASQUE session is dead|WARP session is closed' warpproxy.log; do
+              i=$((i + 1)); [ "$i" -lt 45 ] || break
+              sleep 1
+            done
+            sudo iptables -D $rule
+          fi
           i=0
           until grep -q 'a new WARP session is open' warpproxy.log; do
             i=$((i + 1))
-            if [ "$i" -gt 40 ]; then
+            if [ "$i" -gt 60 ]; then
               sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' warpproxy.log | tail -30
-              echo "no new WARP session after 40 s"
+              echo "no new WARP session after 60 s"
               exit 1
             fi
             sleep 1

@@ -76,7 +76,10 @@ impl<T: Closable> Live<T> {
                     delay = Duration::ZERO;
                     continue;
                 }
-                if !delay.is_zero() {
+                if delay.is_zero() {
+                    // Issue 116: the log of warp up shows each close.
+                    info!("the WARP session is closed; cfrs opens a new one");
+                } else {
                     tokio::time::sleep(delay).await;
                 }
                 match connect().await {
