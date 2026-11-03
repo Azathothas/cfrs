@@ -387,7 +387,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cfrs"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -395,6 +395,7 @@ dependencies = [
  "bytes",
  "clap",
  "clap_complete",
+ "curve25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "h2",
@@ -2155,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "pod-netns"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "anyhow",
  "libc",
