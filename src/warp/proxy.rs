@@ -509,7 +509,7 @@ pub fn run_l4(l4: Arc<super::l4::L4>, bound: Bound) -> WarpProxy {
                 l4.dial(&host.to_string(), port).await
             };
             if let Err(err) = handle_client_auth(stream, dial, None, CREDENTIALS.get()).await {
-                debug!(error = %err, "WARP proxy client (L4) failed");
+                warn!(error = %format!("{err:#}"), "WARP proxy client (L4) failed");
             }
         });
     }

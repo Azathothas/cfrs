@@ -34,11 +34,13 @@ const TCP_BUFFER: usize = 512 * 1024;
 /// the MTU, or `none` for no limit (issue 100). For a measurement.
 pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
 
-/// The default TCP window, in segments (issue 100). On the direct path to
-/// the front door, 4, 8, 16 and no limit stall (live run 41567562797);
-/// through the WebSocket relay, no window stalled (runs 41556920224 to
-/// 41563827050). One segment is the default until the cause is known.
-const TCP_BURST_DEFAULT: usize = 1;
+/// The default TCP window (issue 100): no limit. With smoltcp 0.11, a
+/// window over 1 segment stalled on the direct path (live run
+/// 41567562797), so 1 was the default. With smoltcp 0.12, no window
+/// stalls: a download of 20 MB with no limit was 12.1 and 16.8 MB/s over
+/// HTTP/2 and 44.8 and 66.1 MB/s over HTTP/3, against 7.1 to 9.5 MB/s with
+/// 1 segment (live runs 41630694087 and 41633242174).
+const TCP_BURST_DEFAULT: Option<usize> = None;
 
 /// The largest value of [`TCP_BURST_VARIABLE`]: more segments do not fit
 /// in the receive buffer.
@@ -113,7 +115,7 @@ pub fn check_tcp_burst() -> Result<()> {
 /// measurement could not be trusted.
 fn parse_tcp_burst(value: Option<&str>) -> Result<Option<usize>> {
     let Some(value) = value else {
-        return Ok(Some(TCP_BURST_DEFAULT));
+        return Ok(TCP_BURST_DEFAULT);
     };
     let value = value.trim();
     if value == "none" {
@@ -1569,7 +1571,7 @@ mod tests {
 
     #[test]
     fn the_tcp_burst_variable_is_checked() {
-        assert_eq!(parse_tcp_burst(None).unwrap(), Some(TCP_BURST_DEFAULT));
+        assert_eq!(parse_tcp_burst(None).unwrap(), TCP_BURST_DEFAULT);
         assert_eq!(parse_tcp_burst(Some("none")).unwrap(), None);
         assert_eq!(parse_tcp_burst(Some(" 8 ")).unwrap(), Some(8));
         assert_eq!(parse_tcp_burst(Some("430")).unwrap(), Some(430));
