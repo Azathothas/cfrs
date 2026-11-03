@@ -1425,6 +1425,9 @@ mod tests {
                 tokio::io::AsyncWriteExt::write_all(&mut file, format!("race-{i}").as_bytes())
                     .await
                     .unwrap();
+                // A tokio File writes in the background: the flush waits for
+                // the write (CI run 41569743059 read an empty file).
+                tokio::io::AsyncWriteExt::flush(&mut file).await.unwrap();
                 path
             }));
         }
