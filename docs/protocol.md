@@ -338,7 +338,18 @@ From the Cloudflare page
   named tunnel (`--token` or `--config` with `credentials-file:`).
 * No uptime guarantee.
 * At most 200 requests in flight for each quick tunnel. More get `429`.
-* No Server-Sent Events (SSE).
+* No Server-Sent Events (SSE). An event stream can arrive in bursts, or at
+  its end.
+
+The provision service (`api.trycloudflare.com`) also limits the
+provisions of each address. Observed (issue 182): after 5 to 7
+provisions in 12 to 70 minutes, the service answers `429` (error 1015)
+with a `Retry-After`. The wait is a fixed expiry: a new request does not
+make it longer. cfrs waits at most 300 s for one provision (with
+`--detach`, at most `--ready-timeout` for the first start), then exits 75
+with `retry_after_s` in the error report. A script needs its own loop. A
+supervisor of `--detach` waits the `Retry-After` (at most 1 h) before its
+next start. Each restart of a quick tunnel uses one provision.
 
 cloudflared makes one edge connection for a quick tunnel (section 3.1).
 

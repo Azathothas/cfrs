@@ -363,8 +363,8 @@ struct TunnelOpts {
     /// one transfer faster. Default: ha-connections of --config, else 2.
     #[arg(long, global = true, value_parser = clap::value_parser!(u8).range(1..=8))]
     ha_connections: Option<u8>,
-    /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then
-    /// http2). Default: protocol of --config, else auto.
+    /// Edge protocol: quic (UDP 7844), http2 or h2 (TCP 7844), or auto
+    /// (quic, then http2). Default: protocol of --config, else auto.
     #[arg(long, global = true, value_parser = ["auto", "quic", "http2", "h2"])]
     protocol: Option<String>,
     /// How to reach the edge: auto (try 7844, fall back to WARP on 443),
@@ -601,7 +601,7 @@ struct ShareArgs {
     /// Upload mode: the most bytes of one upload request. A larger request
     /// gets 413 and saves nothing (cfrs drops its body). The edge of
     /// Cloudflare takes at most 100 MB in one request.
-    #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST)]
+    #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST, value_parser = clap::value_parser!(u64).range(1..))]
     max_request: u64,
     /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
     /// the host can read a command line.

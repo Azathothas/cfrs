@@ -200,7 +200,11 @@ impl Tunnel {
         let proxy = crate::egress::proxy_for(EDGE_REGION_NAME, 7844);
         let (plan, note) = plan_with_proxy(plan, protocol, proxy.as_ref());
         if let Some(note) = note {
-            info!("{note}");
+            if matches!(protocol, Protocol::Auto) {
+                info!("{note}");
+            } else {
+                tracing::warn!("{note}");
+            }
         }
         let egress = match udp_probe {
             Some(task) => task.await.ok(),
@@ -456,7 +460,7 @@ async fn resolve_credentials(
                 crate::quicktunnel::AuthMode::Public,
                 user_agent,
                 Duration::from_secs(30),
-                crate::quicktunnel::PROVISION_BUDGET,
+                crate::detach::provision_budget(crate::quicktunnel::PROVISION_BUDGET),
             )
             .await
             .context("provisioning quick tunnel")
@@ -591,8 +595,18 @@ pub fn plan_with_proxy(
     let Some(proxy) = proxy else {
         return (plan, None);
     };
-    if !matches!(protocol, Protocol::Auto) || !plan.contains(&LegKind::QuicDirect) {
+    if !plan.contains(&LegKind::QuicDirect) {
         return (plan, None);
+    }
+    // Issue 182: an explicit --protocol quic keeps the leg, with a word
+    // that it does not use the proxy.
+    if !matches!(protocol, Protocol::Auto) {
+        return (
+            plan,
+            Some(format!(
+                "a proxy is set ({proxy}); QUIC uses UDP 7844 and goes around the proxy, so it can fail here (--protocol http2 goes through the proxy)"
+            )),
+        );
     }
     let kept: Vec<LegKind> = plan
         .into_iter()
@@ -1362,6 +1376,23 @@ mod tests {
             vec![H2Direct]
         );
         let _ = refused;
+    }
+
+    // Issue 182: with a proxy, auto drops QUIC on UDP 7844; an explicit
+    // quic keeps it, with a note.
+    #[test]
+    fn a_proxy_and_the_quic_leg() {
+        let proxy = crate::egress::Proxy::parse_trusted("http://127.0.0.1:3128").unwrap();
+        let auto = leg_plan(Protocol::Auto, Transport::Auto).unwrap();
+        let (plan, note) = plan_with_proxy(auto, Protocol::Auto, Some(&proxy));
+        assert!(!plan.contains(&LegKind::QuicDirect));
+        assert!(note.unwrap().contains("does not try QUIC"));
+        let quic = leg_plan(Protocol::Quic, Transport::Direct).unwrap();
+        let (plan, note) = plan_with_proxy(quic, Protocol::Quic, Some(&proxy));
+        assert_eq!(plan, vec![LegKind::QuicDirect]);
+        assert!(note.unwrap().contains("goes around the proxy"));
+        let quic = leg_plan(Protocol::Quic, Transport::Direct).unwrap();
+        assert_eq!(plan_with_proxy(quic, Protocol::Quic, None).1, None);
     }
 
     #[test]

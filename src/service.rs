@@ -135,7 +135,12 @@ fn static_router(root: &Path, spa: bool) -> Result<Router> {
         // fallback, not not_found_service: an SPA route answers 200.
         Router::new().fallback_service(dir.fallback(index))
     } else {
-        Router::new().fallback_service(dir)
+        // Issue 182: a missing path has the body of each other 404 of
+        // the guard ("Not Found"); before, ServeDir gave an empty body.
+        let missing = tower::service_fn(|_: http::Request<axum::body::Body>| async {
+            Ok::<_, std::convert::Infallible>(not_found())
+        });
+        Router::new().fallback_service(dir.not_found_service(missing))
     };
     Ok(router.layer(axum::middleware::from_fn_with_state(
         canonical,
@@ -282,6 +287,9 @@ mod tests {
         ] {
             let (status, body) = get(&router, path).await;
             assert_eq!(status, 404, "{path}: {body}");
+            // Issue 182: each 404 has one body; a missing path does not
+            // look other than a refused one.
+            assert_eq!(body, "Not Found", "{path}");
             assert!(
                 !body.contains("outside") && !body.contains("SECRET"),
                 "{path}: {body}"

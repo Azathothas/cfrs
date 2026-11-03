@@ -468,6 +468,17 @@ fn the_supervisor_starts_a_killed_child_again() {
     assert!(connects(&env.sock), "the new child serves");
     let log = std::fs::read_to_string(env.run.join("sup.log")).unwrap();
     assert!(log.contains("start 1"), "{log}");
+    // Issue 182: each line of the restarted child is in the log once.
+    let last = log.rsplit("---- start").next().unwrap();
+    let lines: Vec<&str> = last
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    for line in &lines {
+        assert!(seen.insert(*line), "a line two times: {line}\n{log}");
+    }
     // SIGTERM to the supervisor (cfrs stop) ends both, with no new start.
     let child = instance(&env, "sup")["pid"].as_i64().unwrap() as i32;
     assert!(env.run(&["stop", "sup"]).status.success());
@@ -623,4 +634,14 @@ fn a_named_foreground_process_is_in_ps_and_stops() {
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(0), "{status:?}");
     assert!(env.ps()["instances"].as_array().unwrap().is_empty());
+}
+
+// Issue 182: wait for a name that never existed says so.
+#[test]
+fn wait_for_a_name_that_never_existed_says_so() {
+    let env = Env::new();
+    let out = env.run(&["wait", "nosuch", "--timeout", "1"]);
+    assert_eq!(out.status.code(), Some(69));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no instance nosuch"), "{err}");
 }

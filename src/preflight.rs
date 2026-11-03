@@ -186,7 +186,12 @@ pub async fn check(config: &Config) -> Report {
                         }
                         crate::race::Failover::Serial => "serial".to_string(),
                     };
-                    let mut detail = format!("{} ({failover})", names.join(", then "));
+                    // Issue 182: the row is the plan; the check makes no
+                    // edge connection (cfrs doctor tests the reach).
+                    let mut detail = format!(
+                        "planned: {} ({failover}); no edge connection is made (cfrs doctor tests the reach)",
+                        names.join(", then ")
+                    );
                     if let Some(note) = note {
                         detail.push_str(&format!("; {note}"));
                     }

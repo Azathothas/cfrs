@@ -98,9 +98,9 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",
     },
     EnvVar {
-        names: &["CFRS_DETACH_NAME", "CFRS_DETACH_HASH", "CFRS_DETACH_COMMAND", "CFRS_DETACH_SUPERVISED"],
+        names: &["CFRS_DETACH_NAME", "CFRS_DETACH_HASH", "CFRS_DETACH_COMMAND", "CFRS_DETACH_SUPERVISED", "CFRS_DETACH_READY_TIMEOUT"],
         used_by: "--detach",
-        meaning: "cfrs sets them for the child of --detach: the name of the instance, the hash of its arguments, the command, and whether a supervisor runs it. Do not set them.",
+        meaning: "cfrs sets them for the child of --detach: the name of the instance, the hash of its arguments, the command, whether a supervisor runs it, and the --ready-timeout of the first start (a provision of a quick tunnel does not wait past it). Do not set them.",
     },
     EnvVar {
         names: &["CFRS_RELAY"],

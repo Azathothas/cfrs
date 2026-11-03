@@ -367,6 +367,10 @@ attempt). Other values:
 | `auto` or `quic` | `warp` | `quic+warp` |
 | `auto` or `http2` | `relay` | `http2+relay` |
 
+`h2` is a name of `http2`. With a proxy, `auto` drops `quic` (see "Proxies
+and DNS"); an explicit `--protocol quic` keeps it, and a warning says that
+QUIC goes around the proxy.
+
 `--transport relay` sends the HTTP/2 leg in a WebSocket to a
 WebSocket-to-TCP relay on TCP 443 (`--relay URL`, or `CFRS_RELAY`; the
 default is `https://tcp.ssh.relay.ajam.dev`). The relay opens TCP to the
@@ -755,7 +759,8 @@ cfrs --no-proxy tunnel --url http://127.0.0.1:8080
   `/etc/gitconfig`, `/etc/pip.conf`, and `/etc/environment`. The log names
   the file. `--no-proxy` turns it off.
 * With a proxy, `--protocol auto` does not try QUIC on UDP 7844 (no proxy
-  carries UDP), and cfrs prints one line that says so.
+  carries UDP), and cfrs prints one line that says so. `--protocol quic`
+  keeps QUIC, with a warning.
 * With a user and a password, cfrs sends Basic. A proxy that answers 407
   with a Digest challenge (RFC 7616: MD5, MD5-sess, SHA-256,
   SHA-256-sess, `qop=auth`) gets the Digest answer on a new connection.
@@ -861,7 +866,8 @@ is ready: until the public URL answers, or until the listener is bound.
 Then it leaves the terminal (`setsid`, SIGHUP ignored, stdin to
 `/dev/null`, stdout and stderr to its log), and the start prints one JSON
 document as its last line: `name`, `pid`, `log`, and `url` or `listen`.
-The instance keeps running when the shell or the terminal closes.
+The instance keeps running when the shell or the terminal closes. A sandbox
+or a container that kills each process of its run also ends it.
 
 * A second start with the same name and the same arguments prints the same
   document and starts nothing. Other arguments exit 69; `--replace` stops
@@ -925,6 +931,9 @@ cfrs autostart remove web
 * `remove` deletes only what `add` wrote (a marker line in the unit, a
   marker comment on the crontab line).
 * Each program that `add` or `remove` runs has a limit of 10 s.
+* With no systemd user manager and no cron, `add` exits 69. Its error text
+  gives a `nohup` line: put it in a login script (for example
+  `~/.profile`).
 
 ## Doctor
 
@@ -1027,10 +1036,13 @@ It tests the flags and the config file, each origin (a connection, and the
 TLS handshake for `https`; no request is sent), the files and the
 directories (`--dir`, `--spa` and its `index.html`, `--file`, the upload
 directory, `--warp-identity`, `--credentials-file`), `CFRS_EDGE` and the edge
-legs. It makes no Cloudflare API call and no edge connection, opens no
+legs (the `legs` row is the plan: `cfrs doctor` tests the reach of each
+leg). It makes no Cloudflare API call and no edge connection, opens no
 listening socket and writes no file. It prints no token and no PIN. Exit 0:
-each check passed. Exit 1: a check failed. A bad command line (64) or a bad
-config file (78) stops before the check. With `--json`, the output is one
+each check passed. Exit 1: a check of an origin failed. Exit 78: each
+failed check is a check of the configuration (`CFRS_EDGE`, the credentials
+file, the roots). A bad command line (64) or a bad config file (78) stops
+before the check. With `--json`, the output is one
 document: `{"ok", "plan", "checks": [{"name", "status", "detail"}]}`.
 
 ```sh

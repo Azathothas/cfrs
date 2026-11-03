@@ -42,6 +42,19 @@ pub const NAME_VARIABLE: &str = "CFRS_DETACH_NAME";
 pub const HASH_VARIABLE: &str = "CFRS_DETACH_HASH";
 /// The command (`tunnel`, `warp proxy`), for the child.
 pub const COMMAND_VARIABLE: &str = "CFRS_DETACH_COMMAND";
+/// The `--ready-timeout` in seconds, for the first child (issue 182): its
+/// provision does not wait past it.
+pub const READY_TIMEOUT_VARIABLE: &str = "CFRS_DETACH_READY_TIMEOUT";
+
+/// The time that a provision may wait: `budget`, and in the first child of
+/// `--detach` at most its `--ready-timeout`.
+pub fn provision_budget(budget: Duration) -> Duration {
+    std::env::var(READY_TIMEOUT_VARIABLE)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(budget, |secs| budget.min(Duration::from_secs(secs.max(1))))
+}
+
 /// The start of the ready line on the pipe.
 const READY: &str = "cfrs-detached-ready ";
 /// The log is cut at this size; the part before goes to `.log.1`.
@@ -266,7 +279,25 @@ fn begin_log(path: &Path, name: &str) {
         crate::trust::imf_fixdate(std::time::SystemTime::now()),
         std::process::id()
     );
-    crate::report::set_log_tee(file);
+    // Issue 182: a restarted child has the log as its stderr (from its
+    // supervisor); a tee to the same file wrote each line two times.
+    if !same_file(&file, 2) {
+        crate::report::set_log_tee(file);
+    }
+}
+
+/// Whether `file` and the descriptor `fd` are the same file.
+fn same_file(file: &std::fs::File, fd: i32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    // SAFETY: fstat() with a zeroed struct to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        return false;
+    }
+    st.st_dev as u64 == meta.dev() && st.st_ino as u64 == meta.ino()
 }
 
 /// The command is ready, with `doc` (a JSON object: `url`, or `listen`, and
@@ -471,6 +502,10 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
         .envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env(NAME_VARIABLE, &name)
         .env(HASH_VARIABLE, &hash)
+        .env(
+            READY_TIMEOUT_VARIABLE,
+            options.ready_timeout.as_secs().to_string(),
+        )
         .env(COMMAND_VARIABLE, command)
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
@@ -589,10 +624,19 @@ pub fn wait_ready_record(dir: &Path, name: &str, timeout: Duration) -> Result<se
     use crate::exit::{fault, Fault};
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(record) = instances::read(dir, name) {
+        let record = instances::read(dir, name);
+        let known = record.is_some();
+        if let Some(record) = record {
             if let Some(doc) = record.ready.filter(|_| record.state == "ready") {
                 return Ok(doc);
             }
+        }
+        // Issue 182: a name with no record and no lock is not an instance.
+        if !known && !instances::is_alive(dir, name) {
+            return Err(fault(
+                Fault::Unavailable,
+                anyhow::anyhow!("no instance {name} (cfrs ps)"),
+            ));
         }
         if !instances::is_alive(dir, name) {
             return Err(fault(
@@ -785,6 +829,10 @@ mod supervise {
             {
                 use std::os::unix::process::CommandExt;
                 cmd.arg0("cfrs");
+            }
+            if ready_seen {
+                // A restart has no caller that waits: the full budget.
+                cmd.env_remove(READY_TIMEOUT_VARIABLE);
             }
             cmd.arg(CHILD_FLAG)
                 .args(&child_args)
@@ -1043,6 +1091,19 @@ mod tests {
 
     /// Issues 182 and 210: a Retry-After of the child is the wait when it is
     /// longer than the backoff, at most 1 h.
+    // Issue 182: the first child does not wait past --ready-timeout.
+    #[test]
+    fn the_provision_budget_of_the_first_child() {
+        let full = Duration::from_secs(300);
+        std::env::remove_var(READY_TIMEOUT_VARIABLE);
+        assert_eq!(provision_budget(full), full);
+        std::env::set_var(READY_TIMEOUT_VARIABLE, "60");
+        assert_eq!(provision_budget(full), Duration::from_secs(60));
+        std::env::set_var(READY_TIMEOUT_VARIABLE, "900");
+        assert_eq!(provision_budget(full), full);
+        std::env::remove_var(READY_TIMEOUT_VARIABLE);
+    }
+
     #[test]
     fn the_wait_honours_a_retry_after() {
         let backoff = Duration::from_secs(4);
