@@ -50,6 +50,14 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 assert len(d["colo"]) == 3, d["colo"]
 print("exit colo", d["colo"], "country", d["loc"], "warp", d["warp"], "rtt_ms", d["rtt_ms"])
+# Issue 184: the IPv6 egress address. The log is public: the family and
+# the first group only.
+v6 = d.get("ipv6")
+if v6:
+    assert ":" in v6, v6
+    print("exit ipv6: yes, prefix", v6.split(":")[0] + "::/16")
+else:
+    print("exit ipv6: no:", (d.get("ipv6_error") or "")[:200])
 ' "$dir/exit.json"
 
 echo "== warp scan (issue 139)"

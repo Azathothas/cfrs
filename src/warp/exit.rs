@@ -13,6 +13,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 /// The address of the trace.
 pub const TRACE_ADDRESS: std::net::IpAddr =
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
+/// The IPv6 address of the trace and of the whoami query (issue 184).
+pub const TRACE_ADDRESS_V6: std::net::IpAddr = std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+    0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111,
+));
 /// The name of the trace (the certificate and the Host header).
 pub const TRACE_NAME: &str = "one.one.one.one";
 /// The time limit of the trace.
@@ -33,6 +37,10 @@ pub struct Exit {
     pub warp: Option<String>,
     /// The time of the request.
     pub rtt: Duration,
+    /// The IPv6 egress address (issue 184), when it was asked for.
+    pub ipv6: Option<String>,
+    /// Why the IPv6 egress address is not known.
+    pub ipv6_error: Option<String>,
 }
 
 impl Exit {
@@ -43,6 +51,8 @@ impl Exit {
             "ip": self.ip,
             "warp": self.warp,
             "rtt_ms": self.rtt.as_millis() as u64,
+            "ipv6": self.ipv6,
+            "ipv6_error": self.ipv6_error,
         })
     }
 }
@@ -68,16 +78,111 @@ pub fn parse(body: &str, rtt: Duration) -> Option<Exit> {
         ip: get("ip"),
         warp: get("warp"),
         rtt,
+        ipv6: None,
+        ipv6_error: None,
     })
 }
 
 /// The exit of the session of `stack`.
 pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
+    trace_at(stack, TRACE_ADDRESS).await
+}
+
+/// The IPv6 egress address of the session of `stack` (issue 184): the
+/// trace over IPv6, else the TXT record of whoami.cloudflare (class CH) at
+/// the IPv6 resolver of Cloudflare.
+pub async fn egress_v6(stack: &super::WarpStack) -> Result<String> {
+    let mut errors = Vec::new();
+    match trace_at(stack, TRACE_ADDRESS_V6).await {
+        Ok(exit) => match exit.ip {
+            Some(ip) if ip.contains(':') => return Ok(ip),
+            other => errors.push(format!(
+                "the IPv6 trace gave {}",
+                other.as_deref().unwrap_or("no ip")
+            )),
+        },
+        Err(err) => errors.push(format!("the IPv6 trace: {err:#}")),
+    }
+    match whoami_v6(stack).await {
+        Ok(ip) => Ok(ip),
+        Err(err) => bail!("{}; whoami.cloudflare: {err:#}", errors.join("; ")),
+    }
+}
+
+/// The DNS query of the TXT record of `whoami.cloudflare` in class CH.
+pub fn whoami_query(id: u16) -> Vec<u8> {
+    let mut q = Vec::with_capacity(40);
+    q.extend_from_slice(&id.to_be_bytes());
+    q.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in ["whoami", "cloudflare"] {
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.push(0);
+    q.extend_from_slice(&16u16.to_be_bytes()); // TXT
+    q.extend_from_slice(&3u16.to_be_bytes()); // CH
+    q
+}
+
+/// The text of the first TXT answer of a DNS message.
+pub fn first_txt(message: &[u8]) -> Option<String> {
+    let u16_at = |i: usize| Some(u16::from_be_bytes([*message.get(i)?, *message.get(i + 1)?]));
+    let skip_name = |mut i: usize| -> Option<usize> {
+        loop {
+            let len = *message.get(i)? as usize;
+            if len == 0 {
+                return Some(i + 1);
+            }
+            if len & 0xc0 == 0xc0 {
+                return Some(i + 2);
+            }
+            i += 1 + len;
+        }
+    };
+    let questions = u16_at(4)?;
+    let answers = u16_at(6)?;
+    let mut i = 12;
+    for _ in 0..questions {
+        i = skip_name(i)? + 4;
+    }
+    for _ in 0..answers {
+        i = skip_name(i)?;
+        let kind = u16_at(i)?;
+        let rdlen = u16_at(i + 8)? as usize;
+        let rdata = message.get(i + 10..i + 10 + rdlen)?;
+        if kind == 16 {
+            let mut text = String::new();
+            let mut j = 0;
+            while j < rdata.len() {
+                let n = rdata[j] as usize;
+                text.push_str(&String::from_utf8_lossy(rdata.get(j + 1..j + 1 + n)?));
+                j += 1 + n;
+            }
+            return Some(text);
+        }
+        i += 10 + rdlen;
+    }
+    None
+}
+
+async fn whoami_v6(stack: &super::WarpStack) -> Result<String> {
+    let server = std::net::SocketAddr::new(TRACE_ADDRESS_V6, 53);
+    let query = whoami_query(0x7e57);
+    let answer = super::proxy::forward_dns_to(stack, server, &query).await?;
+    let text = first_txt(&answer).context("the answer has no TXT record")?;
+    if !text.contains(':') {
+        bail!("the answer is not an IPv6 address: {text}");
+    }
+    Ok(text)
+}
+
+/// The trace at `address`.
+async fn trace_at(stack: &super::WarpStack, address: std::net::IpAddr) -> Result<Exit> {
     let start = Instant::now();
     let work = async {
         let stream = super::proxy::dial(
             Arc::new(stack.clone()),
-            pod_netns::socks::ProxyHost::Ip(TRACE_ADDRESS),
+            pod_netns::socks::ProxyHost::Ip(address),
             443,
         )
         .await?;
@@ -86,7 +191,7 @@ pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(name, stream)
             .await
-            .context("TLS with 1.1.1.1 through WARP")?;
+            .with_context(|| format!("TLS with {address} through WARP"))?;
         // HTTP/1.0: the body is not chunked, and ends with the connection.
         let request = format!(
             "GET /cdn-cgi/trace HTTP/1.0\r\nHost: {TRACE_NAME}\r\nUser-Agent: cfrs\r\n\r\n"
@@ -120,6 +225,37 @@ pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 184: the whoami query and the TXT of its answer.
+    #[test]
+    fn the_whoami_query_and_its_answer() {
+        let q = whoami_query(0x1234);
+        assert_eq!(&q[..2], &[0x12, 0x34]);
+        assert_eq!(&q[q.len() - 4..], &[0, 16, 0, 3]);
+        // The answer: the question, then a TXT record with a pointer name.
+        let mut a = q.clone();
+        a[2] = 0x81;
+        a[3] = 0x80;
+        a[7] = 1; // one answer
+        let ip = "2a09:bac1:28a0:8::1f:2a";
+        a.extend_from_slice(&[0xc0, 0x0c, 0, 16, 0, 3, 0, 0, 0, 0]);
+        a.extend_from_slice(&((ip.len() + 1) as u16).to_be_bytes());
+        a.push(ip.len() as u8);
+        a.extend_from_slice(ip.as_bytes());
+        assert_eq!(first_txt(&a).as_deref(), Some(ip));
+        assert_eq!(first_txt(&q), None);
+    }
+
+    // Issue 184: the JSON keeps ip and adds ipv6.
+    #[test]
+    fn the_json_keeps_ip_and_adds_ipv6() {
+        let mut exit = parse("colo=AMS\nip=104.28.0.1\n", Duration::from_millis(5)).unwrap();
+        exit.ipv6 = Some("2a09:bac1::1".into());
+        let doc = exit.to_json();
+        assert_eq!(doc["ip"], "104.28.0.1");
+        assert_eq!(doc["ipv6"], "2a09:bac1::1");
+        assert!(doc["ipv6_error"].is_null());
+    }
 
     #[test]
     fn the_trace_body_gives_the_exit() {

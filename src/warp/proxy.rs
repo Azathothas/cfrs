@@ -398,7 +398,11 @@ async fn dot_exchange<S: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
-async fn forward_dns_to(stack: &WarpStack, server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
+pub(crate) async fn forward_dns_to(
+    stack: &WarpStack,
+    server: SocketAddr,
+    query: &[u8],
+) -> Result<Vec<u8>> {
     if query.len() < 12 {
         bail!("not a DNS message");
     }

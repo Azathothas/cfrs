@@ -3417,11 +3417,16 @@ enum WarpCommand {
     },
     /// Open the tunnel and print its exit: the data center (colo), the
     /// country and the address that a destination sees (from
-    /// http://1.1.1.1/cdn-cgi/trace). Exit 69 when there is no answer.
+    /// http://1.1.1.1/cdn-cgi/trace), and the IPv6 egress address (the
+    /// trace at 2606:4700:4700::1111, else the TXT of whoami.cloudflare).
+    /// Exit 69 when there is no answer.
     Exit {
         /// Print one JSON object.
         #[arg(long)]
         json: bool,
+        /// Do not ask for the IPv6 egress address.
+        #[arg(long)]
+        no_ipv6: bool,
     },
     /// Print a WireGuard config of a new WARP device (wg-quick or JSON),
     /// for other clients. The device and its private key are in
@@ -4283,17 +4288,35 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 ));
             }
         }
-        WarpCommand::Exit { json } => {
+        WarpCommand::Exit { json, no_ipv6 } => {
             let stack = client.connect().await.fault(Fault::Unavailable)?;
-            let exit = cfrs::warp::exit::trace(&stack)
+            let mut exit = cfrs::warp::exit::trace(&stack)
                 .await
                 .fault(Fault::Unavailable)?;
+            // Issue 184: the IPv6 egress address changes with each session.
+            if !no_ipv6 {
+                if client.device().ipv6().is_none() {
+                    exit.ipv6_error = Some("the device has no IPv6 address".into());
+                } else {
+                    match cfrs::warp::exit::egress_v6(&stack).await {
+                        Ok(ip) => exit.ipv6 = Some(ip),
+                        Err(err) => exit.ipv6_error = Some(format!("{err:#}")),
+                    }
+                }
+            }
             if json {
                 println!("{}", exit.to_json());
             } else {
                 println!("colo        {}", exit.colo);
                 println!("country     {}", exit.loc.as_deref().unwrap_or("-"));
                 println!("ip          {}", exit.ip.as_deref().unwrap_or("-"));
+                if !no_ipv6 {
+                    match (&exit.ipv6, &exit.ipv6_error) {
+                        (Some(ip), _) => println!("ipv6        {ip}"),
+                        (None, Some(why)) => println!("ipv6        - ({why})"),
+                        _ => println!("ipv6        -"),
+                    }
+                }
                 println!("warp        {}", exit.warp.as_deref().unwrap_or("-"));
                 println!("rtt         {} ms", exit.rtt.as_millis());
             }

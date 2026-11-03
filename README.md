@@ -491,7 +491,7 @@ cfrs warp license <KEY>           # attach a WARP+ license key
 cfrs warp rotate                  # make and enrol a new MASQUE key
 cfrs warp delete                  # remove the device and the saved file
 cfrs warp probe                   # test TCP connects through the tunnel
-cfrs warp exit                    # the exit colo, country and address
+cfrs warp exit                    # the exit colo, country, address and IPv6 address
 cfrs warp scan --candidate 162.159.198.1   # measure front doors (TCP and TLS)
 cfrs warp export --out warp.conf  # a WireGuard device for other clients (UDP)
 cfrs warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
