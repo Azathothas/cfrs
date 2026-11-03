@@ -567,7 +567,10 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   is closed. `--via-relay` goes through the WebSocket relay to HOST:PORT
   with no WARP. `cfrs warp ssh-config [--host PATTERN]` prints the SSH
   config block and a `GIT_SSH_COMMAND`. SSH checks the host key as on a
-  direct connection.
+  direct connection. At the end of stdin, cfrs sends no FIN: the pipe ends
+  when the far end closes, or `--idle` seconds (default 5) after the last
+  data. `-N` sends the FIN at the end of stdin, for a server that waits for
+  it. An error of the far end exits 69.
 * `cfrs warp ssh-config --write --host github.com` puts the block in
   `~/.ssh/config` (or `--config FILE`), between two marker lines, before
   the first `Host` or `Match` line. A second `--write` replaces it (for

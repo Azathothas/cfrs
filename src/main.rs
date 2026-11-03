@@ -1392,6 +1392,17 @@ fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -
     out
 }
 
+/// The default `--idle` of `cfrs warp nc -u`, in seconds.
+const UDP_NC_IDLE: u64 = 3;
+
+/// The end of the TCP pipe of `cfrs warp nc` (issue 188).
+fn nc_end(idle: Option<u64>, shutdown: bool) -> cfrs::warp::nc::PipeEnd {
+    cfrs::warp::nc::PipeEnd {
+        shutdown,
+        idle: idle.map_or(cfrs::warp::nc::TCP_IDLE, Duration::from_secs),
+    }
+}
+
 /// `cfrs warp nc -u` on stdin and stdout (issue 115). The process ends
 /// here: a read of stdin blocks a thread.
 async fn udp_nc(
@@ -3385,10 +3396,15 @@ enum WarpCommand {
         /// datagram that comes back goes to stdout.
         #[arg(short = 'u', long)]
         udp: bool,
-        /// With -u: after the end of stdin, end when no datagram came for
-        /// this many seconds.
-        #[arg(long, value_name = "SECS", default_value_t = 3)]
-        idle: u64,
+        /// After the end of stdin, end when no data came for this many
+        /// seconds (default 3 with -u, else 5). TCP: cfrs then sends the FIN.
+        #[arg(long, value_name = "SECS")]
+        idle: Option<u64>,
+        /// TCP: send the FIN at the end of stdin, then wait for the far end
+        /// to close (as nc -N). Without it, cfrs sends no FIN until the end:
+        /// some servers drop a half-closed connection before they answer.
+        #[arg(short = 'N', long, conflicts_with = "udp")]
+        shutdown: bool,
     },
     /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
     /// With --write, --remove or --check: own the block in the SSH config
@@ -3671,13 +3687,17 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             host,
             port,
             via_relay: true,
+            idle,
+            shutdown,
             ..
         } => {
             let relay = cfrs::ws_relay::Relay::from_env(None).fault(Fault::Config)?;
             let io = cfrs::warp::nc::via_relay(&relay, host, *port)
                 .await
                 .fault(Fault::Unavailable)?;
-            return cfrs::warp::nc::pipe(io).await;
+            return cfrs::warp::nc::pipe(io, nc_end(*idle, *shutdown))
+                .await
+                .fault(Fault::Unavailable);
         }
         WarpCommand::Nc {
             host,
@@ -3687,12 +3707,20 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             ..
         } => {
             if let Some((out, back)) = cfrs::warp::nc::udp_via_running(host, *port).await? {
-                return udp_nc(out, back, *idle).await;
+                return udp_nc(out, back, idle.unwrap_or(UDP_NC_IDLE)).await;
             }
         }
-        WarpCommand::Nc { host, port, .. } => {
+        WarpCommand::Nc {
+            host,
+            port,
+            idle,
+            shutdown,
+            ..
+        } => {
             if let Some(io) = cfrs::warp::nc::via_running(host, *port).await? {
-                return cfrs::warp::nc::pipe(io).await;
+                return cfrs::warp::nc::pipe(io, nc_end(*idle, *shutdown))
+                    .await
+                    .fault(Fault::Unavailable);
             }
         }
         // Issue 148: a WireGuard device of its own; warp.json is not used.
@@ -4468,6 +4496,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             port,
             udp,
             idle,
+            shutdown,
             ..
         } => {
             // No cfrs warp up runs: a session of this process. Issue 115:
@@ -4478,7 +4507,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 let (out, back) = cfrs::warp::nc::udp_via_stack(stack, &host, port)
                     .await
                     .fault(Fault::Unavailable)?;
-                return udp_nc(out, back, idle).await;
+                return udp_nc(out, back, idle.unwrap_or(UDP_NC_IDLE)).await;
             }
             let target = match host.parse::<std::net::IpAddr>() {
                 Ok(ip) => pod_netns::socks::ProxyHost::Ip(ip),
@@ -4487,7 +4516,9 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             let io = cfrs::warp::proxy::dial(stack, target, port)
                 .await
                 .fault(Fault::Unavailable)?;
-            cfrs::warp::nc::pipe(Box::new(io)).await?;
+            cfrs::warp::nc::pipe(Box::new(io), nc_end(idle, shutdown))
+                .await
+                .fault(Fault::Unavailable)?;
         }
         WarpCommand::Run {
             backend,

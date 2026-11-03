@@ -54,35 +54,89 @@ pub async fn via_relay(relay: &crate::ws_relay::Relay, host: &str, port: u16) ->
         .await
 }
 
+/// When the TCP pipe of `cfrs warp nc` sends its FIN, and when it ends.
+#[derive(Clone, Copy, Debug)]
+pub struct PipeEnd {
+    /// `-N`: send the FIN at the end of the input, then wait for the far
+    /// end to close.
+    pub shutdown: bool,
+    /// With no `-N`: after the end of the input, end (and send the FIN)
+    /// when no data came for this time.
+    pub idle: std::time::Duration,
+}
+
+/// The default `--idle` of the TCP pipe, as `relay connect` (issue 109).
+pub const TCP_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Copy stdin to `io` and `io` to stdout, until the far end closes; then
 /// end the process (a read of stdin blocks a thread, and the runtime would
 /// wait for it).
-pub async fn pipe(io: BoxedIo) -> Result<()> {
-    pipe_with(io, tokio::io::stdin(), tokio::io::stdout()).await?;
+pub async fn pipe(io: BoxedIo, end: PipeEnd) -> Result<()> {
+    pipe_with(io, tokio::io::stdin(), tokio::io::stdout(), end).await?;
     std::process::exit(0);
 }
 
 /// Copy `input` to `io` and `io` to `output`, until the far end closes.
-pub async fn pipe_with<R, W>(io: BoxedIo, input: R, mut output: W) -> Result<()>
+///
+/// Issue 188: at the end of the input, no FIN goes to the far end (as
+/// OpenBSD nc with no -N). Some servers drop a connection that is half
+/// closed before they answer, and the answer was lost. The pipe ends when
+/// the far end closes, or `end.idle` after the last data. With
+/// `end.shutdown` (-N), the FIN goes at the end of the input.
+///
+/// An error of the far end is returned; before, the pipe exited 0.
+pub async fn pipe_with<R, W>(io: BoxedIo, input: R, mut output: W, end: PipeEnd) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
+    use tokio::io::AsyncReadExt as _;
     let (mut from, mut to) = tokio::io::split(io);
     let upload = async move {
         let mut input = BufReader::new(input);
-        let _ = tokio::io::copy(&mut input, &mut to).await;
-        let _ = to.shutdown().await;
+        let sent = tokio::io::copy(&mut input, &mut to).await;
+        if end.shutdown {
+            let _ = to.shutdown().await;
+        }
+        (to, sent)
     };
-    let download = async move {
-        let _ = tokio::io::copy(&mut from, &mut output).await;
-        let _ = output.flush().await;
-    };
-    // The far end closes: the pipe ends, also while the input stays open.
-    tokio::select! {
-        _ = download => {}
-        _ = async { upload.await; std::future::pending::<()>().await } => {}
+    let mut upload = std::pin::pin!(upload);
+    let mut writer = None;
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut received = 0u64;
+    let mut last = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            (to, sent) = &mut upload, if writer.is_none() => {
+                tracing::debug!(sent = ?sent.as_ref().ok(), "warp nc: the end of the input");
+                writer = Some(to);
+                last = tokio::time::Instant::now();
+            }
+            read = from.read(&mut buf) => match read {
+                Ok(0) => break,
+                Ok(n) => {
+                    received += n as u64;
+                    last = tokio::time::Instant::now();
+                    output.write_all(&buf[..n]).await.context("writing the output")?;
+                    output.flush().await.context("writing the output")?;
+                }
+                Err(err) => {
+                    let _ = output.flush().await;
+                    tracing::debug!(received, "warp nc: the far end failed");
+                    return Err(err).context("reading from the far end");
+                }
+            },
+            _ = tokio::time::sleep_until(last + end.idle), if writer.is_some() && !end.shutdown => {
+                tracing::debug!(received, "warp nc: no data after the end of the input");
+                if let Some(mut to) = writer.take() {
+                    let _ = to.shutdown().await;
+                }
+                break;
+            }
+        }
     }
+    tracing::debug!(received, "warp nc: the far end closed");
+    output.flush().await.context("writing the output")?;
     Ok(())
 }
 
@@ -306,7 +360,7 @@ mod tests {
         });
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            pipe_with(Box::new(ours), input, output),
+            pipe_with(Box::new(ours), input, output, DEFAULT_END),
         )
         .await
         .expect("the pipe ends")
@@ -315,5 +369,94 @@ mod tests {
         let mut got = Vec::new();
         shown.read_to_end(&mut got).await.unwrap();
         assert_eq!(got, b"SSH-2.0-test\r\n");
+    }
+
+    const DEFAULT_END: PipeEnd = PipeEnd {
+        shutdown: false,
+        idle: TCP_IDLE,
+    };
+
+    /// A far end that reads the request, waits, and answers only if it saw
+    /// no FIN (as a server that drops a half-closed connection).
+    async fn picky_server(mut theirs: tokio::io::DuplexStream) -> bool {
+        use tokio::io::AsyncReadExt as _;
+        let mut buf = [0u8; 64];
+        let n = theirs.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"GET");
+        let fin = matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), theirs.read(&mut buf))
+                .await,
+            Ok(Ok(0))
+        );
+        if !fin {
+            theirs.write_all(b"REPLY").await.unwrap();
+        }
+        drop(theirs);
+        fin
+    }
+
+    // Issue 188: an input that ends at once does not lose the reply.
+    #[tokio::test]
+    async fn the_reply_survives_an_input_that_ends_at_once() {
+        use tokio::io::AsyncReadExt as _;
+        let (ours, theirs) = tokio::io::duplex(1024);
+        let (output, mut shown) = tokio::io::duplex(1024);
+        let far = tokio::spawn(picky_server(theirs));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pipe_with(Box::new(ours), &b"GET"[..], output, DEFAULT_END),
+        )
+        .await
+        .expect("the pipe ends")
+        .unwrap();
+        assert!(!far.await.unwrap(), "no FIN before the reply");
+        let mut got = Vec::new();
+        shown.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"REPLY");
+    }
+
+    // Issue 188: -N sends the FIN at the end of the input.
+    #[tokio::test]
+    async fn with_n_the_far_end_sees_the_eof() {
+        let (ours, theirs) = tokio::io::duplex(1024);
+        let (output, _shown) = tokio::io::duplex(1024);
+        let far = tokio::spawn(picky_server(theirs));
+        let end = PipeEnd {
+            shutdown: true,
+            idle: TCP_IDLE,
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pipe_with(Box::new(ours), &b"GET"[..], output, end),
+        )
+        .await
+        .expect("the pipe ends")
+        .unwrap();
+        assert!(far.await.unwrap(), "the far end saw the FIN");
+    }
+
+    // Issue 188: after the end of the input, no data for the idle time
+    // ends the pipe, and the far end then gets the FIN.
+    #[tokio::test]
+    async fn the_pipe_ends_after_idle_with_no_reply() {
+        use tokio::io::AsyncReadExt as _;
+        let (ours, mut theirs) = tokio::io::duplex(1024);
+        let (output, _shown) = tokio::io::duplex(1024);
+        let end = PipeEnd {
+            shutdown: false,
+            idle: std::time::Duration::from_millis(200),
+        };
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pipe_with(Box::new(ours), &b"x"[..], output, end),
+        )
+        .await
+        .expect("the pipe ends")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"x");
     }
 }
