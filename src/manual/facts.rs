@@ -138,6 +138,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "Set and not empty: the pod prints no warnings (errors stay). cfrs -q sets it.",
     },
     EnvVar {
+        names: &["CFRS_PROXY_USER", "CFRS_PROXY_PASSWORD_FILE"],
+        used_by: "warp proxy, warp up",
+        meaning: "The value of --proxy-user and --proxy-password-file: each client of the proxy must give this user and the password on the first line of the file (mode 0600), with SOCKS5 (RFC 1929) or HTTP Basic. A client with no or wrong credentials gets 0xff, 0x01 or 407.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

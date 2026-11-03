@@ -244,6 +244,12 @@ async fn forward_dns_to(stack: &WarpStack, server: SocketAddr, query: &[u8]) -> 
 /// after a reconnect (issue 75), new clients take the new session.
 pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound) -> WarpProxy {
     let listen = bound.listen().clone();
+    // Issue 146: a listener that other hosts reach, with no credentials.
+    if let ProxyListen::Tcp(addr) = &listen {
+        if !addr.ip().is_loopback() && !has_credentials() {
+            tracing::warn!(%addr, "the WARP proxy listens on an address that other hosts can reach, and takes each client: give --proxy-user and --proxy-password-file");
+        }
+    }
     let task = match bound {
         Bound::Tcp(listener, _) => tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -290,7 +296,7 @@ where
         };
         let udp = Some(stack.clone());
         let dial = move |host, port| dial(stack.clone(), host, port);
-        if let Err(err) = handle_client(stream, dial, udp).await {
+        if let Err(err) = handle_client_auth(stream, dial, udp, CREDENTIALS.get()).await {
             debug!(error = %err, "WARP proxy client failed");
         }
     });
@@ -312,13 +318,61 @@ where
     D: FnOnce(ProxyHost, u16) -> F,
     F: std::future::Future<Output = Result<DuplexStream>>,
 {
+    handle_client_auth(stream, dial, udp, None).await
+}
+
+/// The credentials that each client of the proxies of this process must
+/// give (issue 146), when they are set.
+static CREDENTIALS: std::sync::OnceLock<crate::proxy_auth::Credentials> =
+    std::sync::OnceLock::new();
+
+/// Set the credentials of the clients (issue 146). Call it before the first
+/// client.
+pub fn set_credentials(credentials: crate::proxy_auth::Credentials) {
+    let _ = CREDENTIALS.set(credentials);
+}
+
+/// True when the clients must give credentials.
+pub fn has_credentials() -> bool {
+    CREDENTIALS.get().is_some()
+}
+
+/// The longest time for the request of a client (issue 146: a client that
+/// sent nothing held its task for ever).
+const REQUEST_LIMIT: Duration = Duration::from_secs(30);
+
+/// [`handle_client`] with the credentials that the client must give.
+pub async fn handle_client_auth<S, D, F>(
+    stream: S,
+    dial: D,
+    udp: Option<Arc<WarpStack>>,
+    auth: Option<&crate::proxy_auth::Credentials>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    D: FnOnce(ProxyHost, u16) -> F,
+    F: std::future::Future<Output = Result<DuplexStream>>,
+{
     let mut stream = stream;
     let mut first = [0u8; 1];
-    stream.read_exact(&mut first).await?;
+    tokio::time::timeout(REQUEST_LIMIT, stream.read_exact(&mut first))
+        .await
+        .map_err(|_| anyhow::anyhow!("no request in {} s", REQUEST_LIMIT.as_secs()))??;
     let is_socks = socks::looks_like_socks5(first[0]);
     let mut stream = Prefixed::new(first[0], stream);
+    if !is_socks && first[0] == 0x16 {
+        // A TLS ClientHello: the client takes the proxy for https://.
+        bail!("a TLS client on the proxy (use http:// or socks5h:// for the proxy URL)");
+    }
+    let check = auth.map(|c| move |u: &str, p: &str| c.check(u, p));
+    let check_ref: Option<socks::CheckUser<'_>> = check.as_ref().map(|c| c as socks::CheckUser<'_>);
     let request: ProxyRequest = if is_socks {
-        let (command, request) = socks::socks5_read_command(&mut stream).await?;
+        let (command, request) = tokio::time::timeout(
+            REQUEST_LIMIT,
+            socks::socks5_read_command_auth(&mut stream, check_ref),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("no SOCKS5 request in {} s", REQUEST_LIMIT.as_secs()))??;
         match command {
             0x01 => request,
             0x03 => match udp {
@@ -341,7 +395,23 @@ where
             }
         }
     } else {
-        match socks::http_read_request(&mut stream).await? {
+        let (request, authorization) =
+            tokio::time::timeout(REQUEST_LIMIT, socks::http_read_request_auth(&mut stream))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("no HTTP request in {} s", REQUEST_LIMIT.as_secs())
+                })??;
+        if let Some(auth) = auth {
+            if !auth.check_basic(authorization.as_deref()) {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"cfrs\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
+                bail!("an HTTP client with no or wrong credentials");
+            }
+        }
+        match request {
             socks::HttpRequest::Connect(request) => request,
             socks::HttpRequest::Forward { request, head } => {
                 // An http:// URL (HTTP_PROXY): send the request in origin
@@ -1124,6 +1194,111 @@ mod tests {
         assert_eq!(seen.lock().unwrap().as_deref(), Some("example.com:443"));
         drop(client);
         let _ = task.await;
+    }
+
+    async fn read_head<R: AsyncRead + Unpin>(r: &mut R) -> String {
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if r.read_exact(&mut b).await.is_err() {
+                break;
+            }
+            head.push(b[0]);
+        }
+        String::from_utf8_lossy(&head).into_owned()
+    }
+
+    // Issue 146: with credentials, a SOCKS5 client needs the right user and
+    // password; a client that offers no acceptable method gets 0xff.
+    #[tokio::test]
+    async fn a_socks5_client_gives_its_credentials() {
+        let creds = crate::proxy_auth::Credentials::new("alice", "pw").unwrap();
+        for (user, pass, ok) in [("alice", "pw", true), ("alice", "no", false)] {
+            let seen = Arc::new(std::sync::Mutex::new(None));
+            let (mut client, server) = tokio::io::duplex(1024);
+            let c = creds.clone();
+            let task = tokio::spawn(async move {
+                handle_client_auth(server, echo_dial(seen), None, Some(&c)).await
+            });
+            client.write_all(&[5, 2, 0, 2]).await.unwrap();
+            let mut reply = [0u8; 2];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [5, 2]);
+            let mut auth = vec![1, user.len() as u8];
+            auth.extend_from_slice(user.as_bytes());
+            auth.push(pass.len() as u8);
+            auth.extend_from_slice(pass.as_bytes());
+            client.write_all(&auth).await.unwrap();
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [1, if ok { 0 } else { 1 }], "{user}:{pass}");
+            if ok {
+                let mut request = vec![5, 1, 0, 1, 10, 0, 0, 1];
+                request.extend_from_slice(&22u16.to_be_bytes());
+                client.write_all(&request).await.unwrap();
+                let mut head = [0u8; 10];
+                client.read_exact(&mut head).await.unwrap();
+                assert_eq!(head[1], 0);
+            }
+            drop(client);
+            let result = task.await.unwrap();
+            assert_eq!(result.is_ok(), ok, "{result:?}");
+        }
+        // No credentials offered to a server that needs them: 0xff.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let c = creds.clone();
+        let task = tokio::spawn(async move {
+            handle_client_auth(server, echo_dial(Arc::default()), None, Some(&c)).await
+        });
+        client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut reply = [0u8; 2];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, [5, 0xff]);
+        assert!(task.await.unwrap().is_err());
+        // Only user and password offered to a server with no credentials:
+        // 0xff. Before, the server answered 0x00.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(handle_client(server, echo_dial(Arc::default()), None));
+        client.write_all(&[5, 1, 2]).await.unwrap();
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, [5, 0xff]);
+        assert!(task.await.unwrap().is_err());
+    }
+
+    // Issue 146: an HTTP client with no credentials gets 407; with Basic it
+    // gets 200.
+    #[tokio::test]
+    async fn an_http_client_gives_its_credentials() {
+        let creds = crate::proxy_auth::Credentials::new("alice", "pw").unwrap();
+        for (header, want) in [
+            ("", "407"),
+            ("Proxy-Authorization: Basic YWxpY2U6cHc=\r\n", "200"),
+        ] {
+            let (mut client, server) = tokio::io::duplex(1024);
+            let c = creds.clone();
+            let task = tokio::spawn(async move {
+                handle_client_auth(server, echo_dial(Arc::default()), None, Some(&c)).await
+            });
+            let request =
+                format!("CONNECT 10.0.0.1:22 HTTP/1.1\r\nHost: 10.0.0.1:22\r\n{header}\r\n");
+            client.write_all(request.as_bytes()).await.unwrap();
+            let head = read_head(&mut client).await;
+            assert!(head.starts_with(&format!("HTTP/1.1 {want}")), "{head}");
+            if want == "407" {
+                assert!(head.contains("Proxy-Authenticate: Basic"), "{head}");
+            }
+            drop(client);
+            let _ = task.await;
+        }
+    }
+
+    // Issue 146: a client that sends nothing is closed after the limit.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_client_is_closed() {
+        let (_client, server) = tokio::io::duplex(1024);
+        let err = handle_client(server, echo_dial(Arc::default()), None)
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("no request"), "{err}");
     }
 
     #[tokio::test]

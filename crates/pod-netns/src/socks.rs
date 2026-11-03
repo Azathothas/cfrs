@@ -206,6 +206,15 @@ pub async fn http_read_request<S>(stream: &mut S) -> Result<HttpRequest>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    Ok(http_read_request_auth(stream).await?.0)
+}
+
+/// [`http_read_request`], and the value of `Proxy-Authorization` (issue
+/// 146). The header is not in the head that goes to the origin.
+pub async fn http_read_request_auth<S>(stream: &mut S) -> Result<(HttpRequest, Option<String>)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     const MAX_HEADER: usize = 64 * 1024;
     let mut header = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
@@ -223,6 +232,12 @@ where
         }
     }
     let text = String::from_utf8_lossy(&header);
+    let authorization = text.split("\r\n").skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("proxy-authorization")
+            .then(|| value.trim().to_string())
+    });
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
@@ -231,10 +246,13 @@ where
     let version = parts.next().unwrap_or("HTTP/1.1");
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = split_host_port(target).context("CONNECT target is not host:port")?;
-        return Ok(HttpRequest::Connect(ProxyRequest {
-            host: proxy_host(host),
-            port,
-        }));
+        return Ok((
+            HttpRequest::Connect(ProxyRequest {
+                host: proxy_host(host),
+                port,
+            }),
+            authorization,
+        ));
     }
     let Some(rest) = target.strip_prefix("http://") else {
         http_reply_with_body(
@@ -279,13 +297,16 @@ where
         head.push_str("\r\n");
     }
     head.push_str("Connection: close\r\n\r\n");
-    Ok(HttpRequest::Forward {
-        request: ProxyRequest {
-            host: proxy_host(host),
-            port,
+    Ok((
+        HttpRequest::Forward {
+            request: ProxyRequest {
+                host: proxy_host(host),
+                port,
+            },
+            head: head.into_bytes(),
         },
-        head: head.into_bytes(),
-    })
+        authorization,
+    ))
 }
 
 fn proxy_host(host: String) -> ProxyHost {
@@ -396,6 +417,23 @@ pub async fn socks5_read_command<S>(stream: &mut S) -> Result<(u8, ProxyRequest)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    socks5_read_command_auth(stream, None).await
+}
+
+/// A check of a user and a password (RFC 1929).
+pub type CheckUser<'a> = &'a (dyn Fn(&str, &str) -> bool + Send + Sync);
+
+/// [`socks5_read_command`] with an optional check of a user and a password
+/// (issue 146). With a check, the method 0x02 (RFC 1929) is required. A
+/// client that offers no method that the server takes gets `0xff` (before,
+/// the server answered `0x00` to each greeting).
+pub async fn socks5_read_command_auth<S>(
+    stream: &mut S,
+    check: Option<CheckUser<'_>>,
+) -> Result<(u8, ProxyRequest)>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let mut intro = [0u8; 2];
     stream
         .read_exact(&mut intro)
@@ -406,7 +444,43 @@ where
     }
     let mut methods = vec![0u8; intro[1] as usize];
     stream.read_exact(&mut methods).await?;
-    stream.write_all(&[0x05, 0x00]).await?;
+    let wanted = if check.is_some() { 0x02 } else { 0x00 };
+    if !methods.contains(&wanted) {
+        stream.write_all(&[0x05, 0xff]).await?;
+        bail!(
+            "the SOCKS5 client offers no acceptable method (it needs {})",
+            if wanted == 0x02 {
+                "user and password"
+            } else {
+                "no authentication"
+            }
+        );
+    }
+    stream.write_all(&[0x05, wanted]).await?;
+    if let Some(check) = check {
+        // RFC 1929: version 1, the user, the password.
+        let mut head = [0u8; 2];
+        stream.read_exact(&mut head).await.context("SOCKS5 user")?;
+        if head[0] != 0x01 {
+            bail!("SOCKS5 user and password version {} is not 1", head[0]);
+        }
+        let mut user = vec![0u8; head[1] as usize];
+        stream.read_exact(&mut user).await?;
+        let mut plen = [0u8; 1];
+        stream.read_exact(&mut plen).await?;
+        let mut pass = vec![0u8; plen[0] as usize];
+        stream.read_exact(&mut pass).await?;
+        let ok = check(
+            &String::from_utf8_lossy(&user),
+            &String::from_utf8_lossy(&pass),
+        );
+        stream
+            .write_all(&[0x01, if ok { 0x00 } else { 0x01 }])
+            .await?;
+        if !ok {
+            bail!("SOCKS5 user or password is wrong");
+        }
+    }
     let mut header = [0u8; 4];
     stream
         .read_exact(&mut header)

@@ -380,6 +380,12 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   reported, and the proxy starts with the others (`--strict` exits 69
   instead). With no listener, the exit code is 69. Names are resolved
   through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
+* `--proxy-user USER --proxy-password-file FILE` (also on `warp up`): each
+  client must give the user and the password of the first line of FILE
+  (mode 0600), with SOCKS5 (RFC 1929) or HTTP `Proxy-Authorization: Basic`.
+  A listener on an address that is not loopback, with no credentials, gets
+  a warning. `--max-connections N` limits the clients; `--dns ADDR`
+  answers DNS through WARP.
 * `cfrs warp run --backend netns-raw` runs the program in a user and network
   namespace whose TUN goes to WARP as raw IP packets: TCP, UDP, ICMP and
   IPv6, with the kernel stack of the namespace and no root. The TUN has the

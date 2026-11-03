@@ -1234,9 +1234,21 @@ fn warp_up(
     ready_timeout: u64,
     replace: bool,
     dns: Option<std::net::SocketAddr>,
+    auth: Option<(&String, &PathBuf)>,
 ) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
     let mut argv = warp_up_args(args, port, &socket, ready_timeout);
+    // Issue 146: the path of the password goes to the child, not the
+    // password.
+    if let Some((user, file)) = auth {
+        let file = file.canonicalize().unwrap_or_else(|_| file.clone());
+        argv.extend([
+            "--proxy-user".into(),
+            user.clone(),
+            "--proxy-password-file".into(),
+            file.display().to_string(),
+        ]);
+    }
     if let Some(dns) = dns {
         argv.push("--dns".into());
         argv.push(dns.to_string());
@@ -2764,6 +2776,24 @@ enum WarpCommand {
         /// 127.0.0.1:5353): each query goes through WARP to 1.1.1.1.
         #[arg(long, value_name = "ADDR")]
         dns: Option<std::net::SocketAddr>,
+        /// Clients must give this user (SOCKS5 user and password, or HTTP
+        /// Basic), with the password of --proxy-password-file.
+        #[arg(
+            long,
+            value_name = "USER",
+            env = "CFRS_PROXY_USER",
+            requires = "proxy_password_file"
+        )]
+        proxy_user: Option<String>,
+        /// The file with the password of --proxy-user on its first line
+        /// (mode 0600).
+        #[arg(
+            long,
+            value_name = "FILE",
+            env = "CFRS_PROXY_PASSWORD_FILE",
+            requires = "proxy_user"
+        )]
+        proxy_password_file: Option<PathBuf>,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
@@ -2800,6 +2830,24 @@ enum WarpCommand {
         /// 127.0.0.1:5353): each query goes through WARP to 1.1.1.1.
         #[arg(long, value_name = "ADDR")]
         dns: Option<std::net::SocketAddr>,
+        /// Clients must give this user (SOCKS5 user and password, or HTTP
+        /// Basic), with the password of --proxy-password-file.
+        #[arg(
+            long,
+            value_name = "USER",
+            env = "CFRS_PROXY_USER",
+            requires = "proxy_password_file"
+        )]
+        proxy_user: Option<String>,
+        /// The file with the password of --proxy-user on its first line
+        /// (mode 0600).
+        #[arg(
+            long,
+            value_name = "FILE",
+            env = "CFRS_PROXY_PASSWORD_FILE",
+            requires = "proxy_user"
+        )]
+        proxy_password_file: Option<PathBuf>,
     },
     /// Stop what cfrs warp up started, and remove its env file and its
     /// block in ~/.bashrc and ~/.profile.
@@ -2966,8 +3014,13 @@ async fn warp(args: WarpArgs) -> Result<()> {
             ready_timeout,
             replace,
             dns,
+            proxy_user,
+            proxy_password_file,
             ..
-        } => return warp_up(&args, *port, *persist, *ready_timeout, *replace, *dns),
+        } => {
+            let auth = proxy_user.as_ref().zip(proxy_password_file.as_ref());
+            return warp_up(&args, *port, *persist, *ready_timeout, *replace, *dns, auth);
+        }
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
             let text = cfrs::warp::up::env_text()?;
@@ -3188,9 +3241,17 @@ async fn warp(args: WarpArgs) -> Result<()> {
             strict,
             max_connections,
             dns,
+            proxy_user,
+            proxy_password_file,
             ..
         } => {
             cfrs::warp::proxy::set_max_connections(max_connections);
+            // Issue 146: the credentials of the clients.
+            if let (Some(user), Some(file)) = (&proxy_user, &proxy_password_file) {
+                let credentials =
+                    cfrs::proxy_auth::Credentials::load(user, file).fault(Fault::Config)?;
+                cfrs::warp::proxy::set_credentials(credentials);
+            }
             // Issue 117: the DNS listener is bound before the session, as
             // the proxy listeners.
             let dns_socket = match dns {
