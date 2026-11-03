@@ -1249,6 +1249,15 @@ fn instances_ps(json: bool) -> Result<()> {
             "{:<24} {:<9} {:>8} {:>3} {:>7}  {}",
             r.name, r.state, r.pid, r.restarts, age, at
         );
+        // Issue 203: the endpoint for cfrs connect, on its own line.
+        if let Some(forward) = r
+            .ready
+            .as_ref()
+            .and_then(|d| d.get("forward"))
+            .and_then(|v| v.as_str())
+        {
+            println!("{:<24} forward {forward}", "");
+        }
     }
     Ok(())
 }
@@ -2785,13 +2794,19 @@ async fn serve_until(
 
 /// The ready document of a tunnel for --detach.
 fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) -> serde_json::Value {
-    serde_json::json!({
+    let mut doc = serde_json::json!({
         "url": url,
         "verified": verified && url.is_some(),
         "tunnel_id": handle.tunnel_id().to_string(),
         "locations": handle.locations(),
         "leg": handle.leg(),
-    })
+    });
+    // Issue 203: the endpoint for cfrs connect.
+    if let Some(path) = handle.forward_path() {
+        doc["forward"] = url.and_then(|u| cfrs::ws::forward_url(u, path)).into();
+        doc["forward_path"] = path.into();
+    }
+    doc
 }
 
 /// The ready document of a listener for --detach.
@@ -3001,16 +3016,18 @@ fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
     // (before, only after the verify).
     cfrs::detach::arm_stop();
     if show.json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "event": "ready",
-                "url": handle.url(),
-                "tunnel_id": handle.tunnel_id().to_string(),
-                "locations": handle.locations(),
-                "leg": handle.leg(),
-            })
-        );
+        let mut doc = serde_json::json!({
+            "event": "ready",
+            "url": handle.url(),
+            "tunnel_id": handle.tunnel_id().to_string(),
+            "locations": handle.locations(),
+            "leg": handle.leg(),
+        });
+        if let Some(path) = handle.forward_path() {
+            doc["forward"] = handle.forward().into();
+            doc["forward_path"] = path.into();
+        }
+        println!("{doc}");
     } else {
         announce_text(handle);
     }
@@ -3039,6 +3056,11 @@ fn announce_text(handle: &cfrs::TunnelHandle) {
         handle.locations().join(", "),
         handle.leg()
     );
+    match (handle.forward(), handle.forward_path()) {
+        (Some(url), _) => println!("  cfrs: forward  {url} (cfrs connect {url} -L ...)"),
+        (None, Some(path)) => println!("  cfrs: forward  path {path} of the hostname"),
+        _ => {}
+    }
     println!();
 }
 

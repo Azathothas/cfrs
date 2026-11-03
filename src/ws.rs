@@ -31,6 +31,34 @@ const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /// Default path for a `--forward` WebSocket endpoint.
 pub const DEFAULT_PATH: &str = "/__cfrs/ws";
 
+/// The path of the first `--forward` rule of `ingress` (issue 203).
+pub fn forward_path(ingress: &crate::ingress::Ingress) -> Option<String> {
+    ingress
+        .rules
+        .iter()
+        .find(|rule| matches!(rule.service, Service::Forward(_)))
+        .map(|rule| {
+            rule.path
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PATH.to_string())
+        })
+}
+
+/// The wss:// URL of the forward endpoint at `path` of the public URL `url`.
+pub fn forward_url(url: &str, path: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .map(|r| ("wss", r))
+        .or_else(|| url.strip_prefix("http://").map(|r| ("ws", r)))?;
+    let host = rest.1.split('/').next()?;
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    Some(format!("{}://{host}{path}", rest.0))
+}
+
 /// Compute `Sec-WebSocket-Accept` for a client's `Sec-WebSocket-Key`.
 pub fn accept_key(key: &str) -> String {
     use sha1::{Digest, Sha1};
@@ -448,5 +476,32 @@ mod bench {
         let mut got = vec![0u8; SIZE];
         local_b.read_exact(&mut got).await.unwrap();
         eprintln!("ws bridge: {} bytes in {:?}", got.len(), t.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod forward_tests {
+    use super::*;
+
+    // Issue 203: the forward endpoint of a public URL.
+    #[test]
+    fn the_forward_url_of_a_public_url() {
+        assert_eq!(
+            forward_url("https://a-b.trycloudflare.com", DEFAULT_PATH).as_deref(),
+            Some("wss://a-b.trycloudflare.com/__cfrs/ws")
+        );
+        assert_eq!(
+            forward_url("https://h.example/x/", "raw").as_deref(),
+            Some("wss://h.example/raw")
+        );
+        assert_eq!(forward_url("ftp://h", "/x"), None);
+        let ingress = crate::ingress::Ingress::new().rule_with(crate::ingress::IngressRule {
+            hostname: None,
+            path: Some(DEFAULT_PATH.into()),
+            service: Service::Forward(ForwardTarget::Tcp("127.0.0.1:22".into())),
+            origin: OriginOptions::default(),
+        });
+        assert_eq!(forward_path(&ingress).as_deref(), Some(DEFAULT_PATH));
+        assert_eq!(forward_path(&crate::ingress::Ingress::new()), None);
     }
 }

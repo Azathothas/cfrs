@@ -44,6 +44,9 @@ until grep -q '"event":"ready"' "$dir/tunnel.out" 2> /dev/null; do
 done
 url=$(jq -r 'select(.event == "ready") | .url' "$dir/tunnel.out")
 host=${url#https://}
+# Issue 203: the ready event gives the endpoint for cfrs connect.
+forward=$(jq -r 'select(.event == "ready") | .forward' "$dir/tunnel.out")
+[ "$forward" = "wss://$host/__cfrs/ws" ] || { echo "the ready event has no forward endpoint"; exit 1; }
 echo "::add-mask::$host"
 # A new name takes some seconds to resolve (issue 119).
 sh "$(dirname "$0")/live-wait-name.sh" "$host" 240
@@ -85,7 +88,7 @@ for s in $sizes; do
     rate http POST "$url/sink" "$s"
 done
 
-"$cfrs" connect -L "tcp://127.0.0.1:$local" "wss://$host/__cfrs/ws" > "$dir/connect.out" 2> "$dir/connect.err" &
+"$cfrs" connect -L "tcp://127.0.0.1:$local" "$forward" > "$dir/connect.out" 2> "$dir/connect.err" &
 sleep 2
 rate connect GET "http://127.0.0.1:$local/$largest.bin" "$largest"
 rate connect POST "http://127.0.0.1:$local/sink" "$largest"

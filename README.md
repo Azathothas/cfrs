@@ -447,6 +447,11 @@ cfrs tunnel --forward unix:/run/app.sock
 cfrs connect wss://<random>.trycloudflare.com/__cfrs/ws -L tcp://127.0.0.1:8080
 ```
 
+The tunnel prints the endpoint (`cfrs: forward  wss://...`). The ready
+event of `--json`, the ready document of `--detach` and `cfrs ps --json`
+have it as `forward` (and `forward_path`); `cfrs ps` shows it on a second
+line.
+
 `-L` accepts `tcp://[bind:]port` and `unix:///path` and is repeatable. Each
 local connection gets its own WebSocket. `--forward` and an origin can be used
 together: the origin gets all paths other than `/__cfrs/ws`.

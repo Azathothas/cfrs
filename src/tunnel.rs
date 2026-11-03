@@ -168,6 +168,7 @@ impl Tunnel {
         // --dir, a --spa with no index.html or a missing --file stops here.
         let metrics = Metrics::new();
         let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
+        let forward_path = crate::ws::forward_path(&ingress);
 
         // CFRS_UDP: the UDP probe runs while the quick tunnel is provisioned.
         let udp = crate::udp::Choice::from_env()?;
@@ -426,6 +427,7 @@ impl Tunnel {
         let locations = vec![location];
 
         Ok(TunnelHandle {
+            forward_path,
             url: public_url,
             tunnel_id,
             account_tag,
@@ -994,6 +996,8 @@ fn spawn_leg(
 
 /// A running tunnel.
 pub struct TunnelHandle {
+    /// The path of the `--forward` WebSocket endpoint (issue 203).
+    forward_path: Option<String>,
     url: Option<String>,
     tunnel_id: Uuid,
     account_tag: String,
@@ -1026,6 +1030,18 @@ impl TunnelHandle {
                 std::future::pending::<()>().await;
             }
         }
+    }
+
+    /// The wss:// endpoint of `--forward` for `cfrs connect` (issue 203):
+    /// with a public URL. A named tunnel gives the path only
+    /// ([`TunnelHandle::forward_path`]).
+    pub fn forward(&self) -> Option<String> {
+        crate::ws::forward_url(self.url.as_deref()?, self.forward_path.as_deref()?)
+    }
+
+    /// The path of the `--forward` endpoint.
+    pub fn forward_path(&self) -> Option<&str> {
+        self.forward_path.as_deref()
     }
 
     /// Public URL for a quick tunnel; `None` for a named tunnel (the hostname
