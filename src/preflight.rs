@@ -42,6 +42,8 @@ pub struct Check {
     pub name: String,
     pub status: Status,
     pub detail: String,
+    /// The class of a failed check of the configuration (issue 173).
+    pub fault: Option<crate::exit::Fault>,
 }
 
 /// Each check, and the plan of the tunnel.
@@ -52,6 +54,14 @@ pub struct Report {
 }
 
 impl Report {
+    /// The class of the failed checks: Config when each failed check is a
+    /// check of the configuration; else none (exit 1).
+    pub fn fault(&self) -> Option<crate::exit::Fault> {
+        let mut failed = self.checks.iter().filter(|c| c.status == Status::Fail);
+        let first = failed.next()?.fault?;
+        failed.all(|c| c.fault == Some(first)).then_some(first)
+    }
+
     /// True when no check failed. A warning does not fail the check.
     pub fn ok(&self) -> bool {
         self.checks.iter().all(|c| c.status != Status::Fail)
@@ -92,6 +102,17 @@ impl Report {
             name: name.into(),
             status,
             detail: detail.into(),
+            fault: None,
+        });
+    }
+
+    /// A failed check of the configuration.
+    fn config_fail(&mut self, name: impl Into<String>, detail: impl Into<String>) {
+        self.checks.push(Check {
+            name: name.into(),
+            status: Status::Fail,
+            detail: detail.into(),
+            fault: Some(crate::exit::Fault::Config),
         });
     }
 
@@ -143,7 +164,7 @@ pub async fn check(config: &Config) -> Report {
             format!("CFRS_EDGE gives {} address(es)", list.len()),
         ),
         Ok(None) => report.push("edge", Status::Pass, "edge discovery by DNS"),
-        Err(err) => report.push("edge", Status::Fail, format!("{err:#}")),
+        Err(err) => report.config_fail("edge", format!("{err:#}")),
     }
 
     let legs = match crate::tunnel::leg_plan(config.protocol, config.transport) {
@@ -189,6 +210,12 @@ pub async fn check(config: &Config) -> Report {
         }
     };
 
+    // Issue 173 row 11: the roots of --ca-file and SSL_CERT_FILE.
+    match crate::trust::roots() {
+        Ok(roots) => report.push("tls-roots", Status::Pass, roots.sources.join(", ")),
+        Err(err) => report.config_fail("tls-roots", format!("{err:#}")),
+    }
+
     let mut files = Vec::new();
     if let Some(path) = &config.warp_identity {
         files.push(path.display().to_string());
@@ -196,12 +223,14 @@ pub async fn check(config: &Config) -> Report {
     }
     if let Credentials::File(path) = &config.credentials {
         files.push(path.display().to_string());
-        report.result(
-            "credentials",
-            crate::config::parse_credentials_file(path)
-                .map(|_| format!("{} parses", path.display()))
-                .map_err(|e| format!("{e:#}")),
-        );
+        match crate::config::parse_credentials_file(path) {
+            Ok(_) => report.push(
+                "credentials",
+                Status::Pass,
+                format!("{} parses", path.display()),
+            ),
+            Err(e) => report.config_fail("credentials", format!("{e:#}")),
+        }
     }
 
     let mut ingress = Vec::new();

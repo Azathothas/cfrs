@@ -326,12 +326,17 @@ pub struct Added {
 
 /// Add the entry `name` that runs `cfrs ARGS`.
 pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
-    check_name(name)?;
+    // Issue 173: a bad name, command or place of the binary is a usage
+    // error (64); a failed write stays an error (1).
+    let usage = |err: anyhow::Error| crate::exit::fault(crate::exit::Fault::Usage, err);
+    check_name(name).map_err(usage)?;
     let Some(first) = args.first() else {
-        bail!("give the command after --, for example: cfrs autostart add web -- tunnel --config /etc/cfrs.yml");
+        return Err(usage(anyhow::anyhow!("give the command after --, for example: cfrs autostart add web -- tunnel --config /etc/cfrs.yml")));
     };
     if ["autostart", "pod", "update", "man", "completions"].contains(&first.as_str()) {
-        bail!("cfrs {first} cannot run as an autostart entry");
+        return Err(usage(anyhow::anyhow!(
+            "cfrs {first} cannot run as an autostart entry"
+        )));
     }
     let exe = std::env::current_exe().context("the path of this binary")?;
     let exe = exe.canonicalize().unwrap_or(exe);
@@ -342,10 +347,10 @@ pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
     ] {
         let tmp = tmp.canonicalize().unwrap_or(tmp);
         if exe.starts_with(&tmp) {
-            bail!(
+            return Err(usage(anyhow::anyhow!(
                 "{} is in a temporary directory: copy cfrs to a lasting place (for example ~/.local/bin) first",
                 exe.display()
-            );
+            )));
         }
     }
     let dir = dir()?;

@@ -794,7 +794,8 @@ It then runs the checks again and prints one JSON document: `mode`
 the commands to use (`eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`,
 `cfrs warp ssh-config`).
 When WARP was needed and `cfrs warp up` failed, the document has
-`warp_error`, and the exit code is 69.
+`warp_error`, and the exit code is 69. When an expose failed (its `state`
+in `exposed` is not `ready`), the exit code is 69 too.
 
 ## Inbound access through the relay: `cfrs relay`
 

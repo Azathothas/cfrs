@@ -443,6 +443,9 @@ impl TunnelOpts {
             config.protocol = Protocol::parse(protocol)?;
         }
         config.transport = Transport::parse(&self.transport)?;
+        // Issue 173: a protocol that the transport cannot carry is a usage
+        // error before any network call.
+        cfrs::tunnel::leg_plan(config.protocol, config.transport).fault(Fault::Usage)?;
         if config.transport == Transport::Relay {
             cfrs::ws_relay::set(
                 cfrs::ws_relay::Relay::from_env(Some(&self.relay)).fault(Fault::Usage)?,
@@ -767,6 +770,18 @@ fn main() {
     }
     if let Some(path) = &cli.ca_file {
         cfrs::trust::set_ca_file(path.clone());
+        // Issue 173: a roots file that cannot be used exits 78 for each
+        // command (status and doctor too), before any work.
+        if let Err(err) = cfrs::trust::roots() {
+            let err = cfrs::exit::fault(
+                cfrs::exit::Fault::Config,
+                err.context(format!("--ca-file {}", path.display())),
+            );
+            eprintln!("{}", cfrs::report::error_line(&err));
+            let code = cfrs::exit::code_of(&err);
+            cfrs::report::send(command.as_deref(), code, Some(&err));
+            std::process::exit(code);
+        }
     }
     if let Err(err) = network_options(&cli) {
         let err = cfrs::exit::fault(cfrs::exit::Fault::Usage, err);
@@ -1127,6 +1142,17 @@ async fn agent(command: AgentCommand) -> Result<()> {
                     anyhow::anyhow!("agent up: WARP was needed, and cfrs warp up failed"),
                 ));
             }
+            // Issue 173: an expose that failed is not a success.
+            let failed = exposes_failed(&doc["exposed"]);
+            if failed > 0 {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!(
+                        "agent up: {failed} of {} exposes failed (see \"exposed\")",
+                        expose.len()
+                    ),
+                ));
+            }
             Ok(())
         }
         AgentCommand::Down => {
@@ -1147,6 +1173,25 @@ async fn agent(command: AgentCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The class of a failed `warp license` (issue 173): the API refused the
+/// key (HTTP 4xx, other than 401, 403 and 429) is a usage error; else the
+/// service is not available.
+fn license_fault(err: &anyhow::Error) -> Fault {
+    match cfrs::warp::register::api_status(err) {
+        Some(401 | 403 | 429) => Fault::Unavailable,
+        Some(400..=499) => Fault::Usage,
+        _ => Fault::Unavailable,
+    }
+}
+
+/// The number of exposes of `agent up` that are not ready.
+fn exposes_failed(exposed: &serde_json::Value) -> usize {
+    exposed
+        .as_array()
+        .map(|a| a.iter().filter(|e| e["state"] != "ready").count())
+        .unwrap_or(0)
 }
 
 /// `cfrs ps`: the instances of the run directory.
@@ -2015,10 +2060,16 @@ async fn preflight(config: &Config, show: Show) -> Result<()> {
         .filter(|c| c.status == cfrs::preflight::Status::Fail)
         .count();
     if failed > 0 {
-        bail!(
+        let err = anyhow::anyhow!(
             "the check failed ({failed} of {}); nothing was started",
             report.checks.len()
         );
+        // Issue 173: a failed check of the configuration gives its code
+        // (78), as a run does. A failed origin or network check gives 1.
+        return Err(match report.fault() {
+            Some(class) => cfrs::exit::fault(class, err),
+            None => err,
+        });
     }
     Ok(())
 }
@@ -2447,11 +2498,18 @@ async fn share(args: ShareArgs) -> Result<()> {
             ShareConfig::upload(dir)
         }
         ModeArg::Download => {
-            let file = args.file.clone().context("download mode needs --file")?;
+            let file = args
+                .file
+                .clone()
+                .context("download mode needs --file")
+                .fault(Fault::Usage)?;
             ShareConfig::download(file)
         }
         ModeArg::Proxy => {
-            let port = args.port.context("proxy mode needs --port")?;
+            let port = args
+                .port
+                .context("proxy mode needs --port")
+                .fault(Fault::Usage)?;
             // A check sends no request to the origin: it only connects.
             if !args.common.check {
                 cfrs::ports::confirm_local_http(port).await?;
@@ -3948,7 +4006,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         }
         WarpCommand::License { key } => {
             cfrs::report::hide(&key);
-            let account = client.set_license(&key).await?;
+            let account = client
+                .set_license(&key)
+                .await
+                .map_err(|err| cfrs::exit::fault(license_fault(&err), err))?;
             save(&client)?;
             let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
             println!("license     set");
@@ -5041,7 +5102,8 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
         Some(switch) => {
             let address = args
                 .address
-                .context("--switch needs --address, the address of this stack")?;
+                .context("--switch needs --address, the address of this stack")
+                .fault(Fault::Usage)?;
             let config = cfrs::vnet::StackConfig {
                 local_v4: address,
                 ..cfrs::vnet::StackConfig::default()
@@ -5053,8 +5115,14 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
                 reorder: args.reorder,
                 seed: args.seed,
             };
-            let switch = ProxyListen::parse(switch)?;
-            _link = Some(cfrs::vnet::switch::attach(&net, &switch, faults).await?);
+            let switch = ProxyListen::parse(switch)
+                .context("--switch")
+                .fault(Fault::Usage)?;
+            _link = Some(
+                cfrs::vnet::switch::attach(&net, &switch, faults)
+                    .await
+                    .fault(Fault::Unavailable)?,
+            );
             #[cfg(target_os = "linux")]
             {
                 if let Some(name) = &args.control {
@@ -5605,6 +5673,32 @@ mod tests {
         ] {
             assert_eq!(command_name(&argv(line)).as_deref(), Some(want), "{line}");
         }
+    }
+
+    // Issue 173: the classes of warp license and agent up.
+    #[test]
+    fn license_and_expose_classes() {
+        let api = |status| {
+            anyhow::Error::new(cfrs::warp::register::ApiError {
+                status,
+                body: String::new(),
+            })
+            .context("PUT /reg/{id}/account")
+        };
+        assert!(matches!(license_fault(&api(400)), Fault::Usage));
+        assert!(matches!(license_fault(&api(403)), Fault::Unavailable));
+        assert!(matches!(license_fault(&api(500)), Fault::Unavailable));
+        assert!(matches!(
+            license_fault(&anyhow::anyhow!("no route")),
+            Fault::Unavailable
+        ));
+        let exposed = serde_json::json!([
+            {"state": "ready"},
+            {"state": "failed"},
+            {"state": "origin-unreachable"}
+        ]);
+        assert_eq!(exposes_failed(&exposed), 2);
+        assert_eq!(exposes_failed(&serde_json::json!([])), 0);
     }
 
     #[test]

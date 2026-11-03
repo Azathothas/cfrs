@@ -1256,3 +1256,57 @@ fn bad_credentials_exit_78() {
         .unwrap();
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
+
+/// Issue 173: the exit code of each class of error.
+#[test]
+fn exit_codes_of_flags_and_configuration() {
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(args)
+            .env_remove("CFRS_EDGE")
+            .env_remove("TUNNEL_TOKEN");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        (out.status.code(), stderr(&out))
+    };
+    for (args, env, want) in [
+        (&["share", "--mode", "download", "--check"][..], &[][..], 64),
+        (&["share", "--mode", "proxy", "--check"], &[], 64),
+        (
+            &["tunnel", "--hello-world", "--check"],
+            &[("CFRS_EDGE", "bogus::")][..],
+            78,
+        ),
+        (
+            &[
+                "tunnel",
+                "--hello-world",
+                "--protocol",
+                "http2",
+                "--transport",
+                "warp",
+                "--check",
+            ],
+            &[],
+            64,
+        ),
+        (&["--ca-file", "/nonexistent/roots.pem", "status"], &[], 78),
+        (
+            &[
+                "--ca-file",
+                "/nonexistent/roots.pem",
+                "tunnel",
+                "--hello-world",
+                "--check",
+            ],
+            &[],
+            78,
+        ),
+        (&["autostart", "add", "bad name", "--", "tunnel"], &[], 64),
+    ] {
+        let (code, err) = run(args, env);
+        assert_eq!(code, Some(want), "{args:?}: {err}");
+    }
+}

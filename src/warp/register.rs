@@ -487,9 +487,35 @@ pub async fn delete_device(device_id: &str, token: &str, proxy: Option<&Proxy>) 
     Ok(())
 }
 
+/// A WARP API answer that is not a success: its HTTP status and body.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    pub body: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WARP API answered HTTP {}: {}", self.status, self.body)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// The HTTP status of a WARP API answer in the chain of `err`.
+pub fn api_status(err: &anyhow::Error) -> Option<u16> {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<ApiError>())
+        .map(|e| e.status)
+}
+
 fn json_body(resp: crate::fetch::Response) -> Result<serde_json::Value> {
     if !resp.is_success() {
-        bail!("WARP API answered HTTP {}: {}", resp.status, resp.text());
+        return Err(ApiError {
+            status: resp.status,
+            body: resp.text(),
+        }
+        .into());
     }
     serde_json::from_slice(&resp.body)
         .with_context(|| format!("decoding the WARP API answer ({} bytes)", resp.body.len()))
