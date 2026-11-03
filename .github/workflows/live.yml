@@ -602,9 +602,12 @@ jobs:
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP' EXIT
-          # Issue 119: port 18097 has no origin: no tunnel for it.
-          sh scripts/live-run.sh agent timeout 300 target/release/cfrs agent up --expose 18096 --expose 18097 ||
-            { tail -30 agent.err; exit 1; }
+          # Issue 119: port 18097 has no origin: no tunnel for it. Issue
+          # 173: a failed expose exits 69, with the document on stdout.
+          rc=0
+          sh scripts/live-run.sh agent timeout 300 target/release/cfrs agent up --expose 18096 --expose 18097 || rc=$?
+          test "$rc" = 69 || { echo "agent up exited $rc, not 69"; tail -30 agent.err; exit 1; }
+          grep -q '1 of 2 exposes failed' agent.err
           tail -1 agent.out > agent.json
           jq -c '.exposed[] | {port, state}' agent.json
           jq -e '.exposed[0].state == "ready"' agent.json
