@@ -689,6 +689,10 @@ jobs:
           python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 1.1.1.1:53 3
           curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
           if grep -q 'panicked' warpproxy.log; then grep -A2 'panicked' warpproxy.log; exit 1; fi
+          # Issue 114: datagrams to a name (ATYP 3); at least 27 of 30 get
+          # an answer.
+          python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 one.one.one.one:53 30 | tee atyp3.txt
+          awk '{ exit !($3 >= 27) }' atyp3.txt
           # Issues 93 and 100: one TCP download of 20 MB through the
           # userspace stack and MASQUE, for each TCP window
           # (CFRS_WARP_TCP_BURST, in segments; the default is 1). Run

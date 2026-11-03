@@ -234,8 +234,22 @@ async fn udp_associate<S>(mut control: S, stack: Arc<WarpStack>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let local = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
-    let tunnel = stack.udp_bind().await?;
+    // Issue 114: a failure gets a SOCKS5 reply (general failure), not a
+    // closed connection with no reply.
+    let sockets = async {
+        let local = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .context("a UDP socket on 127.0.0.1 for the relay (a host that refuses it can use the UDP association in the stream, command 0x83)")?;
+        let tunnel = stack.udp_bind().await?;
+        anyhow::Ok((Arc::new(local), tunnel))
+    };
+    let (local, tunnel) = match sockets.await {
+        Ok(sockets) => sockets,
+        Err(err) => {
+            let _ = socks::socks5_reply(&mut control, 0x01, None).await;
+            return Err(err);
+        }
+    };
     socks::socks5_reply(&mut control, 0x00, Some(local.local_addr()?)).await?;
     debug!(relay = %local.local_addr()?, "a UDP ASSOCIATE");
     let client: Arc<std::sync::Mutex<Option<SocketAddr>>> = Arc::default();
@@ -247,6 +261,7 @@ where
         let client = client.clone();
         async move {
             let mut buf = vec![0u8; 65_536];
+            let mut names = Names::default();
             loop {
                 let Ok((n, from)) = local.recv_from(&mut buf).await else {
                     return;
@@ -255,15 +270,8 @@ where
                 let Some((host, port, payload)) = socks::socks5_udp_unwrap(&buf[..n]) else {
                     continue;
                 };
-                let ip = match host {
-                    ProxyHost::Ip(ip) => ip,
-                    ProxyHost::Domain(name) => match resolve(&stack, &name).await {
-                        Ok(ip) => ip,
-                        Err(err) => {
-                            debug!(%name, error = %err, "UDP name not resolved");
-                            continue;
-                        }
-                    },
+                let Some(ip) = names.address(&stack, host).await else {
+                    continue;
                 };
                 let _ = tunnel
                     .send_to(payload.to_vec(), SocketAddr::new(ip, port))
@@ -311,7 +319,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     use pod_netns::upstream::{read_udp_frame, wrap_udp, write_udp_frame};
-    let tunnel = stack.udp_bind().await?;
+    let tunnel = match stack.udp_bind().await {
+        Ok(tunnel) => tunnel,
+        Err(err) => {
+            let _ = socks::socks5_reply(&mut control, 0x01, None).await;
+            return Err(err);
+        }
+    };
     socks::socks5_reply(&mut control, 0x00, None).await?;
     debug!("a UDP association in the stream (no UDP socket of the host)");
     let (mut read, mut write) = tokio::io::split(control);
@@ -319,19 +333,13 @@ where
         let tunnel = tunnel.clone();
         let stack = stack.clone();
         async move {
+            let mut names = Names::default();
             while let Ok(Some(datagram)) = read_udp_frame(&mut read).await {
                 let Some((host, port, payload)) = socks::socks5_udp_unwrap(&datagram) else {
                     continue;
                 };
-                let ip = match host {
-                    ProxyHost::Ip(ip) => ip,
-                    ProxyHost::Domain(name) => match resolve(&stack, &name).await {
-                        Ok(ip) => ip,
-                        Err(err) => {
-                            debug!(%name, error = %err, "UDP name not resolved");
-                            continue;
-                        }
-                    },
+                let Some(ip) = names.address(&stack, host).await else {
+                    continue;
                 };
                 let _ = tunnel
                     .send_to(payload.to_vec(), SocketAddr::new(ip, port))
@@ -408,15 +416,76 @@ pub fn order(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
     out
 }
 
+/// The addresses of the names of one UDP association, so that only the
+/// first datagram to a name waits for DNS (issue 114).
+#[derive(Default)]
+struct Names(std::collections::HashMap<String, IpAddr>);
+
+impl Names {
+    async fn address(&mut self, stack: &WarpStack, host: ProxyHost) -> Option<IpAddr> {
+        match host {
+            ProxyHost::Ip(ip) => Some(ip),
+            ProxyHost::Domain(name) => {
+                if let Some(ip) = self.0.get(&name) {
+                    return Some(*ip);
+                }
+                match resolve(stack, &name).await {
+                    Ok(ip) => {
+                        if self.0.len() >= 256 {
+                            self.0.clear();
+                        }
+                        self.0.insert(name, ip);
+                        Some(ip)
+                    }
+                    Err(err) => {
+                        debug!(%name, error = %err, "UDP name not resolved");
+                        None
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The interval of the resends of a DNS query (issue 114: one lost
+/// datagram cost the full time limit).
+const DNS_RESEND: Duration = Duration::from_millis(1200);
+
 async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> {
+    query_at(stack, TUNNEL_RESOLVER, name, kind).await
+}
+
+/// Ask `server` for the `kind` records of `name`. The query is sent again
+/// each [`DNS_RESEND`] until an answer with its id comes, in at most
+/// [`DNS_TIMEOUT`].
+async fn query_at(
+    stack: &WarpStack,
+    server: SocketAddr,
+    name: &str,
+    kind: u16,
+) -> Result<Vec<IpAddr>> {
     let udp = stack.udp_bind().await?;
     let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;
     let query = pod_netns::dns::build_query(id, name, kind)?;
-    udp.send_to(query, TUNNEL_RESOLVER).await?;
-    let (answer, _) = tokio::time::timeout(DNS_TIMEOUT, udp.recv_from(4096))
-        .await
-        .map_err(|_| anyhow::anyhow!("no DNS answer for {name} through WARP"))??;
-    pod_netns::dns::parse_answers(&answer)
+    let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
+    loop {
+        udp.send_to(query.clone(), server).await?;
+        let resend = (tokio::time::Instant::now() + DNS_RESEND).min(deadline);
+        loop {
+            match tokio::time::timeout_at(resend, udp.recv_from(4096)).await {
+                Ok(Ok((answer, from))) => {
+                    if from == server && answer.get(..2) == Some(&id.to_be_bytes()[..]) {
+                        return pod_netns::dns::parse_answers(&answer);
+                    }
+                }
+                Ok(Err(err)) => return Err(err),
+                Err(_) => break,
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("no DNS answer for {name} through WARP");
+        }
+    }
 }
 
 /// The A and the AAAA addresses of `name`, with DNS queries through the
@@ -441,12 +510,27 @@ pub async fn resolve_all(stack: &WarpStack, name: &str) -> Result<Vec<IpAddr>> {
 }
 
 /// The first address of `name` (IPv4 first), with DNS through the tunnel.
+/// The AAAA query is sent only when there is no A record (issue 114:
+/// before, a lost AAAA answer delayed each name by the time limit).
 pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
-    resolve_all(stack, name)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no address for {name}"))
+    if let Ok(ip) = name
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
+        return Ok(ip);
+    }
+    let a = query(stack, name, pod_netns::dns::TYPE_A).await;
+    if let Some(ip) = a.as_ref().ok().and_then(|a| a.first()) {
+        return Ok(*ip);
+    }
+    let aaaa = query(stack, name, pod_netns::dns::TYPE_AAAA).await;
+    match (a, aaaa) {
+        (_, Ok(aaaa)) if !aaaa.is_empty() => Ok(aaaa[0]),
+        (Err(err), _) | (_, Err(err)) => {
+            Err(err.context(format!("no address for {name} through WARP")))
+        }
+        _ => bail!("no address for {name} through WARP"),
+    }
 }
 
 /// Copy bytes between a tunnel connection and a local pipe end.
@@ -457,7 +541,13 @@ async fn bridge(conn: TcpConn, pipe: DuplexStream) {
         let mut buf = vec![0u8; CHUNK];
         loop {
             let n = match pipe_read.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
+                Ok(0) => {
+                    // Issue 125: the end of the data of the client goes to
+                    // the peer as a FIN; the answer still comes back.
+                    conn.shutdown().await;
+                    break;
+                }
+                Err(_) => break,
                 Ok(n) => n,
             };
             let mut sent = 0;
@@ -573,6 +663,132 @@ mod order_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stack over a bare device, and a DNS server on the other side of
+    /// the link at 198.51.100.7:53 that drops the first `drop_first`
+    /// queries and answers 192.0.2.44 to the others.
+    fn stack_with_dns(drop_first: usize) -> (Arc<WarpStack>, Arc<std::sync::atomic::AtomicUsize>) {
+        use crate::vnet::device::LinkDevice;
+        use smoltcp::iface::{Config, Interface, SocketSet};
+        use smoltcp::socket::udp;
+        use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+        let device = LinkDevice::tunnel_bounded(super::super::ip::TUNNEL_MTU, 64);
+        let (to_peer, from_peer) = (device.outbound(), device.inbound());
+        let stack = Arc::new(WarpStack::on_device(
+            device,
+            super::super::ip::StackConfig::new("172.16.0.2".parse().unwrap()),
+        ));
+        let queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (stack2, queries2) = (stack.clone(), queries.clone());
+        tokio::spawn(async move {
+            let mut dev = LinkDevice::tunnel(super::super::ip::TUNNEL_MTU);
+            let start = std::time::Instant::now();
+            let now = || smoltcp::time::Instant::from_micros(start.elapsed().as_micros() as i64);
+            let mut iface = Interface::new(Config::new(HardwareAddress::Ip), &mut dev, now());
+            iface.update_ip_addrs(|a| {
+                a.push(IpCidr::new(IpAddress::v4(198, 51, 100, 7), 24)).ok();
+            });
+            iface
+                .routes_mut()
+                .add_default_ipv4_route(smoltcp::wire::Ipv4Address::new(198, 51, 100, 1))
+                .ok();
+            let mut sockets = SocketSet::new(Vec::new());
+            let mut socket = udp::Socket::new(
+                udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 8], vec![0; 8192]),
+                udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 8], vec![0; 8192]),
+            );
+            socket.bind(53).unwrap();
+            let handle = sockets.add(socket);
+            loop {
+                while let Some(packet) = to_peer.pop() {
+                    dev.inbound().push(packet);
+                }
+                iface.poll(now(), &mut dev, &mut sockets);
+                let socket = sockets.get_mut::<udp::Socket>(handle);
+                while let Ok((query, meta)) = socket.recv() {
+                    let n = queries2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if n < drop_first {
+                        continue;
+                    }
+                    let parsed = pod_netns::dns::ParsedQuery::parse(query).unwrap();
+                    let answer = pod_netns::dns::build_response(
+                        &parsed,
+                        &["192.0.2.44".parse().unwrap()],
+                        0,
+                    );
+                    socket.send_slice(&answer, meta.endpoint).unwrap();
+                }
+                iface.poll(now(), &mut dev, &mut sockets);
+                let mut moved = false;
+                while let Some(packet) = dev.outbound().pop() {
+                    from_peer.push(packet);
+                    moved = true;
+                }
+                if moved {
+                    stack2.wake();
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        });
+        (stack, queries)
+    }
+
+    const PEER_DNS: &str = "198.51.100.7:53";
+
+    // Issue 114: a lost DNS datagram is sent again. Before, it cost the
+    // full time limit (5 s) and gave no answer.
+    #[tokio::test]
+    async fn a_lost_dns_query_is_sent_again() {
+        let (stack, queries) = stack_with_dns(1);
+        let start = std::time::Instant::now();
+        let ips = query_at(
+            &stack,
+            PEER_DNS.parse().unwrap(),
+            "example.com",
+            pod_netns::dns::TYPE_A,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ips, vec!["192.0.2.44".parse::<IpAddr>().unwrap()]);
+        assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(start.elapsed() < DNS_TIMEOUT, "{:?}", start.elapsed());
+    }
+
+    // Issues 112 and 114: through a UDP ASSOCIATE, a datagram to IPv6 on a
+    // tunnel with no IPv6 address does not stop the stack. A datagram to
+    // IPv4 after it gets its answer, and a second association works.
+    #[tokio::test]
+    async fn a_udp_association_survives_a_datagram_to_ipv6() {
+        let (stack, _) = stack_with_dns(0);
+        for round in 0..2 {
+            let (mut client, server) = tokio::io::duplex(1024);
+            let task = tokio::spawn(udp_associate(server, stack.clone()));
+            let mut reply = [0u8; 10];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply[1], 0, "round {round}: {reply:?}");
+            let relay = SocketAddr::new(
+                IpAddr::from([reply[4], reply[5], reply[6], reply[7]]),
+                u16::from_be_bytes([reply[8], reply[9]]),
+            );
+            let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let query = pod_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
+            let v6 =
+                pod_netns::upstream::wrap_udp(&query, "2606:4700:4700::1111".parse().unwrap(), 53);
+            udp.send_to(&v6, relay).await.unwrap();
+            let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+            udp.send_to(&v4, relay).await.unwrap();
+            let mut buf = [0u8; 1024];
+            let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp.recv_from(&mut buf))
+                .await
+                .expect("an answer")
+                .unwrap();
+            assert_eq!(&buf[10..12], &[0x42, 0x42], "round {round}");
+            assert!(n > 12);
+            assert!(!stack.is_closed());
+            drop(client);
+            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+        }
+    }
 
     /// Issue 97: each listener is bound on its own. A TCP listener that the
     /// host refuses (here: a port in use, and an address that is not on

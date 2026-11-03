@@ -53,6 +53,15 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// The most packets in the outbound queue of the tunnel device.
 const OUTBOUND_PACKETS: usize = 512;
 const UDP_PACKETS: usize = 64;
+/// A TCP connection that has no answer of the peer for this time is
+/// aborted: a connect, data that is not acknowledged, or a keepalive
+/// (issue 125).
+const TCP_TIMEOUT: Duration = Duration::from_secs(60);
+/// The interval of the TCP keepalive of an idle connection (issue 125).
+const TCP_KEEPALIVE: Duration = Duration::from_secs(20);
+/// The time that a closed connection has to send its data and its FIN.
+/// After it, the connection is aborted and its socket is freed (issue 125).
+const TCP_LINGER: Duration = Duration::from_secs(30);
 const UDP_PAYLOAD: usize = 64 * 1024;
 
 /// A live handle on the userspace stack.
@@ -81,6 +90,10 @@ enum Command {
     TcpClose {
         id: u32,
     },
+    /// Send a FIN; the receive side stays open (issue 125).
+    TcpShutdown {
+        id: u32,
+    },
     UdpBind {
         reply: oneshot::Sender<Result<(u32, u16)>>,
     },
@@ -94,6 +107,9 @@ enum Command {
         id: u32,
         max: usize,
         reply: oneshot::Sender<Result<(Vec<u8>, SocketAddr)>>,
+    },
+    UdpClose {
+        id: u32,
     },
 }
 
@@ -124,6 +140,31 @@ enum Pending {
         max: usize,
         reply: oneshot::Sender<Result<(Vec<u8>, SocketAddr)>>,
     },
+}
+
+impl Pending {
+    fn handle(&self) -> SocketHandle {
+        match self {
+            Pending::TcpConnect { handle, .. }
+            | Pending::TcpSend { handle, .. }
+            | Pending::TcpRecv { handle, .. }
+            | Pending::UdpSend { handle, .. }
+            | Pending::UdpRecv { handle, .. } => *handle,
+        }
+    }
+
+    /// Complete the operation with an error.
+    fn fail(self, why: &str) {
+        let err = || anyhow::anyhow!("{why}");
+        match self {
+            Pending::TcpConnect { reply, .. } => drop(reply.send(Err(err()))),
+            Pending::TcpSend { reply, .. } | Pending::UdpSend { reply, .. } => {
+                drop(reply.send(Err(err())))
+            }
+            Pending::TcpRecv { reply, .. } => drop(reply.send(Err(err()))),
+            Pending::UdpRecv { reply, .. } => drop(reply.send(Err(err()))),
+        }
+    }
 }
 
 /// How to configure the interface the tunnel exposes.
@@ -216,6 +257,26 @@ fn build_iface(config: &StackConfig, device: &mut LinkDevice) -> Interface {
         iface.routes_mut().add_default_ipv6_route(v6.into()).ok();
     }
     iface
+}
+
+/// Run the driver in a task, with its supervisor.
+fn spawn_driver(
+    driver: Driver,
+    cmd_rx: mpsc::Receiver<Command>,
+    notify: std::sync::Arc<Notify>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let task = {
+        let notify = notify.clone();
+        let closed = closed.clone();
+        tokio::spawn(async move {
+            let mut driver = driver;
+            driver.run(cmd_rx, notify, closed).await;
+        })
+    };
+    // Issue 112: the stack is closed when the driver ends, also by a panic,
+    // so that Live replaces it with a new session.
+    tokio::spawn(supervise(task, closed, notify));
 }
 
 /// Wait for the driver task to end. Then mark the stack closed. A panic of
@@ -315,16 +376,7 @@ impl WarpStack {
         {
             let notify = notify.clone();
             let closed = closed.clone();
-            let driver = {
-                let notify = notify.clone();
-                let closed = closed.clone();
-                tokio::spawn(async move {
-                    Driver::new(iface, device).run(cmd_rx, notify, closed).await;
-                })
-            };
-            // Issue 112: the stack is closed when the driver ends, also by a
-            // panic, so that Live replaces it with a new session.
-            tokio::spawn(supervise(driver, closed, notify));
+            spawn_driver(Driver::new(iface, device), cmd_rx, notify, closed);
         }
 
         Ok(Self {
@@ -333,6 +385,34 @@ impl WarpStack {
             closed,
             local: config.local,
         })
+    }
+
+    /// A stack over a bare device, with no MASQUE session (for the tests):
+    /// the test moves the packets of the device.
+    #[cfg(test)]
+    pub(crate) fn on_device(mut device: LinkDevice, config: StackConfig) -> Self {
+        let iface = build_iface(&config, &mut device);
+        let (cmd, cmd_rx) = mpsc::channel(256);
+        let notify = std::sync::Arc::new(Notify::new());
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        spawn_driver(
+            Driver::new(iface, device),
+            cmd_rx,
+            notify.clone(),
+            closed.clone(),
+        );
+        Self {
+            cmd,
+            notify,
+            closed,
+            local: config.local,
+        }
+    }
+
+    /// Wake the driver (for the tests, after a packet in the device).
+    #[cfg(test)]
+    pub(crate) fn wake(&self) {
+        self.notify.notify_one();
     }
 
     /// True when the MASQUE session of this stack can no longer carry a
@@ -380,6 +460,11 @@ impl WarpStack {
             local: SocketAddr::new(self.local, port),
             cmd: self.cmd.clone(),
             notify: self.notify.clone(),
+            _close: std::sync::Arc::new(CloseOnDrop {
+                cmd: self.cmd.clone(),
+                notify: self.notify.clone(),
+                close: Some(Command::UdpClose { id }),
+            }),
         })
     }
 }
@@ -421,9 +506,43 @@ impl TcpConn {
         wait.await.context("userspace stack driver is gone")?
     }
 
+    /// Send a FIN: the peer reads the end of the data. The receive side
+    /// stays open (issue 125).
+    pub async fn shutdown(&self) {
+        let _ = self.cmd.send(Command::TcpShutdown { id: self.id }).await;
+        self.notify.notify_one();
+    }
+
     pub async fn close(&self) {
         let _ = self.cmd.send(Command::TcpClose { id: self.id }).await;
         self.notify.notify_one();
+    }
+}
+
+impl Drop for TcpConn {
+    /// A connection that is dropped with no close (a cancelled task) is
+    /// closed too (issue 125). A second close does nothing.
+    fn drop(&mut self) {
+        if self.cmd.try_send(Command::TcpClose { id: self.id }).is_ok() {
+            self.notify.notify_one();
+        }
+    }
+}
+
+/// Send a command when the last clone of a handle is dropped.
+struct CloseOnDrop {
+    cmd: mpsc::Sender<Command>,
+    notify: std::sync::Arc<Notify>,
+    close: Option<Command>,
+}
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        if let Some(close) = self.close.take() {
+            if self.cmd.try_send(close).is_ok() {
+                self.notify.notify_one();
+            }
+        }
     }
 }
 
@@ -434,6 +553,8 @@ pub struct UdpConn {
     local: SocketAddr,
     cmd: mpsc::Sender<Command>,
     notify: std::sync::Arc<Notify>,
+    /// The last clone frees the socket (issue 125).
+    _close: std::sync::Arc<CloseOnDrop>,
 }
 
 impl UdpConn {
@@ -478,6 +599,8 @@ struct Driver {
     device: LinkDevice,
     registry: HashMap<u32, SocketHandle>,
     pending: VecDeque<Pending>,
+    /// The closed TCP sockets that still send, with the time of the close.
+    closing: Vec<(SocketHandle, Instant)>,
     next_id: u32,
     next_ephemeral: u16,
 }
@@ -490,6 +613,7 @@ impl Driver {
             device,
             registry: HashMap::new(),
             pending: VecDeque::new(),
+            closing: Vec::new(),
             next_id: 1,
             next_ephemeral: 40_000,
         }
@@ -524,8 +648,12 @@ impl Driver {
             let now = Self::now();
             self.iface.poll(now, &mut self.device, &mut self.sockets);
             let moved = self.progress();
+            self.reap(now);
 
-            if closed.load(std::sync::atomic::Ordering::Relaxed) && self.pending.is_empty() {
+            // Issue 125: the operations of a dead session fail now. Before,
+            // a read waited for data that could not come.
+            if closed.load(std::sync::atomic::Ordering::Relaxed) {
+                self.fail_all("the MASQUE session is closed");
                 break;
             }
             // A read or a write changed a window: poll again at once, so
@@ -554,10 +682,63 @@ impl Driver {
     }
 
     fn tcp_socket() -> tcp::Socket<'static> {
-        tcp::Socket::new(
+        let mut socket = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER]),
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER]),
-        )
+        );
+        socket.set_timeout(Some(TCP_TIMEOUT.into()));
+        socket.set_keep_alive(Some(TCP_KEEPALIVE.into()));
+        socket
+    }
+
+    /// Remove a socket and fail each pending operation on it.
+    fn forget(&mut self, handle: SocketHandle) {
+        let pending = std::mem::take(&mut self.pending);
+        for op in pending {
+            if op.handle() == handle {
+                op.fail("the connection is closed");
+            } else {
+                self.pending.push_back(op);
+            }
+        }
+        self.closing.retain(|(h, _)| *h != handle);
+        self.sockets.remove(handle);
+    }
+
+    /// Fail each pending operation and abort each connection.
+    fn fail_all(&mut self, why: &str) {
+        for op in std::mem::take(&mut self.pending) {
+            op.fail(why);
+        }
+        for (_, socket) in self.sockets.iter_mut() {
+            if let smoltcp::socket::Socket::Tcp(tcp) = socket {
+                tcp.abort();
+            }
+        }
+    }
+
+    /// Free the sockets of the closed connections that are done, or that
+    /// had [`TCP_LINGER`] to finish (issue 125: before, each closed socket
+    /// stayed for the life of the stack).
+    fn reap(&mut self, now: Instant) {
+        let mut done = Vec::new();
+        for (handle, at) in &self.closing {
+            let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
+            match socket.state() {
+                tcp::State::Closed | tcp::State::TimeWait => done.push(*handle),
+                _ if now - *at > TCP_LINGER.into() => socket.abort(),
+                _ => {}
+            }
+        }
+        for handle in done {
+            self.forget(handle);
+        }
+    }
+
+    /// The number of sockets in the stack (for the tests).
+    #[cfg(test)]
+    fn socket_count(&self) -> usize {
+        self.sockets.iter().count()
     }
 
     fn udp_socket() -> udp::Socket<'static> {
@@ -645,6 +826,19 @@ impl Driver {
             Command::TcpClose { id } => {
                 if let Some(handle) = self.registry.remove(&id) {
                     self.sockets.get_mut::<tcp::Socket>(handle).close();
+                    self.closing.push((handle, Self::now()));
+                }
+            }
+
+            Command::TcpShutdown { id } => {
+                if let Some(handle) = self.handle_of(id) {
+                    self.sockets.get_mut::<tcp::Socket>(handle).close();
+                }
+            }
+
+            Command::UdpClose { id } => {
+                if let Some(handle) = self.registry.remove(&id) {
+                    self.forget(handle);
                 }
             }
 
@@ -721,6 +915,13 @@ impl Driver {
         let mut still_waiting = VecDeque::with_capacity(self.pending.len());
         while let Some(op) = self.pending.pop_front() {
             match op {
+                Pending::TcpConnect { id, handle, reply } if reply.is_closed() => {
+                    // Issue 125: the caller gave up (a timeout): free the
+                    // socket. Before, its SYN was sent again for ever.
+                    self.registry.remove(&id);
+                    self.sockets.get_mut::<tcp::Socket>(handle).abort();
+                    self.closing.push((handle, Self::now()));
+                }
                 Pending::TcpConnect { id, handle, reply } => {
                     let state = self.sockets.get_mut::<tcp::Socket>(handle).state();
                     match state {
@@ -769,6 +970,10 @@ impl Driver {
                         });
                     }
                 }
+                // A read whose caller gave up (a timeout) takes no data:
+                // the data stays for the next read. Before, it was lost.
+                Pending::TcpRecv { reply, .. } if reply.is_closed() => {}
+                Pending::UdpRecv { reply, .. } if reply.is_closed() => {}
                 Pending::TcpRecv { handle, max, reply } => {
                     let socket = self.sockets.get_mut::<tcp::Socket>(handle);
                     if socket.can_recv() {
@@ -943,5 +1148,213 @@ mod tests {
         drop(cmd_rx);
         assert!(stack.is_closed());
         assert!(stack.udp_bind().await.is_err());
+    }
+
+    /// A peer on the other side of the tunnel: a smoltcp node at
+    /// 198.51.100.7 with one TCP socket that listens on port 80.
+    struct Peer {
+        device: LinkDevice,
+        iface: Interface,
+        sockets: SocketSet<'static>,
+        tcp: SocketHandle,
+    }
+
+    const PEER: &str = "198.51.100.7:80";
+
+    fn peer() -> Peer {
+        let mut device = LinkDevice::tunnel(TUNNEL_MTU);
+        let mut iface = Interface::new(
+            IfaceConfig::new(HardwareAddress::Ip),
+            &mut device,
+            Instant::ZERO,
+        );
+        iface.update_ip_addrs(|a| {
+            a.push(IpCidr::new(IpAddress::v4(198, 51, 100, 7), 24)).ok();
+        });
+        iface
+            .routes_mut()
+            .add_default_ipv4_route(smoltcp::wire::Ipv4Address::new(198, 51, 100, 1))
+            .ok();
+        let mut sockets = SocketSet::new(Vec::new());
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 64 * 1024]),
+            tcp::SocketBuffer::new(vec![0; 64 * 1024]),
+        );
+        socket.listen(80).unwrap();
+        let tcp = sockets.add(socket);
+        Peer {
+            device,
+            iface,
+            sockets,
+            tcp,
+        }
+    }
+
+    /// Move the packets of each side to the other, and poll both, `n` times.
+    fn pump(d: &mut Driver, p: &mut Peer, n: usize) {
+        for _ in 0..n {
+            let now = Driver::now();
+            d.iface.poll(now, &mut d.device, &mut d.sockets);
+            d.progress();
+            d.reap(now);
+            while let Some(packet) = d.device.outbound().pop() {
+                p.device.inbound().push(packet);
+            }
+            p.iface.poll(now, &mut p.device, &mut p.sockets);
+            while let Some(packet) = p.device.outbound().pop() {
+                d.device.inbound().push(packet);
+            }
+        }
+    }
+
+    fn connect(d: &mut Driver, p: &mut Peer) -> u32 {
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::TcpConnect {
+            remote: PEER.parse().unwrap(),
+            reply,
+        });
+        for _ in 0..50 {
+            pump(d, p, 1);
+            if let Ok(id) = wait.try_recv() {
+                return id.unwrap();
+            }
+        }
+        panic!("no connection");
+    }
+
+    fn recv(d: &mut Driver, p: &mut Peer, id: u32) -> Vec<u8> {
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::TcpRecv {
+            id,
+            max: 1024,
+            reply,
+        });
+        for _ in 0..50 {
+            pump(d, p, 1);
+            if let Ok(data) = wait.try_recv() {
+                return data.unwrap();
+            }
+        }
+        panic!("no data");
+    }
+
+    fn v4_driver() -> Driver {
+        driver(&StackConfig::new("172.16.0.2".parse().unwrap()))
+    }
+
+    // Issue 125: a closed connection frees its socket. Before, each socket
+    // stayed in the stack for the life of the session.
+    #[test]
+    fn a_closed_connection_frees_its_socket() {
+        let mut d = v4_driver();
+        let mut p = peer();
+        for round in 0..3 {
+            let id = connect(&mut d, &mut p);
+            let peer_socket = p.sockets.get_mut::<tcp::Socket>(p.tcp);
+            peer_socket.send_slice(b"hello").unwrap();
+            peer_socket.close();
+            assert_eq!(recv(&mut d, &mut p, id), b"hello");
+            d.apply(Command::TcpClose { id });
+            pump(&mut d, &mut p, 30);
+            assert_eq!(d.socket_count(), 0, "round {round}");
+            assert!(d.registry.is_empty());
+            // The peer listens again for the next round.
+            let peer_socket = p.sockets.get_mut::<tcp::Socket>(p.tcp);
+            peer_socket.abort();
+            pump(&mut d, &mut p, 2);
+            p.sockets.get_mut::<tcp::Socket>(p.tcp).listen(80).unwrap();
+        }
+    }
+
+    // Issue 125: a shutdown sends a FIN, and the answer of the peer still
+    // comes back.
+    #[test]
+    fn a_shutdown_reaches_the_peer_and_the_answer_comes_back() {
+        let mut d = v4_driver();
+        let mut p = peer();
+        let id = connect(&mut d, &mut p);
+        d.apply(Command::TcpShutdown { id });
+        pump(&mut d, &mut p, 10);
+        let peer_socket = p.sockets.get_mut::<tcp::Socket>(p.tcp);
+        assert!(!peer_socket.may_recv(), "the peer has the FIN");
+        peer_socket.send_slice(b"answer").unwrap();
+        assert_eq!(recv(&mut d, &mut p, id), b"answer");
+    }
+
+    // Issue 125: a connect that the caller gave up frees its socket.
+    #[test]
+    fn a_cancelled_connect_frees_its_socket() {
+        let mut d = v4_driver();
+        let (reply, wait) = oneshot::channel();
+        d.apply(Command::TcpConnect {
+            remote: "192.0.2.1:443".parse().unwrap(),
+            reply,
+        });
+        assert_eq!(d.socket_count(), 1);
+        drop(wait);
+        for _ in 0..3 {
+            let now = Driver::now();
+            d.iface.poll(now, &mut d.device, &mut d.sockets);
+            d.progress();
+            d.reap(now);
+        }
+        assert_eq!(d.socket_count(), 0);
+        assert!(d.pending.is_empty());
+    }
+
+    #[test]
+    fn a_udp_close_frees_its_socket() {
+        let mut d = v4_driver();
+        let id = bind(&mut d);
+        assert_eq!(d.socket_count(), 1);
+        d.apply(Command::UdpClose { id });
+        assert_eq!(d.socket_count(), 0);
+    }
+
+    // Issue 125: the last clone of a UdpConn sends the close.
+    #[test]
+    fn the_last_clone_of_a_udp_socket_closes_it() {
+        let (cmd, mut rx) = mpsc::channel(4);
+        let notify = std::sync::Arc::new(Notify::new());
+        let conn = UdpConn {
+            id: 7,
+            local: "172.16.0.2:40000".parse().unwrap(),
+            cmd: cmd.clone(),
+            notify: notify.clone(),
+            _close: std::sync::Arc::new(CloseOnDrop {
+                cmd,
+                notify,
+                close: Some(Command::UdpClose { id: 7 }),
+            }),
+        };
+        let clone = conn.clone();
+        drop(conn);
+        assert!(rx.try_recv().is_err());
+        drop(clone);
+        assert!(matches!(rx.try_recv(), Ok(Command::UdpClose { id: 7 })));
+    }
+
+    // Issue 125: when the session is dead, a pending read fails. Before, it
+    // waited for ever.
+    #[test]
+    fn a_dead_session_fails_the_pending_operations() {
+        let mut d = v4_driver();
+        let mut p = peer();
+        let id = connect(&mut d, &mut p);
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::TcpRecv { id, max: 10, reply });
+        d.progress();
+        assert!(wait.try_recv().is_err(), "the read waits");
+        d.fail_all("the MASQUE session is closed");
+        let err = wait.try_recv().unwrap().unwrap_err();
+        assert!(format!("{err}").contains("closed"), "{err}");
+        assert!(d.pending.is_empty());
+    }
+
+    #[test]
+    fn a_tcp_socket_has_a_timeout_and_a_keepalive() {
+        let socket = Driver::tcp_socket();
+        assert_eq!(socket.timeout(), Some(TCP_TIMEOUT.into()));
+        assert_eq!(socket.keep_alive(), Some(TCP_KEEPALIVE.into()));
     }
 }

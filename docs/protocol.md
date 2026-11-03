@@ -283,7 +283,20 @@ goes inside the MASQUE session. The host opens only TCP 443.
   through such a proxy.
 * The WARP proxy of `cfrs` (`cfrs warp proxy`) carries TCP (SOCKS5 and HTTP
   `CONNECT`) and UDP (SOCKS5 UDP ASSOCIATE). It resolves names through the
-  tunnel. The UDP relay socket of an association is on `127.0.0.1`.
+  tunnel. The UDP relay socket of an association is on `127.0.0.1`. When the
+  proxy cannot open it, the reply is `0x01` (general failure).
+* A host that refuses UDP on `127.0.0.1` uses the UDP association in the
+  stream: the SOCKS5 command `0x83`
+  (`pod_netns::upstream::CMD_UDP_IN_STREAM`) in place of `0x03`. The reply
+  has no relay address. Each datagram then goes on the control connection
+  as a frame: a length of 2 bytes (big-endian), then the datagram with its
+  SOCKS5 UDP header (RFC 1928 section 7). The answers come back the same
+  way. `cfrs warp run --backend seccomp` and `cfrs pod` use it; the unix
+  socket of `cfrs warp up` serves it.
+* A name in a UDP datagram (ATYP 3) is resolved once for each association,
+  with an A query through the tunnel; AAAA only when there is no A record.
+  A DNS query through the tunnel is sent again after 1.2 s, in a time limit
+  of 5 s.
 
 ## 6. Edge, measured
 
