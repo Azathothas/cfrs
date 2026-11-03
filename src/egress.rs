@@ -49,6 +49,19 @@ pub enum ProxyKind {
     Socks5 { remote_dns: bool },
 }
 
+/// How cfrs reaches the proxy (issue 129).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Carrier {
+    /// TCP to the host and the port of the proxy.
+    Tcp,
+    /// A unix socket: `socks5h+unix:/path` or `socks5h://unix:/path`.
+    Unix(std::path::PathBuf),
+    /// The stdin and the stdout of a command (`sh -c`), one process for
+    /// each connection, as the ProxyCommand of SSH: `http+exec:COMMAND`.
+    /// Only from `--proxy` and `CFRS_PROXY`.
+    Exec(String),
+}
+
 /// A proxy for TCP connections.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Proxy {
@@ -56,6 +69,7 @@ pub struct Proxy {
     host: String,
     port: u16,
     auth: Option<(String, String)>,
+    via: Carrier,
 }
 
 /// The Debug form shows no credentials: they go to logs and reports.
@@ -65,6 +79,7 @@ impl std::fmt::Debug for Proxy {
             .field("kind", &self.kind)
             .field("host", &self.host)
             .field("port", &self.port)
+            .field("via", &self.via_text())
             .field(
                 "credentials",
                 &if self.auth.is_some() {
@@ -77,9 +92,13 @@ impl std::fmt::Debug for Proxy {
     }
 }
 
-/// `scheme://host:port`, with no credentials: the form for a message.
+/// `scheme://host:port`, with no credentials: the form for a message. A
+/// command shows its first word only (it can hold a secret).
 impl std::fmt::Display for Proxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.via != Carrier::Tcp {
+            return write!(f, "{}+{}", self.scheme(), self.via_text());
+        }
         let host = if self.host.contains(':') {
             format!("[{}]", self.host)
         } else {
@@ -90,9 +109,45 @@ impl std::fmt::Display for Proxy {
 }
 
 impl Proxy {
-    /// The host of the proxy (no port, no credentials).
+    /// The host of the proxy (no port, no credentials). Empty for a proxy
+    /// on a unix socket or a command.
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    /// How cfrs reaches the proxy.
+    pub fn carrier(&self) -> &Carrier {
+        &self.via
+    }
+
+    fn via_text(&self) -> String {
+        match &self.via {
+            Carrier::Tcp => "tcp".into(),
+            Carrier::Unix(path) => format!("unix:{}", path.display()),
+            Carrier::Exec(command) => format!(
+                "exec:{} ...",
+                command.split_whitespace().next().unwrap_or_default()
+            ),
+        }
+    }
+
+    /// Parse the value of `--proxy` or `CFRS_PROXY`: [`parse`](Self::parse),
+    /// and also `SCHEME+exec:COMMAND` (issue 129). A command in the proxy
+    /// variables of other tools is refused: a variable must not start a
+    /// program.
+    pub fn parse_trusted(spec: &str) -> Result<Self> {
+        let spec = spec.trim();
+        if let Some((scheme, command)) = spec.split_once("+exec:") {
+            if command.trim().is_empty() {
+                bail!("{scheme}+exec: has no command");
+            }
+            let mut proxy = Self::parse(&format!("{scheme}://exec.invalid"))?;
+            proxy.host.clear();
+            proxy.port = 0;
+            proxy.via = Carrier::Exec(command.trim().to_string());
+            return Ok(proxy);
+        }
+        Self::parse(spec)
     }
 
     /// Read the proxy from the variables of [`PROXY_VARIABLES`]. Returns
@@ -123,6 +178,23 @@ impl Proxy {
         let spec = spec.trim();
         if spec.is_empty() {
             bail!("empty proxy URL");
+        }
+        // Issue 129: a proxy on a unix socket.
+        let unix = spec
+            .split_once("+unix:")
+            .or_else(|| spec.split_once("://unix:"));
+        if let Some((scheme, path)) = unix.filter(|(s, _)| !s.contains('/')) {
+            if !path.starts_with('/') {
+                bail!("the unix socket of a proxy is an absolute path: {scheme}+unix:/PATH");
+            }
+            let mut proxy = Self::parse(&format!("{scheme}://unix.invalid"))?;
+            proxy.host.clear();
+            proxy.port = 0;
+            proxy.via = Carrier::Unix(path.into());
+            return Ok(proxy);
+        }
+        if spec.contains("+exec:") {
+            bail!("a proxy command (+exec:) is only taken from --proxy or CFRS_PROXY");
         }
         let (scheme, rest) = match spec.split_once("://") {
             Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
@@ -170,7 +242,22 @@ impl Proxy {
             host,
             port,
             auth,
+            via: Carrier::Tcp,
         })
+    }
+
+    /// Open the byte stream to the proxy.
+    async fn open(&self, timeout: Duration) -> Result<BoxedIo> {
+        match &self.via {
+            Carrier::Tcp => Ok(Box::new(dial_direct(&self.host, self.port, timeout).await?)),
+            Carrier::Unix(path) => {
+                let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(path))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("no connect in {} s", timeout.as_secs()))??;
+                Ok(Box::new(stream))
+            }
+            Carrier::Exec(command) => Ok(Box::new(ChildIo::spawn(command)?)),
+        }
     }
 
     /// The protocol of the proxy.
@@ -201,7 +288,8 @@ impl Proxy {
     /// stream after the answer of the proxy.
     pub async fn connect(&self, host: &str, port: u16, timeout: Duration) -> Result<BoxedIo> {
         let work = async {
-            let mut stream = dial_direct(&self.host, self.port, timeout)
+            let mut stream = self
+                .open(timeout)
                 .await
                 .with_context(|| format!("connecting to the proxy {self}"))?;
             match self.kind {
@@ -231,7 +319,8 @@ impl Proxy {
                             &crate::proxy_auth::cnonce(),
                             1,
                         );
-                        stream = dial_direct(&self.host, self.port, timeout)
+                        stream = self
+                            .open(timeout)
                             .await
                             .with_context(|| format!("connecting to the proxy {self} again"))?;
                         if self
@@ -248,7 +337,7 @@ impl Proxy {
                         .await?
                 }
             }
-            Ok::<BoxedIo, anyhow::Error>(Box::new(stream))
+            Ok::<BoxedIo, anyhow::Error>(stream)
         };
         work.await
             .with_context(|| format!("{host}:{port} through the proxy {self}"))
@@ -260,7 +349,7 @@ impl Proxy {
     /// first try was not Digest and credentials are there.
     async fn http_connect(
         &self,
-        stream: &mut TcpStream,
+        stream: &mut BoxedIo,
         host: &str,
         port: u16,
         timeout: Duration,
@@ -317,7 +406,7 @@ impl Proxy {
 
     async fn socks5_connect(
         &self,
-        stream: &mut TcpStream,
+        stream: &mut BoxedIo,
         host: &str,
         port: u16,
         remote_dns: bool,
@@ -467,7 +556,7 @@ pub fn refusal(err: &anyhow::Error) -> Option<&Refusal> {
 /// first line of the body (for example "not on the egress allowlist"),
 /// with no control characters. Reads at most 512 bytes of the body, for
 /// at most 2 s.
-async fn reply_reason(stream: &mut TcpStream, head: &[u8]) -> String {
+async fn reply_reason(stream: &mut BoxedIo, head: &[u8]) -> String {
     let text = String::from_utf8_lossy(head);
     let phrase = text
         .lines()
@@ -958,6 +1047,85 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
         .with_context(|| format!("no address answered in {} s", timeout.as_secs()))?
 }
 
+/// The stdin and the stdout of a command as one byte stream (issue 129).
+/// The command runs with `sh -c`; its stderr is the stderr of cfrs. The
+/// end of the stream closes its stdin; a drop kills it.
+pub struct ChildIo {
+    child: tokio::process::Child,
+    stdin: Option<tokio::process::ChildStdin>,
+    stdout: tokio::process::ChildStdout,
+}
+
+impl ChildIo {
+    pub fn spawn(command: &str) -> Result<Self> {
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .context("starting the proxy command (sh -c)")?;
+        let stdin = child.stdin.take();
+        let stdout = child
+            .stdout
+            .take()
+            .context("the stdout of the proxy command")?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    /// The exit status, when the command has ended.
+    pub fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().ok().flatten()
+    }
+}
+
+impl tokio::io::AsyncRead for ChildIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stdout).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for ChildIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.stdin.as_mut() {
+            Some(stdin) => std::pin::Pin::new(stdin).poll_write(cx, data),
+            None => std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into())),
+        }
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.stdin.as_mut() {
+            Some(stdin) => std::pin::Pin::new(stdin).poll_flush(cx),
+            None => std::task::Poll::Ready(Ok(())),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.stdin = None;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 /// Split `host:port`, `[v6]:port` or a bare host. Refuse a host with a
 /// character that has no place in a host name.
 fn split_host_port(authority: &str, default_port: u16) -> Result<(String, u16)> {
@@ -1035,7 +1203,7 @@ fn hex_val(b: u8) -> Option<u8> {
 }
 
 /// Read bytes until the blank line that ends the response head.
-async fn read_head(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>> {
+async fn read_head(stream: &mut BoxedIo, timeout: Duration) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(512);
     let mut byte = [0u8; 1];
     // One byte at a time: no byte after the head is taken from the caller.
@@ -1147,6 +1315,93 @@ mod tests {
     }
 
     use super::*;
+
+    // Issue 129: a proxy on a unix socket, or at a command.
+    #[test]
+    fn the_carriers_parse() {
+        for spec in ["socks5h+unix:/run/w.sock", "socks5h://unix:/run/w.sock"] {
+            let p = Proxy::parse(spec).unwrap();
+            assert_eq!(p.carrier(), &Carrier::Unix("/run/w.sock".into()), "{spec}");
+            assert_eq!(p.kind(), ProxyKind::Socks5 { remote_dns: true });
+            assert_eq!(p.to_string(), "socks5h+unix:/run/w.sock");
+        }
+        assert!(Proxy::parse("http+unix:relative.sock").is_err());
+        let spec = "http+exec:ssh -i /secret/key gw nc 127.0.0.1 3128";
+        assert!(
+            Proxy::parse(spec).is_err(),
+            "a variable does not start a command"
+        );
+        let p = Proxy::parse_trusted(spec).unwrap();
+        assert_eq!(p.kind(), ProxyKind::Http);
+        assert!(matches!(p.carrier(), Carrier::Exec(c) if c.starts_with("ssh -i")));
+        assert_eq!(p.to_string(), "http+exec:ssh ...");
+        assert!(!format!("{p:?}").contains("secret"));
+        assert!(Proxy::parse_trusted("http+exec:  ").is_err());
+    }
+
+    /// An HTTP CONNECT proxy on a unix socket that answers 200 and echoes.
+    async fn unix_connect_echo(path: std::path::PathBuf) {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut b = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if s.read_exact(&mut b).await.is_err() {
+                            return;
+                        }
+                        head.push(b[0]);
+                    }
+                    assert!(head.starts_with(b"CONNECT echo.test:7 HTTP/1.1"));
+                    s.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+                    let (mut r, mut w) = s.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+    }
+
+    async fn round_trip(proxy: &Proxy) -> Vec<u8> {
+        let mut io = proxy
+            .connect("echo.test", 7, Duration::from_secs(5))
+            .await
+            .unwrap();
+        io.write_all(b"ping").await.unwrap();
+        let mut back = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(5), io.read_exact(&mut back))
+            .await
+            .unwrap()
+            .unwrap();
+        back.to_vec()
+    }
+
+    #[tokio::test]
+    async fn a_proxy_on_a_unix_socket_carries_a_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sock");
+        unix_connect_echo(path.clone()).await;
+        let proxy = Proxy::parse(&format!("http+unix:{}", path.display())).unwrap();
+        assert_eq!(round_trip(&proxy).await, b"ping");
+    }
+
+    // Issue 129: the proxy is at the stdin and the stdout of a command: a
+    // shell script reads the CONNECT, answers 200, then echoes.
+    #[tokio::test]
+    async fn a_proxy_command_carries_a_connection() {
+        let script = r#"http+exec:while IFS= read -r l; do [ "$l" = "$(printf '\r')" ] && break; done; printf 'HTTP/1.1 200 OK\r\n\r\n'; exec cat"#;
+        let proxy = Proxy::parse_trusted(script).unwrap();
+        assert_eq!(round_trip(&proxy).await, b"ping");
+        let proxy = Proxy::parse_trusted("http+exec:exit 3").unwrap();
+        let Err(err) = proxy.connect("echo.test", 7, Duration::from_secs(5)).await else {
+            panic!("a command that exits is no proxy");
+        };
+        assert_eq!(
+            crate::hop::of(&err),
+            Some(crate::hop::Hop::Proxy),
+            "{err:#}"
+        );
+    }
 
     #[test]
     fn the_same_error_of_many_addresses_is_one_entry() {

@@ -47,7 +47,14 @@ fn quote(s: &str) -> String {
 pub fn start(label: &str, argv: &[String]) -> Result<serde_json::Value> {
     use std::io::{BufRead as _, BufReader};
     let exe = std::env::current_exe().context("the path of this binary")?;
-    let mut child = std::process::Command::new(&exe)
+    let mut command = std::process::Command::new(&exe);
+    // A shell that read the env file of an earlier warp up has proxy
+    // variables that point at the listeners of this proxy: the proxy must
+    // not send its own session through them.
+    for key in own_proxy_variables(argv, std::env::vars()) {
+        command.env_remove(key);
+    }
+    let mut child = command
         .args(argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -161,19 +168,48 @@ pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String 
     text
 }
 
+/// The variables of `vars` whose value is a listener of `argv` (a
+/// `--listen tcp://ADDR` or `unix:PATH`): the env file of warp up wrote
+/// them.
+fn own_proxy_variables(
+    argv: &[String],
+    vars: impl Iterator<Item = (String, String)>,
+) -> Vec<String> {
+    let own: Vec<String> = argv
+        .iter()
+        .filter_map(|a| {
+            a.strip_prefix("tcp://")
+                .or_else(|| a.strip_prefix("unix:"))
+                .map(str::to_string)
+        })
+        .collect();
+    vars.filter(|(key, value)| {
+        key != "CFRS_WARP_SOCKET" && own.iter().any(|o| value.ends_with(o.as_str()))
+    })
+    .map(|(key, _)| key)
+    .collect()
+}
+
 /// The text of the env file for a proxy on `127.0.0.1:port` and `socket`.
 /// With no port (issue 97: the host refused the TCP listener), the file has
-/// no proxy variables: a program goes through WARP with `cfrs warp exec`.
+/// no proxy variables for other tools: a program goes through WARP with
+/// `cfrs warp exec`. cfrs itself gets CFRS_PROXY on the unix socket (issue
+/// 116).
 pub fn env_file_text(port: Option<u16>, socket: &Path) -> String {
     let mut out = String::from("# cfrs warp up: the proxy variables of the WARP proxy\n");
     let Some(port) = port else {
         out.push_str(
             "# The host refused the TCP listener: there are no proxy variables.\n\
-             # Run a program through WARP with: cfrs warp exec -- CMD\n",
+             # Run a program through WARP with: cfrs warp exec -- CMD\n\
+             # cfrs itself uses the unix socket (CFRS_PROXY).\n",
         );
         out.push_str(&format!(
             "export CFRS_WARP_SOCKET={}\n",
             quote(&socket.display().to_string())
+        ));
+        out.push_str(&format!(
+            "export CFRS_PROXY={}\n",
+            quote(&format!("socks5h+unix:{}", socket.display()))
         ));
         return out;
     };
@@ -469,11 +505,24 @@ pub fn exec_in_pod(rules: &[String], program: &[String]) -> anyhow::Error {
         Ok(e) => e,
         Err(e) => return e.into(),
     };
-    let err = std::process::Command::new(exe)
-        .args(pod_args(&socket, rules, program))
-        .envs(ca_exports())
-        .exec();
+    let err = pod_command(exe, &socket, rules, program).exec();
     anyhow::Error::new(err).context("running cfrs pod")
+}
+
+/// The command of `warp exec` (issue 116): the program gets
+/// CFRS_WARP_SOCKET, also when the shell did not read the env file.
+fn pod_command(
+    exe: std::path::PathBuf,
+    socket: &Path,
+    rules: &[String],
+    program: &[String],
+) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(pod_args(socket, rules, program))
+        .env("CFRS_WARP_SOCKET", socket)
+        .envs(ca_exports());
+    command
 }
 
 /// `cfrs warp shell`: `$SHELL` under the pod; when the proxy does not
@@ -488,10 +537,8 @@ pub fn shell() -> anyhow::Error {
     let exe = std::env::current_exe().ok();
     if let (Some(socket), Some(exe)) = (socket.as_ref(), exe) {
         if socket_answers(socket) {
-            let err = std::process::Command::new(exe)
-                .args(pod_args(socket, &[], std::slice::from_ref(&shell)))
+            let err = pod_command(exe, socket, &[], std::slice::from_ref(&shell))
                 .env(SHELL_VARIABLE, "1")
-                .envs(ca_exports())
                 .exec();
             eprintln!("cfrs: warp shell: {err}; the shell starts with no pod");
         } else {
@@ -536,6 +583,9 @@ mod tests {
     fn with_no_tcp_listener_the_env_file_has_the_socket_only() {
         let text = env_file_text(None, Path::new("/r/warp.sock"));
         assert!(text.contains("export CFRS_WARP_SOCKET='/r/warp.sock'\n"));
+        // Issue 116: cfrs gets a proxy URL on the unix socket, and it parses.
+        assert!(text.contains("export CFRS_PROXY='socks5h+unix:/r/warp.sock'\n"));
+        assert!(crate::egress::Proxy::parse("socks5h+unix:/r/warp.sock").is_ok());
         for var in ["ALL_PROXY", "HTTPS_PROXY", "http_proxy", "CARGO_HTTP_PROXY"] {
             assert!(!text.contains(var), "{var}: {text}");
         }
@@ -544,6 +594,48 @@ mod tests {
         assert_eq!(listeners_of(&doc), (None, true));
         let doc = serde_json::json!({"listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"]});
         assert_eq!(listeners_of(&doc), (Some(40000), true));
+    }
+
+    // Issue 116: the program of warp exec gets CFRS_WARP_SOCKET.
+    #[test]
+    fn warp_exec_gives_the_socket() {
+        let command = pod_command(
+            "/b/cfrs".into(),
+            Path::new("/r/warp.sock"),
+            &[],
+            &["sh".to_string()],
+        );
+        assert!(command
+            .get_envs()
+            .any(|(k, v)| k == "CFRS_WARP_SOCKET" && v == Some("/r/warp.sock".as_ref())));
+    }
+
+    // Issue 116: warp up does not send its own session through the proxy
+    // variables of an earlier warp up.
+    #[test]
+    fn the_own_proxy_variables_are_not_given_to_the_proxy() {
+        let argv: Vec<String> = [
+            "warp",
+            "proxy",
+            "--listen",
+            "tcp://127.0.0.1:40000",
+            "--listen",
+            "unix:/r/warp.sock",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let vars = [
+            ("ALL_PROXY", "socks5h://127.0.0.1:40000"),
+            ("HTTPS_PROXY", "http://127.0.0.1:40000"),
+            ("CFRS_PROXY", "socks5h+unix:/r/warp.sock"),
+            ("CFRS_WARP_SOCKET", "/r/warp.sock"),
+            ("http_proxy", "http://corp.example:3128"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let mut own = own_proxy_variables(&argv, vars.into_iter());
+        own.sort();
+        assert_eq!(own, ["ALL_PROXY", "CFRS_PROXY", "HTTPS_PROXY"]);
     }
 
     #[test]

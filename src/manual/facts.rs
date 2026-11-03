@@ -80,7 +80,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["CFRS_PROXY"],
         used_by: "all commands",
-        meaning: "The value of --proxy when the flag is not given. It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry.",
+        meaning: "The value of --proxy when the flag is not given: http://, socks5:// or socks5h://HOST:PORT, SCHEME+unix:/PATH, or SCHEME+exec:COMMAND (a proxy at the stdin and stdout of a command). It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry. The env file of cfrs warp up with no TCP listener sets it to the unix socket.",
     },
     EnvVar {
         names: &["CFRS_WARP_SHELL"],

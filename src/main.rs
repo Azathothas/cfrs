@@ -57,10 +57,13 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     ca_file: Option<PathBuf>,
     /// The proxy for each connection: http://, socks5:// or socks5h://
-    /// [user:password@]host[:port]. Without it, cfrs reads HTTPS_PROXY and
-    /// ALL_PROXY. NO_PROXY names the targets that do not use a proxy.
-    /// CFRS_PROXY gives the same value, and keeps a password out of the
-    /// command line.
+    /// [user:password@]host[:port]. A proxy on a unix socket:
+    /// socks5h+unix:/PATH (or socks5h://unix:/PATH). A proxy at the stdin
+    /// and stdout of a command, one for each connection (as ProxyCommand of
+    /// SSH): http+exec:COMMAND or socks5h+exec:COMMAND. Without it, cfrs
+    /// reads HTTPS_PROXY and ALL_PROXY (no +exec: there). NO_PROXY names
+    /// the targets that do not use a proxy. CFRS_PROXY gives the same
+    /// value, and keeps a password out of the command line.
     #[arg(
         long,
         global = true,
@@ -1386,7 +1389,7 @@ fn network_options(cli: &Cli) -> Result<()> {
         // Issue 95: a value with no scheme (CFRS_PROXY=notaurl) became
         // http://notaurl:8080, and each leg then failed on a name. The
         // proxy variables of other tools keep the lenient form.
-        if !spec.contains("://") {
+        if !spec.contains("://") && !spec.contains("+unix:") && !spec.contains("+exec:") {
             let shown = match spec.rsplit_once('@') {
                 Some((_, host)) => format!("***@{host}"),
                 None => spec.clone(),
@@ -1396,7 +1399,9 @@ fn network_options(cli: &Cli) -> Result<()> {
             );
         }
         cfrs::report::hide(spec);
-        set_choice(ProxyChoice::Via(Proxy::parse(spec).context("--proxy")?));
+        set_choice(ProxyChoice::Via(
+            Proxy::parse_trusted(spec).context("--proxy")?,
+        ));
     } else if cli.no_proxy {
         set_choice(ProxyChoice::Direct);
     }

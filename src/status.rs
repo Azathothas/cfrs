@@ -20,7 +20,10 @@ fn proxy() -> Value {
         return match crate::egress::Proxy::parse(&value) {
             Ok(p) => json!({
                 "variable": key,
-                "address": format!("{}:{}", p.address().0, p.address().1),
+                "address": match p.carrier() {
+                    crate::egress::Carrier::Tcp => format!("{}:{}", p.address().0, p.address().1),
+                    _ => p.to_string(),
+                },
                 "kind": "http",
                 "credentials": p.has_credentials(),
             }),

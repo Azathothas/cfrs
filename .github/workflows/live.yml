@@ -180,6 +180,12 @@ jobs:
           grep -q '^api.trycloudflare.com:443$' "$RUNNER_TEMP/connect.log"
           grep -q ':7844$' "$RUNNER_TEMP/connect.log"
           grep -q '\.trycloudflare\.com:443$' "$RUNNER_TEMP/connect.log"
+          # Issue 129: the same proxy at the stdin and the stdout of a
+          # command (one nc for each connection).
+          : > "$RUNNER_TEMP/connect.log"
+          sh scripts/live-run.sh viaexec target/release/cfrs --proxy 'http+exec:nc 127.0.0.1 18080' demo --exit-on-verify
+          grep -q '^api.trycloudflare.com:443$' "$RUNNER_TEMP/connect.log"
+          grep -c ':7844$' "$RUNNER_TEMP/connect.log" | sed 's/^/edge connections through the command: /'
       # The rate of a GET and a POST on the HTTP path, through cfrs connect,
       # and through a WebSocket client in Python (issue 51).
       - name: Throughput of the HTTP path and of a --forward WebSocket

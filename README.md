@@ -540,6 +540,14 @@ cfrs --no-proxy tunnel --url http://127.0.0.1:8080
 * `http://` uses `CONNECT`. `socks5://` resolves the name on this host;
   `socks5h://` gives the name to the proxy. cfrs refuses `socks4://` and
   `https://`.
+* A proxy on a unix socket: `socks5h+unix:/PATH` (also
+  `socks5h://unix:/PATH`), or `http+unix:/PATH`.
+* A proxy at the stdin and the stdout of a command, when the only way out
+  is a byte channel (issue 129): `--proxy 'http+exec:ssh gw nc 127.0.0.1
+  3128'`. Each connection starts the command once, with `sh -c`, as the
+  `ProxyCommand` of SSH; its stderr is the stderr of cfrs. Only `--proxy`
+  and `CFRS_PROXY` take `+exec:`: a variable of another tool does not start
+  a program. QUIC legs need UDP and do not use it.
 * Without `--proxy` and `--no-proxy`, cfrs reads `HTTPS_PROXY`,
   `https_proxy`, `ALL_PROXY` and `all_proxy`. `NO_PROXY` names the targets
   that do not use the proxy.
