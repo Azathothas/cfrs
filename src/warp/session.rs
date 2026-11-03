@@ -184,6 +184,11 @@ enum TxInner {
         tx: Box<super::h3::H3Tx>,
         keepalive_taken: bool,
     },
+    /// WireGuard on UDP (issue 152).
+    Wg {
+        tx: Box<super::wg::WgTx>,
+        keepalive: Option<super::wg::WgKeepalive>,
+    },
 }
 
 /// The read half of a session, moved to whatever task pumps inbound packets.
@@ -199,6 +204,7 @@ pub struct MasqueRx {
 enum RxInner {
     H2(h2::RecvStream),
     H3(Box<super::h3::H3Rx>),
+    Wg(Box<super::wg::WgRx>),
 }
 
 /// The liveness check of a session (issue 104): an HTTP/2 PING when no data
@@ -214,6 +220,7 @@ pub struct Keepalive {
 enum KeepInner {
     H2(h2::PingPong),
     H3(quinn::Connection),
+    Wg(super::wg::WgKeepalive),
 }
 
 impl Keepalive {
@@ -242,6 +249,7 @@ impl Keepalive {
         let mut ping = match self.inner {
             KeepInner::H2(ping) => ping,
             KeepInner::H3(conn) => return super::h3::closed(conn).await,
+            KeepInner::Wg(keepalive) => return keepalive.run().await,
         };
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -513,6 +521,28 @@ impl MasqueSession {
         }
     }
 
+    /// A session over WireGuard (issue 152): the handshake with `peer`.
+    pub async fn connect_wg(peer: &super::wg::Peer) -> Result<Self> {
+        let (tx, rx, keepalive) = super::wg::connect(peer).await?;
+        Ok(MasqueSession {
+            tx: MasqueTx {
+                inner: TxInner::Wg {
+                    tx: Box::new(tx),
+                    keepalive: Some(keepalive),
+                },
+                closed: false,
+                waits: 0,
+                stall: SEND_STALL,
+            },
+            rx: MasqueRx {
+                inner: RxInner::Wg(Box::new(rx)),
+                decoder: CapsuleDecoder::new(),
+                closed: false,
+                progress: Default::default(),
+            },
+        })
+    }
+
     /// True for a session over HTTP/3.
     pub fn is_h3(&self) -> bool {
         matches!(self.tx.inner, TxInner::H3 { .. })
@@ -565,6 +595,13 @@ impl MasqueTx {
         let send = match &mut self.inner {
             TxInner::H2 { send, .. } => send,
             TxInner::H3 { tx, .. } => {
+                if let Err(err) = tx.send_packets(packets).await {
+                    self.closed = true;
+                    return Err(err);
+                }
+                return Ok(());
+            }
+            TxInner::Wg { tx, .. } => {
                 if let Err(err) = tx.send_packets(packets).await {
                     self.closed = true;
                     return Err(err);
@@ -633,6 +670,10 @@ impl MasqueTx {
                     progress,
                 })
             }
+            TxInner::Wg { keepalive, .. } => keepalive.take().map(|k| Keepalive {
+                inner: KeepInner::Wg(k),
+                progress,
+            }),
         }
     }
 
@@ -645,6 +686,7 @@ impl MasqueTx {
                     .send_data(Bytes::new(), true)
                     .context("closing the CONNECT-IP body")?,
                 TxInner::H3 { tx, .. } => tx.close(),
+                TxInner::Wg { .. } => {}
             }
         }
         Ok(())
@@ -674,6 +716,19 @@ impl MasqueRx {
             }
             let recv = match &mut self.inner {
                 RxInner::H2(recv) => recv,
+                RxInner::Wg(rx) => {
+                    return match rx.recv_packet().await {
+                        Ok(packet) => {
+                            self.progress
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(packet)
+                        }
+                        Err(err) => {
+                            self.closed = true;
+                            Err(err)
+                        }
+                    };
+                }
                 RxInner::H3(rx) => match rx.next().await {
                     Ok(Some(super::h3::Incoming::Packet(packet))) => {
                         self.progress

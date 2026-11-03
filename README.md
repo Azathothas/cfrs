@@ -455,6 +455,12 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   of `--fragment-size` bytes (64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
+* `--transport wireguard` (global, `CFRS_WARP_TRANSPORT`): the tunnel on
+  WireGuard (UDP, port 2408 of the record, or `--wireguard-endpoint`) in
+  place of MASQUE. The device is the one of `cfrs warp export`
+  (`warp-wg.json` in the state directory); cfrs registers it when the file
+  has none. The stack, the proxy and the commands are the same. There is no
+  relay and no proxy: WireGuard is UDP.
 * `--masque-transport h3` (global, `CFRS_WARP_MASQUE_TRANSPORT`): the MASQUE
   session over HTTP/3 on UDP 443 in place of HTTP/2 on TCP 443. Each IP
   packet is an HTTP datagram (RFC 9297), so a lost packet does not stop the

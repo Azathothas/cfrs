@@ -1446,6 +1446,10 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--masque-sni".into());
         argv.push(sni.clone());
     }
+    if let Some(endpoint) = args.wireguard_endpoint {
+        argv.push("--wireguard-endpoint".into());
+        argv.push(endpoint.to_string());
+    }
     for resolver in &args.resolver {
         argv.push("--resolver".into());
         argv.push(resolver.clone());
@@ -1458,6 +1462,7 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         ("--fragment-size", &args.fragment_size),
         ("--cc", &args.cc),
         ("--masque-transport", &args.masque_transport),
+        ("--transport", &args.transport),
     ] {
         if let Some(value) = value {
             argv.push(flag.into());
@@ -2873,6 +2878,26 @@ struct WarpArgs {
         value_parser = ["h2", "h3"]
     )]
     masque_transport: Option<String>,
+    /// The leg of the tunnel: masque (the default) or wireguard (UDP to the
+    /// WireGuard front door, with the device of `cfrs warp export`, which
+    /// cfrs registers when the file has none).
+    #[arg(
+        long,
+        value_name = "masque|wireguard",
+        global = true,
+        env = "CFRS_WARP_TRANSPORT",
+        value_parser = ["masque", "wireguard"]
+    )]
+    transport: Option<String>,
+    /// The WireGuard front door (IP:PORT) in place of the one of the
+    /// device record (port 2408).
+    #[arg(
+        long,
+        value_name = "IP:PORT",
+        global = true,
+        env = "CFRS_WARP_WG_ENDPOINT"
+    )]
+    wireguard_endpoint: Option<std::net::SocketAddr>,
 
     #[command(subcommand)]
     command: WarpCommand,
@@ -3220,7 +3245,32 @@ enum WarpCommand {
 
 async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
     let (client, path) = warp_client_inner(args).await?;
-    Ok((client.with_masque(masque_options(args)), path))
+    let peer = wireguard_peer(args).await?;
+    Ok((
+        client
+            .with_masque(masque_options(args))
+            .with_wireguard(peer),
+        path,
+    ))
+}
+
+/// The WireGuard peer of `--transport wireguard` (issue 152): the device of
+/// `warp export` (warp-wg.json of the state directory).
+async fn wireguard_peer(args: &WarpArgs) -> Result<Option<cfrs::warp::wg::Peer>> {
+    if args.transport.as_deref() != Some("wireguard") {
+        return Ok(None);
+    }
+    let path = cfrs::warp::export::default_path()
+        .fault(Fault::Config)?
+        .context("CFRS_STATE_DIR=none keeps no WireGuard device; --transport wireguard needs one")
+        .fault(Fault::Config)?;
+    let exported = cfrs::warp::export::load_or_register(&path, false, None)
+        .await
+        .fault(Fault::Unavailable)?;
+    let peer = cfrs::warp::wg::Peer::from_exported(&exported, args.wireguard_endpoint)
+        .fault(Fault::Config)?;
+    tracing::info!(endpoint = %peer.endpoint, "the tunnel goes on WireGuard (UDP)");
+    Ok(Some(peer))
 }
 
 /// The MASQUE options of the command line.
@@ -3674,7 +3724,16 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     .map_or_else(|| "-".to_string(), |a| a.to_string())
             );
             let stack = client.connect().await.fault(Fault::Unavailable)?;
-            println!("tunnel      up (MASQUE over TCP 443)");
+            println!(
+                "tunnel      up ({})",
+                if client.is_wireguard() {
+                    "WireGuard over UDP"
+                } else if args.masque_transport.as_deref() == Some("h3") {
+                    "MASQUE over HTTP/3, UDP 443"
+                } else {
+                    "MASQUE over TCP 443"
+                }
+            );
             // Issue 147: the exit of the session. It does not change the
             // exit code.
             match cfrs::warp::exit::trace(&stack).await {

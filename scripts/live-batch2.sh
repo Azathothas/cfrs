@@ -18,6 +18,8 @@ cleanup() {
             "$cfrs" warp --identity "$dir/$id.json" delete > /dev/null 2>&1 || true
         fi
     done
+    # The WireGuard device of --transport wireguard (the state directory).
+    "$cfrs" warp export --delete > /dev/null 2>&1 || true
     if [ -f "$dir/wg.json" ]; then
         "$cfrs" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1 || true
     fi
@@ -174,6 +176,24 @@ wait_port 40014 "$dir/h2p.log"
 down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 60 -x socks5h://127.0.0.1:40014 'https://speed.cloudflare.com/__down?bytes=20000000') || true
 echo "h2 download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
 kill "$pid" 2> /dev/null || true
+
+echo "== the WireGuard leg (issue 152; a report, not a check yet)"
+if "$cfrs" warp --transport wireguard probe > "$dir/wgp.out" 2>&1; then
+    grep -E '^(tunnel|OK|exit) ' "$dir/wgp.out" | head -4
+    echo "wireguard probe: ok"
+    "$cfrs" warp --transport wireguard proxy --listen tcp://127.0.0.1:40015 --run-for 120 > "$dir/wgproxy.log" 2>&1 &
+    pid=$!
+    pids="$pids $pid"
+    wait_port 40015 "$dir/wgproxy.log"
+    down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 60 -x socks5h://127.0.0.1:40015 'https://speed.cloudflare.com/__down?bytes=20000000') || true
+    echo "wireguard download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    up=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 -x socks5h://127.0.0.1:40015 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
+    echo "wireguard upload 16 MiB: HTTP ${up%% *}, $(echo "${up#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    kill "$pid" 2> /dev/null || true
+else
+    echo "wireguard probe: FAIL"
+    sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/wgp.out" | tail -5
+fi
 
 echo "== QUIC on the front door (issue 157)"
 python3 scripts/quic-vn.py 162.159.198.2 443 5 || true

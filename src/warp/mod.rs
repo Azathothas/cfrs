@@ -51,6 +51,7 @@ pub mod ssh_config;
 #[cfg(target_os = "linux")]
 pub mod tun;
 pub mod up;
+pub mod wg;
 
 pub use identity::Identity;
 pub use ip::{check_cc, check_tcp_burst, StackConfig, TcpConn, UdpConn, WarpStack};
@@ -83,6 +84,9 @@ pub struct WarpClient {
     /// The address of a front door whose session carried no packet (issue
     /// 133): it goes last.
     door_bad: std::sync::Mutex<Option<std::net::SocketAddr>>,
+    /// WireGuard in place of MASQUE (issue 152): the peer of the device
+    /// of `warp export`.
+    wireguard: Option<wg::Peer>,
 }
 
 /// The order of the front door addresses: the one that worked last first,
@@ -242,6 +246,7 @@ impl WarpClient {
             leg_read: std::sync::Once::new(),
             endpoint_won: std::sync::Mutex::new(None),
             door_bad: std::sync::Mutex::new(None),
+            wireguard: None,
         })
     }
 
@@ -259,6 +264,7 @@ impl WarpClient {
             leg_read: std::sync::Once::new(),
             endpoint_won: std::sync::Mutex::new(None),
             door_bad: std::sync::Mutex::new(None),
+            wireguard: None,
         }
     }
 
@@ -267,6 +273,18 @@ impl WarpClient {
     pub fn with_masque(mut self, masque: MasqueOptions) -> Self {
         self.masque = masque;
         self
+    }
+
+    /// Carry the tunnel on WireGuard with `peer` (issue 152), in place of
+    /// MASQUE.
+    pub fn with_wireguard(mut self, peer: Option<wg::Peer>) -> Self {
+        self.wireguard = peer;
+        self
+    }
+
+    /// True when the tunnel goes on WireGuard.
+    pub fn is_wireguard(&self) -> bool {
+        self.wireguard.is_some()
     }
 
     /// The relay of the fallback: the relay of `--transport relay` when it
@@ -504,6 +522,13 @@ impl WarpClient {
 
     /// The address the tunnel assigned to us.
     pub fn local_address(&self) -> Result<std::net::IpAddr> {
+        if let Some(peer) = &self.wireguard {
+            return peer
+                .v4
+                .map(std::net::IpAddr::V4)
+                .or(peer.v6.map(std::net::IpAddr::V6))
+                .context("the WireGuard device has no address");
+        }
         self.device
             .ipv4()
             .map(std::net::IpAddr::V4)
@@ -519,7 +544,10 @@ impl WarpClient {
         let stack = WarpStack::start(
             tx,
             rx,
-            StackConfig::new(local).with_ipv6(self.device.ipv6()),
+            StackConfig::new(local).with_ipv6(match &self.wireguard {
+                Some(peer) => peer.v6,
+                None => self.device.ipv6(),
+            }),
         )?;
         // Issue 120: the session is up when a packet crossed it.
         if std::env::var_os(proxy::NO_CHECK_VARIABLE).is_some_and(|v| !v.is_empty()) {
@@ -587,6 +615,12 @@ impl WarpClient {
     /// worked last goes first.
     async fn open_session(&self) -> Result<MasqueSession> {
         use std::sync::atomic::Ordering;
+        // Issue 152: WireGuard on UDP, with no relay and no proxy.
+        if let Some(peer) = &self.wireguard {
+            let session = MasqueSession::connect_wg(peer).await?;
+            crate::decisions::count("masque", "wireguard");
+            return Ok(session);
+        }
         // Issue 157: HTTP/3 has no relay (the relay carries TCP).
         let relay = if self.masque.h3 { None } else { self.relay() };
         let Some(relay) = relay else {

@@ -35,7 +35,7 @@ repo=${CFRS_REPO:-Azathothas/cfrs}
 engine=${CONTAINER:-docker}
 
 dir=$(mktemp -d)
-cleanup() { rm -rf "$dir"; }
+cleanup() { rm -rf "$dir" 2> /dev/null || true; }
 trap cleanup EXIT INT TERM
 
 # A path of its own: a binary that kept the path of its source would
@@ -65,6 +65,10 @@ fi
     -e CFRS_BUILD_COMMIT="$commit" \
     "$image" \
     cargo build --locked --release --target "$target"
+# The container wrote target/ as root: give it back to this user, so that
+# the cleanup can remove it.
+"$engine" run --rm -v "$src:/rebuild/$tag" "$image" \
+    chown -R "$(id -u):$(id -g)" "/rebuild/$tag" || true
 
 curl -fsSL -o "$dir/SHA256SUMS" "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
 failed=0
