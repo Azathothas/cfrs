@@ -31,6 +31,55 @@ pub fn init_crypto() {
     });
 }
 
+/// The addresses of a name of RFC 6761 for this host: `localhost` and
+/// `*.localhost` (issue 119: a static build on a host with no /etc/hosts
+/// did not resolve `localhost`).
+pub fn local_name(host: &str) -> Option<Vec<std::net::IpAddr>> {
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    (name == "localhost" || name.ends_with(".localhost")).then(|| {
+        vec![
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST),
+        ]
+    })
+}
+
+/// `HOST:PORT` or `[V6]:PORT`.
+fn split_host_port(addr: &str) -> Option<(&str, u16)> {
+    let (host, port) = addr.rsplit_once(':')?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    Some((host, port.parse().ok()?))
+}
+
+/// Connect to an origin. `localhost` needs no resolver. The error says if
+/// the name or the connection failed (issue 119: both were "connecting to
+/// HOST:PORT"). An origin name does not go to DNS over HTTPS.
+pub async fn connect_origin(host: &str, port: u16) -> Result<TcpStream> {
+    let addrs: Vec<std::net::SocketAddr> = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => vec![(ip, port).into()],
+        Err(_) => match local_name(host) {
+            Some(ips) => ips.into_iter().map(|ip| (ip, port).into()).collect(),
+            None => tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|e| {
+                    crate::hop::at(
+                        crate::hop::Hop::Dns,
+                        anyhow::anyhow!("resolving the origin {host}: {e}"),
+                    )
+                })?
+                .collect(),
+        },
+    };
+    let mut last = None;
+    for addr in &addrs {
+        match TcpStream::connect(addr).await {
+            Ok(tcp) => return Ok(tcp),
+            Err(e) => last = Some(anyhow::anyhow!("connecting to {addr}: {e}")),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("the origin {host} has no address")))
+}
+
 /// Dial the origin for a forward service.
 pub async fn dial(service: &Service, options: &OriginOptions) -> Result<BoxedIo> {
     let timeout = options.connect_timeout;
@@ -38,9 +87,7 @@ pub async fn dial(service: &Service, options: &OriginOptions) -> Result<BoxedIo>
         match service {
             Service::Http(url) => {
                 let (host, port, tls) = parse_http_url(url)?;
-                let tcp = TcpStream::connect((host.as_str(), port))
-                    .await
-                    .with_context(|| format!("connecting to {host}:{port}"))?;
+                let tcp = connect_origin(&host, port).await?;
                 if tls {
                     tls_wrap(tcp, &host, options.no_tls_verify).await
                 } else {
@@ -49,13 +96,13 @@ pub async fn dial(service: &Service, options: &OriginOptions) -> Result<BoxedIo>
             }
             Service::Unix(path) => dial_unix(path, false, options).await,
             Service::UnixTls(path) => dial_unix(path, true, options).await,
-            Service::Tcp(addr) => TcpStream::connect(addr.as_str())
-                .await
-                .map(|s| {
-                    let _ = s.set_nodelay(true);
-                    Box::new(s) as BoxedIo
-                })
-                .with_context(|| format!("connecting to {addr}")),
+            Service::Tcp(addr) => {
+                let (host, port) =
+                    split_host_port(addr).with_context(|| format!("{addr} is not HOST:PORT"))?;
+                let s = connect_origin(host, port).await?;
+                let _ = s.set_nodelay(true);
+                Ok(Box::new(s) as BoxedIo)
+            }
             other => bail!("{} is not a forward service", other.describe()),
         }
     };
@@ -239,6 +286,33 @@ fn _pathbuf(_: PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 119: localhost needs no resolver (a host with no /etc/hosts).
+    #[test]
+    fn localhost_is_a_local_name() {
+        for name in ["localhost", "LOCALHOST.", "app.localhost"] {
+            let ips = local_name(name).unwrap();
+            assert_eq!(ips[0], std::net::IpAddr::from([127, 0, 0, 1]), "{name}");
+        }
+        assert!(local_name("example.com").is_none());
+        assert!(local_name("localhost.example.com").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_origin_on_localhost_connects_and_a_refusal_names_the_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(connect_origin("localhost", port).await.is_ok());
+        drop(listener);
+        let err = connect_origin("localhost", port).await.unwrap_err();
+        assert!(format!("{err}").contains("connecting to "), "{err}");
+        assert!(!format!("{err}").contains("resolving"), "{err}");
+        let err = connect_origin("no-such-name.invalid", 80)
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("resolving the origin"), "{err}");
+        assert_eq!(split_host_port("[::1]:8080"), Some(("::1", 8080)));
+    }
 
     #[test]
     fn parses_urls() {

@@ -44,6 +44,36 @@ fn parse_proc_net(text: &str, ports: &mut BTreeSet<u16>) {
     }
 }
 
+/// True when a TCP connect to 127.0.0.1:`port` works in `timeout` (issue
+/// 119: a port in the LISTEN table can refuse each connection, for example
+/// under a seccomp policy that denies connect).
+pub async fn reachable(port: u16, timeout: std::time::Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(("127.0.0.1", port))).await,
+        Ok(Ok(_))
+    )
+}
+
+/// The ports of `ports` that accept a connection, and the others.
+pub async fn probe(ports: &[u16]) -> (Vec<u16>, Vec<u16>) {
+    let checks = futures::future::join_all(
+        ports
+            .iter()
+            .map(|p| reachable(*p, std::time::Duration::from_millis(500))),
+    )
+    .await;
+    let mut open = Vec::new();
+    let mut closed = Vec::new();
+    for (port, ok) in ports.iter().zip(checks) {
+        if ok {
+            open.push(*port);
+        } else {
+            closed.push(*port);
+        }
+    }
+    (open, closed)
+}
+
 /// Probe a loopback port with a minimal HTTP request; returns the port when
 /// something HTTP-ish answers.
 pub async fn confirm_local_http(port: u16) -> anyhow::Result<u16> {
@@ -72,6 +102,18 @@ pub async fn confirm_local_http(port: u16) -> anyhow::Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_probe_splits_open_and_closed_ports() {
+        let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (a, b) = (
+            open.local_addr().unwrap().port(),
+            closed.local_addr().unwrap().port(),
+        );
+        drop(closed);
+        assert_eq!(probe(&[a, b]).await, (vec![a], vec![b]));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

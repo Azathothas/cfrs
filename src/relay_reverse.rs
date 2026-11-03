@@ -354,11 +354,7 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
         }
     };
     tracing::info!(name = %pair.name, %target, "the node is connected to the relay");
-    crate::detach::ready(serde_json::json!({
-        "name": pair.name,
-        "relay": pair.relay,
-        "target": target.to_string(),
-    }));
+    crate::detach::ready(node_ready(pair, target));
     let (mut sink, mut stream) = ws.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(256);
     let mut sessions: HashMap<String, mpsc::Sender<Vec<u8>>> = HashMap::new();
@@ -490,6 +486,37 @@ async fn session(
 /// `ready`, then copy `input` to the node and the node to `output`.
 /// After the end of the input of `relay connect`, the time with no data from
 /// the target after which the session ends (issue 109).
+/// The ready document of a node (issue 119): the key `name` is the name of
+/// the instance (`detach::ready` sets it), so the pair is `pair`, with its
+/// end.
+pub fn node_ready(pair: &Pair, target: &Target) -> serde_json::Value {
+    serde_json::json!({
+        "pair": pair.name,
+        "relay": pair.relay,
+        "target": target.to_string(),
+        "expires": pair.expires,
+        "expires_in": pair.left().as_secs(),
+    })
+}
+
+/// The detached instances that serve the node of the pair `name` (issue
+/// 119: `relay stop` stops them too).
+pub fn instances_of_pair(records: &[crate::instances::Record], name: &str) -> Vec<String> {
+    records
+        .iter()
+        .filter(|r| r.command.starts_with("relay node"))
+        .filter(|r| {
+            r.ready
+                .as_ref()
+                .and_then(|d| d.get("pair"))
+                .and_then(|v| v.as_str())
+                .map(|p| p == name)
+                .unwrap_or_else(|| r.args.iter().any(|a| a == name))
+        })
+        .map(|r| r.name.clone())
+        .collect()
+}
+
 pub const EOF_IDLE: Duration = Duration::from_secs(5);
 
 pub async fn connect<R, W>(
@@ -622,6 +649,69 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(
+        name: &str,
+        command: &str,
+        args: &[&str],
+        pair: Option<&str>,
+    ) -> crate::instances::Record {
+        crate::instances::Record {
+            name: name.into(),
+            pid: 1,
+            supervisor: None,
+            started: 0,
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            hash: String::new(),
+            cwd: "/".into(),
+            state: "ready".into(),
+            ready: pair.map(|p| serde_json::json!({ "pair": p })),
+            log: String::new(),
+            restarts: 0,
+        }
+    }
+
+    // Issue 119: relay stop finds the node instances of its pair.
+    #[test]
+    fn the_instances_of_a_pair() {
+        let records = [
+            record("relay-node-a1", "relay node", &[], Some("ssh-box")),
+            record(
+                "relay-node-b2",
+                "relay node",
+                &["relay", "node", "ssh-box"],
+                None,
+            ),
+            record("relay-node-c3", "relay node", &[], Some("other")),
+            record("ssh-box", "tunnel", &["ssh-box"], None),
+        ];
+        assert_eq!(
+            instances_of_pair(&records, "ssh-box"),
+            ["relay-node-a1", "relay-node-b2"]
+        );
+    }
+
+    // Issue 119: the ready document names the pair and its end.
+    #[test]
+    fn the_node_ready_document_names_the_pair() {
+        let pair = Pair {
+            name: "ssh-box".into(),
+            node_token: "n".into(),
+            connect_token: "c".into(),
+            stop_token: String::new(),
+            expires: (SystemTime::now() + Duration::from_secs(600))
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            relay: "https://relay.example".into(),
+        };
+        let doc = node_ready(&pair, &Target::parse("127.0.0.1:22").unwrap());
+        assert_eq!(doc["pair"], "ssh-box");
+        assert!(doc.get("name").is_none());
+        assert_eq!(doc["expires"], pair.expires);
+        assert!(doc["expires_in"].as_u64().unwrap() > 590);
+    }
 
     #[test]
     fn targets_and_names() {

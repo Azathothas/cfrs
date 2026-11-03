@@ -342,6 +342,7 @@ together: the origin gets all paths other than `/__cfrs/ws`.
 
 ```sh
 cfrs ports            # list the listening TCP ports (Linux)
+cfrs ports --probe    # only the ports that accept a connection
 cfrs qr <URL>         # print a QR code
 ```
 

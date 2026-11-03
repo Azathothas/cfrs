@@ -394,8 +394,18 @@ jobs:
           wait
           grep -qx parallel-1 relay-1.out
           grep -qx parallel-2 relay-2.out
-          target/release/cfrs stop relaynode
-          target/release/cfrs relay stop "$name"
+          # Issue 109: an input that ends at once still gets the answer
+          # (the SSH banner of the target).
+          printf 'SSH-2.0-cfrs-live\r\n' | timeout 30 target/release/cfrs relay connect "$name" > banner.out || true
+          grep -q '^SSH-2.0-' banner.out
+          echo "relay connect: the answer came after the end of the input"
+          # Issue 119: the ready document names the pair; relay stop stops
+          # the node instance too.
+          target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "relaynode") | .ready.pair' > /dev/null
+          target/release/cfrs relay stop "$name" | sed "s/$name/<pair>/"
+          if target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "relaynode")' > /dev/null; then
+            echo "the node instance runs after relay stop"; exit 1
+          fi
       - name: WARP account and probe
         timeout-minutes: 4
         run: |
@@ -539,9 +549,13 @@ jobs:
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP' EXIT
-          sh scripts/live-run.sh agent timeout 300 target/release/cfrs agent up --expose 18096 ||
+          # Issue 119: port 18097 has no origin: no tunnel for it.
+          sh scripts/live-run.sh agent timeout 300 target/release/cfrs agent up --expose 18096 --expose 18097 ||
             { tail -30 agent.err; exit 1; }
           tail -1 agent.out > agent.json
+          jq -c '.exposed[] | {port, state}' agent.json
+          jq -e '.exposed[0].state == "ready"' agent.json
+          jq -e '.exposed[1].state == "origin-unreachable" and .exposed[1].url == null' agent.json
           jq -e '.mode == "warp"' agent.json
           jq -e '.works["git (SSH)"] | index("warp") != null' agent.json
           url=$(jq -r '.exposed[0].url' agent.json)

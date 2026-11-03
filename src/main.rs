@@ -325,6 +325,10 @@ struct PortsArgs {
     /// Print one JSON object: {"ports": [PORT, ...]}.
     #[arg(long)]
     json: bool,
+    /// Connect to each port, and list only the ports that accept a
+    /// connection. With --json, the others are in "unreachable".
+    #[arg(long)]
+    probe: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -946,6 +950,16 @@ async fn agent(command: AgentCommand) -> Result<()> {
             let mut exposed = Vec::new();
             for p in &expose {
                 let name = format!("expose-{p}");
+                // Issue 119: a port with no origin gets no tunnel (it gave
+                // a URL that answered 502).
+                if !cfrs::ports::reachable(*p, Duration::from_secs(2)).await {
+                    exposed.push(serde_json::json!({
+                        "port": p,
+                        "state": "origin-unreachable",
+                        "error": format!("nothing accepts a connection on 127.0.0.1:{p}"),
+                    }));
+                    continue;
+                }
                 let base = vec![
                     "tunnel".to_string(),
                     "--port".into(),
@@ -961,12 +975,12 @@ async fn agent(command: AgentCommand) -> Result<()> {
                     run_self_json(&relay)
                 });
                 match result {
-                    Ok(d) => {
-                        exposed.push(serde_json::json!({"port": p, "name": name, "url": d["url"]}))
-                    }
-                    Err(err) => {
-                        exposed.push(serde_json::json!({"port": p, "error": format!("{err:#}")}))
-                    }
+                    Ok(d) => exposed.push(
+                        serde_json::json!({"port": p, "state": "ready", "name": name, "url": d["url"]}),
+                    ),
+                    Err(err) => exposed.push(
+                        serde_json::json!({"port": p, "state": "failed", "error": format!("{err:#}")}),
+                    ),
                 }
             }
             let after = cfrs::agent::run(timeout).await;
@@ -1419,7 +1433,23 @@ async fn async_main(cli: Cli) -> Result<()> {
             }
         }
         Command::Ports(args) => {
-            let ports = cfrs::ports::listening_ports();
+            let mut ports = cfrs::ports::listening_ports();
+            if args.probe {
+                // Issue 119: a port in the LISTEN table can refuse each
+                // connection.
+                let (open, unreachable) = cfrs::ports::probe(&ports).await;
+                ports = open;
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "ports": ports, "probed": true, "unreachable": unreachable })
+                    );
+                    return Ok(());
+                }
+                for port in &unreachable {
+                    eprintln!("cfrs: ports: {port} listens, and refuses a connection");
+                }
+            }
             if args.json {
                 println!("{}", serde_json::json!({ "ports": ports }));
             } else {
@@ -2281,6 +2311,19 @@ async fn relay(args: RelayArgs) -> Result<()> {
         }
         RelayCommand::Stop { name } => {
             let pair = reverse::load(&dir, Some(&name)).fault(Fault::Usage)?;
+            // Issue 119: the local node of the pair stops first, so that it
+            // does not connect again.
+            if let Ok(run) = cfrs::instances::run_dir() {
+                let records: Vec<_> = cfrs::instances::list(&run)
+                    .into_iter()
+                    .filter(|e| e.alive)
+                    .map(|e| e.record)
+                    .collect();
+                for instance in reverse::instances_of_pair(&records, &name) {
+                    cfrs::detach::stop(&run, &instance, Duration::from_secs(10))?;
+                    println!("cfrs: relay    stopped the node instance {instance}");
+                }
+            }
             let relay = cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
             reverse::stop(&relay, &pair)
                 .await
