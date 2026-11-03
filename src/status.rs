@@ -88,6 +88,10 @@ pub fn document() -> Value {
         "stdin_tty": tty(0),
         "stdout_tty": tty(1),
         "instances": instances(),
+        "nofile": match crate::rlimit::now() {
+            Some(n) => json!({"soft": n.soft, "hard": n.hard, "raised_from": n.raised_from}),
+            None => Value::Null,
+        },
     })
 }
 

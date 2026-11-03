@@ -1031,3 +1031,50 @@ fn a_full_stdout_is_no_panic() {
     );
     assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 }
+
+/// Issue 126: cfrs raises the soft limit of open files to the hard limit,
+/// and `status` shows it. `warp exec` leaves it as it is (it runs a program
+/// of the user).
+#[test]
+#[allow(clippy::unnecessary_cast)]
+fn the_soft_limit_of_open_files_is_raised() {
+    use std::os::unix::process::CommandExt;
+    let status_with = |soft: u64, hard: u64| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.arg("status").env("CFRS_STATE_DIR", "none");
+        // SAFETY: setrlimit is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(move || {
+                let limit = libc::rlimit {
+                    rlim_cur: soft as libc::rlim_t,
+                    rlim_max: hard as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let out = cmd.output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        doc["nofile"].clone()
+    };
+    let mut hard = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes one rlimit.
+    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut hard) };
+    let hard = (hard.rlim_max as u64).min(4096);
+    if hard <= 256 {
+        eprintln!("skipping: the hard limit is {hard}");
+        return;
+    }
+    let nofile = status_with(256, hard);
+    assert_eq!(nofile["soft"], hard, "{nofile}");
+    assert_eq!(nofile["raised_from"], 256, "{nofile}");
+    let nofile = status_with(hard, hard);
+    assert_eq!(nofile["soft"], hard, "{nofile}");
+    assert!(nofile["raised_from"].is_null(), "{nofile}");
+}

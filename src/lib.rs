@@ -81,6 +81,7 @@ pub mod relay;
 pub mod relay_reverse;
 pub mod report;
 pub mod resolve;
+pub mod rlimit;
 pub mod service;
 pub mod share;
 pub mod state;

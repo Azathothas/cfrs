@@ -691,6 +691,15 @@ fn main() {
         }
     };
     let command = command_name(&argv);
+    // Issue 126: a server command holds one descriptor for each connection.
+    // A command that runs a program of the user leaves its limit as it is.
+    let runs_a_program = matches!(
+        command.as_deref(),
+        Some("warp exec" | "warp shell" | "warp run" | "autostart run")
+    );
+    if !runs_a_program {
+        cfrs::rlimit::raise();
+    }
     if let Some(detach) = detach_of(&cli.command).filter(|d| d.detach) {
         let name = command.clone().unwrap_or_default();
         if !cfrs::detach::is_child() {

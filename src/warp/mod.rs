@@ -67,6 +67,43 @@ pub struct WarpClient {
     relay: std::sync::OnceLock<Option<std::sync::Arc<crate::ws_relay::Relay>>>,
     /// The last session went through the relay: try it first next time.
     relay_first: std::sync::atomic::AtomicBool,
+    /// The file that keeps the leg that worked between two runs (issue
+    /// 126), next to the identity file.
+    leg_file: Option<std::path::PathBuf>,
+    /// The leg file was read.
+    leg_read: std::sync::Once,
+}
+
+/// A leg in the leg file is used for this time.
+const LEG_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+/// The leg file of an identity file: `warp.json` gives `warp-leg.json`.
+fn leg_file_of(identity: &std::path::Path) -> std::path::PathBuf {
+    let stem = identity
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "warp".into());
+    identity.with_file_name(format!("{stem}-leg.json"))
+}
+
+/// True when the text of a leg file says that the relay `relay` worked
+/// less than [`LEG_TTL`] before `now` (unix seconds).
+fn relay_first_from(text: &str, now: u64, relay: &str) -> bool {
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    doc["leg"] == "relay"
+        && doc["relay"] == relay
+        && doc["at"]
+            .as_u64()
+            .is_some_and(|at| at <= now && now - at < LEG_TTL.as_secs())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// How cfrs reaches the MASQUE front door (issue 76).
@@ -124,6 +161,8 @@ impl WarpClient {
             masque: MasqueOptions::default(),
             relay: std::sync::OnceLock::new(),
             relay_first: std::sync::atomic::AtomicBool::new(false),
+            leg_file: None,
+            leg_read: std::sync::Once::new(),
         })
     }
 
@@ -137,6 +176,8 @@ impl WarpClient {
             masque: MasqueOptions::default(),
             relay: std::sync::OnceLock::new(),
             relay_first: std::sync::atomic::AtomicBool::new(false),
+            leg_file: None,
+            leg_read: std::sync::Once::new(),
         }
     }
 
@@ -215,7 +256,36 @@ impl WarpClient {
             .with_context(|| format!("parsing the WARP identity in {}", path.display()))?;
         let identity = Identity::from_pem(&stored.cert_pem, &stored.key_pem)
             .context("rebuilding the MASQUE identity")?;
-        Ok(Self::from_parts(stored.device, identity))
+        let mut client = Self::from_parts(stored.device, identity);
+        client.leg_file = Some(leg_file_of(path));
+        Ok(client)
+    }
+
+    /// Read the leg file once: a relay that worked in the last hours goes
+    /// first (issue 126: a restart started with the direct path, which can
+    /// time out for a long time on a blocked front door).
+    fn read_leg(&self, relay: &crate::ws_relay::Relay) {
+        self.leg_read.call_once(|| {
+            let Some(path) = &self.leg_file else { return };
+            let Ok(text) = std::fs::read_to_string(path) else {
+                return;
+            };
+            if relay_first_from(&text, unix_now(), &relay.url()) {
+                tracing::debug!("the last run used the relay; it goes first");
+                self.relay_first
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+    }
+
+    /// Keep the leg that worked. A failure to write is not an error.
+    fn write_leg(&self, leg: &str, relay: &crate::ws_relay::Relay) {
+        let Some(path) = &self.leg_file else { return };
+        let text =
+            serde_json::json!({"leg": leg, "at": unix_now(), "relay": relay.url()}).to_string();
+        if let Err(err) = write_private(path, text.as_bytes()) {
+            tracing::debug!(error = %err, path = %path.display(), "the leg file is not written");
+        }
     }
 
     /// Register if `path` holds nothing yet, otherwise resume what it holds.
@@ -373,6 +443,7 @@ impl WarpClient {
         let Some(relay) = relay else {
             return self.open_on(None).await;
         };
+        self.read_leg(&relay);
         if self.relay_first.load(Ordering::SeqCst) {
             match self.open_on(Some(&relay)).await {
                 Ok(session) => return Ok(session),
@@ -380,6 +451,7 @@ impl WarpClient {
                     tracing::warn!(error = %format!("{err:#}"), "MASQUE through the relay failed; trying the direct path");
                     let session = self.open_on(None).await?;
                     self.relay_first.store(false, Ordering::SeqCst);
+                    self.write_leg("direct", &relay);
                     return Ok(session);
                 }
             }
@@ -397,6 +469,7 @@ impl WarpClient {
             Ok(session) => {
                 tracing::info!(relay = %relay.url(), "MASQUE goes through the WebSocket relay");
                 self.relay_first.store(true, Ordering::SeqCst);
+                self.write_leg("relay", &relay);
                 Ok(session)
             }
             Err(through) => Err(direct.context(format!(
@@ -507,6 +580,43 @@ pub(crate) fn check_private(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod private_file_tests {
     use super::*;
+
+    // Issue 126: a relay that worked in the last hours goes first; an old
+    // entry, another relay or a bad file does not.
+    #[test]
+    fn the_leg_file_puts_a_recent_relay_first() {
+        let relay = "https://relay.example";
+        let doc = |leg: &str, at: u64, r: &str| {
+            serde_json::json!({"leg": leg, "at": at, "relay": r}).to_string()
+        };
+        let now = 1_800_000_000;
+        assert!(relay_first_from(&doc("relay", now - 60, relay), now, relay));
+        assert!(!relay_first_from(
+            &doc("direct", now - 60, relay),
+            now,
+            relay
+        ));
+        assert!(!relay_first_from(
+            &doc("relay", now - 7 * 3600, relay),
+            now,
+            relay
+        ));
+        assert!(!relay_first_from(
+            &doc("relay", now - 60, "https://other"),
+            now,
+            relay
+        ));
+        assert!(!relay_first_from(
+            &doc("relay", now + 60, relay),
+            now,
+            relay
+        ));
+        assert!(!relay_first_from("not json", now, relay));
+        assert_eq!(
+            leg_file_of(std::path::Path::new("/s/warp.json")),
+            std::path::Path::new("/s/warp-leg.json")
+        );
+    }
     use std::os::unix::fs::PermissionsExt;
 
     #[test]

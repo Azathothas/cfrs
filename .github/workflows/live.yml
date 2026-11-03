@@ -465,7 +465,9 @@ jobs:
           sleep 1
           target/release/cfrs warp --identity "$ident" up --port 40097 2> up97.err | tail -1 > up97.json
           jq -e '.tcp == false' up97.json
-          grep 'did not start' up97.err
+          # Issue 115: the first line names the unix socket that works.
+          grep 'runs on unix:' up97.err | sed -E 's#unix:[^;]*#unix:<socket>#'
+          grep -q 'refused the TCP listener' up97.err
           target/release/cfrs warp env > env97.txt 2> env97.err
           grep -q CFRS_WARP_SOCKET env97.txt
           ! grep -q ALL_PROXY env97.txt

@@ -102,8 +102,11 @@ When a batch of fixes is green (`CLAUDE.md`):
    dependency), `Cargo.lock` and `fuzz/Cargo.lock` (the packages `cfrs` and
    `pod-netns`).
 2. Write `docs/releases/vX.Y.Z-beta.N.md` (copy the head of the notes before:
-   binaries, the check of a download; then the changes for a tester, what to
-   report, the limits).
+   binaries, the check of a download; then `## Breaking`, then the changes
+   for a tester, what to report, the limits). `## Breaking` lists each flag,
+   output or behaviour that a command written for the previous release
+   must change for; `None.` when there is none. `release.yml` and
+   `tests/docs.rs` refuse a note with no such heading (issue 126).
 3. Commit, push, and wait until `ci` and `live` pass on that commit.
 4. Dispatch `release.yml` on `main` with `publish` empty: the dry run.
 5. When the dry run passes, dispatch `release.yml` with `publish` set to

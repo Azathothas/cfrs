@@ -938,7 +938,9 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
                         return Ok((i, stream));
                     }
                     Err(err) => {
-                        errors.push((addrs[i], err.to_string()));
+                        // Issue 126: EMFILE names the limit.
+                        let text = crate::rlimit::hint(&err).unwrap_or_else(|| err.to_string());
+                        errors.push((addrs[i], text));
                         if pending.is_empty() && next >= addrs.len() {
                             bail!("{}", group_errors(&errors));
                         }

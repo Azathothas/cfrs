@@ -420,6 +420,8 @@ jobs:
           set -eu
           notes="docs/releases/$TAG.md"
           if [ ! -f "$notes" ]; then echo "missing release notes: $notes"; exit 1; fi
+          # Issue 126: each note has a Breaking section ("None." when empty).
+          if ! grep -qx '## Breaking' "$notes"; then echo "$notes has no heading: ## Breaking"; exit 1; fi
           {
             cat "$notes"
             printf '\nThe licenses of the crates in the binaries, with their texts: THIRD-PARTY-LICENSES.md.\n'

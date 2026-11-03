@@ -767,6 +767,11 @@ cfrs --log-format json ...    # the log as one JSON object for each line
 cfrs --color never ...        # colours: auto (a terminal, no NO_COLOR), always, never
 ```
 
+cfrs raises the soft limit of open files (`ulimit -n`) to the hard limit at
+start, at most 1048576. `cfrs status` shows it in `nofile`. `warp exec`,
+`warp shell`, `warp run` and `autostart run` keep the limit of the shell for
+the program.
+
 With `--json`, `cfrs tunnel`, `serve`, `share` and `demo` write JSON lines on
 stdout in place of the text lines. A line with `"event": "ready"` gives
 `url`, `tunnel_id`, `locations` and `leg` (and `pin` for `share`). `leg` is
