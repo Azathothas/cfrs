@@ -455,7 +455,7 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   of `--fragment-size` bytes (64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
-* `--masque-transport h3` (global, `CFRS_WARP_TRANSPORT`): the MASQUE
+* `--masque-transport h3` (global, `CFRS_WARP_MASQUE_TRANSPORT`): the MASQUE
   session over HTTP/3 on UDP 443 in place of HTTP/2 on TCP 443. Each IP
   packet is an HTTP datagram (RFC 9297), so a lost packet does not stop the
   other flows. A packet larger than a datagram goes as a capsule on the

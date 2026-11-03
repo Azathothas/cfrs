@@ -2869,7 +2869,7 @@ struct WarpArgs {
         long,
         value_name = "h2|h3",
         global = true,
-        env = "CFRS_WARP_TRANSPORT",
+        env = "CFRS_WARP_MASQUE_TRANSPORT",
         value_parser = ["h2", "h3"]
     )]
     masque_transport: Option<String>,

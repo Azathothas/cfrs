@@ -128,7 +128,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU: a number from 1 to 430 (default 1), or none: for a measurement of throughput. Another value is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_WARP_TRANSPORT"],
+        names: &["CFRS_WARP_MASQUE_TRANSPORT"],
         used_by: "warp (each command that opens a MASQUE session), warp up (its proxy)",
         meaning: "The value of --masque-transport: h2 (HTTP/2 on TCP 443, the default) or h3 (HTTP/3 on UDP 443; each IP packet is an HTTP datagram). h3 has no relay and no proxy.",
     },
