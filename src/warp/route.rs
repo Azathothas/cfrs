@@ -132,6 +132,88 @@ pub fn plan_exempt(ip: Ipv4Addr, entries: &[Entry], tun: &str) -> Exempt {
     }
 }
 
+/// A route of `/proc/net/ipv6_route` (an UP route; REJECT routes are
+/// skipped).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry6 {
+    pub dev: String,
+    pub dest: Ipv6Addr,
+    pub prefix: u8,
+    pub gateway: Ipv6Addr,
+    pub metric: u32,
+}
+
+/// The UP routes of `/proc/net/ipv6_route`: dest, dest length, source,
+/// source length, next hop, metric, refcount, use, flags, device.
+pub fn parse_entries6(text: &str) -> Vec<Entry6> {
+    let addr = |f: &str| {
+        u128::from_str_radix(f, 16)
+            .ok()
+            .filter(|_| f.len() == 32)
+            .map(Ipv6Addr::from)
+    };
+    text.lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 10 {
+                return None;
+            }
+            let flags = u32::from_str_radix(f[8], 16).ok()?;
+            if flags & 0x1 == 0 || flags & 0x200 != 0 {
+                return None;
+            }
+            Some(Entry6 {
+                dest: addr(f[0])?,
+                prefix: u8::from_str_radix(f[1], 16).ok()?,
+                gateway: addr(f[4])?,
+                metric: u32::from_str_radix(f[5], 16).unwrap_or(u32::MAX),
+                dev: f[9].to_string(),
+            })
+        })
+        .collect()
+}
+
+/// [`Exempt`] for an IPv6 address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exempt6 {
+    No,
+    Via {
+        dev: String,
+        gateway: Option<Ipv6Addr>,
+    },
+    Unreachable,
+}
+
+/// What an IPv6 address of the MASQUE connection needs, as
+/// [`plan_exempt`] (the IPv6-only kit, 0001: before, only IPv4 addresses
+/// were kept outside the TUN).
+pub fn plan_exempt6(ip: Ipv6Addr, entries: &[Entry6], tun: &str) -> Exempt6 {
+    if ip.is_loopback() {
+        return Exempt6::No;
+    }
+    let bits = u128::from(ip);
+    let best = entries
+        .iter()
+        .filter(|e| e.dev != tun && e.dev != "lo")
+        .filter(|e| {
+            let mask = if e.prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(e.prefix.min(128)))
+            };
+            bits & mask == u128::from(e.dest) & mask
+        })
+        .max_by_key(|e| (e.prefix, std::cmp::Reverse(e.metric)));
+    match best {
+        None => Exempt6::Unreachable,
+        Some(e) if e.prefix >= 2 => Exempt6::No,
+        Some(e) => Exempt6::Via {
+            dev: e.dev.clone(),
+            gateway: (!e.gateway.is_unspecified()).then_some(e.gateway),
+        },
+    }
+}
+
 pub fn default_gateway() -> Option<Gateway> {
     parse_route_table(&std::fs::read_to_string("/proc/net/route").ok()?)
 }
@@ -223,8 +305,8 @@ struct In6Rtmsg {
     ifindex: libc::c_int,
 }
 
-/// Add or delete an IPv6 route on `dev`.
-fn route6(add: bool, dst: Ipv6Addr, prefix: u16, dev: &str) -> Result<()> {
+/// Add or delete an IPv6 route on `dev`, through `via` when it is given.
+fn route6(add: bool, dst: Ipv6Addr, prefix: u16, via: Option<Ipv6Addr>, dev: &str) -> Result<()> {
     let ctl = socket(libc::AF_INET6)?;
     let dev_c = std::ffi::CString::new(dev)?;
     // SAFETY: a C string; 0 when the device does not exist.
@@ -240,6 +322,15 @@ fn route6(add: bool, dst: Ipv6Addr, prefix: u16, dev: &str) -> Result<()> {
     rt.dst_len = prefix;
     rt.metric = 1;
     rt.flags = libc::RTF_UP as u32;
+    if prefix == 128 {
+        rt.flags |= libc::RTF_HOST as u32;
+    }
+    if let Some(gw) = via {
+        rt.gateway = libc::in6_addr {
+            s6_addr: gw.octets(),
+        };
+        rt.flags |= libc::RTF_GATEWAY as u32;
+    }
     rt.ifindex = ifindex as libc::c_int;
     let cmd = if add {
         libc::SIOCADDRT
@@ -287,6 +378,8 @@ pub struct Routes {
     tun: String,
     /// The host routes that keep the MASQUE connection outside the tunnel.
     exempt: Vec<(Ipv4Addr, Option<Ipv4Addr>, String)>,
+    /// The IPv6 host routes of the same.
+    exempt6: Vec<(Ipv6Addr, Option<Ipv6Addr>, String)>,
     ipv6: bool,
     dns: Option<Dns>,
     up: bool,
@@ -298,26 +391,62 @@ impl Routes {
     /// routes come with [`Routes::up`]. A host with no default route works
     /// when the MASQUE connection goes through a proxy on loopback or on a
     /// connected subnet (issue 105).
-    pub fn setup(tun: &str, exempt: Vec<Ipv4Addr>, ipv6: bool) -> Result<Self> {
+    ///
+    /// An address of `required` (the front door or the proxy of the
+    /// session) with no route is an error. An address of `optional` (the
+    /// relay of a later session, of both families) with no route is
+    /// skipped (the IPv6-only kit, 0001: an IPv4 address on a host with no
+    /// IPv4 route stopped the command).
+    pub fn setup(
+        tun: &str,
+        required: Vec<std::net::IpAddr>,
+        optional: Vec<std::net::IpAddr>,
+        ipv6: bool,
+    ) -> Result<Self> {
         let entries =
             parse_entries(&std::fs::read_to_string("/proc/net/route").unwrap_or_default());
+        let entries6 =
+            parse_entries6(&std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default());
         let mut routes = Self {
             tun: tun.to_string(),
             exempt: Vec::new(),
+            exempt6: Vec::new(),
             ipv6,
             dns: None,
             up: false,
         };
-        for ip in exempt {
-            match plan_exempt(ip, &entries, tun) {
-                Exempt::No => {}
-                Exempt::Via { dev, gateway } => {
-                    route4(true, ip, 32, gateway, &dev)?;
-                    routes.exempt.push((ip, gateway, dev));
-                }
-                Exempt::Unreachable => bail!(
+        let all = required
+            .into_iter()
+            .map(|ip| (ip, true))
+            .chain(optional.into_iter().map(|ip| (ip, false)));
+        for (ip, needed) in all {
+            let unreachable = match ip {
+                std::net::IpAddr::V4(ip) => match plan_exempt(ip, &entries, tun) {
+                    Exempt::No => false,
+                    Exempt::Via { dev, gateway } => {
+                        route4(true, ip, 32, gateway, &dev)?;
+                        routes.exempt.push((ip, gateway, dev));
+                        false
+                    }
+                    Exempt::Unreachable => true,
+                },
+                std::net::IpAddr::V6(ip) => match plan_exempt6(ip, &entries6, tun) {
+                    Exempt6::No => false,
+                    Exempt6::Via { dev, gateway } => {
+                        route6(true, ip, 128, gateway, &dev)?;
+                        routes.exempt6.push((ip, gateway, dev));
+                        false
+                    }
+                    Exempt6::Unreachable => true,
+                },
+            };
+            if unreachable && needed {
+                bail!(
                     "no route to {ip}, an address of the MASQUE connection: cfrs cannot keep it outside the tunnel (use a proxy on a reachable address, or run without --default-route)"
-                ),
+                );
+            }
+            if unreachable {
+                tracing::debug!(%ip, "no route: this address of the relay is not kept outside the tunnel");
             }
         }
         routes.dns = Some(set_dns(tun)?);
@@ -325,8 +454,16 @@ impl Routes {
     }
 
     /// The addresses that have a host route outside the tunnel.
-    pub fn exempted(&self) -> Vec<Ipv4Addr> {
-        self.exempt.iter().map(|(ip, _, _)| *ip).collect()
+    pub fn exempted(&self) -> Vec<std::net::IpAddr> {
+        self.exempt
+            .iter()
+            .map(|(ip, _, _)| std::net::IpAddr::V4(*ip))
+            .chain(
+                self.exempt6
+                    .iter()
+                    .map(|(ip, _, _)| std::net::IpAddr::V6(*ip)),
+            )
+            .collect()
     }
 
     /// The default routes on the TUN (the session is up).
@@ -336,7 +473,7 @@ impl Routes {
         }
         if self.ipv6 {
             for (dst, prefix) in HALVES6 {
-                if let Err(err) = route6(true, dst, prefix, &self.tun) {
+                if let Err(err) = route6(true, dst, prefix, None, &self.tun) {
                     tracing::warn!(error = %format!("{err:#}"), "no IPv6 default route on the TUN");
                     self.ipv6 = false;
                     break;
@@ -358,7 +495,7 @@ impl Routes {
         }
         if self.ipv6 {
             for (dst, prefix) in HALVES6 {
-                let _ = route6(false, dst, prefix, &self.tun);
+                let _ = route6(false, dst, prefix, None, &self.tun);
             }
         }
         self.up = false;
@@ -370,6 +507,9 @@ impl Drop for Routes {
         self.down();
         for (ip, gateway, dev) in &self.exempt {
             let _ = route4(false, *ip, 32, *gateway, dev);
+        }
+        for (ip, gateway, dev) in &self.exempt6 {
+            let _ = route6(false, *ip, 128, *gateway, dev);
         }
         match self.dns.take() {
             Some(Dns::Resolved) => {
@@ -436,6 +576,44 @@ mod tests {
             text.push_str("eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\n");
         }
         parse_entries(&text)
+    }
+
+    /// A /proc/net/ipv6_route table: fd00:77::/64 on eth0, ::1 on lo, a /1
+    /// of the TUN, and optionally the default route via fd00:77::1.
+    fn table6(default: bool) -> Vec<Entry6> {
+        let mut text = String::from(
+            "fd000077000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth0\n\
+             00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n\
+             00000000000000000000000000000000 01 00000000000000000000000000000000 00 00000000000000000000000000000000 00000001 00000000 00000000 00000001    cfrs0\n",
+        );
+        if default {
+            text.push_str("00000000000000000000000000000000 00 00000000000000000000000000000000 00 fd000077000000000000000000000001 00000400 00000001 00000000 00000003     eth0\n");
+        }
+        parse_entries6(&text)
+    }
+
+    /// The IPv6-only kit, 0001: an IPv6 front door gets a host route
+    /// through the IPv6 default route; an address on a connected prefix
+    /// needs none; with no IPv6 route it is unreachable.
+    #[test]
+    fn the_plan_of_each_ipv6_masque_address() {
+        let ip = |s: &str| s.parse::<Ipv6Addr>().unwrap();
+        let with = table6(true);
+        assert_eq!(with.len(), 4);
+        assert_eq!(
+            plan_exempt6(ip("2606:4700:103::2"), &with, "cfrs0"),
+            Exempt6::Via {
+                dev: "eth0".into(),
+                gateway: Some(ip("fd00:77::1")),
+            }
+        );
+        assert_eq!(plan_exempt6(ip("fd00:77::9"), &with, "cfrs0"), Exempt6::No);
+        assert_eq!(plan_exempt6(ip("::1"), &with, "cfrs0"), Exempt6::No);
+        let none = table6(false);
+        assert_eq!(
+            plan_exempt6(ip("2606:4700:103::2"), &none, "cfrs0"),
+            Exempt6::Unreachable
+        );
     }
 
     /// Issue 105: with no default route, a proxy on loopback or on the

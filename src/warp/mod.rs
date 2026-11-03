@@ -453,6 +453,16 @@ impl WarpClient {
         Ok(stack)
     }
 
+    /// The address of the front door of the last session: the override of
+    /// `--masque-endpoint`, else the address that worked, else the first of
+    /// the device record (the IPv6-only kit, 0001).
+    pub fn endpoint_in_use(&self) -> Option<std::net::SocketAddr> {
+        self.masque
+            .endpoint
+            .or(*self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner()))
+            .or_else(|| self.device.masque_endpoint())
+    }
+
     /// Open the session without the userspace stack, for callers that only want
     /// the raw packet pipe.
     pub async fn connect_raw(&self) -> Result<MasqueSession> {

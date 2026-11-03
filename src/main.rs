@@ -3290,9 +3290,10 @@ async fn warp(args: WarpArgs) -> Result<()> {
             let tun =
                 cfrs::warp::tun::Tun::create(&name, address, 1280).fault(Fault::Unavailable)?;
             let session = client.connect_raw().await.fault(Fault::Unavailable)?;
+            // The IPv6-only kit, 0001: the front door of the session, not
+            // the first address of the device record.
             let endpoint = client
-                .device()
-                .masque_endpoint()
+                .endpoint_in_use()
                 .map(|e| e.ip().to_string())
                 .unwrap_or_default();
             println!("cfrs: tun      {} {address}/32 mtu 1280", tun.name);
@@ -3316,41 +3317,49 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 "  ip route add 0.0.0.0/1 dev {0}; ip route add 128.0.0.0/1 dev {0}",
                 tun.name
             );
+            let host_prefix = if endpoint.contains(':') {
+                "-6 route add {}/128"
+            } else {
+                "route add {}/32"
+            };
             println!(
-                "  ip route add {endpoint}/32 via <your gateway>   # keep the session outside"
+                "  ip {} via <your gateway>   # keep the session outside",
+                host_prefix.replace("{}", &endpoint)
             );
             // --default-route (issue 77): the addresses of the MASQUE
             // connection stay outside the tunnel.
             let routes = if default_route {
-                let mut hosts: Vec<String> = Vec::new();
-                match cfrs::egress::proxy_for(&endpoint, 443) {
-                    Some(proxy) => hosts.push(proxy.host().to_string()),
-                    None => hosts.push(endpoint.clone()),
-                }
+                // The front door of the session (or its proxy) must stay
+                // outside the TUN; the relay of a later session should,
+                // where a route to it exists.
+                let session_host = match cfrs::egress::proxy_for(&endpoint, 443) {
+                    Some(proxy) => proxy.host().to_string(),
+                    None => endpoint.clone(),
+                };
+                let mut relay_host = String::new();
                 if !args.no_relay {
                     if let Ok(relay) = cfrs::ws_relay::Relay::from_env(None) {
                         // Issue 105: a relay that is reached through the
                         // proxy needs no route of its own.
-                        match cfrs::egress::proxy_for(relay.host(), relay.port()) {
-                            Some(proxy) => hosts.push(proxy.host().to_string()),
-                            None => hosts.push(relay.host().to_string()),
-                        }
+                        relay_host = match cfrs::egress::proxy_for(relay.host(), relay.port()) {
+                            Some(proxy) => proxy.host().to_string(),
+                            None => relay.host().to_string(),
+                        };
                     }
                 }
-                hosts.dedup();
-                let mut exempt: Vec<std::net::Ipv4Addr> = Vec::new();
-                for host in hosts.iter().filter(|h| !h.is_empty()) {
-                    for ip in cfrs::resolve::resolve(host).await.unwrap_or_default() {
-                        if let std::net::IpAddr::V4(v4) = ip {
-                            if !exempt.contains(&v4) {
-                                exempt.push(v4);
-                            }
-                        }
+                let addresses = |host: String| async move {
+                    if host.is_empty() {
+                        return Vec::new();
                     }
-                }
+                    cfrs::resolve::resolve(&host).await.unwrap_or_default()
+                };
+                let required = addresses(session_host).await;
+                let mut optional = addresses(relay_host).await;
+                optional.retain(|ip| !required.contains(ip));
                 let routes = cfrs::warp::route::Routes::setup(
                     &tun.name,
-                    exempt.clone(),
+                    required,
+                    optional,
                     client.device().ipv6().is_some(),
                 )
                 .fault(Fault::Unavailable)?;
