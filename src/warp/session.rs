@@ -133,6 +133,15 @@ impl ServerCertVerifier for PinnedKey {
 }
 
 fn tls_config(identity: &Identity, pinned_spki: Vec<u8>) -> Result<Arc<ClientConfig>> {
+    tls_config_alpn(identity, pinned_spki, b"h2")
+}
+
+/// [`tls_config`] with another ALPN (HTTP/3: `h3`).
+fn tls_config_alpn(
+    identity: &Identity,
+    pinned_spki: Vec<u8>,
+    alpn: &[u8],
+) -> Result<Arc<ClientConfig>> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = Arc::new(PinnedKey {
         expected: pinned_spki,
@@ -144,45 +153,77 @@ fn tls_config(identity: &Identity, pinned_spki: Vec<u8>) -> Result<Arc<ClientCon
         .with_client_auth_cert(identity.cert_chain(), identity.private_key())
         .context("installing the MASQUE client certificate")?;
     config.dangerous().set_certificate_verifier(verifier);
-    config.alpn_protocols = vec![b"h2".to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     Ok(Arc::new(config))
 }
 
 /// An established CONNECT-IP session.
 pub struct MasqueSession {
-    ping: Option<h2::PingPong>,
-    send: h2::SendStream<Bytes>,
-    recv: h2::RecvStream,
-    decoder: CapsuleDecoder,
-    /// Set once the body stream ends.
-    closed: bool,
+    tx: MasqueTx,
+    rx: MasqueRx,
 }
 
 /// The write half of a session, moved to whatever task pumps outbound packets.
 pub struct MasqueTx {
-    ping: Option<h2::PingPong>,
-    send: h2::SendStream<Bytes>,
+    inner: TxInner,
     closed: bool,
     waits: u64,
     /// The longest wait for send capacity ([`SEND_STALL`]).
     stall: Duration,
 }
 
+enum TxInner {
+    /// HTTP/2: the PING handle (until the keepalive takes it) and the
+    /// request body.
+    H2 {
+        ping: Option<h2::PingPong>,
+        send: h2::SendStream<Bytes>,
+    },
+    /// HTTP/3 (issue 157): datagrams, and the request stream.
+    H3 {
+        tx: Box<super::h3::H3Tx>,
+        keepalive_taken: bool,
+    },
+}
+
 /// The read half of a session, moved to whatever task pumps inbound packets.
 pub struct MasqueRx {
-    recv: h2::RecvStream,
+    inner: RxInner,
     decoder: CapsuleDecoder,
     closed: bool,
-    /// The count of DATA frames received: proof that the peer is alive.
+    /// The count of DATA frames (or datagrams) received: proof that the
+    /// peer is alive.
     progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+enum RxInner {
+    H2(h2::RecvStream),
+    H3(Box<super::h3::H3Rx>),
 }
 
 /// The liveness check of a session (issue 104): an HTTP/2 PING when no data
 /// came in for an interval, and a dead session after `MAX_MISSED_PONGS`
-/// intervals with no pong and no data.
+/// intervals with no pong and no data. Over HTTP/3, the keepalive and the
+/// idle timeout of QUIC do the same: the check ends when the connection
+/// closes.
 pub struct Keepalive {
-    ping: h2::PingPong,
+    inner: KeepInner,
     progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+enum KeepInner {
+    H2(h2::PingPong),
+    H3(quinn::Connection),
+}
+
+impl Keepalive {
+    /// The check of an HTTP/2 session.
+    pub fn h2(ping: h2::PingPong, progress: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+        Keepalive {
+            inner: KeepInner::H2(ping),
+            progress,
+        }
+    }
 }
 
 /// The intervals with no pong (and no data) that make a session dead.
@@ -196,8 +237,12 @@ impl Keepalive {
     /// second PING failed at each interval (h2 takes one PING at a time,
     /// and the pong was never collected), and a stalled session was not
     /// seen.
-    pub async fn run(mut self, every: Duration) -> Result<()> {
+    pub async fn run(self, every: Duration) -> Result<()> {
         use std::sync::atomic::Ordering;
+        let mut ping = match self.inner {
+            KeepInner::H2(ping) => ping,
+            KeepInner::H3(conn) => return super::h3::closed(conn).await,
+        };
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tick.tick().await;
@@ -210,7 +255,7 @@ impl Keepalive {
                 continue;
             }
             // Idle: one PING, kept across the ticks until its pong comes.
-            let pong = self.ping.ping(h2::Ping::opaque());
+            let pong = ping.ping(h2::Ping::opaque());
             tokio::pin!(pong);
             let mut missed = 0;
             loop {
@@ -248,6 +293,8 @@ pub struct Dial<'a> {
     pub relay: Option<&'a crate::ws_relay::Relay>,
     /// The SNI in place of [`MASQUE_SNI`].
     pub sni: Option<&'a str>,
+    /// HTTP/3 on UDP in place of HTTP/2 on TCP (issue 157).
+    pub h3: bool,
 }
 
 /// The times of one front door (issue 139): the TCP connect and the TLS
@@ -313,6 +360,14 @@ impl MasqueSession {
         pinned_spki: Vec<u8>,
         dial: Dial<'_>,
     ) -> Result<Self> {
+        if dial.h3 {
+            return tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                Self::connect_h3(endpoint, identity, pinned_spki, dial),
+            )
+            .await
+            .context("MASQUE connect over HTTP/3 timed out (is UDP 443 open?)")?;
+        }
         tokio::time::timeout(
             CONNECT_TIMEOUT,
             Self::connect_inner(endpoint, identity, pinned_spki, dial),
@@ -412,77 +467,79 @@ impl MasqueSession {
             );
         }
 
-        Ok(Self {
-            ping,
-            send,
-            recv: response.into_body(),
-            decoder: CapsuleDecoder::new(),
-            closed: false,
-        })
+        Ok(Self::from_h2(ping, send, response.into_body()))
+    }
+
+    /// A session over HTTP/2.
+    fn from_h2(
+        ping: Option<h2::PingPong>,
+        send: h2::SendStream<Bytes>,
+        recv: h2::RecvStream,
+    ) -> Self {
+        MasqueSession {
+            tx: MasqueTx {
+                inner: TxInner::H2 { ping, send },
+                closed: false,
+                waits: 0,
+                stall: SEND_STALL,
+            },
+            rx: MasqueRx {
+                inner: RxInner::H2(recv),
+                decoder: CapsuleDecoder::new(),
+                closed: false,
+                progress: Default::default(),
+            },
+        }
+    }
+
+    /// A session over HTTP/3 (issue 157).
+    fn from_h3(tx: super::h3::H3Tx, rx: super::h3::H3Rx) -> Self {
+        MasqueSession {
+            tx: MasqueTx {
+                inner: TxInner::H3 {
+                    tx: Box::new(tx),
+                    keepalive_taken: false,
+                },
+                closed: false,
+                waits: 0,
+                stall: SEND_STALL,
+            },
+            rx: MasqueRx {
+                inner: RxInner::H3(Box::new(rx)),
+                decoder: CapsuleDecoder::new(),
+                closed: false,
+                progress: Default::default(),
+            },
+        }
+    }
+
+    /// True for a session over HTTP/3.
+    pub fn is_h3(&self) -> bool {
+        matches!(self.tx.inner, TxInner::H3 { .. })
+    }
+
+    /// Open the session over HTTP/3 (issue 157): QUIC to the front door on
+    /// UDP, with the client certificate and the pinned key.
+    async fn connect_h3(
+        endpoint: std::net::SocketAddr,
+        identity: &Identity,
+        pinned_spki: Vec<u8>,
+        dial: Dial<'_>,
+    ) -> Result<Self> {
+        if dial.proxy.is_some() || dial.relay.is_some() {
+            bail!("MASQUE over HTTP/3 needs UDP to the front door; a proxy or a relay carries TCP only");
+        }
+        let tls = tls_config_alpn(identity, pinned_spki, super::h3::ALPN)?;
+        let sni = dial.sni.unwrap_or(MASQUE_SNI);
+        let authority = CONNECT_URI.trim_start_matches("https://");
+        let (tx, rx) = super::h3::connect(endpoint, tls, sni, authority).await?;
+        Ok(Self::from_h3(tx, rx))
     }
 
     /// Split into a write half and a read half so the two directions can be
     /// pumped from different tasks.
     pub fn split(self) -> (MasqueTx, MasqueRx) {
-        (
-            MasqueTx {
-                ping: self.ping,
-                send: self.send,
-                closed: self.closed,
-                waits: 0,
-                stall: SEND_STALL,
-            },
-            MasqueRx {
-                recv: self.recv,
-                decoder: self.decoder,
-                closed: self.closed,
-                progress: Default::default(),
-            },
-        )
-    }
-
-    /// Send one IP packet through the tunnel.
-    pub fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
-        if self.closed {
-            bail!("the MASQUE session is closed");
-        }
-        let mut buf = BytesMut::with_capacity(packet.len() + 3);
-        capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet);
-        self.send
-            .send_data(buf.freeze(), false)
-            .context("writing a CONNECT-IP DATA capsule")?;
-        Ok(())
-    }
-
-    /// Receive one IP packet, waiting for more body bytes if needed.
-    pub async fn recv_packet(&mut self) -> Result<Option<Bytes>> {
-        loop {
-            if let Some(packet) = self.decoder.next_packet() {
-                return Ok(Some(packet));
-            }
-            if let Some(err) = self.decoder.error() {
-                // Issue 123: the stream is not usable after it.
-                self.closed = true;
-                bail!("the CONNECT-IP body: {err}");
-            }
-            if self.closed {
-                return Ok(None);
-            }
-            match self.recv.data().await {
-                Some(Ok(data)) => {
-                    let _ = self.recv.flow_control().release_capacity(data.len());
-                    self.decoder.push(&data);
-                }
-                Some(Err(err)) => {
-                    self.closed = true;
-                    bail!("reading the CONNECT-IP body: {err}");
-                }
-                None => {
-                    self.closed = true;
-                    return Ok(None);
-                }
-            }
-        }
+        (self.tx, self.rx)
     }
 }
 
@@ -505,15 +562,25 @@ impl MasqueTx {
         if self.closed {
             bail!("the MASQUE session is closed");
         }
+        let send = match &mut self.inner {
+            TxInner::H2 { send, .. } => send,
+            TxInner::H3 { tx, .. } => {
+                if let Err(err) = tx.send_packets(packets).await {
+                    self.closed = true;
+                    return Err(err);
+                }
+                return Ok(());
+            }
+        };
         let total: usize = packets.iter().map(|p| p.as_ref().len() + 4).sum();
         let mut buf = BytesMut::with_capacity(total);
         for packet in packets {
             capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet.as_ref());
         }
-        self.send.reserve_capacity(SEND_RESERVE.max(buf.len()));
-        while self.send.capacity() < buf.len() {
+        send.reserve_capacity(SEND_RESERVE.max(buf.len()));
+        while send.capacity() < buf.len() {
             self.waits += 1;
-            let capacity = std::future::poll_fn(|cx| self.send.poll_capacity(cx));
+            let capacity = std::future::poll_fn(|cx| send.poll_capacity(cx));
             let Ok(capacity) = tokio::time::timeout(self.stall, capacity).await else {
                 self.closed = true;
                 bail!(
@@ -532,10 +599,9 @@ impl MasqueTx {
                     bail!("the MASQUE stream has no send capacity any more");
                 }
             }
-            self.send.reserve_capacity(SEND_RESERVE.max(buf.len()));
+            send.reserve_capacity(SEND_RESERVE.max(buf.len()));
         }
-        self.send
-            .send_data(buf.freeze(), false)
+        send.send_data(buf.freeze(), false)
             .context("writing a CONNECT-IP DATA capsule")?;
         Ok(())
     }
@@ -548,19 +614,38 @@ impl MasqueTx {
     /// The liveness check of this session, with the progress of `rx`
     /// (once: the PING handle moves to it).
     pub fn keepalive(&mut self, rx: &MasqueRx) -> Option<Keepalive> {
-        self.ping.take().map(|ping| Keepalive {
-            ping,
-            progress: rx.progress.clone(),
-        })
+        let progress = rx.progress.clone();
+        match &mut self.inner {
+            TxInner::H2 { ping, .. } => ping.take().map(|ping| Keepalive {
+                inner: KeepInner::H2(ping),
+                progress,
+            }),
+            TxInner::H3 {
+                tx,
+                keepalive_taken,
+            } => {
+                if *keepalive_taken {
+                    return None;
+                }
+                *keepalive_taken = true;
+                Some(Keepalive {
+                    inner: KeepInner::H3(tx.connection()),
+                    progress,
+                })
+            }
+        }
     }
 
     /// Close the request body, which tears the tunnel down.
     pub fn close(&mut self) -> Result<()> {
         if !self.closed {
-            self.send
-                .send_data(Bytes::new(), true)
-                .context("closing the CONNECT-IP body")?;
             self.closed = true;
+            match &mut self.inner {
+                TxInner::H2 { send, .. } => send
+                    .send_data(Bytes::new(), true)
+                    .context("closing the CONNECT-IP body")?,
+                TxInner::H3 { tx, .. } => tx.close(),
+            }
         }
         Ok(())
     }
@@ -587,9 +672,33 @@ impl MasqueRx {
             if self.closed {
                 return Ok(None);
             }
-            match self.recv.data().await {
+            let recv = match &mut self.inner {
+                RxInner::H2(recv) => recv,
+                RxInner::H3(rx) => match rx.next().await {
+                    Ok(Some(super::h3::Incoming::Packet(packet))) => {
+                        self.progress
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(Some(packet));
+                    }
+                    Ok(Some(super::h3::Incoming::Capsules(data))) => {
+                        self.decoder.push(&data);
+                        self.progress
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        continue;
+                    }
+                    Ok(None) => {
+                        self.closed = true;
+                        return Ok(None);
+                    }
+                    Err(err) => {
+                        self.closed = true;
+                        return Err(err);
+                    }
+                },
+            };
+            match recv.data().await {
                 Some(Ok(data)) => {
-                    let _ = self.recv.flow_control().release_capacity(data.len());
+                    let _ = recv.flow_control().release_capacity(data.len());
                     self.decoder.push(&data);
                     self.progress
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -614,6 +723,130 @@ impl MasqueRx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A front door of HTTP/3 on the loopback (issue 157): it checks the
+    /// extended CONNECT, answers 200, and sends each datagram and each DATA
+    /// frame back.
+    async fn h3_front_door() -> (std::net::SocketAddr, Vec<u8>, tokio::task::JoinHandle<()>) {
+        use super::super::h3;
+        crate::net::init_crypto();
+        let server_id = Identity::generate().unwrap();
+        let pin = server_id.spki_der().to_vec();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut tls = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(server_id.cert_chain(), server_id.private_key())
+            .unwrap();
+        tls.alpn_protocols = vec![h3::ALPN.to_vec()];
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(tls)).unwrap();
+        let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+        let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = server.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let conn = server.accept().await.unwrap().await.unwrap();
+            let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+            let mut frames = h3::Frames::default();
+            let headers = loop {
+                if let Some((kind, payload)) = frames.next_frame().unwrap() {
+                    if kind == 0x01 {
+                        break payload;
+                    }
+                    continue;
+                }
+                let chunk = recv.read_chunk(65536, true).await.unwrap().unwrap();
+                frames.push(&chunk.bytes);
+            };
+            assert!(headers.windows(13).any(|w| w == b"cf-connect-ip"));
+            assert_eq!(&headers[2..5], &[0xcf, 0xd7, 0xc1]);
+            send.write_all(&h3::frame(0x01, &[0, 0, 0xc0 | 25]))
+                .await
+                .unwrap();
+            let echo = conn.clone();
+            tokio::spawn(async move {
+                while let Ok(d) = echo.read_datagram().await {
+                    let _ = echo.send_datagram(d);
+                }
+            });
+            loop {
+                while let Some((kind, payload)) = frames.next_frame().unwrap() {
+                    if kind == 0x00 {
+                        send.write_all(&h3::frame(0x00, &payload)).await.unwrap();
+                    }
+                }
+                match recv.read_chunk(65536, true).await {
+                    Ok(Some(chunk)) => frames.push(&chunk.bytes),
+                    _ => break,
+                }
+            }
+        });
+        (addr, pin, task)
+    }
+
+    #[tokio::test]
+    async fn a_session_over_http3_carries_datagrams_and_capsules() {
+        let (addr, pin, server) = h3_front_door().await;
+        let client_id = Identity::generate().unwrap();
+        let dial = Dial {
+            h3: true,
+            ..Default::default()
+        };
+        let session = MasqueSession::connect(addr, &client_id, pin, dial)
+            .await
+            .unwrap();
+        assert!(session.is_h3());
+        let (mut tx, mut rx) = session.split();
+        assert!(tx.keepalive(&rx).is_some());
+        // A small packet (a datagram) and one larger than a datagram (a
+        // DATA capsule on the stream).
+        let small = vec![0x45u8; 200];
+        let large = vec![0x60u8; 3000];
+        tx.send_packets(&[small.clone(), large.clone()])
+            .await
+            .unwrap();
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let packet = tokio::time::timeout(Duration::from_secs(5), rx.recv_packet())
+                .await
+                .expect("a packet back")
+                .unwrap()
+                .unwrap();
+            got.push(packet.to_vec());
+        }
+        got.sort_by_key(|p| p.len());
+        assert_eq!(got, vec![small, large]);
+        tx.close().unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http3_refuses_a_proxy_and_a_wrong_key() {
+        let (addr, _pin, server) = h3_front_door().await;
+        let client_id = Identity::generate().unwrap();
+        let other = Identity::generate().unwrap();
+        let dial = Dial {
+            h3: true,
+            ..Default::default()
+        };
+        let err = MasqueSession::connect(addr, &client_id, other.spki_der().to_vec(), dial)
+            .await
+            .err()
+            .expect("a wrong key fails");
+        assert!(format!("{err:#}").contains("pinned"), "{err:#}");
+        let proxy = crate::egress::Proxy::parse("http://127.0.0.1:3128").unwrap();
+        let dial = Dial {
+            h3: true,
+            proxy: Some(&proxy),
+            ..Default::default()
+        };
+        let err = MasqueSession::connect(addr, &client_id, vec![], dial)
+            .await
+            .err()
+            .expect("a proxy fails");
+        assert!(format!("{err:#}").contains("UDP"), "{err:#}");
+        server.abort();
+    }
 
     /// The front door sends one small DATA frame for each packet (ACKs).
     /// A full stream window of 59-byte frames, with a reader that waits
@@ -659,13 +892,7 @@ mod tests {
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
         let response = response.await.unwrap();
-        let session = MasqueSession {
-            ping: None,
-            send,
-            recv: response.into_body(),
-            decoder: CapsuleDecoder::new(),
-            closed: false,
-        };
+        let session = MasqueSession::from_h2(None, send, response.into_body());
         let (_tx, mut rx) = session.split();
         // A slow receive task: the frames pile up in h2 first.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -719,10 +946,7 @@ mod tests {
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
         let response = tokio::time::timeout(Duration::from_millis(500), response).await;
-        let keepalive = Keepalive {
-            ping,
-            progress: Default::default(),
-        };
+        let keepalive = Keepalive::h2(ping, Default::default());
         // The client, the request stream and the response stay alive: the
         // connection closes when they are dropped.
         (keepalive, server, Box::new((client, send, response)))
@@ -818,13 +1042,7 @@ mod tests {
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
         let response = response.await.unwrap();
-        let session = MasqueSession {
-            ping: None,
-            send,
-            recv: response.into_body(),
-            decoder: CapsuleDecoder::new(),
-            closed: false,
-        };
+        let session = MasqueSession::from_h2(None, send, response.into_body());
         let (mut tx, _rx) = session.split();
         let batch: Vec<Vec<u8>> = (0..10u8).map(|i| vec![i; 1200]).collect();
         tx.send_packets(&batch).await.unwrap();
@@ -861,13 +1079,7 @@ mod tests {
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
         let response = response.await.unwrap();
-        let session = MasqueSession {
-            ping: None,
-            send,
-            recv: response.into_body(),
-            decoder: CapsuleDecoder::new(),
-            closed: false,
-        };
+        let session = MasqueSession::from_h2(None, send, response.into_body());
         let (mut tx, _rx) = session.split();
         let packet = vec![0x45u8; 1200];
         // The first packets of a new stream go out at once (a QUIC Initial

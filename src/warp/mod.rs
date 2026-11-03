@@ -36,6 +36,7 @@ pub mod capsule;
 pub mod exit;
 pub mod export;
 pub mod forward;
+pub mod h3;
 pub mod identity;
 pub mod ip;
 pub mod live;
@@ -188,6 +189,9 @@ pub struct MasqueOptions {
     pub endpoint: Option<std::net::SocketAddr>,
     /// The TLS name in place of `consumer-masque.cloudflareclient.com`.
     pub sni: Option<String>,
+    /// HTTP/3 on UDP 443 in place of HTTP/2 on TCP 443 (issue 157). No
+    /// relay and no proxy: they carry TCP only.
+    pub h3: bool,
 }
 
 impl WarpClient {
@@ -583,7 +587,8 @@ impl WarpClient {
     /// worked last goes first.
     async fn open_session(&self) -> Result<MasqueSession> {
         use std::sync::atomic::Ordering;
-        let relay = self.relay();
+        // Issue 157: HTTP/3 has no relay (the relay carries TCP).
+        let relay = if self.masque.h3 { None } else { self.relay() };
         let Some(relay) = relay else {
             let session = self.open_on(None).await?;
             crate::decisions::count("masque", "no_relay");
@@ -680,6 +685,7 @@ impl WarpClient {
             proxy: self.proxy.as_ref(),
             relay: None,
             sni: self.masque.sni.as_deref(),
+            h3: false,
         };
         let mut out: Vec<_> = futures::stream::iter(all)
             .map(|a| {
@@ -704,6 +710,7 @@ impl WarpClient {
             proxy: self.proxy.as_ref(),
             relay,
             sni: self.masque.sni.as_deref(),
+            h3: self.masque.h3,
         };
         let (endpoint, pinned) = Self::endpoint_and_pin(&self.device)?;
         // Issue 124: the IPv4 and the IPv6 address of the front door, the

@@ -149,6 +149,32 @@ for cc in none reno cubic; do
     [ "${out%% *}" = 200 ] || { echo "the upload failed with cc $cc"; exit 1; }
 done
 
+echo "== MASQUE over HTTP/3 (issue 157; a report, not a check yet)"
+if "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 probe > "$dir/h3.out" 2>&1; then
+    grep -E '^(tunnel|OK|exit) ' "$dir/h3.out" | head -4
+    echo "h3 probe: ok"
+    "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 proxy --listen tcp://127.0.0.1:40013 --run-for 150 > "$dir/h3p.log" 2>&1 &
+    pid=$!
+    pids="$pids $pid"
+    wait_port 40013 "$dir/h3p.log"
+    down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 60 -x socks5h://127.0.0.1:40013 'https://speed.cloudflare.com/__down?bytes=20000000') || true
+    echo "h3 download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    up=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 -x socks5h://127.0.0.1:40013 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
+    echo "h3 upload 16 MiB: HTTP ${up%% *}, $(echo "${up#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    kill "$pid" 2> /dev/null || true
+else
+    echo "h3 probe: FAIL"
+    sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/h3.out" | tail -5
+fi
+# The same download over HTTP/2, for the comparison.
+"$cfrs" warp --identity "$dir/a.json" --no-relay proxy --listen tcp://127.0.0.1:40014 --run-for 100 > "$dir/h2p.log" 2>&1 &
+pid=$!
+pids="$pids $pid"
+wait_port 40014 "$dir/h2p.log"
+down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 60 -x socks5h://127.0.0.1:40014 'https://speed.cloudflare.com/__down?bytes=20000000') || true
+echo "h2 download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+kill "$pid" 2> /dev/null || true
+
 echo "== QUIC on the front door (issue 157)"
 python3 scripts/quic-vn.py 162.159.198.2 443 5 || true
 python3 scripts/quic-vn.py 2606:4700:103::2 443 5 || true

@@ -1457,6 +1457,7 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         ("--fragment-client-hello", &args.fragment_client_hello),
         ("--fragment-size", &args.fragment_size),
         ("--cc", &args.cc),
+        ("--masque-transport", &args.masque_transport),
     ] {
         if let Some(value) = value {
             argv.push(flag.into());
@@ -2861,6 +2862,17 @@ struct WarpArgs {
     /// consumer-masque.cloudflareclient.com.
     #[arg(long, value_name = "NAME", global = true)]
     masque_sni: Option<String>,
+    /// The transport of the MASQUE session: h2 (HTTP/2 on TCP 443, the
+    /// default) or h3 (HTTP/3 on UDP 443: each packet is a QUIC datagram;
+    /// no proxy and no relay).
+    #[arg(
+        long,
+        value_name = "h2|h3",
+        global = true,
+        env = "CFRS_WARP_TRANSPORT",
+        value_parser = ["h2", "h3"]
+    )]
+    masque_transport: Option<String>,
 
     #[command(subcommand)]
     command: WarpCommand,
@@ -3217,6 +3229,7 @@ fn masque_options(args: &WarpArgs) -> cfrs::warp::MasqueOptions {
         no_relay: args.no_relay,
         endpoint: args.masque_endpoint,
         sni: args.masque_sni.clone(),
+        h3: args.masque_transport.as_deref() == Some("h3"),
     }
 }
 
