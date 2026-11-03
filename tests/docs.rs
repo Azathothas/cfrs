@@ -59,3 +59,61 @@ fn the_readme_does_not_call_warp_flags_global() {
         .unwrap();
     assert_eq!(out.status.code(), Some(64));
 }
+
+/// The python block of the README section "Ephemeral hosts".
+fn readme_notebook_cell() -> String {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let section = readme
+        .split("### Ephemeral hosts")
+        .nth(1)
+        .expect("the README has the section");
+    let block = section
+        .split("```python\n")
+        .nth(1)
+        .and_then(|b| b.split("```").next())
+        .expect("the section has a python block");
+    block.to_string()
+}
+
+/// Issue 192: the notebook is valid nbformat 4 with no outputs, and its
+/// code cell is the cell of the README.
+#[test]
+fn the_notebook_is_the_cell_of_the_readme() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/notebooks/install.ipynb"
+    ))
+    .unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(nb["nbformat"], 4);
+    let code = nb["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["cell_type"] == "code")
+        .expect("a code cell");
+    assert_eq!(code["outputs"], serde_json::json!([]));
+    let source: String = code["source"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert_eq!(source.trim_end(), readme_notebook_cell().trim_end());
+    // The cell compiles, when python3 is here.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cell.py");
+    std::fs::write(&file, &source).unwrap();
+    if let Ok(out) = std::process::Command::new("python3")
+        .args(["-I", "-m", "py_compile"])
+        .arg(&file)
+        .output()
+    {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

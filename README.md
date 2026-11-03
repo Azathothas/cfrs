@@ -216,6 +216,45 @@ exits 0 when `curl` fails or is missing.
 * A missing file of the release and a failed download have different
   messages. INT, TERM and HUP stop the script and remove its files.
 
+### Ephemeral hosts
+
+A hosted notebook, a rebuilt container or a CI job can lose its disk at
+each start. Then three things go:
+
+* The binary: give `CFRS_INSTALL_DIR` a directory that stays.
+* The WARP device: give `CFRS_STATE_DIR` (or `--identity PATH`) a directory
+  that stays. Without it, each start registers a new anonymous device (the
+  service limits new devices; see "WARP"). `CFRS_STATE_DIR=none` uses a new
+  device on purpose.
+* The release list: a pinned `CFRS_VERSION` uses no GitHub API.
+
+This cell (Python 3, no curl) installs cfrs in `KEEP`. The same cell is in
+`notebooks/install.ipynb`. It fails when the install fails (`check=True`):
+
+```python
+# Install cfrs on a host that loses its disk at each start (a notebook).
+# KEEP is a directory that stays, for example a mounted drive.
+import os
+import subprocess
+import urllib.request
+
+KEEP = os.environ.get("CFRS_KEEP", os.path.expanduser("~/cfrs-keep"))
+VERSION = "latest"  # A tag (for example v0.3.0-beta.10) uses no GitHub API.
+URL = "https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh"
+
+os.makedirs(os.path.join(KEEP, "bin"), exist_ok=True)
+script = os.path.join(KEEP, "install.sh")
+with open(script, "wb") as f:
+    f.write(urllib.request.urlopen(URL, timeout=60).read())
+env = dict(os.environ, CFRS_INSTALL_DIR=os.path.join(KEEP, "bin"), CFRS_VERSION=VERSION)
+subprocess.run(["sh", script], env=env, check=True)
+
+# The binary and the WARP device stay in KEEP.
+os.environ["PATH"] = os.path.join(KEEP, "bin") + ":" + os.environ["PATH"]
+os.environ["CFRS_STATE_DIR"] = os.path.join(KEEP, "state")
+print(subprocess.run(["cfrs", "--version"], check=True, capture_output=True, text=True).stdout)
+```
+
 ### Container image
 
 Each release has an image for each Linux architecture of the binaries:
