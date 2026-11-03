@@ -111,6 +111,15 @@ enum Command {
     Connect(ConnectArgs),
     /// List local TCP ports that are listening.
     Ports(PortsArgs),
+    /// Print a text for a bug report: the version, cfrs status, the
+    /// detached instances and the end of their logs, and the names of the
+    /// variables that are set. Ids, tokens and credentials are hidden. No
+    /// network unless --doctor.
+    BugReport {
+        /// Also run cfrs doctor and add its JSON (network).
+        #[arg(long)]
+        doctor: bool,
+    },
     /// Print a completion script for a shell: bash, zsh, fish or elvish.
     ///
     /// Bash: cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs.
@@ -1652,6 +1661,19 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Autostart(args) => autostart(args.command),
         Command::Status { .. } => {
             println!("{}", cfrs::status::document());
+            Ok(())
+        }
+        Command::BugReport { doctor } => {
+            let report = if doctor {
+                let options = cfrs::doctor::Options {
+                    samples: 3,
+                    ..Default::default()
+                };
+                Some(cfrs::doctor::run(options).await.to_json())
+            } else {
+                None
+            };
+            print!("{}", cfrs::bug_report::text(report.as_ref()));
             Ok(())
         }
     }

@@ -49,6 +49,7 @@ macro_rules! eprintln {
 
 pub mod agent;
 pub mod autostart;
+pub mod bug_report;
 pub mod cloudflare;
 pub mod config;
 pub mod connect;
