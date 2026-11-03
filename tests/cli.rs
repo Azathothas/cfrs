@@ -353,6 +353,7 @@ fn sigterm_is_a_clean_stop() {
                 "-L",
                 &format!("tcp://127.0.0.1:{port}"),
                 "wss://127.0.0.1:9/__cfrs/ws",
+                "--no-check",
             ])
             .env_remove("CFRS_ERROR_PROGRAM")
             .stdout(std::process::Stdio::null())

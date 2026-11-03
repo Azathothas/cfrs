@@ -651,6 +651,16 @@ struct ConnectArgs {
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long)]
     run_for: Option<u64>,
+    /// Start with no check of the remote. By default, connect opens one
+    /// WebSocket to the remote at start and exits 69 when it fails (the
+    /// origin then dials its forward target once).
+    #[arg(long)]
+    no_check: bool,
+    /// Take a unix socket path that another process serves. By default, a
+    /// socket that answers is refused (exit 69); a stale socket file is
+    /// replaced.
+    #[arg(long)]
+    replace: bool,
 }
 
 #[derive(Args, Debug)]
@@ -2141,50 +2151,72 @@ async fn connect(args: ConnectArgs) -> Result<()> {
             ),
         ));
     }
-    let mut tasks = Vec::new();
+    let mut locals = Vec::new();
     for raw in &args.locals {
-        let local = LocalSpec::parse(raw)?;
-        let remote = args.remote.clone();
+        locals.push(LocalSpec::parse(raw)?);
+    }
+    let mut tcp = Vec::new();
+    #[cfg(unix)]
+    let mut unix = Vec::new();
+    // Issue 202: each socket file of this run is removed at the end.
+    #[cfg(unix)]
+    let mut files = Vec::new();
+    for local in &locals {
         match local {
             LocalSpec::Tcp { bind, port } => {
-                let listener = tokio::net::TcpListener::bind((bind.as_str(), port))
+                let listener = tokio::net::TcpListener::bind((bind.as_str(), *port))
                     .await
                     .with_context(|| format!("binding {bind}:{port}"))?;
-                println!(
-                    "cfrs: {} -> {remote}",
-                    LocalSpec::Tcp {
-                        bind: bind.clone(),
-                        port
-                    }
-                    .describe()
-                );
-                tasks.push(tokio::spawn(accept_loop(listener, remote)));
+                tcp.push((local.describe(), listener));
             }
             LocalSpec::Unix(path) => {
                 #[cfg(unix)]
                 {
-                    let listener = unix_listener(&path)?;
-                    println!(
-                        "cfrs: {} -> {remote}",
-                        LocalSpec::Unix(path.clone()).describe()
-                    );
-                    tasks.push(tokio::spawn(accept_unix(listener, remote)));
+                    let (listener, file) = unix_listener(path, args.replace)?;
+                    files.push(file);
+                    unix.push((local.describe(), listener));
                 }
                 #[cfg(not(unix))]
-                {
-                    let _ = remote;
-                    bail!(
-                        "unix sockets are not supported on this platform: {}",
-                        path.display()
-                    );
-                }
+                bail!(
+                    "unix sockets are not supported on this platform: {}",
+                    path.display()
+                );
             }
         }
+    }
+    // Issue 207: one WebSocket at start shows that the remote answers.
+    // Before, the listeners came up, and each client got a reset.
+    if !args.no_check {
+        let ws = ws::dial(&args.remote, ws::DIAL_TIMEOUT)
+            .await
+            .map_err(|err| {
+                cfrs::exit::fault(
+                    Fault::Unavailable,
+                    err.context(format!(
+                        "the remote {} does not answer (--no-check starts without this check)",
+                        args.remote
+                    )),
+                )
+            })?;
+        let mut ws = ws;
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
+    }
+    let mut tasks = Vec::new();
+    for (name, listener) in tcp {
+        println!("cfrs: {name} -> {}", args.remote);
+        tasks.push(tokio::spawn(accept_loop(listener, args.remote.clone())));
+    }
+    #[cfg(unix)]
+    for (name, listener) in unix {
+        println!("cfrs: {name} -> {}", args.remote);
+        tasks.push(tokio::spawn(accept_unix(listener, args.remote.clone())));
     }
     sleep_or_signal(args.run_for).await;
     for task in tasks {
         task.abort();
     }
+    #[cfg(unix)]
+    drop(files);
     Ok(())
 }
 
@@ -2208,11 +2240,70 @@ async fn accept_loop(listener: tokio::net::TcpListener, remote: String) {
     }
 }
 
+/// A socket file that this run made. Drop removes it, but only while the
+/// file is still the one of this run: a later `--replace` run owns its own.
 #[cfg(unix)]
-fn unix_listener(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
-    let _ = std::fs::remove_file(path);
-    pod_netns::listen::bind_private(path)
-        .with_context(|| format!("binding unix:{}", path.display()))
+struct SocketFile {
+    path: std::path::PathBuf,
+    id: Option<(u64, u64)>,
+}
+
+#[cfg(unix)]
+fn file_id(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(unix)]
+impl Drop for SocketFile {
+    fn drop(&mut self) {
+        if self.id.is_some() && file_id(&self.path) == self.id {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Bind a unix listener at `path` (issue 202). A socket that answers
+/// belongs to another process and is refused, unless `replace`. A stale
+/// socket file is removed. Another kind of file is never removed.
+#[cfg(unix)]
+fn unix_listener(
+    path: &std::path::Path,
+    replace: bool,
+) -> Result<(tokio::net::UnixListener, SocketFile)> {
+    use std::os::unix::fs::FileTypeExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => {
+            if !replace && std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!(
+                        "unix:{} is served by another process (cfrs ps; --replace takes it)",
+                        path.display()
+                    ),
+                ));
+            }
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing the old socket unix:{}", path.display()))?;
+        }
+        Ok(_) => {
+            return Err(cfrs::exit::fault(
+                Fault::Usage,
+                anyhow::anyhow!("unix:{} exists and is not a socket", path.display()),
+            ))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("unix:{}", path.display())),
+    }
+    let listener = pod_netns::listen::bind_private(path)
+        .with_context(|| format!("binding unix:{}", path.display()))?;
+    let file = SocketFile {
+        path: path.to_path_buf(),
+        id: file_id(path),
+    };
+    Ok((listener, file))
 }
 
 #[cfg(unix)]

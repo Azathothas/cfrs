@@ -75,11 +75,78 @@ pub async fn serve_websocket(
     bridge(ws, io, metrics).await
 }
 
+/// The time for each step (TCP, TLS, the upgrade) of a client WebSocket.
+pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A client WebSocket to `url` (ws:// or wss://). The TCP goes through
+/// the egress layer of cfrs (issue 191): `--proxy`, NO_PROXY,
+/// `--resolve`, the system resolver and DoH. TLS trusts the roots of
+/// cfrs (`--ca-file`, SSL_CERT_FILE).
+pub async fn dial(url: &str, timeout: std::time::Duration) -> Result<WebSocketStream<BoxedIo>> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let request = url
+        .into_client_request()
+        .with_context(|| format!("{url} is not a WebSocket URL"))?;
+    let uri = request.uri();
+    let tls = match uri.scheme_str() {
+        Some("wss") => true,
+        Some("ws") => false,
+        _ => bail!("{url} is not a WebSocket URL: give ws:// or wss://"),
+    };
+    let host = uri
+        .host()
+        .with_context(|| format!("{url} has no host"))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+    let io = crate::egress::dial(&host, port, None, timeout)
+        .await
+        .with_context(|| format!("TCP to {host}:{port}"))?;
+    let io: BoxedIo = if tls {
+        // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
+        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let name = rustls::pki_types::ServerName::try_from(host.clone())
+            .with_context(|| format!("{host} is not a valid TLS name"))?;
+        let stream = tokio::time::timeout(
+            timeout,
+            tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)).connect(name, io),
+        )
+        .await
+        .map_err(|_| {
+            crate::hop::at(
+                crate::hop::Hop::Network,
+                anyhow::anyhow!("TLS to {host}: no answer in {} s", timeout.as_secs()),
+            )
+        })?
+        .map_err(|err| {
+            let hop = crate::hop::tls_hop(&err);
+            crate::hop::at(
+                hop,
+                anyhow::Error::new(err).context(format!("TLS to {host}")),
+            )
+        })?;
+        Box::new(stream)
+    } else {
+        io
+    };
+    match tokio::time::timeout(timeout, tokio_tungstenite::client_async(request, io)).await {
+        Err(_) => bail!(
+            "the WebSocket upgrade at {url}: no answer in {} s",
+            timeout.as_secs()
+        ),
+        Ok(Ok((ws, _response))) => Ok(ws),
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => bail!(
+            "{url} refused the WebSocket upgrade: HTTP {}",
+            response.status().as_u16()
+        ),
+        Ok(Err(err)) => Err(err).with_context(|| format!("the WebSocket upgrade at {url}")),
+    }
+}
+
 /// Connect a local socket to a remote WebSocket endpoint.
 pub async fn connect_bridge(url: &str, io: BoxedIo) -> Result<()> {
-    let (ws, _response) = tokio_tungstenite::connect_async(url)
-        .await
-        .with_context(|| format!("connecting to {url}"))?;
+    let ws = dial(url, DIAL_TIMEOUT).await?;
     bridge(ws, io, &Metrics::new()).await
 }
 

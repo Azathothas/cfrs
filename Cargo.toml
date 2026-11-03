@@ -81,9 +81,7 @@ smoltcp = { version = "=0.12.0", default-features = false, features = [
     "assembler-max-segment-count-32",
 ] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
-    "connect",
     "handshake",
-    "rustls-tls-webpki-roots",
 ] }
 tokio = { version = "1", features = [
     "macros",

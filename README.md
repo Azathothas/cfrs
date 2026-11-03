@@ -402,6 +402,13 @@ cfrs connect wss://<random>.trycloudflare.com/__cfrs/ws -L tcp://127.0.0.1:8080
 local connection gets its own WebSocket. `--forward` and an origin can be used
 together: the origin gets all paths other than `/__cfrs/ws`.
 
+`cfrs connect` dials as the other commands do: `--proxy` (or HTTPS_PROXY and
+NO_PROXY), `--resolve`, the system resolver and DoH, and the roots of
+`--ca-file`. At start, it opens one WebSocket to the remote and exits 69 when
+the remote does not answer; `--no-check` starts without this check. A unix
+socket that another process serves is refused (exit 69); `--replace` takes
+it. At the end, cfrs removes the socket files that it made.
+
 ### Other commands
 
 ```sh
