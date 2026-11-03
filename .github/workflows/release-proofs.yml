@@ -154,7 +154,11 @@ jobs:
             echo "skip $TAG has no cfrs update"
             exit 0
           fi
-          timeout 300 "$dir/cfrs" update --version "$TAG"
+          # Issue 197: an update to the same version needs --force (from
+          # v0.3.0-beta.10 on); an older binary installs it again with no flag.
+          force=""
+          if "$dir/cfrs" update --help 2>&1 | grep -q -- '--force'; then force=--force; fi
+          timeout 300 "$dir/cfrs" update --version "$TAG" $force
           got=$("$dir/cfrs" --version)
           test "$got" = "cfrs ${TAG#v} ($COMMIT)" || { echo "after the update: $got"; exit 1; }
           echo "ok   cfrs update installed $TAG and checked its signature: $got"
