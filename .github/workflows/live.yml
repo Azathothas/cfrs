@@ -708,7 +708,7 @@ jobs:
         timeout-minutes: 9
         run: |
           set -eu
-          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --run-for 150 > warpproxy.log 2>&1 &
+          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --dns 127.0.0.1:15353 --run-for 150 > warpproxy.log 2>&1 &
           # The proxy listens after the WARP registration: wait for it.
           i=0
           until nc -z 127.0.0.1 40000 2> /dev/null; do
@@ -739,6 +739,15 @@ jobs:
           grep -m1 'a packet crossed the MASQUE session' warpproxy.log | sed -E 's/^[^ ]+ +//'
           # Issue 121: what the front door assigned (if it sends it).
           grep -m1 'the front door assigned' warpproxy.log | sed -E 's/^[^ ]+ +//; s/[0-9a-f:]{6,}[0-9a-f]\/128/<v6>\/128/g' || echo "no ADDRESS_ASSIGN in the log"
+          # Issue 117: the DNS forwarder of --dns answers through WARP.
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
+          s.sendto(bytes.fromhex('432101000001000000000000076578616d706c6503636f6d0000010001'), ('127.0.0.1', 15353))
+          a = s.recv(512)
+          print('dns forwarder', 'ok' if a[:2] == bytes.fromhex('4321') and a[3] & 15 == 0 else 'bad')
+          " | tee dnsfwd.txt
+          grep -q 'dns forwarder ok' dnsfwd.txt
           # Issue 114: datagrams to a name (ATYP 3); at least 27 of 30 get
           # an answer.
           python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 one.one.one.one:53 30 | tee atyp3.txt

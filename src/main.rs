@@ -1224,9 +1224,14 @@ fn warp_up(
     persist: bool,
     ready_timeout: u64,
     replace: bool,
+    dns: Option<std::net::SocketAddr>,
 ) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
     let mut argv = warp_up_args(args, port, &socket, ready_timeout);
+    if let Some(dns) = dns {
+        argv.push("--dns".into());
+        argv.push(dns.to_string());
+    }
     // Issue 115: the advice of a running instance with other arguments
     // names --replace; warp up has it now.
     if replace {
@@ -2684,6 +2689,10 @@ enum WarpCommand {
         /// at once, with a warning in the log. 0: no limit.
         #[arg(long, value_name = "N", default_value_t = 0)]
         max_connections: u64,
+        /// Also answer DNS on this UDP address (for example
+        /// 127.0.0.1:5353): each query goes through WARP to 1.1.1.1.
+        #[arg(long, value_name = "ADDR")]
+        dns: Option<std::net::SocketAddr>,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
@@ -2716,6 +2725,10 @@ enum WarpCommand {
         /// and start this one.
         #[arg(long)]
         replace: bool,
+        /// Also answer DNS on this UDP address (for example
+        /// 127.0.0.1:5353): each query goes through WARP to 1.1.1.1.
+        #[arg(long, value_name = "ADDR")]
+        dns: Option<std::net::SocketAddr>,
     },
     /// Stop what cfrs warp up started, and remove its env file and its
     /// block in ~/.bashrc and ~/.profile.
@@ -2897,8 +2910,9 @@ async fn warp(args: WarpArgs) -> Result<()> {
             persist,
             ready_timeout,
             replace,
+            dns,
             ..
-        } => return warp_up(&args, *port, *persist, *ready_timeout, *replace),
+        } => return warp_up(&args, *port, *persist, *ready_timeout, *replace, *dns),
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
             let text = cfrs::warp::up::env_text()?;
@@ -3118,9 +3132,21 @@ async fn warp(args: WarpArgs) -> Result<()> {
             run_for,
             strict,
             max_connections,
+            dns,
             ..
         } => {
             cfrs::warp::proxy::set_max_connections(max_connections);
+            // Issue 117: the DNS listener is bound before the session, as
+            // the proxy listeners.
+            let dns_socket = match dns {
+                Some(addr) => Some(
+                    tokio::net::UdpSocket::bind(addr)
+                        .await
+                        .with_context(|| format!("binding the DNS address {addr}"))
+                        .fault(Fault::Unavailable)?,
+                ),
+                None => None,
+            };
             let listens = listen
                 .iter()
                 .map(|l| cfrs::vnet::proxy::ProxyListen::parse(l))
@@ -3152,6 +3178,9 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 .await
                 .fault(Fault::Unavailable)?;
             cfrs::warp::proxy::health_log(live.clone());
+            if let Some(socket) = dns_socket {
+                cfrs::warp::proxy::serve_dns(live.clone(), socket);
+            }
             let proxies: Vec<_> = bound
                 .into_iter()
                 .map(|b| cfrs::warp::proxy::run(live.clone(), b))

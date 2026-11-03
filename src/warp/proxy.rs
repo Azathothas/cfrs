@@ -178,6 +178,67 @@ pub fn health_log(live: Arc<super::Live<WarpStack>>) {
     });
 }
 
+/// A DNS forwarder (issue 117): each query that comes to `socket` goes
+/// through the WARP session of `live` to [`TUNNEL_RESOLVER`], and the
+/// answer goes back. For a program that sends its own DNS on UDP (a host
+/// with a fake or broken resolver).
+pub fn serve_dns(live: Arc<super::Live<WarpStack>>, socket: tokio::net::UdpSocket) {
+    let socket = Arc::new(socket);
+    if let Ok(addr) = socket.local_addr() {
+        info!(%addr, "the DNS forwarder through WARP is listening");
+    }
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            let query = buf[..n].to_vec();
+            let socket = socket.clone();
+            let live = live.clone();
+            tokio::spawn(async move {
+                let Ok(stack) = live.get().await else { return };
+                match forward_dns(&stack, &query).await {
+                    Ok(answer) => {
+                        let _ = socket.send_to(&answer, from).await;
+                    }
+                    Err(err) => {
+                        debug!(error = %format!("{err:#}"), "a DNS query through WARP failed")
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Send one DNS message to [`TUNNEL_RESOLVER`] through the tunnel, with the
+/// resends of [`DNS_RESEND`]; the answer with the id of the query.
+async fn forward_dns(stack: &WarpStack, query: &[u8]) -> Result<Vec<u8>> {
+    forward_dns_to(stack, TUNNEL_RESOLVER, query).await
+}
+
+async fn forward_dns_to(stack: &WarpStack, server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
+    if query.len() < 12 {
+        bail!("not a DNS message");
+    }
+    let udp = stack.udp_bind().await?;
+    let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
+    loop {
+        udp.send_to(query.to_vec(), server).await?;
+        let resend = (tokio::time::Instant::now() + DNS_RESEND).min(deadline);
+        loop {
+            match tokio::time::timeout_at(resend, udp.recv_from(4096)).await {
+                Ok(Ok((answer, from))) if from == server && answer.get(..2) == query.get(..2) => {
+                    return Ok(answer)
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => return Err(err),
+                Err(_) => break,
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("no DNS answer through WARP");
+        }
+    }
+}
+
 /// Accept proxy clients on `bound` and connect them through the WARP
 /// session of `live`. Each client takes the session of the time it comes;
 /// after a reconnect (issue 75), new clients take the new session.
@@ -934,6 +995,25 @@ mod tests {
             drop(client);
             let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
         }
+    }
+
+    // Issue 117: the DNS forwarder gives the answer of the server through
+    // the tunnel, with the id of the query.
+    #[tokio::test]
+    async fn the_dns_forwarder_gives_the_answer() {
+        let (stack, _) = stack_with_dns(1);
+        let query = pod_netns::dns::build_query(0x7777, "example.com", 1).unwrap();
+        let answer = forward_dns_to(&stack, PEER_DNS.parse().unwrap(), &query)
+            .await
+            .unwrap();
+        assert_eq!(&answer[..2], &[0x77, 0x77]);
+        assert_eq!(
+            pod_netns::dns::parse_answers(&answer).unwrap(),
+            vec!["192.0.2.44".parse::<IpAddr>().unwrap()]
+        );
+        assert!(forward_dns_to(&stack, PEER_DNS.parse().unwrap(), b"short")
+            .await
+            .is_err());
     }
 
     // Issue 117: the limit refuses the client over it, and frees the place
