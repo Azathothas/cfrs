@@ -1,27 +1,38 @@
 #!/bin/sh
 # Install the static Linux binary of cfrs from a GitHub release (issue 160).
 #
-#   curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
-#   wget -qO- https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
+#   s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh) && sh -c "$s"
+#   s=$(wget -qO- https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh) && sh -c "$s"
+#
+# Do not use `curl ... | sh` in a script: a pipe has the exit status of sh,
+# and sh exits 0 when curl fails (issue 165).
 #
 # The script is POSIX sh. It finds a downloader (curl, wget, aria2c,
 # httpie, python3, python, perl, and last busybox wget, which does not check
 # TLS certificates: a warning says so), the target of this machine, and
 # the release. It checks the binary against SHA256SUMS of the release
 # (sha256sum, shasum, openssl, busybox or python), and the cosign signature
-# of SHA256SUMS when cosign is installed. Then it installs the binary.
+# of SHA256SUMS when cosign is installed. It runs the new binary in the
+# install directory; only then does it replace the old binary.
 #
 # Variables:
 #   CFRS_VERSION       The release: latest (the newest, also a prerelease;
 #                      the default), or a tag (v0.3.0-beta.7, or 0.3.0-beta.7).
-#   CFRS_INSTALL_DIR   The directory of the binary. Default: $XDG_BIN_HOME,
-#                      else ~/.local/bin, else /usr/local/bin for root.
+#                      latest reads the GitHub API, else releases.atom (no
+#                      quota). A tag needs neither.
+#   CFRS_INSTALL_DIR   The directory of the binary. Default: /usr/local/bin
+#                      for root, else $XDG_BIN_HOME, else ~/.local/bin.
 #   CFRS_POD_NETNS=1   Also install pod-netns.
 #   CFRS_REPO          OWNER/NAME of the releases (Azathothas/cfrs).
 #   CFRS_NO_VERIFY=1   Install with no SHA256 check (no tool for it).
 #   CFRS_DOWNLOADER    Use this downloader (one of the list above).
+#   GITHUB_TOKEN       Sent to api.github.com only (curl, wget), for its
+#   GH_TOKEN           quota on a shared address. Not sent to other hosts.
 #   NO_COLOR           No colors.
 #   DEBUG              set -x.
+#
+# INT, TERM and HUP stop the script and remove its files. SIGKILL cannot be
+# caught: a temporary directory can then stay.
 set -eu
 
 main() {
@@ -44,12 +55,24 @@ main() {
     esac
 
     target=$(detect_target)
-    downloader=$(detect_downloader) || fail "no downloader: install curl or wget"
+    if ! downloader=$(detect_downloader); then
+        if [ -n "${CFRS_DOWNLOADER:-}" ]; then
+            fail "CFRS_DOWNLOADER=$CFRS_DOWNLOADER: not found or not usable (valid: curl wget aria2c http python3 python perl busybox)"
+        fi
+        fail "no downloader: install curl or wget"
+    fi
     info "downloader: $downloader; target: $target"
     warn_insecure
 
+    # The directory first: a bad directory fails before the downloads.
+    dir=$(install_dir)
+
     tmp=$(make_temp)
-    trap 'rm -rf "$tmp"' EXIT INT TERM HUP
+    new_files=
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
 
     tag=$(resolve_tag "$version")
     base="https://github.com/$repo/releases/download/$tag"
@@ -58,26 +81,52 @@ main() {
     names="cfrs"
     if [ "${CFRS_POD_NETNS:-}" = 1 ]; then names="cfrs pod-netns"; fi
 
-    fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "no SHA256SUMS in $tag"
+    get "$base/SHA256SUMS" "$tmp/SHA256SUMS" SHA256SUMS
     verify_signature "$base" "$tmp"
     for name in $names; do
         file="$name-$target"
-        fetch "$base/$file" "$tmp/$file" || fail "no $file in $tag"
+        get "$base/$file" "$tmp/$file" "$file"
         check_sum "$tmp/SHA256SUMS" "$tmp" "$file"
     done
 
-    dir=$(install_dir)
+    # A copy in the directory, a run of the copy, then a rename: a binary
+    # that does not run does not replace the old one (issues 169, 175), and a
+    # running binary is not changed in place. The run is in the directory of
+    # the binary, because /tmp is often noexec.
     for name in $names; do
         file="$name-$target"
+        new="$dir/.$name.new.$$"
+        new_files="$new_files $new"
         chmod 0755 "$tmp/$file"
-        # A copy in the directory, then a rename: a running binary is not
-        # changed in place.
-        cp "$tmp/$file" "$dir/.$name.new.$$"
+        cp "$tmp/$file" "$new"
+        if ! shown=$(run_version "$new"); then
+            fail "$file does not run on this machine (uname -m: $(uname -m 2> /dev/null || echo unknown)); $dir/$name is not changed"
+        fi
+        if [ "$name" = cfrs ]; then version_line=$shown; fi
+    done
+    for name in $names; do
         mv -f "$dir/.$name.new.$$" "$dir/$name"
         ok "installed $dir/$name"
     done
-    "$dir/cfrs" --version || fail "$dir/cfrs does not run on this machine"
+    new_files=
+    printf '%s\n' "$version_line"
     path_hint "$dir"
+}
+
+# Remove the files of this run.
+cleanup() {
+    rm -rf "$tmp"
+    # shellcheck disable=SC2086 # a list of paths with no spaces of ours
+    [ -z "${new_files:-}" ] || rm -f $new_files
+}
+
+# The output of FILE --version, with no stdin, in at most 10 s.
+run_version() {
+    if command -v timeout > /dev/null 2>&1; then
+        timeout 10 "$1" --version < /dev/null
+    else
+        "$1" --version < /dev/null
+    fi
 }
 
 info() { printf '%s\n' "${blue}cfrs install:${reset} $*" >&2; }
@@ -153,8 +202,43 @@ warn_insecure() {
     esac
 }
 
-# Download URL to FILE with the downloader. HTTPS only.
+# Download URL to FILE with the downloader. HTTPS only. The status is the
+# status of the downloader; a file that is empty is an error too.
 fetch() {
+    url=$1
+    out=$2
+    rm -f "$out"
+    download "$url" "$out" || return $?
+    [ -s "$out" ]
+}
+
+# Download URL to FILE for WHAT, or fail with a message that tells a
+# missing file from a failed download.
+get() {
+    rc=0
+    fetch "$1" "$2" || rc=$?
+    [ "$rc" = 0 ] && return 0
+    case "$downloader:$rc" in
+        curl:22 | wget:8) fail "no $3 in $tag" ;;
+    esac
+    fail "the download of $3 failed (exit $rc of $downloader; is github.com reachable?): $1"
+}
+
+# A request to the GitHub API, with GITHUB_TOKEN or GH_TOKEN (curl and
+# wget). The token goes to api.github.com only.
+fetch_api() {
+    token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
+    rm -f "$2"
+    case "$downloader:${token:+t}" in
+        curl:t) curl -fsSL --proto '=https' --tlsv1.2 -H "Authorization: Bearer $token" -o "$2" "$1" || return $? ;;
+        wget:t) wget -q --https-only --header="Authorization: Bearer $token" -O "$2" "$1" || return $? ;;
+        *) download "$1" "$2" || return $? ;;
+    esac
+    [ -s "$2" ]
+}
+
+# The download itself, by the downloader.
+download() {
     url=$1
     out=$2
     case "$downloader" in
@@ -177,7 +261,6 @@ open(sys.argv[2], "wb").write(data)' "$url" "$out" ;;
 exit($r->{success} ? 0 : 1)' "$url" "$out" ;;
         *) return 1 ;;
     esac
-    [ -s "$out" ]
 }
 
 # A new private temporary directory.
@@ -191,14 +274,26 @@ make_temp() {
 }
 
 # The tag of VERSION: latest is the newest release of the API, prereleases
-# too (cfrs has prereleases only, and /releases/latest skips them).
+# too (cfrs has prereleases only, and /releases/latest skips them). When
+# the API fails (403 on a shared address, issue 166), releases.atom gives
+# the newest tag.
 resolve_tag() {
     case "$1" in
         latest)
-            fetch "https://api.github.com/repos/$repo/releases?per_page=1" "$tmp/releases.json" ||
-                fail "cannot read the releases of $repo; set CFRS_VERSION=vX.Y.Z"
-            t=$(tr ',' '\n' < "$tmp/releases.json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-            [ -n "$t" ] || fail "no release of $repo; set CFRS_VERSION=vX.Y.Z"
+            t=
+            if fetch_api "https://api.github.com/repos/$repo/releases?per_page=1" "$tmp/releases.json" 2> "$tmp/api.err"; then
+                t=$(tr ',' '\n' < "$tmp/releases.json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+            fi
+            if [ -z "$t" ]; then
+                info "the GitHub API did not answer; reading releases.atom"
+                if fetch "https://github.com/$repo/releases.atom" "$tmp/releases.atom" 2> "$tmp/atom.err"; then
+                    t=$(tr '>' '\n' < "$tmp/releases.atom" | sed -n 's#.*/releases/tag/\([^"<]*\)".*#\1#p' | head -n 1)
+                fi
+            fi
+            if [ -z "$t" ]; then
+                tail -n 3 "$tmp/api.err" "$tmp/atom.err" >&2 2> /dev/null || true
+                fail "cannot read the releases of $repo (the API and releases.atom); set CFRS_VERSION=vX.Y.Z"
+            fi
             echo "$t" ;;
         v*) echo "$1" ;;
         *) echo "v$1" ;;
@@ -244,33 +339,44 @@ verify_signature() {
         info "no cosign: the signature of SHA256SUMS is not checked (cfrs update checks it)"
         return 0
     fi
-    fetch "$1/SHA256SUMS.sigstore.json" "$2/SHA256SUMS.sigstore.json" ||
-        fail "no SHA256SUMS.sigstore.json in $tag"
-    cosign verify-blob --bundle "$2/SHA256SUMS.sigstore.json" \
+    get "$1/SHA256SUMS.sigstore.json" "$2/SHA256SUMS.sigstore.json" SHA256SUMS.sigstore.json
+    if ! cosign verify-blob --bundle "$2/SHA256SUMS.sigstore.json" \
         --certificate-identity "https://github.com/$repo/.github/workflows/release.yml@refs/tags/$tag" \
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-        "$2/SHA256SUMS" > /dev/null 2>&1 || fail "the cosign signature of SHA256SUMS is not valid"
+        "$2/SHA256SUMS" > "$2/cosign.log" 2>&1; then
+        tail -n 5 "$2/cosign.log" >&2
+        fail "the cosign signature of SHA256SUMS is not valid (the lines above are the output of cosign)"
+    fi
     ok "the cosign signature of SHA256SUMS: ok"
 }
 
-# The directory of the binary.
+# True when DIR is a directory where this user can make a file. `[ -w ]`
+# of busybox sh says yes for root on a read-only file system (issue 175).
+writable_dir() {
+    [ -d "$1" ] || return 1
+    probe="$1/.cfrs-probe.$$"
+    (: > "$probe") 2> /dev/null || return 1
+    rm -f "$probe"
+}
+
+# The directory of the binary, as an absolute path.
 install_dir() {
     if [ -n "${CFRS_INSTALL_DIR:-}" ]; then
         mkdir -p "$CFRS_INSTALL_DIR" 2> /dev/null || true
-        [ -d "$CFRS_INSTALL_DIR" ] && [ -w "$CFRS_INSTALL_DIR" ] ||
+        writable_dir "$CFRS_INSTALL_DIR" ||
             fail "CFRS_INSTALL_DIR ($CFRS_INSTALL_DIR) is not a writable directory"
-        echo "$CFRS_INSTALL_DIR"
+        (cd "$CFRS_INSTALL_DIR" && pwd -P)
         return 0
     fi
-    if [ "$(id -u 2> /dev/null || echo 1)" = 0 ] && [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    if [ "$(id -u 2> /dev/null || echo 1)" = 0 ] && writable_dir /usr/local/bin; then
         echo /usr/local/bin
         return 0
     fi
     for d in "${XDG_BIN_HOME:-}" "${HOME:+$HOME/.local/bin}"; do
         [ -n "$d" ] || continue
         mkdir -p "$d" 2> /dev/null || true
-        if [ -d "$d" ] && [ -w "$d" ]; then
-            echo "$d"
+        if writable_dir "$d"; then
+            (cd "$d" && pwd -P)
             return 0
         fi
     done

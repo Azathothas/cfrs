@@ -160,8 +160,12 @@ sh scripts/rebuild.sh v0.3.0-beta.8
 (prereleases too) for this machine. It is POSIX `sh`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
+s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh) && sh -c "$s"
 ```
+
+With wget: `s=$(wget -qO- URL) && sh -c "$s"`. Do not use `curl URL | sh`
+in a script or a CI step: a pipe has the exit status of `sh`, and `sh`
+exits 0 when `curl` fails or is missing.
 
 * It uses the first downloader that it finds: `curl`, `wget`, `aria2c`,
   `http` (HTTPie), `python3`, `python` or `perl` (`HTTP::Tiny` with TLS),
@@ -172,11 +176,22 @@ curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/instal
   busybox with no TLS (no `ssl_client`) is not used.
 * It checks the binary against `SHA256SUMS` (`sha256sum`, `shasum`,
   `openssl`, `busybox` or `python3`), and the cosign signature of
-  `SHA256SUMS` when `cosign` is installed. A failed check stops it.
+  `SHA256SUMS` when `cosign` is installed. A failed check stops it, and
+  cosign then shows its output.
+* It runs the new binary (`--version`) in the install directory before it
+  replaces the old binary. A binary that does not run on this machine does
+  not replace the old one.
 * The directory: `CFRS_INSTALL_DIR`, else `/usr/local/bin` for root, else
   `$XDG_BIN_HOME`, else `~/.local/bin`. A line says how to add it to `PATH`.
-* `CFRS_VERSION=v0.3.0-beta.7` installs that release. `CFRS_POD_NETNS=1`
-  also installs `pod-netns`. `CFRS_DOWNLOADER=wget` selects the downloader.
+  The script checks the directory before the downloads.
+* `CFRS_VERSION=v0.3.0-beta.7` installs that release, with no request to
+  the GitHub API. For the newest release, the script reads the API; when
+  the API refuses (403 on a shared address), it reads `releases.atom`.
+  `GITHUB_TOKEN` or `GH_TOKEN` goes to `api.github.com` only.
+* `CFRS_POD_NETNS=1` also installs `pod-netns`. `CFRS_DOWNLOADER=wget`
+  selects the downloader.
+* A missing file of the release and a failed download have different
+  messages. INT, TERM and HUP stop the script and remove its files.
 
 ### Container image
 
