@@ -56,6 +56,24 @@ The tools: `.github/workflows/live.yml` (run 41260604779), `release.yml`
 | Unprivileged user namespaces | AppArmor limits them: a namespace can be made, but `lo` cannot come up | measured |
 | `cfrs warp run --backend seccomp` | Works (`warp=on`) | measured |
 
+### An IPv6-only host (the IPv6-only kit, 2026-11-02; a runner, from beta.7)
+
+The kit of 2026-11-02 ran cfrs 0.3.0-beta.6 in a netns and in a VM with
+IPv6 only (NAT66 out through WARP). `scripts/v6only/` makes the same host
+on a runner: the namespace `v6up` has IPv4 and `cfrs warp tun
+--default-route`; `v6only` behind it has IPv6 only (no IPv4 route; the
+address 127.0.0.1 stays). The step "An IPv6-only host" of `live.yml` runs
+`scripts/v6only/acceptance.sh`.
+
+| Fact | Result | Mark |
+| --- | --- | --- |
+| A connect to an IPv4 address | `ENETUNREACH` | measured (kit) |
+| `cfrs warp run` (beta.6) | IPv4 and UDP for the program through WARP; a tunnel at 1.9 to 2.2 MB/s | measured (kit) |
+| A tunnel with TCP 443 and DNS only (beta.6) | Ready in 13 s; after `kill -9`, the supervisor starts it again in less than 30 s, with a new URL | measured (kit) |
+| `warp up --tun` (beta.6) | Fails: it does not give `--masque-endpoint` to `warp tun` (fixed in beta.8) | measured (kit) |
+| No system resolver (beta.6) | No tunnel: the DoH servers were IPv4 only (fixed in beta.8: IPv6 servers first on a host with no IPv4 route) | measured (kit) |
+| `cfrs doctor` (beta.6) | "0 of 3 legs" while the tunnel works: it probed the IPv4 front door only (fixed in beta.8) | measured (kit) |
+
 ### The test box (a GitHub runner, from 2026-11-01)
 
 `scripts/test_in_box.sh` copies the sandbox above onto a runner, with no

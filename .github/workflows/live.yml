@@ -830,6 +830,17 @@ jobs:
           done
           curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
           grep 'a new WARP session is open' warpproxy.log
+      # Issue 163: an IPv6-only host (the IPv6-only kit of 2026-11-02). The
+      # namespace v6up has IPv4 to the runner and cfrs warp tun; v6only
+      # behind it has IPv6 only, with NAT66 out of the TUN. The routes of
+      # the runner do not change.
+      - name: An IPv6-only host
+        timeout-minutes: 12
+        run: |
+          set -eu
+          trap 'sh scripts/v6only/down.sh' EXIT
+          sh scripts/v6only/up.sh target/release/cfrs
+          sh scripts/v6only/acceptance.sh target/release/cfrs
       # The test box (issue 21): a user whose only egress is a policy proxy.
       - name: The test box
         timeout-minutes: 15

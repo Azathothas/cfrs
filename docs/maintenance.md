@@ -46,6 +46,10 @@ state of the open work.
     with the failed jobs and steps. Give the full SHA (`git rev-parse
     HEAD`): the API does not match a short SHA. A push to `main` starts
     four runs (`ci`, `live`, `deny`, `secrets`): `MIN_RUNS` 4.
+  * `v6only/up.sh BINARY`, `v6only/run.sh CMD`, `v6only/acceptance.sh
+    BINARY`, `v6only/down.sh`: an IPv6-only host on a runner (issue 163).
+    It needs root, `ip`, `iptables` and `ip6tables`; it cannot run in this
+    sandbox (no IPv6 in its kernel).
   * Run the two watchers under the Monitor tool (a monitor stops after
     30 min: start it again when it ends).
 
