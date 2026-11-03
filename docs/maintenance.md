@@ -154,21 +154,19 @@ Rules that the tests check:
 ## Open work
 
 * **The TCP window of the userspace stack of WARP (#100).** The default is
-  8 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`), from beta.7. Four live runs
-  after the changes of #125 carried 20 MB with each window; before them, 8
-  stalled at about 10.5 MB. But in those four runs the sessions possibly
-  went through the WebSocket relay (the leg file of #126 put the relay
-  first after the relay step), so the data is not proven for the direct
-  path. From the commit after 7d576d8, each line of the table names its
-  leg ("warp proxy download, TCP window N, leg L").
-  * Not known: which change of #125 removed the stall (the free of
-    sockets, the TCP time limits and keepalive, or a read that took data
-    for a caller that gave up).
+  1 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`). Each live run prints a table
+  ("warp proxy download, binary B, TCP window N, leg L") with this binary
+  and the binary of beta.6, on the same runner.
+  * Direct path to the front door: 4, 8, 16 and no limit stall (run
+    41567562797, after the changes of #125 too).
+  * Through the WebSocket relay: no window stalled (runs 41556920224 to
+    41563827050; the leg file of #126 put the relay first then).
+  * So the stall is on the direct TCP path (runner to front door), not in
+    the inner TCP of smoltcp alone.
   * The value is not a count of segments: smoltcp compares the scaled
     window field with `max_burst_size` segments, so with a receive buffer
-    of 512 KiB (window shift 3) the window is about N x 9.8 KB. A cleaner
-    form: a receive buffer of the size of the window, and no burst limit.
-  * Watch the live table. If 8 stalls again, keep the TCP state of the
-    stalled connection (a pcap of `vnet::record::Recorder`).
+    of 512 KiB (window shift 3) the window is about N x 9.8 KB.
+  * Window 1 gave 3.3 and 6.2 MB/s in runs before beta.7 and 0.46 MB/s in
+    run 41567562797: the A/B lines with beta.6 tell if beta.7 is slower.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.

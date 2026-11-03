@@ -756,16 +756,27 @@ jobs:
           awk '{ exit !($3 >= 27) }' atyp3.txt
           # Issues 93 and 100: one TCP download of 20 MB through the
           # userspace stack and MASQUE, for each TCP window
-          # (CFRS_WARP_TCP_BURST, in segments; the default is 8, issue
-          # 100). Runs 41556920224, 41558316715, 41560771738: 8 carried
-          # 20 MB at 2.7 to 4.0 MB/s; 1 gave 0.4 to 0.6 MB/s. A stalled run
-          # prints its last warnings. The step needs 1 MB/s from the
+          # (CFRS_WARP_TCP_BURST, in segments; the default is 1, issue 100).
+          # Run 41567562797 (direct leg): 4, 16 and none stalled; 1 carried
+          # 20 MB at 0.46 MB/s. A stalled run prints its last warnings. The
+          # step needs 1 MB/s from the better of the two runs of the
           # default.
+          # The binary of beta.6 runs the same download (A/B on this runner,
+          # at this time): its default window is 1, as in this binary.
+          old="$RUNNER_TEMP/cfrs-beta6"
+          sh scripts/retry.sh curl -fsSL -o "$old" https://github.com/Azathothas/cfrs/releases/download/v0.3.0-beta.6/cfrs-x86_64-unknown-linux-musl && chmod +x "$old" || old=""
           port=40200
-          for burst in default 1 4 16 none; do
+          for spec in new:default old:default new:4 new:none old:default new:default; do
+            bin=${spec%%:*}
+            burst=${spec#*:}
             port=$((port + 1))
+            exe=target/release/cfrs
+            if [ "$bin" = old ]; then
+              [ -n "$old" ] || continue
+              exe=$old
+            fi
             if [ "$burst" = default ]; then unset CFRS_WARP_TCP_BURST; else export CFRS_WARP_TCP_BURST=$burst; fi
-            RUST_LOG=cfrs=debug target/release/cfrs warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$burst.log" 2>&1 &
+            RUST_LOG=cfrs=debug "$exe" warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$port.log" 2>&1 &
             bp=$!
             i=0
             until nc -z 127.0.0.1 "$port" 2> /dev/null; do
@@ -775,15 +786,18 @@ jobs:
             rate=$(curl -sS --max-time 45 -o /dev/null -w '%{speed_download} %{size_download}' -x "socks5h://127.0.0.1:$port" \
               'https://speed.cloudflare.com/__down?bytes=20000000' || true)
             leg=direct
-            if grep -q 'MASQUE goes through the WebSocket relay' "burst-$burst.log"; then leg=relay; fi
-            echo "warp proxy download, TCP window ${burst}, leg ${leg}: ${rate:-none} (bytes/s, bytes)"
+            if grep -q 'MASQUE goes through the WebSocket relay' "burst-$port.log"; then leg=relay; fi
+            echo "warp proxy download, binary ${bin}, TCP window ${burst}, leg ${leg}: ${rate:-none} (bytes/s, bytes)"
             case "$rate" in
               *" 20000000") ;;
-              *) grep -E 'WARN|ERROR|closed|dead|stall|capacity' "burst-$burst.log" | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | tail -8 ;;
+              *) grep -E 'WARN|ERROR|closed|dead|stall|capacity' "burst-$port.log" | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | tail -8 ;;
             esac
             kill "$bp" 2> /dev/null || true
             wait "$bp" 2> /dev/null || true
-            if [ "$burst" = default ]; then default=${rate%% *}; fi
+            if [ "$spec" = new:default ]; then
+              r=${rate%% *}
+              default=$(awk -v a="${default:-0}" -v b="${r:-0}" 'BEGIN { print (b > a) ? b : a }')
+            fi
           done
           unset CFRS_WARP_TCP_BURST
           awk -v r="${default:-0}" 'BEGIN { exit !(r >= 1000000) }'

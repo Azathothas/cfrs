@@ -34,13 +34,11 @@ const TCP_BUFFER: usize = 512 * 1024;
 /// the MTU, or `none` for no limit (issue 100). For a measurement.
 pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
 
-/// The default TCP window, in segments (issue 100). Before the changes of
-/// issue 125 (the free of sockets, the time limits, no lost read), 8, 32
-/// and no limit stalled at about 10.5 MB (live run 41378673046). After
-/// them, live runs 41556920224, 41558316715 and 41560771738 carried 20 MB
-/// with 8 each time (3.47, 4.03, 2.74 MB/s); 1 gave 0.38 to 0.62 MB/s;
-/// no limit carried 20 MB in two of three runs.
-const TCP_BURST_DEFAULT: usize = 8;
+/// The default TCP window, in segments (issue 100). On the direct path to
+/// the front door, 4, 8, 16 and no limit stall (live run 41567562797);
+/// through the WebSocket relay, no window stalled (runs 41556920224 to
+/// 41563827050). One segment is the default until the cause is known.
+const TCP_BURST_DEFAULT: usize = 1;
 
 /// The largest value of [`TCP_BURST_VARIABLE`]: more segments do not fit
 /// in the receive buffer.
