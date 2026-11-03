@@ -2994,6 +2994,12 @@ enum WarpCommand {
             value_delimiter = ','
         )]
         rules: Vec<String>,
+        /// LISTEN=PATH: a listener whose clients use the WARP device of the
+        /// identity file PATH (made when it does not exist), with a
+        /// session of its own. The --listen listeners use --identity.
+        /// Repeatable; each PATH once.
+        #[arg(long, value_name = "LISTEN=PATH")]
+        listen_identity: Vec<String>,
         /// A file with one rule on each line (# starts a comment), after
         /// the --rule rules. cfrs reads it again when it changes.
         #[arg(long, value_name = "FILE", env = "CFRS_WARP_RULES_FILE")]
@@ -3172,13 +3178,49 @@ enum WarpCommand {
 }
 
 async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
-    let masque = cfrs::warp::MasqueOptions {
+    let (client, path) = warp_client_inner(args).await?;
+    Ok((client.with_masque(masque_options(args)), path))
+}
+
+/// The MASQUE options of the command line.
+fn masque_options(args: &WarpArgs) -> cfrs::warp::MasqueOptions {
+    cfrs::warp::MasqueOptions {
         no_relay: args.no_relay,
         endpoint: args.masque_endpoint,
         sni: args.masque_sni.clone(),
-    };
-    let (client, path) = warp_client_inner(args).await?;
-    Ok((client.with_masque(masque), path))
+    }
+}
+
+/// The pairs of --listen-identity LISTEN=PATH (issue 150). Each PATH once,
+/// and not the identity of --identity (`main`): one device has one
+/// session in a process.
+fn identity_pairs(
+    specs: &[String],
+    main: Option<&std::path::Path>,
+) -> Result<Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)>> {
+    let mut out: Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)> = Vec::new();
+    for spec in specs {
+        let (listen, path) = spec
+            .split_once('=')
+            .filter(|(l, p)| !l.is_empty() && !p.is_empty())
+            .with_context(|| format!("{spec:?}: give LISTEN=PATH"))?;
+        let listen = cfrs::vnet::proxy::ProxyListen::parse(listen)?;
+        let path = PathBuf::from(path);
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+        };
+        if main.is_some_and(|m| same(m, &path)) {
+            bail!("{spec:?}: {} is the identity of --identity", path.display());
+        }
+        if out.iter().any(|(_, p)| same(p, &path)) {
+            bail!("{spec:?}: {} is given twice", path.display());
+        }
+        if out.iter().any(|(l, _)| *l == listen) {
+            bail!("{spec:?}: the listener is given twice");
+        }
+        out.push((listen, path));
+    }
+    Ok(out)
 }
 
 async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
@@ -3382,6 +3424,18 @@ async fn warp(args: WarpArgs) -> Result<()> {
             println!("default     {}", table.default.name());
             return Ok(());
         }
+        // Issue 150: a bad --listen-identity is a usage error before any
+        // registration.
+        WarpCommand::Proxy {
+            listen_identity, ..
+        } if !listen_identity.is_empty() => {
+            let main = match &args.identity {
+                Some(path) => Some(path.clone()),
+                None if args.ephemeral => None,
+                None => cfrs::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
+            };
+            identity_pairs(listen_identity, main.as_deref()).fault(Fault::Usage)?;
+        }
         _ => {}
     }
     // These commands use a saved device and register none.
@@ -3419,6 +3473,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
         }
     }
     let (mut client, path) = warp_client(&args).await?;
+    let masque = masque_options(&args);
     let save = |client: &cfrs::warp::WarpClient| -> Result<()> {
         if let Some(path) = &path {
             client.save(path)?;
@@ -3624,8 +3679,11 @@ async fn warp(args: WarpArgs) -> Result<()> {
             rules,
             rules_file,
             rule_default,
+            listen_identity,
             ..
         } => {
+            // Issue 150: the listeners of the other identities.
+            let pairs = identity_pairs(&listen_identity, path.as_deref()).fault(Fault::Usage)?;
             cfrs::warp::proxy::set_max_connections(max_connections);
             // Issues 132 and 136: the rules of the destinations.
             let default = cfrs::warp::rules::Action::parse(&rule_default).fault(Fault::Usage)?;
@@ -3660,7 +3718,14 @@ async fn warp(args: WarpArgs) -> Result<()> {
             // Issue 97: each listener is bound on its own, before the WARP
             // session. A listener that the host refuses (EACCES on a TCP
             // bind) is reported; the proxy starts with the others.
-            let (bound, failed) = cfrs::warp::proxy::bind_all(&listens).await;
+            let (bound, mut failed) = cfrs::warp::proxy::bind_all(&listens).await;
+            let mut extra = Vec::new();
+            for (listen, identity) in pairs {
+                match cfrs::warp::proxy::bind(&listen).await {
+                    Ok(b) => extra.push((b, identity)),
+                    Err(err) => failed.push((listen, err)),
+                }
+            }
             for (listen, err) in &failed {
                 eprintln!(
                     "cfrs: warp proxy: {} is not available: {err:#}",
@@ -3686,10 +3751,29 @@ async fn warp(args: WarpArgs) -> Result<()> {
             if let Some(socket) = dns_socket {
                 cfrs::warp::proxy::serve_dns(live.clone(), socket);
             }
-            let proxies: Vec<_> = bound
+            let mut proxies: Vec<_> = bound
                 .into_iter()
                 .map(|b| cfrs::warp::proxy::run(live.clone(), b))
                 .collect();
+            let mut identities = Vec::new();
+            for (b, identity) in extra {
+                let other = cfrs::warp::WarpClient::register_or_load(&identity)
+                    .await
+                    .fault(Fault::Unavailable)?
+                    .with_masque(masque.clone());
+                let device = other.device().id.clone();
+                let other = Arc::new(other)
+                    .connect_live()
+                    .await
+                    .fault(Fault::Unavailable)?;
+                let proxy = cfrs::warp::proxy::run(other, b);
+                identities.push(serde_json::json!({
+                    "listen": listen_doc(&proxy.listen)["listen"],
+                    "identity": identity.display().to_string(),
+                    "device": device,
+                }));
+                proxies.push(proxy);
+            }
             for proxy in &proxies {
                 match &proxy.listen {
                     cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
@@ -3718,6 +3802,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .into();
+            doc["identities"] = identities.into();
             cfrs::detach::ready(doc);
             sleep_or_signal(run_for).await;
             for proxy in &proxies {
@@ -4750,6 +4835,32 @@ mod tests {
 
     // The IPv6-only kit, 0002: warp up --tun gives its child the front door
     // and the TLS name.
+    #[test]
+    fn the_pairs_of_listen_identity() {
+        let main = std::path::Path::new("/s/warp.json");
+        let pairs = identity_pairs(
+            &[
+                "tcp://127.0.0.1:40001=/s/b.json".into(),
+                "unix:/run/c.sock=/s/c.json".into(),
+            ],
+            Some(main),
+        )
+        .unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[1].1, PathBuf::from("/s/c.json"));
+        for bad in [
+            vec!["127.0.0.1:40001=/s/warp.json"],
+            vec!["127.0.0.1:40001=/s/b.json", "127.0.0.1:40002=/s/b.json"],
+            vec!["127.0.0.1:40001=/s/b.json", "127.0.0.1:40001=/s/c.json"],
+            vec!["127.0.0.1:40001"],
+            vec!["=/s/b.json"],
+            vec!["nothing=/s/b.json"],
+        ] {
+            let specs: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+            assert!(identity_pairs(&specs, Some(main)).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn the_front_doors_of_a_scan() {
         assert_eq!(

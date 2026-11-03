@@ -396,6 +396,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A listener on an address that is not loopback, with no credentials, gets
   a warning. `--max-connections N` limits the clients; `--dns ADDR`
   answers DNS through WARP.
+* `--listen-identity LISTEN=PATH` (repeatable): the clients of LISTEN use
+  the WARP device of the identity file PATH (cfrs makes it when it does not
+  exist), with a session of its own and its own address. The `--listen`
+  listeners use `--identity`. One file is for one listener only. The ready
+  document lists the listeners and their devices in `identities`.
 * Rules of `warp proxy` (`-r KIND:VALUE=ACTION`, repeatable): KIND is
   `domain` (`NAME`, or `.NAME` for the name and the names under it) or
   `cidr` (`ADDR/PREFIX`, IPv4 or IPv6, or `@FILE` with one prefix on each
