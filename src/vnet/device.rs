@@ -28,6 +28,9 @@ pub struct DeviceStats {
     pub tx_bytes: AtomicU64,
     pub rx_dropped: AtomicU64,
     pub tx_dropped: AtomicU64,
+    /// The times that the stack held its packets because the outbound
+    /// queue was full (issue 134).
+    pub tx_held: AtomicU64,
 }
 
 /// An immutable snapshot of [`DeviceStats`].
@@ -39,6 +42,7 @@ pub struct DeviceStatsSnapshot {
     pub tx_bytes: u64,
     pub rx_dropped: u64,
     pub tx_dropped: u64,
+    pub tx_held: u64,
 }
 
 impl DeviceStats {
@@ -50,6 +54,7 @@ impl DeviceStats {
             tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
             rx_dropped: self.rx_dropped.load(Ordering::Relaxed),
             tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
+            tx_held: self.tx_held.load(Ordering::Relaxed),
         }
     }
 }
@@ -124,6 +129,12 @@ impl PacketQueue {
 
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().packets.len()
+    }
+
+    /// True when a push now is dropped.
+    pub fn is_full(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.packets.len() >= inner.capacity
     }
 
     pub fn is_empty(&self) -> bool {
@@ -201,6 +212,8 @@ pub struct LinkDevice {
     /// The burst limit of smoltcp: it also clamps the TCP window that the
     /// stack advertises to this many segments (issue 100). None: no limit.
     max_burst: Option<usize>,
+    /// Send no new packet while the outbound queue is full (issue 134).
+    hold_when_full: bool,
 }
 
 /// Alias kept for the protocol documentation's name.
@@ -232,10 +245,22 @@ impl LinkDevice {
 
     /// A tunnel device whose outbound queue holds at most `packets`: a
     /// further packet is dropped, as a full router queue drops it.
+    ///
+    /// Issue 134: while the queue is full, the stack sends no new packet
+    /// (it keeps the data in its sockets), so the queue drops only the
+    /// packets of a receive (acknowledgements).
     pub fn tunnel_bounded(mtu: usize, packets: usize) -> Self {
         let mut device = Self::new(mtu, false);
         device.tx = PacketQueue::bounded(packets);
+        device.hold_when_full = true;
         device
+    }
+
+    /// Count in `stats` (shared with other devices) in place of counters
+    /// of this device only.
+    pub fn with_stats(mut self, stats: Arc<DeviceStats>) -> Self {
+        self.stats = stats;
+        self
     }
 
     fn new(mtu: usize, loopback: bool) -> Self {
@@ -248,6 +273,7 @@ impl LinkDevice {
             loopback,
             local: Arc::new(std::sync::RwLock::new(Vec::new())),
             max_burst: None,
+            hold_when_full: false,
         }
     }
 
@@ -301,6 +327,10 @@ impl Device for LinkDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        if self.hold_when_full && self.tx.is_full() {
+            self.stats.tx_held.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         Some(self.tx_token())
     }
 
@@ -543,6 +573,21 @@ mod tests {
         let mut seen = Vec::new();
         rx.consume(|buf| seen.extend_from_slice(buf));
         assert_eq!(seen, b"hello");
+    }
+
+    #[test]
+    fn a_full_tunnel_queue_holds_the_stack() {
+        let mut device = LinkDevice::tunnel_bounded(1280, 1);
+        let token = device.transmit(Instant::ZERO).expect("room");
+        token.consume(20, |b| b[0] = 0x45);
+        assert!(device.transmit(Instant::ZERO).is_none());
+        assert_eq!(device.stats().snapshot().tx_held, 1);
+        assert_eq!(device.stats().snapshot().tx_dropped, 0);
+        device.outbound().pop().unwrap();
+        assert!(device.transmit(Instant::ZERO).is_some());
+        // An unbounded tunnel never holds.
+        let mut device = LinkDevice::tunnel(1280);
+        assert!(device.transmit(Instant::ZERO).is_some());
     }
 
     #[test]

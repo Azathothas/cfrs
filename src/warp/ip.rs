@@ -83,6 +83,16 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 const BATCH_BYTES: usize = 16 * 1024;
 /// The most packets in the outbound queue of the tunnel device.
 const OUTBOUND_PACKETS: usize = 512;
+
+/// The counters of the links of the WARP stacks of this process (issue
+/// 134): each session adds to them.
+static LINK_STATS: std::sync::LazyLock<std::sync::Arc<crate::vnet::device::DeviceStats>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The counters of the links of the WARP stacks of this process.
+pub fn link_stats() -> crate::vnet::device::DeviceStatsSnapshot {
+    LINK_STATS.snapshot()
+}
 const UDP_PACKETS: usize = 64;
 /// A TCP connection that has no answer of the peer for this time is
 /// aborted: a connect, data that is not acknowledged, or a keepalive
@@ -357,8 +367,9 @@ impl WarpStack {
         // 600 KB at the MTU; a full queue drops, so TCP and QUIC see a loss.
         let burst = tcp_burst()?;
         tracing::debug!(segments = ?burst, "the TCP window of the userspace stack");
-        let mut device =
-            LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS).with_max_burst(burst);
+        let mut device = LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS)
+            .with_max_burst(burst)
+            .with_stats(LINK_STATS.clone());
         let inbound = device.inbound();
         let outbound = device.outbound();
 

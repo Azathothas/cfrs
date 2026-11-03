@@ -175,6 +175,8 @@ pub fn health_log(live: Arc<super::Live<WarpStack>>) {
                     tunnel = super::rules::COUNTERS.tunnel.load(Relaxed),
                     direct = super::rules::COUNTERS.direct.load(Relaxed),
                     rejected = super::rules::COUNTERS.reject.load(Relaxed),
+                    tx_dropped = super::ip::link_stats().tx_dropped,
+                    tx_held = super::ip::link_stats().tx_held,
                     decisions = %crate::decisions::summary(),
                     "WARP proxy health"
                 );
