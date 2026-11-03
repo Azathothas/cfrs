@@ -132,6 +132,23 @@ for mode in record sni; do
     echo "fragment $mode: ok"
 done
 
+echo "== an upload of 16 MiB with each congestion controller (issue 134)"
+# Before 0.3.0-beta.9, an upload of more than the send buffer of the stack
+# was corrupt (the TLS peer answered bad record mac).
+head -c 16777216 /dev/urandom > "$dir/up16"
+for cc in none reno cubic; do
+    "$cfrs" warp --identity "$dir/a.json" --cc "$cc" proxy --listen tcp://127.0.0.1:40012 --run-for 120 > "$dir/cc.log" 2>&1 &
+    pid=$!
+    pids="$pids $pid"
+    wait_port 40012 "$dir/cc.log"
+    out=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 \
+        -x socks5h://127.0.0.1:40012 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
+    echo "upload cc $cc: HTTP ${out%% *}, $(echo "${out#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    kill "$pid" 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    [ "${out%% *}" = 200 ] || { echo "the upload failed with cc $cc"; exit 1; }
+done
+
 echo "== QUIC on the front door (issue 157)"
 python3 scripts/quic-vn.py 162.159.198.2 443 5 || true
 python3 scripts/quic-vn.py 2606:4700:103::2 443 5 || true

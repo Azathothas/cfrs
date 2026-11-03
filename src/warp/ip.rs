@@ -44,6 +44,59 @@ const TCP_BURST_DEFAULT: usize = 1;
 /// in the receive buffer.
 const TCP_BURST_MAX: usize = TCP_BUFFER.div_ceil(TUNNEL_MTU - 60);
 
+/// The variable of the congestion controller of the TCP connections of the
+/// stack (issue 134): `none` (the default), `reno` or `cubic`.
+pub const CC_VARIABLE: &str = "CFRS_WARP_CC";
+
+static CC: std::sync::OnceLock<smoltcp::socket::tcp::CongestionControl> =
+    std::sync::OnceLock::new();
+
+/// `none`, `reno` (RFC 5681) or `cubic` (RFC 9438).
+pub fn parse_cc(value: &str) -> Result<smoltcp::socket::tcp::CongestionControl> {
+    use smoltcp::socket::tcp::CongestionControl;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "none" => Ok(CongestionControl::None),
+        "reno" => Ok(CongestionControl::Reno),
+        "cubic" => Ok(CongestionControl::Cubic),
+        other => Err(crate::exit::fault(
+            crate::exit::Fault::Config,
+            anyhow::anyhow!("--cc (or {CC_VARIABLE}) {other:?}: give none, reno or cubic"),
+        )),
+    }
+}
+
+/// Set the congestion controller of this process (`--cc`). A later call
+/// does nothing.
+pub fn set_cc(cc: smoltcp::socket::tcp::CongestionControl) {
+    if CC.set(cc).is_ok() {
+        tracing::debug!(
+            ?cc,
+            "the congestion controller of the TCP connections of WARP"
+        );
+    }
+}
+
+/// The congestion controller: `--cc`, else [`CC_VARIABLE`], else none. A
+/// bad variable is reported by [`check_cc`] before this is read.
+fn cc() -> smoltcp::socket::tcp::CongestionControl {
+    if let Some(cc) = CC.get() {
+        return *cc;
+    }
+    std::env::var(CC_VARIABLE)
+        .ok()
+        .and_then(|v| parse_cc(&v).ok())
+        .unwrap_or(smoltcp::socket::tcp::CongestionControl::None)
+}
+
+/// Check [`CC_VARIABLE`] before a command opens a session: a bad value is a
+/// configuration error (exit 78).
+pub fn check_cc() -> Result<()> {
+    match std::env::var(CC_VARIABLE) {
+        Ok(v) => parse_cc(&v).map(|_| ()),
+        Err(_) => Ok(()),
+    }
+}
+
 /// The TCP window of [`TCP_BURST_VARIABLE`]: `None` for no limit.
 fn tcp_burst() -> Result<Option<usize>> {
     parse_tcp_burst(std::env::var(TCP_BURST_VARIABLE).ok().as_deref())
@@ -164,7 +217,11 @@ enum Pending {
     },
     TcpSend {
         handle: SocketHandle,
+        /// The bytes that the socket did not take yet.
         data: Vec<u8>,
+        /// The length of the data of the command: the answer, when the
+        /// socket took each byte.
+        total: usize,
         reply: oneshot::Sender<Result<usize>>,
     },
     TcpRecv {
@@ -252,8 +309,8 @@ impl StackConfig {
 
 fn to_smol(addr: IpAddr) -> IpAddress {
     match addr {
-        IpAddr::V4(v4) => IpAddress::Ipv4(v4.into()),
-        IpAddr::V6(v6) => IpAddress::Ipv6(v6.into()),
+        IpAddr::V4(v4) => IpAddress::Ipv4(v4),
+        IpAddr::V6(v6) => IpAddress::Ipv6(v6),
     }
 }
 
@@ -263,8 +320,8 @@ fn to_endpoint(addr: SocketAddr) -> IpEndpoint {
 
 fn from_endpoint(ep: IpEndpoint) -> SocketAddr {
     match ep.addr {
-        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(v4.into()), ep.port),
-        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(v6.into()), ep.port),
+        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(v4), ep.port),
+        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(v6), ep.port),
     }
 }
 
@@ -276,28 +333,26 @@ fn build_iface(config: &StackConfig, device: &mut LinkDevice) -> Interface {
 
     iface.update_ip_addrs(|addrs| {
         let cidr = match config.local {
-            IpAddr::V4(v4) => IpCidr::new(IpAddress::Ipv4(v4.into()), 32),
-            IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6.into()), 128),
+            IpAddr::V4(v4) => IpCidr::new(IpAddress::Ipv4(v4), 32),
+            IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6), 128),
         };
         addrs.push(cidr).ok();
         if let Some(v6) = config.local_v6 {
-            addrs
-                .push(IpCidr::new(IpAddress::Ipv6(v6.into()), 128))
-                .ok();
+            addrs.push(IpCidr::new(IpAddress::Ipv6(v6), 128)).ok();
         }
     });
     match config.gateway {
         IpAddr::V4(gw) => {
-            iface.routes_mut().add_default_ipv4_route(gw.into()).ok();
+            iface.routes_mut().add_default_ipv4_route(gw).ok();
         }
         IpAddr::V6(gw) => {
-            iface.routes_mut().add_default_ipv6_route(gw.into()).ok();
+            iface.routes_mut().add_default_ipv6_route(gw).ok();
         }
     }
     if let Some(v6) = config.local_v6 {
         // The tunnel is point to point: the own address is a next hop
         // that needs no neighbour discovery.
-        iface.routes_mut().add_default_ipv6_route(v6.into()).ok();
+        iface.routes_mut().add_default_ipv6_route(v6).ok();
     }
     iface
 }
@@ -768,6 +823,9 @@ impl Driver {
         );
         socket.set_timeout(Some(TCP_TIMEOUT.into()));
         socket.set_keep_alive(Some(TCP_KEEPALIVE.into()));
+        // Issue 134: none unless --cc says otherwise (smoltcp 0.12 takes
+        // cubic by default when its feature is on).
+        socket.set_congestion_control(cc());
         socket
     }
 
@@ -886,6 +944,7 @@ impl Driver {
             Command::TcpSend { id, data, reply } => match self.handle_of(id) {
                 Some(handle) => self.pending.push_back(Pending::TcpSend {
                     handle,
+                    total: data.len(),
                     data,
                     reply,
                 }),
@@ -1019,6 +1078,7 @@ impl Driver {
                 Pending::TcpSend {
                     handle,
                     mut data,
+                    total,
                     reply,
                 } => {
                     let socket = self.sockets.get_mut::<tcp::Socket>(handle);
@@ -1027,11 +1087,17 @@ impl Driver {
                             Ok(sent) => {
                                 data.drain(..sent);
                                 if data.is_empty() {
-                                    let _ = reply.send(Ok(sent));
+                                    // Each byte of the command: the answer
+                                    // is its length. Before, it was the last
+                                    // part only, and the caller sent the
+                                    // other parts again (an upload of more
+                                    // than the send buffer was corrupt).
+                                    let _ = reply.send(Ok(total));
                                 } else {
                                     still_waiting.push_back(Pending::TcpSend {
                                         handle,
                                         data,
+                                        total,
                                         reply,
                                     });
                                 }
@@ -1046,6 +1112,7 @@ impl Driver {
                         still_waiting.push_back(Pending::TcpSend {
                             handle,
                             data,
+                            total,
                             reply,
                         });
                     }
@@ -1346,6 +1413,50 @@ mod tests {
         }
     }
 
+    // A send of more than the send buffer: the answer is the whole length,
+    // and the peer gets each byte once, in order. Before, the answer was the
+    // last part only, and the proxy sent the parts before it again (an
+    // upload through warp proxy gave "bad record mac").
+    #[test]
+    fn a_large_send_is_answered_with_its_length() {
+        let mut d = v4_driver();
+        let mut p = peer();
+        let id = connect(&mut d, &mut p);
+        let data: Vec<u8> = (0..(TCP_BUFFER * 2 + 12_345) as u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::TcpSend {
+            id,
+            data: data.clone(),
+            reply,
+        });
+        let mut got = Vec::with_capacity(data.len());
+        let mut answer = None;
+        for _ in 0..20_000 {
+            pump(&mut d, &mut p, 1);
+            let peer_socket = p.sockets.get_mut::<tcp::Socket>(p.tcp);
+            let mut buf = [0u8; 64 * 1024];
+            while let Ok(n) = peer_socket.recv_slice(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            if answer.is_none() {
+                if let Ok(result) = wait.try_recv() {
+                    answer = Some(result.unwrap());
+                }
+            }
+            if answer.is_some() && got.len() == data.len() {
+                break;
+            }
+        }
+        assert_eq!(answer, Some(data.len()));
+        assert_eq!(got.len(), data.len());
+        assert!(got == data, "the peer got other bytes");
+    }
+
     // Issue 125: a shutdown sends a FIN, and the answer of the peer still
     // comes back.
     #[test]
@@ -1439,6 +1550,23 @@ mod tests {
     }
 
     // Issue 111: a bad value is an error, not the default.
+    #[test]
+    fn the_congestion_controller() {
+        use smoltcp::socket::tcp::CongestionControl;
+        assert_eq!(parse_cc("none").unwrap(), CongestionControl::None);
+        assert_eq!(parse_cc(" Reno ").unwrap(), CongestionControl::Reno);
+        assert_eq!(parse_cc("cubic").unwrap(), CongestionControl::Cubic);
+        let err = parse_cc("bbr").unwrap_err();
+        assert_eq!(crate::exit::code_of(&err), 78);
+        // No --cc and no variable: none, as before smoltcp 0.12.
+        if std::env::var(CC_VARIABLE).is_err() {
+            assert_eq!(
+                Driver::tcp_socket().congestion_control(),
+                CongestionControl::None
+            );
+        }
+    }
+
     #[test]
     fn the_tcp_burst_variable_is_checked() {
         assert_eq!(parse_tcp_burst(None).unwrap(), Some(TCP_BURST_DEFAULT));

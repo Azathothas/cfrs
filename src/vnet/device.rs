@@ -365,11 +365,11 @@ pub struct LinkRx {
 }
 
 impl RxToken for LinkRx {
-    fn consume<R, F>(mut self, f: F) -> R
+    fn consume<R, F>(self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
-        f(&mut self.packet)
+        f(&self.packet)
     }
 }
 
@@ -502,7 +502,7 @@ pub struct RecordRx<'a, R> {
 impl<R: RxToken> RxToken for RecordRx<'_, R> {
     fn consume<Ret, F>(self, f: F) -> Ret
     where
-        F: FnOnce(&mut [u8]) -> Ret,
+        F: FnOnce(&[u8]) -> Ret,
     {
         let recorder = self.recorder;
         self.inner.consume(|buffer| {

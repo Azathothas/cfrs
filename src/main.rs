@@ -947,6 +947,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
             warp,
         } => {
             cfrs::warp::check_tcp_burst()?;
+            cfrs::warp::check_cc()?;
             let before = cfrs::agent::run(timeout).await;
             let direct_enough = before
                 .rows
@@ -1455,6 +1456,7 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         ("--device-locale", &args.device_locale),
         ("--fragment-client-hello", &args.fragment_client_hello),
         ("--fragment-size", &args.fragment_size),
+        ("--cc", &args.cc),
     ] {
         if let Some(value) = value {
             argv.push(flag.into());
@@ -2843,6 +2845,10 @@ struct WarpArgs {
         env = "CFRS_WARP_FRAGMENT_SIZE"
     )]
     fragment_size: Option<String>,
+    /// The congestion controller of the TCP connections of the userspace
+    /// stack (what the stack sends): none (the default), reno or cubic.
+    #[arg(long, value_name = "NAME", global = true, env = "CFRS_WARP_CC")]
+    cc: Option<String>,
     /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
     /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
@@ -3278,6 +3284,10 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 async fn warp(args: WarpArgs) -> Result<()> {
     // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
     cfrs::warp::check_tcp_burst()?;
+    // Issue 134: the congestion controller of the stack.
+    if let Some(cc) = &args.cc {
+        cfrs::warp::ip::set_cc(cfrs::warp::ip::parse_cc(cc)?);
+    }
     // Issue 145: the resolvers of the tunnel.
     let resolvers = cfrs::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
     cfrs::warp::proxy::set_resolvers(resolvers);

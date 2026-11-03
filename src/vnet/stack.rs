@@ -201,15 +201,15 @@ impl NetStats {
 
 fn to_smoltcp(ip: IpAddr) -> IpAddress {
     match ip {
-        IpAddr::V4(ip) => IpAddress::Ipv4(ip.into()),
-        IpAddr::V6(ip) => IpAddress::Ipv6(ip.into()),
+        IpAddr::V4(ip) => IpAddress::Ipv4(ip),
+        IpAddr::V6(ip) => IpAddress::Ipv6(ip),
     }
 }
 
 fn from_smoltcp(ip: IpAddress) -> IpAddr {
     match ip {
-        IpAddress::Ipv4(ip) => IpAddr::V4(ip.into()),
-        IpAddress::Ipv6(ip) => IpAddr::V6(ip.into()),
+        IpAddress::Ipv4(ip) => IpAddr::V4(ip),
+        IpAddress::Ipv6(ip) => IpAddr::V6(ip),
     }
 }
 
@@ -675,10 +675,13 @@ struct Core {
 
 fn new_tcp_socket(config: &StackConfig) -> tcp::Socket<'static> {
     let size = config.tcp_buffer;
-    tcp::Socket::new(
+    let mut socket = tcp::Socket::new(
         tcp::SocketBuffer::new(vec![0u8; size]),
         tcp::SocketBuffer::new(vec![0u8; size]),
-    )
+    );
+    // As before smoltcp 0.12: no congestion controller (issue 134).
+    socket.set_congestion_control(tcp::CongestionControl::None);
+    socket
 }
 
 fn new_udp_socket(config: &StackConfig) -> udp::Socket<'static> {
@@ -709,22 +712,19 @@ impl Core {
         let gateway_v6 = config.subnet.gateway(crate::vnet::addr::Family::V6);
         iface.update_ip_addrs(|addrs| {
             let prefix = config.subnet.v4_prefix;
-            let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(config.local_v4.into()), prefix));
+            let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(config.local_v4), prefix));
             let v6_prefix = config.subnet.v6_prefix;
-            let _ = addrs.push(IpCidr::new(
-                IpAddress::Ipv6(config.local_v6.into()),
-                v6_prefix,
-            ));
+            let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(config.local_v6), v6_prefix));
             // The stack also answers for the gateway, where the virtual
             // resolver lives, so a client can reach `10.66.0.1:53`.
             if let IpAddr::V4(gateway) = gateway_v4 {
                 if gateway != config.local_v4 {
-                    let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(gateway.into()), prefix));
+                    let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(gateway), prefix));
                 }
             }
             if let IpAddr::V6(gateway) = gateway_v6 {
                 if gateway != config.local_v6 {
-                    let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(gateway.into()), v6_prefix));
+                    let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(gateway), v6_prefix));
                 }
             }
         });

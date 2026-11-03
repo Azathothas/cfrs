@@ -65,13 +65,17 @@ hickory-resolver = { version = "0.26", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.11"
-smoltcp = { version = "=0.11.0", default-features = false, features = [
+# 0.12: the last release for the MSRV (0.13 needs Rust 1.91).
+smoltcp = { version = "=0.12.0", default-features = false, features = [
     "std",
     "medium-ip",
     "proto-ipv4",
     "proto-ipv6",
     "socket-tcp",
     "socket-udp",
+    # The congestion controllers of issue 134 (cfrs warp --cc).
+    "socket-tcp-reno",
+    "socket-tcp-cubic",
     # 32 out-of-order ranges in a TCP receive buffer (the default is 4):
     # a large window with loss keeps the data after a hole (issue 100).
     "assembler-max-segment-count-32",

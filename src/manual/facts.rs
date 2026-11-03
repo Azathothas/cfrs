@@ -128,6 +128,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU: a number from 1 to 430 (default 1), or none: for a measurement of throughput. Another value is a configuration error (exit 78).",
     },
     EnvVar {
+        names: &["CFRS_WARP_CC"],
+        used_by: "warp (each command with a userspace stack), warp up (its proxy), tunnel --transport warp",
+        meaning: "The value of --cc: the congestion controller of the TCP connections of the userspace stack of WARP, for the data that the stack sends: none (the default; only the window of the peer limits it), reno (RFC 5681) or cubic (RFC 9438). Another value is a configuration error (exit 78).",
+    },
+    EnvVar {
         names: &["CFRS_WARP_NO_CHECK"],
         used_by: "warp proxy, warp run, warp up, warp probe, warp exit, warp nc, agent up",
         meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and cfrs tries again. For a measurement.",

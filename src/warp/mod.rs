@@ -52,7 +52,7 @@ pub mod tun;
 pub mod up;
 
 pub use identity::Identity;
-pub use ip::{check_tcp_burst, StackConfig, TcpConn, UdpConn, WarpStack};
+pub use ip::{check_cc, check_tcp_burst, StackConfig, TcpConn, UdpConn, WarpStack};
 pub use live::{Closable, Live};
 pub use register::Device;
 pub use session::Dial;

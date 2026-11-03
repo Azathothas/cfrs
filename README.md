@@ -440,6 +440,10 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   of `--fragment-size` bytes (64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
+* `--cc none|reno|cubic` (global, `CFRS_WARP_CC`): the congestion
+  controller of the TCP connections of the userspace stack, for the data
+  that it sends (an upload). The default is `none`: only the window of the
+  peer limits it.
 * `--listen-identity LISTEN=PATH` (repeatable): the clients of LISTEN use
   the WARP device of the identity file PATH (cfrs makes it when it does not
   exist), with a session of its own and its own address. The `--listen`

@@ -10,7 +10,8 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv4Ad
 
 /// A std `Ipv4Addr` as smoltcp's wire type.
 pub(crate) fn smol_v4(addr: Ipv4Addr) -> Ipv4Address {
-    Ipv4Address::from_bytes(&addr.octets())
+    // smoltcp 0.12: the wire type is `core::net::Ipv4Addr`.
+    addr
 }
 
 // ── tunables ────────────────────────────────────────────────────────────────
@@ -371,8 +372,8 @@ impl Device for Tun {
 
 pub(crate) struct TunRx(Vec<u8>);
 impl RxToken for TunRx {
-    fn consume<R, F: FnOnce(&mut [u8]) -> R>(mut self, f: F) -> R {
-        f(&mut self.0)
+    fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
+        f(&self.0)
     }
 }
 pub(crate) struct TunTx<'a> {
@@ -563,8 +564,7 @@ impl Backend {
                 let IpAddress::Ipv4(dst_ip) = local.addr else {
                     continue;
                 };
-                let b = dst_ip.as_bytes();
-                let dst_ip = Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+                let dst_ip: Ipv4Addr = dst_ip;
                 match self.dns.name_for(dst_ip) {
                     Some(name) => format!("{name}:{}", local.port),
                     None => format!("{dst_ip}:{}", local.port),
@@ -695,6 +695,10 @@ pub(crate) fn tcp_socket() -> tcp::Socket<'static> {
     let tx = tcp::SocketBuffer::new(vec![0u8; TCP_BUF]);
     let mut socket = tcp::Socket::new(rx, tx);
     socket.set_nagle_enabled(false);
+    // As before smoltcp 0.12: no congestion controller. A build of the
+    // workspace turns on the controllers of cfrs, and smoltcp then takes
+    // cubic by default.
+    socket.set_congestion_control(tcp::CongestionControl::None);
     socket
 }
 

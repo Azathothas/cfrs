@@ -27,7 +27,7 @@ fn node(addr: [u8; 4]) -> Node {
     config.random_seed = 7;
     let mut iface = Interface::new(config, &mut device, Instant::ZERO);
     iface.update_ip_addrs(|a| {
-        a.push(IpCidr::new(IpAddress::Ipv4(Ipv4Address(addr)), 24))
+        a.push(IpCidr::new(IpAddress::Ipv4(Ipv4Address::from(addr)), 24))
             .ok();
     });
     let mut sockets = SocketSet::new(Vec::new());
@@ -73,8 +73,8 @@ fn download_rate(total: usize) -> f64 {
             .get_mut::<tcp::Socket>(client.handle)
             .connect(
                 cx,
-                IpEndpoint::new(IpAddress::Ipv4(Ipv4Address([10, 0, 0, 2])), 80),
-                (IpAddress::Ipv4(Ipv4Address([10, 0, 0, 1])), 40_000),
+                IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 2)), 80),
+                (IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1)), 40_000),
             )
             .unwrap();
     }
