@@ -902,8 +902,12 @@ fn install_signals() {
                                 unsafe {
                                     libc::signal(number, libc::SIG_DFL);
                                     libc::raise(number);
+                                    // Issue 208: PID 1 of a namespace (a
+                                    // container with no init) drops a
+                                    // signal with the default action, and
+                                    // raise returns. Exit as a shell does.
+                                    libc::_exit(128 + number);
                                 }
-                                continue;
                             }
                             if number == libc::SIGINT {
                                 tracing::info!("Ctrl-C: stopping");

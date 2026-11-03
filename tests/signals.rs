@@ -91,3 +91,103 @@ fn an_ignored_sighup_stays_ignored() {
     assert_eq!(status.code(), Some(0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A provisioning service that answers each request with 429 and
+/// Retry-After: 100; its port.
+fn refusing_service() -> u16 {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"success":false,"errors":[{"code":1015,"message":"rate limited"}]}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 100\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    port
+}
+
+/// The PID (in this namespace) of the one child of `pid`.
+fn child_of(pid: u32) -> Option<u32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+    text.split_whitespace().next()?.parse().ok()
+}
+
+// Issue 208: cfrs as PID 1 of a PID namespace (a container with no init)
+// stops on SIGTERM before the ready line. Before, the kernel dropped the
+// raised signal, and cfrs went on.
+#[test]
+fn a_sigterm_to_pid_1_during_provisioning_stops_cfrs() {
+    let ok = Command::new("unshare")
+        .args([
+            "--pid",
+            "--fork",
+            "--user",
+            "--map-root-user",
+            "--mount-proc",
+            "true",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!("skipping: no unshare of a PID namespace");
+        return;
+    }
+    let service = refusing_service();
+    let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = origin.local_addr().unwrap().port().to_string();
+    let dir = temp_dir("pid1");
+    let err = dir.join("err.txt");
+    let mut child = Command::new("unshare")
+        .args([
+            "--pid",
+            "--fork",
+            "--user",
+            "--map-root-user",
+            "--mount-proc",
+        ])
+        .arg(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--port", &port, "--no-verify", "--service-url"])
+        .arg(format!("http://127.0.0.1:{service}"))
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .env("NO_PROXY", "*")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let log = std::fs::read_to_string(&err).unwrap_or_default();
+        if log.contains("429") || log.to_lowercase().contains("again") {
+            break;
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("cfrs ended before the retry: {status:?}\n{log}");
+        }
+        assert!(Instant::now() < deadline, "no retry line\n{log}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let cfrs = child_of(child.id()).expect("the cfrs process");
+    // SAFETY: kill() to our own grandchild.
+    unsafe { libc::kill(cfrs as i32, libc::SIGTERM) };
+    let status = wait(&mut child, Duration::from_secs(5));
+    let log = std::fs::read_to_string(&err).unwrap_or_default();
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        unsafe { libc::kill(cfrs as i32, libc::SIGKILL) };
+    }
+    let status = status.unwrap_or_else(|| panic!("cfrs did not stop\n{log}"));
+    assert_eq!(status.code(), Some(143), "{status:?}\n{log}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

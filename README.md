@@ -211,7 +211,8 @@ Each release has an image for each Linux architecture of the binaries:
 (`:latest` for the newest release). The image is `FROM scratch` with `cfrs`
 and `pod-netns` in `/usr/local/bin`. It runs as user 65534. The state
 directory is the volume `/var/lib/cfrs` (`CFRS_STATE_DIR`). The entry point
-is `cfrs`.
+is `cfrs`. In the container, cfrs is PID 1 (no init): SIGTERM and SIGINT
+stop it at each stage, also before the ready line (exit 143 and 130).
 
 ```sh
 docker run --rm ghcr.io/azathothas/cfrs:beta --version
