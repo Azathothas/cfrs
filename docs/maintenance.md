@@ -153,20 +153,19 @@ Rules that the tests check:
 
 ## Open work
 
-* **#100: the TCP window of the userspace stack of WARP.** The window is
-  one segment (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`), which gives about
-  0.5 MB/s at an RTT of 40 ms.
-  * smoltcp clamps the advertised window to `max_burst_size` segments
-    (`src/vnet/device.rs`).
-  * Larger windows stall on the real WARP path: a download of 20 MB stops
-    at 8 to 14 MB, with no warning. The data is in the comments of #100,
-    and each live run prints it ("warp proxy download, TCP window N").
-  * `tests/tcp_window.rs` (a virtual link) shows no stall, also with loss.
-  * Candidates: smoltcp offers no SACK as a TCP client; burst loss on the
-    path.
-  * Next steps: log the TCP state of a stalled connection (the sequence
-    numbers, the retransmissions, the window), or test the window with the
-    kernel stack of the netns-raw backend for a comparison. Then choose the
-    largest window that does not stall.
+* **The TCP window of the userspace stack of WARP (#100).** The default is
+  8 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`), from beta.7. Three live runs
+  after the changes of #125 carried 20 MB with 8 at 2.7 to 4.0 MB/s; before
+  them, 8 stalled at about 10.5 MB. Each live run prints the table
+  ("warp proxy download, TCP window N").
+  * Not known: which change of #125 removed the stall (the free of
+    sockets, the TCP time limits and keepalive, or a read that took data
+    for a caller that gave up).
+  * The value is not a count of segments: smoltcp compares the scaled
+    window field with `max_burst_size` segments, so with a receive buffer
+    of 512 KiB (window shift 3) the window is about N x 9.8 KB. A cleaner
+    form: a receive buffer of the size of the window, and no burst limit.
+  * Watch the live table. If 8 stalls again, keep the TCP state of the
+    stalled connection (a pcap of `vnet::record::Recorder`).
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.

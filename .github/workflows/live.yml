@@ -754,12 +754,13 @@ jobs:
           awk '{ exit !($3 >= 27) }' atyp3.txt
           # Issues 93 and 100: one TCP download of 20 MB through the
           # userspace stack and MASQUE, for each TCP window
-          # (CFRS_WARP_TCP_BURST, in segments; the default is 1). Run
-          # 41378673046: 1 segment gave 3.3 MB/s; 8, 32 and none stalled at
-          # about 10.5 MB. A stalled run prints its last warnings. The step
-          # needs 1 MB/s from the default.
+          # (CFRS_WARP_TCP_BURST, in segments; the default is 8, issue
+          # 100). Runs 41556920224, 41558316715, 41560771738: 8 carried
+          # 20 MB at 2.7 to 4.0 MB/s; 1 gave 0.4 to 0.6 MB/s. A stalled run
+          # prints its last warnings. The step needs 1 MB/s from the
+          # default.
           port=40200
-          for burst in default 2 4 8 none; do
+          for burst in default 1 4 16 none; do
             port=$((port + 1))
             if [ "$burst" = default ]; then unset CFRS_WARP_TCP_BURST; else export CFRS_WARP_TCP_BURST=$burst; fi
             RUST_LOG=cfrs=debug target/release/cfrs warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$burst.log" 2>&1 &
