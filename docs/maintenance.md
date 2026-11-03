@@ -182,7 +182,8 @@ Rules that the tests check:
   `docs/releases/v0.3.0-beta.8.md` has the notes. The owner tests it before
   the release. `scripts/live-batch2.sh` (a step of `live.yml`) checks exit,
   scan, the rules, forward, a nested session and export.
-* **Deferred, size L**: #135 and #151 (other TLS shapes), #140 and #152 to
+* **Deferred, size L**: #151 (an encrypted ClientHello; #135 has the
+  split in records only, with no delay and not on the API calls), #140 and #152 to
   #155 (other transports), #157 (HTTP/3; the spike `scripts/quic-vn.py`
   asks the front door for its QUIC versions), #161 (the library on
   crates.io), #162 (reproducible builds). #149 waits for an exchange of the

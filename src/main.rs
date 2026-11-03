@@ -1453,6 +1453,8 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         ("--device-name", &args.device_name),
         ("--device-model", &args.device_model),
         ("--device-locale", &args.device_locale),
+        ("--fragment-client-hello", &args.fragment_client_hello),
+        ("--fragment-size", &args.fragment_size),
     ] {
         if let Some(value) = value {
             argv.push(flag.into());
@@ -2820,6 +2822,27 @@ struct WarpArgs {
         env = "CFRS_WARP_DEVICE_LOCALE"
     )]
     device_locale: Option<String>,
+    /// Split the TLS ClientHello of the MASQUE connection into records:
+    /// record (records of --fragment-size bytes) or sni (the first record
+    /// ends in the server name). off: one record (the default).
+    #[arg(
+        long,
+        value_name = "MODE",
+        global = true,
+        env = "CFRS_WARP_FRAGMENT",
+        num_args = 0..=1,
+        default_missing_value = "record"
+    )]
+    fragment_client_hello: Option<String>,
+    /// The bytes of handshake data in each record of
+    /// --fragment-client-hello: N or MIN-MAX, 16 to 4096 (default 64-160).
+    #[arg(
+        long,
+        value_name = "MIN[-MAX]",
+        global = true,
+        env = "CFRS_WARP_FRAGMENT_SIZE"
+    )]
+    fragment_size: Option<String>,
     /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
     /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
@@ -3258,6 +3281,15 @@ async fn warp(args: WarpArgs) -> Result<()> {
     // Issue 145: the resolvers of the tunnel.
     let resolvers = cfrs::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
     cfrs::warp::proxy::set_resolvers(resolvers);
+    // Issue 135: the split of the ClientHello of the MASQUE connection.
+    if let Some(split) = cfrs::tls_fragment::Split::parse(
+        args.fragment_client_hello.as_deref().unwrap_or("off"),
+        args.fragment_size.as_deref(),
+    )
+    .fault(Fault::Config)?
+    {
+        cfrs::tls_fragment::set(split);
+    }
     // Issue 141: the name, the model and the locale of a new device.
     cfrs::warp::register::DeviceHints {
         name: args.device_name.clone(),

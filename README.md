@@ -435,6 +435,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A listener on an address that is not loopback, with no credentials, gets
   a warning. `--max-connections N` limits the clients; `--dns ADDR`
   answers DNS through WARP.
+* `--fragment-client-hello [record|sni]` (global, `CFRS_WARP_FRAGMENT`):
+  the TLS ClientHello of the MASQUE connection goes in more than one record
+  of `--fragment-size` bytes (64-160). `sni` ends the first record in the
+  server name. The server joins the records (RFC 8446, section 5.1); a
+  middlebox that reads the name from the first record does not find it.
 * `--listen-identity LISTEN=PATH` (repeatable): the clients of LISTEN use
   the WARP device of the identity file PATH (cfrs makes it when it does not
   exist), with a session of its own and its own address. The `--listen`

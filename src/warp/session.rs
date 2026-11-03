@@ -283,6 +283,7 @@ pub async fn probe_door(
     )
     .await
     .with_context(|| format!("TCP to {endpoint}"))?;
+    let tcp = crate::tls_fragment::wrap(tcp);
     let tcp_time = start.elapsed();
     let config = tls_config(identity, pinned_spki)?;
     let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())
@@ -349,6 +350,8 @@ impl MasqueSession {
             .await
             .with_context(|| format!("TCP to the MASQUE front door {endpoint}"))?,
         };
+        // Issue 135: the ClientHello in more than one record, when set.
+        let tcp = crate::tls_fragment::wrap(tcp);
 
         let config = tls_config(identity, pinned_spki)?;
         let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())

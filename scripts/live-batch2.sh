@@ -113,6 +113,14 @@ print("export: keys ok, endpoint port 2408, reserved", "yes" if d["reserved"] el
 [ ! -e "$dir/wg.json" ]
 echo "export: the device is deleted"
 
+echo "== the ClientHello in records (issue 135)"
+for mode in record sni; do
+    "$cfrs" warp --identity "$dir/a.json" --no-relay --fragment-client-hello "$mode" probe > "$dir/frag.out" 2>&1 ||
+        { grep -E '^(FAIL|TIMEOUT)' "$dir/frag.out"; echo "the front door refused the split ClientHello ($mode)"; exit 1; }
+    grep -E '^(tunnel|OK) ' "$dir/frag.out" | head -2
+    echo "fragment $mode: ok"
+done
+
 echo "== QUIC on the front door (issue 157)"
 python3 scripts/quic-vn.py 162.159.198.2 443 5 || true
 python3 scripts/quic-vn.py 2606:4700:103::2 443 5 || true
