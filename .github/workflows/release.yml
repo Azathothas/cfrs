@@ -455,6 +455,77 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Issue 160: the image ghcr.io/<owner>/cfrs:<tag>, FROM scratch with the
+  # binaries of the release (images/cfrs/Dockerfile). One image for each
+  # architecture (<tag>-<arch>), and one manifest list for all (<tag>, and
+  # latest or beta). A dry run builds the images, runs the amd64 one, and
+  # pushes nothing. It uses the docker CLI of the runner and no other action.
+  image:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: cfrs-*
+          merge-multiple: true
+      - name: the images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          tag="v$version"
+          repo="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/cfrs"
+          push=false
+          case "$GITHUB_REF" in refs/tags/v*) push=true; tag=$GITHUB_REF_NAME ;; esac
+          refs=""
+          for pair in \
+            x86_64-unknown-linux-musl:linux/amd64:amd64 \
+            aarch64-unknown-linux-musl:linux/arm64:arm64 \
+            armv7-unknown-linux-musleabihf:linux/arm/v7:armv7 \
+            arm-unknown-linux-musleabihf:linux/arm/v6:armv6 \
+            i686-unknown-linux-musl:linux/386:386 \
+            riscv64gc-unknown-linux-musl:linux/riscv64:riscv64 \
+            powerpc64le-unknown-linux-musl:linux/ppc64le:ppc64le \
+            loongarch64-unknown-linux-musl:linux/loong64:loong64; do
+            target=${pair%%:*}
+            rest=${pair#*:}
+            platform=${rest%:*}
+            arch=${rest##*:}
+            ctx="$RUNNER_TEMP/ctx-$arch"
+            mkdir -p "$ctx/state" "$ctx/tmp"
+            cp "dist/cfrs-$target" "$ctx/cfrs"
+            cp "dist/pod-netns-$target" "$ctx/pod-netns"
+            touch "$ctx/state/.keep" "$ctx/tmp/.keep"
+            docker build --platform "$platform" -f images/cfrs/Dockerfile \
+              --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+              --label org.opencontainers.image.version="$tag" \
+              --label org.opencontainers.image.revision="$GITHUB_SHA" \
+              --label org.opencontainers.image.licenses=0BSD \
+              -t "$repo:$tag-$arch" "$ctx"
+            refs="$refs $repo:$tag-$arch"
+          done
+          docker run --rm "$repo:$tag-amd64" --version
+          docker run --rm --entrypoint /usr/local/bin/pod-netns "$repo:$tag-amd64" --version
+          docker image ls "$repo"
+          if [ "$push" != true ]; then
+            echo "a dry run: the images are built, and nothing is pushed"
+            exit 0
+          fi
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for ref in $refs; do docker push "$ref"; done
+          channel=latest
+          case "$tag" in *-*) channel=beta ;; esac
+          docker buildx imagetools create -t "$repo:$tag" -t "$repo:$channel" $refs
+          docker buildx imagetools inspect "$repo:$tag"
+          docker logout ghcr.io
+
   # After a release: the proofs of release-proofs.yml, on a fresh runner. Only
   # this job may start a workflow.
   proofs:

@@ -139,6 +139,45 @@ A binary that has one changed byte fails each check. The workflow
 after each release. It also does each check on a changed copy, which must
 fail.
 
+### Install script
+
+`scripts/install.sh` installs the binary of the newest release
+(prereleases too) for this machine. It is POSIX `sh`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
+```
+
+* It uses the first downloader that it finds: `curl`, `wget`, `busybox
+  wget`, `aria2c`, `http` (HTTPie), `python3`, `python` or `perl`
+  (`HTTP::Tiny` with TLS). HTTPS only.
+* It checks the binary against `SHA256SUMS` (`sha256sum`, `shasum`,
+  `openssl`, `busybox` or `python3`), and the cosign signature of
+  `SHA256SUMS` when `cosign` is installed. A failed check stops it.
+* The directory: `CFRS_INSTALL_DIR`, else `/usr/local/bin` for root, else
+  `$XDG_BIN_HOME`, else `~/.local/bin`. A line says how to add it to `PATH`.
+* `CFRS_VERSION=v0.3.0-beta.7` installs that release. `CFRS_POD_NETNS=1`
+  also installs `pod-netns`. `CFRS_DOWNLOADER=wget` selects the downloader.
+
+### Container image
+
+Each release has an image for each Linux architecture of the binaries:
+`ghcr.io/azathothas/cfrs:<tag>`, and `:beta` for the newest prerelease
+(`:latest` for the newest release). The image is `FROM scratch` with `cfrs`
+and `pod-netns` in `/usr/local/bin`. It runs as user 65534. The state
+directory is the volume `/var/lib/cfrs` (`CFRS_STATE_DIR`). The entry point
+is `cfrs`.
+
+```sh
+docker run --rm ghcr.io/azathothas/cfrs:beta --version
+docker run -d --name warp -v cfrs-state:/var/lib/cfrs -p 127.0.0.1:40000:40000 \
+    ghcr.io/azathothas/cfrs:beta warp proxy --listen tcp://0.0.0.0:40000
+docker run --rm ghcr.io/azathothas/cfrs:beta demo --exit-on-verify
+```
+
+The proxy listens on all addresses of the container: publish the port on
+127.0.0.1 only, or give `--proxy-user` and `--proxy-password-file`.
+
 ## Quick start
 
 ```sh
