@@ -75,6 +75,9 @@ pub struct WarpClient {
     leg_read: std::sync::Once,
     /// The address of the front door that worked last (issue 124).
     endpoint_won: std::sync::Mutex<Option<std::net::SocketAddr>>,
+    /// The address of a front door whose session carried no packet (issue
+    /// 133): it goes last.
+    door_bad: std::sync::Mutex<Option<std::net::SocketAddr>>,
 }
 
 /// The order of the front door addresses: the one that worked last first,
@@ -83,16 +86,55 @@ pub struct WarpClient {
 fn endpoint_order(
     all: Vec<std::net::SocketAddr>,
     won: Option<std::net::SocketAddr>,
+    bad: Option<std::net::SocketAddr>,
     ipv6: bool,
 ) -> Vec<std::net::SocketAddr> {
     let mut out: Vec<std::net::SocketAddr> =
         all.into_iter().filter(|a| a.is_ipv4() || ipv6).collect();
-    if let Some(won) = won {
+    if let Some(won) = won.filter(|w| Some(*w) != bad) {
         if let Some(i) = out.iter().position(|a| *a == won) {
             out.swap(0, i);
         }
     }
+    // Issue 133: a door that carried no packet goes last.
+    if let Some(bad) = bad {
+        if let Some(i) = out.iter().position(|a| *a == bad) {
+            let door = out.remove(i);
+            out.push(door);
+        }
+    }
     out
+}
+
+/// The door file of an identity file: `warp.json` gives `warp-door.json`.
+fn door_file_of(identity: &std::path::Path) -> std::path::PathBuf {
+    let stem = identity
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "warp".into());
+    identity.with_file_name(format!("{stem}-door.json"))
+}
+
+/// A door in the door file is used for this time.
+const DOOR_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// The door of the text of a door file, when it is recent (less than
+/// [`DOOR_TTL`] before `now`) and one of `candidates` (issue 133).
+fn door_from(
+    text: &str,
+    now: u64,
+    candidates: &[std::net::SocketAddr],
+) -> Option<std::net::SocketAddr> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    if doc["schema"] != 1 {
+        return None;
+    }
+    let at = doc["at"].as_u64()?;
+    if at > now || now - at >= DOOR_TTL.as_secs() {
+        return None;
+    }
+    let door: std::net::SocketAddr = doc["door"].as_str()?.parse().ok()?;
+    candidates.contains(&door).then_some(door)
 }
 
 /// The delay of the relay after the start of the direct path.
@@ -191,6 +233,7 @@ impl WarpClient {
             leg_file: None,
             leg_read: std::sync::Once::new(),
             endpoint_won: std::sync::Mutex::new(None),
+            door_bad: std::sync::Mutex::new(None),
         })
     }
 
@@ -207,6 +250,7 @@ impl WarpClient {
             leg_file: None,
             leg_read: std::sync::Once::new(),
             endpoint_won: std::sync::Mutex::new(None),
+            door_bad: std::sync::Mutex::new(None),
         }
     }
 
@@ -287,6 +331,14 @@ impl WarpClient {
             .context("rebuilding the MASQUE identity")?;
         let mut client = Self::from_parts(stored.device, identity);
         client.leg_file = Some(leg_file_of(path));
+        // Issue 133: the door that carried data last goes first.
+        if let Ok(text) = std::fs::read_to_string(door_file_of(path)) {
+            let door = door_from(&text, unix_now(), &client.device.masque_endpoints());
+            *client
+                .endpoint_won
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = door;
+        }
         Ok(client)
     }
 
@@ -305,6 +357,30 @@ impl WarpClient {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
             }
         });
+    }
+
+    /// Keep the door that carried data (issue 133). A failure to write is
+    /// not an error; the file is written only when the door changed.
+    fn write_door(&self) {
+        let Some(leg) = &self.leg_file else { return };
+        let Some(door) = *self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner()) else {
+            return;
+        };
+        let path = leg.with_file_name(
+            leg.file_name()
+                .map(|n| n.to_string_lossy().replace("-leg.json", "-door.json"))
+                .unwrap_or_else(|| "warp-door.json".into()),
+        );
+        let now = unix_now();
+        let old = std::fs::read_to_string(&path).ok();
+        if old.and_then(|t| door_from(&t, now, &[door])).is_some() {
+            return;
+        }
+        let text =
+            serde_json::json!({"schema": 1, "door": door.to_string(), "at": now}).to_string();
+        if let Err(err) = write_private(&path, text.as_bytes()) {
+            tracing::debug!(error = %err, path = %path.display(), "the door file is not written");
+        }
     }
 
     /// Keep the leg that worked. A failure to write is not an error.
@@ -444,11 +520,22 @@ impl WarpClient {
                 proxy::NO_CHECK_VARIABLE
             );
         } else {
-            let took = proxy::check_data_path(&stack, local.is_ipv4()).await?;
+            let took = match proxy::check_data_path(&stack, local.is_ipv4()).await {
+                Ok(took) => took,
+                Err(err) => {
+                    // Issue 133: the next session tries the other door
+                    // first. Before, the door that answered the handshake
+                    // and carried nothing stayed first.
+                    let mut won = self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner());
+                    *self.door_bad.lock().unwrap_or_else(|e| e.into_inner()) = won.take();
+                    return Err(err);
+                }
+            };
             tracing::info!(
                 ms = took.as_millis() as u64,
                 "a packet crossed the MASQUE session"
             );
+            self.write_door();
         }
         Ok(stack)
     }
@@ -574,10 +661,11 @@ impl WarpClient {
             Some(one) => vec![one],
             None => {
                 let won = *self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner());
+                let bad = *self.door_bad.lock().unwrap_or_else(|e| e.into_inner());
                 let ipv6 = relay.is_some()
                     || self.proxy.is_some()
                     || crate::resolve::has_default_route(true);
-                let order = endpoint_order(self.device.masque_endpoints(), won, ipv6);
+                let order = endpoint_order(self.device.masque_endpoints(), won, bad, ipv6);
                 if order.is_empty() {
                     vec![endpoint]
                 } else {
@@ -708,10 +796,51 @@ mod private_file_tests {
     fn the_order_of_the_front_door_addresses() {
         let v4: std::net::SocketAddr = "162.159.198.2:443".parse().unwrap();
         let v6: std::net::SocketAddr = "[2606:4700:103::2]:443".parse().unwrap();
-        assert_eq!(endpoint_order(vec![v4, v6], None, true), [v4, v6]);
-        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), true), [v6, v4]);
-        assert_eq!(endpoint_order(vec![v4, v6], None, false), [v4]);
-        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), false), [v4]);
+        assert_eq!(endpoint_order(vec![v4, v6], None, None, true), [v4, v6]);
+        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), None, true), [v6, v4]);
+        assert_eq!(endpoint_order(vec![v4, v6], None, None, false), [v4]);
+        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), None, false), [v4]);
+        // Issue 133: a door that carried no packet goes last, also when it
+        // won the handshake.
+        assert_eq!(
+            endpoint_order(vec![v4, v6], Some(v4), Some(v4), true),
+            [v6, v4]
+        );
+        assert_eq!(endpoint_order(vec![v4, v6], None, Some(v4), true), [v6, v4]);
+    }
+
+    // Issue 133: the door file is used when it is recent and names a door
+    // of the device.
+    #[test]
+    fn the_door_file() {
+        let v4: std::net::SocketAddr = "162.159.198.2:443".parse().unwrap();
+        let v6: std::net::SocketAddr = "[2606:4700:103::2]:443".parse().unwrap();
+        let doc = |door: &str, at: u64, schema: u64| {
+            serde_json::json!({"schema": schema, "door": door, "at": at}).to_string()
+        };
+        let now = 1_800_000_000;
+        let doors = [v4, v6];
+        assert_eq!(
+            door_from(&doc("[2606:4700:103::2]:443", now - 60, 1), now, &doors),
+            Some(v6)
+        );
+        assert_eq!(
+            door_from(&doc("162.159.198.2:443", now - 8 * 86400, 1), now, &doors),
+            None
+        );
+        assert_eq!(
+            door_from(&doc("192.0.2.1:443", now - 60, 1), now, &doors),
+            None
+        );
+        assert_eq!(
+            door_from(&doc("162.159.198.2:443", now - 60, 2), now, &doors),
+            None
+        );
+        assert_eq!(door_from("{", now, &doors), None);
+        assert_eq!(
+            door_file_of(std::path::Path::new("/s/warp.json")),
+            std::path::Path::new("/s/warp-door.json")
+        );
     }
 
     // Issue 126: a relay that worked in the last hours goes first; an old

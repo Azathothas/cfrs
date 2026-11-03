@@ -450,6 +450,13 @@ impl Device {
         let Some(peer) = self.config.peers.first() else {
             return Vec::new();
         };
+        if self.config.peers.len() > 1 {
+            // Issue 133: other peers have other keys; only the first is used.
+            tracing::debug!(
+                peers = self.config.peers.len(),
+                "the device record has more than one peer"
+            );
+        }
         let mut out = Vec::new();
         let v4 = peer.endpoint.v4.split(':').next().unwrap_or("").trim();
         if let Ok(ip) = v4.parse::<std::net::Ipv4Addr>() {
