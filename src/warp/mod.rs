@@ -655,6 +655,49 @@ impl WarpClient {
 
     /// Open a session on one path; a key that is not the pinned key reads
     /// the device record again (the front door changed its key).
+    /// Measure each of `candidates` and the front doors of the device
+    /// record (issue 139), at most 8 at the same time. The result is in
+    /// the order of the total time; a failure goes last.
+    pub async fn scan(
+        &self,
+        candidates: &[std::net::SocketAddr],
+        timeout: std::time::Duration,
+    ) -> Result<Vec<(std::net::SocketAddr, Result<session::DoorTimes>)>> {
+        use futures::StreamExt as _;
+        let (_, pinned) = Self::endpoint_and_pin(&self.device)?;
+        let mut all: Vec<std::net::SocketAddr> = Vec::new();
+        for a in candidates
+            .iter()
+            .copied()
+            .chain(self.device.masque_endpoints())
+        {
+            if !all.contains(&a) {
+                all.push(a);
+            }
+        }
+        let dial = session::Dial {
+            proxy: self.proxy.as_ref(),
+            relay: None,
+            sni: self.masque.sni.as_deref(),
+        };
+        let mut out: Vec<_> = futures::stream::iter(all)
+            .map(|a| {
+                let pinned = pinned.clone();
+                async move {
+                    let r = session::probe_door(a, &self.identity, pinned, dial, timeout).await;
+                    (a, r)
+                }
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+        out.sort_by_key(|(a, r)| match r {
+            Ok(t) => (0, t.total(), *a),
+            Err(_) => (1, std::time::Duration::ZERO, *a),
+        });
+        Ok(out)
+    }
+
     async fn open_on(&self, relay: Option<&crate::ws_relay::Relay>) -> Result<MasqueSession> {
         let dial = session::Dial {
             proxy: self.proxy.as_ref(),

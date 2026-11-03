@@ -366,6 +366,7 @@ cfrs warp rotate                  # make and enrol a new MASQUE key
 cfrs warp delete                  # remove the device and the saved file
 cfrs warp probe                   # test TCP connects through the tunnel
 cfrs warp exit                    # the exit colo, country and address
+cfrs warp scan --candidate 162.159.198.1   # measure front doors (TCP and TLS)
 cfrs warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
 cfrs warp forward -L 5432=db.internal:5432   # as ssh -L, through WARP
 cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace

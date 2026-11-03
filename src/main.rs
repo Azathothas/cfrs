@@ -1927,6 +1927,20 @@ fn autostart(command: AutostartCommand) -> Result<()> {
 }
 
 /// Split `host:port`, `[v6]:port` or `ip:port` into the host and the port.
+/// A front door of `warp scan` (issue 139): IP or IP:PORT, port 443.
+fn parse_door(spec: &str) -> Result<std::net::SocketAddr> {
+    let spec = spec.trim();
+    if let Ok(addr) = spec.parse::<std::net::SocketAddr>() {
+        return Ok(addr);
+    }
+    let ip: std::net::IpAddr = spec
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .with_context(|| format!("{spec:?} is not IP or IP:PORT"))?;
+    Ok(std::net::SocketAddr::new(ip, 443))
+}
+
 /// One line of an exit (issue 147): `AMS NL 104.28.1.2 warp=on 42 ms`.
 fn exit_line(exit: &cfrs::warp::exit::Exit) -> String {
     format!(
@@ -2857,6 +2871,21 @@ enum WarpCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Measure front doors of WARP: the TCP connect and the TLS handshake
+    /// with the pinned key, for each --candidate and the front doors of the
+    /// device record. The fastest goes first. Exit 69 when none answers.
+    Scan {
+        /// A front door to measure: IP or IP:PORT (port 443); an IPv6
+        /// address with a port is in brackets. Repeatable.
+        #[arg(long, value_name = "IP[:PORT]", value_delimiter = ',')]
+        candidate: Vec<String>,
+        /// The time limit of each front door, in milliseconds.
+        #[arg(long, value_name = "MS", default_value_t = 3000)]
+        timeout_ms: u64,
+        /// Print one JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Forward local listeners through WARP (as ssh -L): each connection to
     /// LISTEN goes through the tunnel to HOST:PORT.
     Forward {
@@ -3361,6 +3390,62 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 let _ = std::fs::remove_file(path);
             }
             println!("device      {} deleted", client.device().id);
+        }
+        WarpCommand::Scan {
+            candidate,
+            timeout_ms,
+            json,
+        } => {
+            let candidates = candidate
+                .iter()
+                .map(|c| parse_door(c))
+                .collect::<Result<Vec<_>>>()
+                .fault(Fault::Usage)?;
+            let timeout = std::time::Duration::from_millis(timeout_ms.clamp(100, 60_000));
+            let results = client
+                .scan(&candidates, timeout)
+                .await
+                .fault(Fault::Config)?;
+            let ok = results.iter().filter(|(_, r)| r.is_ok()).count();
+            if json {
+                let doors: Vec<_> = results
+                    .iter()
+                    .map(|(a, r)| match r {
+                        Ok(t) => serde_json::json!({
+                            "endpoint": a.to_string(),
+                            "ok": true,
+                            "tcp_ms": t.tcp.as_millis() as u64,
+                            "tls_ms": t.tls.as_millis() as u64,
+                        }),
+                        Err(err) => serde_json::json!({
+                            "endpoint": a.to_string(),
+                            "ok": false,
+                            "error": format!("{err:#}"),
+                        }),
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({ "doors": doors }));
+            } else {
+                for (a, r) in &results {
+                    match r {
+                        Ok(t) => println!(
+                            "OK          {a:<28} tcp {:>5} ms  tls {:>5} ms",
+                            t.tcp.as_millis(),
+                            t.tls.as_millis()
+                        ),
+                        Err(err) => println!("FAIL        {a:<28} {err:#}"),
+                    }
+                }
+                if let Some((best, _)) = results.iter().find(|(_, r)| r.is_ok()) {
+                    println!("use         cfrs warp --masque-endpoint {best} ...");
+                }
+            }
+            if ok == 0 {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("no front door answered"),
+                ));
+            }
         }
         WarpCommand::Exit { json } => {
             let stack = client.connect().await.fault(Fault::Unavailable)?;
@@ -4584,6 +4669,22 @@ mod tests {
 
     // The IPv6-only kit, 0002: warp up --tun gives its child the front door
     // and the TLS name.
+    #[test]
+    fn the_front_doors_of_a_scan() {
+        assert_eq!(
+            parse_door("162.159.198.1").unwrap().to_string(),
+            "162.159.198.1:443"
+        );
+        assert_eq!(parse_door("162.159.198.1:8443").unwrap().port(), 8443);
+        assert_eq!(
+            parse_door("2606:4700:103::1").unwrap().to_string(),
+            "[2606:4700:103::1]:443"
+        );
+        assert_eq!(parse_door("[2606:4700:103::1]:443").unwrap().port(), 443);
+        assert!(parse_door("engage.cloudflareclient.com").is_err());
+        assert!(parse_door("162.159.198.0/24").is_err());
+    }
+
     #[test]
     fn warp_up_tun_keeps_the_front_door() {
         let cli = Cli::try_parse_from([

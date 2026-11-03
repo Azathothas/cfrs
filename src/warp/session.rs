@@ -250,6 +250,60 @@ pub struct Dial<'a> {
     pub sni: Option<&'a str>,
 }
 
+/// The times of one front door (issue 139): the TCP connect and the TLS
+/// handshake with the pinned key and the client certificate.
+#[derive(Clone, Copy, Debug)]
+pub struct DoorTimes {
+    pub tcp: Duration,
+    pub tls: Duration,
+}
+
+impl DoorTimes {
+    pub fn total(&self) -> Duration {
+        self.tcp + self.tls
+    }
+}
+
+/// Measure one front door: TCP (through the proxy of the egress, as a
+/// session), then the TLS handshake. The key of the front door must be the
+/// pinned key. No CONNECT-IP request is sent.
+pub async fn probe_door(
+    endpoint: std::net::SocketAddr,
+    identity: &Identity,
+    pinned_spki: Vec<u8>,
+    dial: Dial<'_>,
+    timeout: Duration,
+) -> Result<DoorTimes> {
+    let start = std::time::Instant::now();
+    let tcp = crate::egress::dial(
+        &endpoint.ip().to_string(),
+        endpoint.port(),
+        dial.proxy,
+        timeout,
+    )
+    .await
+    .with_context(|| format!("TCP to {endpoint}"))?;
+    let tcp_time = start.elapsed();
+    let config = tls_config(identity, pinned_spki)?;
+    let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())
+        .context("invalid MASQUE SNI")?
+        .to_owned();
+    let rest = timeout
+        .saturating_sub(tcp_time)
+        .max(Duration::from_millis(100));
+    let start = std::time::Instant::now();
+    let tls = tokio::time::timeout(rest, TlsConnector::from(config).connect(server_name, tcp))
+        .await
+        .map_err(|_| anyhow::anyhow!("no TLS handshake in {} ms", rest.as_millis()))?
+        .map_err(|e| anyhow::anyhow!("TLS: {}", crate::hop::tls_text(&e)))?;
+    let tls_time = start.elapsed();
+    drop(tls);
+    Ok(DoorTimes {
+        tcp: tcp_time,
+        tls: tls_time,
+    })
+}
+
 impl MasqueSession {
     /// Dial the MASQUE front door over TCP and open the CONNECT-IP tunnel.
     pub async fn connect(
