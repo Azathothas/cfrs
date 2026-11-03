@@ -4,8 +4,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
 #   wget -qO- https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
 #
-# The script is POSIX sh. It finds a downloader (curl, wget, busybox wget,
-# aria2c, httpie, python3, python, perl), the target of this machine, and
+# The script is POSIX sh. It finds a downloader (curl, wget, aria2c,
+# httpie, python3, python, perl, and last busybox wget, which does not check
+# TLS certificates: a warning says so), the target of this machine, and
 # the release. It checks the binary against SHA256SUMS of the release
 # (sha256sum, shasum, openssl, busybox or python), and the cosign signature
 # of SHA256SUMS when cosign is installed. Then it installs the binary.
@@ -45,6 +46,7 @@ main() {
     target=$(detect_target)
     downloader=$(detect_downloader) || fail "no downloader: install curl or wget"
     info "downloader: $downloader; target: $target"
+    warn_insecure
 
     tmp=$(make_temp)
     trap 'rm -rf "$tmp"' EXIT INT TERM HUP
@@ -105,12 +107,30 @@ detect_target() {
     esac
 }
 
-# The first downloader that this machine has.
+# True when busybox has TLS (its ssl_client helper): a busybox wget with no
+# TLS sends an https URL as plain HTTP (issue 174).
+busybox_tls() {
+    busybox --list 2> /dev/null | grep -qx ssl_client || command -v ssl_client > /dev/null 2>&1
+}
+
+# The first downloader that this machine has. busybox wget goes last: it
+# does not check TLS certificates (issue 174). A wget that is the busybox
+# applet (Alpine) is busybox too.
 detect_downloader() {
-    for tool in ${CFRS_DOWNLOADER:-curl wget busybox aria2c http python3 python perl}; do
+    for tool in ${CFRS_DOWNLOADER:-curl wget aria2c http python3 python perl busybox}; do
         if ! command -v "$tool" > /dev/null 2>&1; then continue; fi
         case "$tool" in
-            busybox) busybox wget --help > /dev/null 2>&1 || continue ;;
+            wget)
+                if wget --help 2>&1 | head -n 2 | grep -q BusyBox; then
+                    busybox_tls || continue
+                    echo wget-busybox
+                    return 0
+                fi
+                ;;
+            busybox)
+                busybox wget --help > /dev/null 2>&1 || continue
+                busybox_tls || continue
+                ;;
             perl) perl -MHTTP::Tiny -e 'exit(HTTP::Tiny->can_ssl ? 0 : 1)' > /dev/null 2>&1 || continue ;;
         esac
         echo "$tool"
@@ -119,13 +139,28 @@ detect_downloader() {
     return 1
 }
 
+# The warning of a downloader that does not check TLS certificates.
+warn_insecure() {
+    case "$downloader" in
+        busybox | wget-busybox)
+            warn "busybox wget does not check TLS certificates: a host on the path can change the files."
+            if command -v cosign > /dev/null 2>&1; then
+                warn "cosign checks the signature of SHA256SUMS, so a changed file is refused."
+            else
+                warn "SHA256SUMS comes the same way, so its check does not protect you. Install curl, wget, python3 or cosign, or check the binary with: sha256sum -c SHA256SUMS (from a trusted copy)."
+            fi
+            ;;
+    esac
+}
+
 # Download URL to FILE with the downloader. HTTPS only.
 fetch() {
     url=$1
     out=$2
     case "$downloader" in
-        curl) curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$out" "$url" ;;
-        wget) wget -q -O "$out" "$url" ;;
+        curl) curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 -o "$out" "$url" ;;
+        wget) wget -q --https-only -O "$out" "$url" ;;
+        wget-busybox) wget -q -O "$out" "$url" ;;
         busybox) busybox wget -q -O "$out" "$url" ;;
         aria2c) aria2c -q --allow-overwrite=true -d "$(dirname "$out")" -o "$(basename "$out")" "$url" ;;
         http) http --check-status -Fdq -o "$out" GET "$url" ;;

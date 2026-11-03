@@ -163,9 +163,13 @@ sh scripts/rebuild.sh v0.3.0-beta.8
 curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | sh
 ```
 
-* It uses the first downloader that it finds: `curl`, `wget`, `busybox
-  wget`, `aria2c`, `http` (HTTPie), `python3`, `python` or `perl`
-  (`HTTP::Tiny` with TLS). HTTPS only.
+* It uses the first downloader that it finds: `curl`, `wget`, `aria2c`,
+  `http` (HTTPie), `python3`, `python` or `perl` (`HTTP::Tiny` with TLS),
+  and last `busybox wget` (also a `wget` that is the busybox applet).
+  HTTPS only; redirects to plain HTTP are refused. busybox wget does not
+  check TLS certificates: the script says so in a warning, and with no
+  `cosign` the check of `SHA256SUMS` then does not protect the download. A
+  busybox with no TLS (no `ssl_client`) is not used.
 * It checks the binary against `SHA256SUMS` (`sha256sum`, `shasum`,
   `openssl`, `busybox` or `python3`), and the cosign signature of
   `SHA256SUMS` when `cosign` is installed. A failed check stops it.
