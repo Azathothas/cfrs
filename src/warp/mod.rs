@@ -77,18 +77,6 @@ pub struct WarpClient {
     endpoint_won: std::sync::Mutex<Option<std::net::SocketAddr>>,
 }
 
-/// True when this host has an IPv6 default route (/proc/net/ipv6_route):
-/// then an IPv6 front door is worth a try.
-fn has_ipv6_route() -> bool {
-    std::fs::read_to_string("/proc/net/ipv6_route")
-        .map(|t| {
-            t.lines().any(|l| {
-                l.starts_with("00000000000000000000000000000000 00 ") && !l.ends_with(" lo")
-            })
-        })
-        .unwrap_or(false)
-}
-
 /// The order of the front door addresses: the one that worked last first,
 /// then the others; IPv6 only with an IPv6 route (or a proxy or a relay,
 /// which reach it for cfrs).
@@ -576,7 +564,9 @@ impl WarpClient {
             Some(one) => vec![one],
             None => {
                 let won = *self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner());
-                let ipv6 = relay.is_some() || self.proxy.is_some() || has_ipv6_route();
+                let ipv6 = relay.is_some()
+                    || self.proxy.is_some()
+                    || crate::resolve::has_default_route(true);
                 let order = endpoint_order(self.device.masque_endpoints(), won, ipv6);
                 if order.is_empty() {
                     vec![endpoint]

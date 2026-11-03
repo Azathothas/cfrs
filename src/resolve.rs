@@ -8,7 +8,9 @@
 //! 3. The system resolver (`/etc/resolv.conf`), with a time limit of
 //!    [`STEP_TIMEOUT`].
 //! 4. DNS over HTTPS by IP address, at two operators: Cloudflare (1.1.1.1,
-//!    1.0.0.1), then Google (8.8.8.8, 8.8.4.4). TLS checks the IP address in
+//!    1.0.0.1, 2606:4700:4700::1111, ::1001), then Google (8.8.8.8, 8.8.4.4,
+//!    2001:4860:4860::8888, ::8844). On a host with no IPv4 default route,
+//!    the IPv6 servers go first. TLS checks the IP address in
 //!    the certificate. An answer that the name does not exist (NXDOMAIN) skips
 //!    the other server of that operator; the next operator is asked (issue
 //!    119: a new name is NXDOMAIN at one operator for minutes, and has an
@@ -49,6 +51,14 @@ pub const DOH_SERVERS: &[DohServer] = &[
         url: "https://1.0.0.1/dns-query",
     },
     DohServer {
+        operator: "Cloudflare",
+        url: "https://[2606:4700:4700::1111]/dns-query",
+    },
+    DohServer {
+        operator: "Cloudflare",
+        url: "https://[2606:4700:4700::1001]/dns-query",
+    },
+    DohServer {
         operator: "Google",
         url: "https://8.8.8.8/resolve",
     },
@@ -56,7 +66,54 @@ pub const DOH_SERVERS: &[DohServer] = &[
         operator: "Google",
         url: "https://8.8.4.4/resolve",
     },
+    DohServer {
+        operator: "Google",
+        url: "https://[2001:4860:4860::8888]/resolve",
+    },
+    DohServer {
+        operator: "Google",
+        url: "https://[2001:4860:4860::8844]/resolve",
+    },
 ];
+
+/// True when this host has a default route of the family (`/proc/net/route`
+/// for IPv4, `/proc/net/ipv6_route` for IPv6). With no file, true for IPv4
+/// and false for IPv6.
+pub fn has_default_route(ipv6: bool) -> bool {
+    if ipv6 {
+        return std::fs::read_to_string("/proc/net/ipv6_route")
+            .map(|t| {
+                t.lines().any(|l| {
+                    l.starts_with("00000000000000000000000000000000 00 ") && !l.ends_with(" lo")
+                })
+            })
+            .unwrap_or(false);
+    }
+    match std::fs::read_to_string("/proc/net/route") {
+        Ok(t) => t.lines().skip(1).any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.len() > 7 && f[1] == "00000000" && f[7] == "00000000"
+        }),
+        Err(_) => true,
+    }
+}
+
+/// True when the host of the URL of `server` is an IPv6 address.
+fn is_ipv6(server: &DohServer) -> bool {
+    server.url.starts_with("https://[")
+}
+
+/// The servers of the family of this host first (issue of the IPv6-only
+/// kit, 0003: on a host with no IPv4 route, each IPv4 server failed before
+/// a server that works). The order in each family stays.
+fn by_family(servers: &[DohServer], ipv4_route: bool) -> Vec<DohServer> {
+    let (v6, v4): (Vec<DohServer>, Vec<DohServer>) = servers.iter().partition(|s| is_ipv6(s));
+    if ipv4_route {
+        v4.into_iter().chain(v6).collect()
+    } else {
+        v6.into_iter().chain(v4).collect()
+    }
+}
 
 /// The DoH servers by name. cfrs asks them only through a proxy, which
 /// resolves the name: some proxies refuse a CONNECT to an IP address. With
@@ -75,7 +132,7 @@ pub const DOH_SERVERS_BY_NAME: &[DohServer] = &[
 /// The DoH servers to ask, in order: by IP address, then by name when a
 /// proxy carries the request.
 pub fn doh_servers() -> Vec<DohServer> {
-    let mut servers = DOH_SERVERS.to_vec();
+    let mut servers = by_family(DOH_SERVERS, has_default_route(false));
     for server in DOH_SERVERS_BY_NAME {
         let host = server
             .url
@@ -353,7 +410,8 @@ mod tests {
     fn the_servers_by_name_need_a_proxy() {
         let servers = doh_servers();
         assert!(servers.len() >= DOH_SERVERS.len());
-        for (i, s) in DOH_SERVERS.iter().enumerate() {
+        let ordered = by_family(DOH_SERVERS, has_default_route(false));
+        for (i, s) in ordered.iter().enumerate() {
             assert_eq!(servers[i].url, s.url);
         }
         let by_name = servers.len() - DOH_SERVERS.len();
@@ -372,9 +430,35 @@ mod tests {
                 .trim_start_matches("https://")
                 .split('/')
                 .next()
-                .unwrap();
+                .unwrap()
+                .trim_start_matches('[')
+                .trim_end_matches(']');
             assert!(host.parse::<IpAddr>().is_ok(), "{}", server.url);
         }
+        // Each operator has IPv4 and IPv6 servers (an IPv6-only host).
+        for operator in ["Cloudflare", "Google"] {
+            let of = |v6: bool| {
+                DOH_SERVERS
+                    .iter()
+                    .filter(|s| s.operator == operator && is_ipv6(s) == v6)
+                    .count()
+            };
+            assert!(of(true) >= 1 && of(false) >= 1, "{operator}");
+        }
+    }
+
+    // A host with no IPv4 route asks the IPv6 servers first; the order of
+    // the operators stays in each family.
+    #[test]
+    fn the_family_of_the_host_goes_first() {
+        let v6_first = by_family(DOH_SERVERS, false);
+        assert!(is_ipv6(&v6_first[0]), "{}", v6_first[0].url);
+        assert_eq!(v6_first[0].operator, "Cloudflare");
+        assert!(v6_first.iter().take(4).all(is_ipv6));
+        let v4_first = by_family(DOH_SERVERS, true);
+        assert_eq!(v4_first[0].url, "https://1.1.1.1/dns-query");
+        assert!(v4_first.iter().take(4).all(|s| !is_ipv6(s)));
+        assert_eq!(v4_first.len(), DOH_SERVERS.len());
     }
 
     fn answer(status: u16, data: &[&str]) -> DohAnswer {

@@ -107,6 +107,9 @@ impl Target {
 
 /// The address of the MASQUE front door.
 pub const MASQUE_ADDRESS: &str = "162.159.198.2";
+/// The IPv6 address of the MASQUE front door (the IPv6-only kit: the doctor
+/// gave "0 of 3 legs" on a host where the tunnel worked over IPv6).
+pub const MASQUE_ADDRESS_V6: &str = "2606:4700:103::2";
 
 /// The targets: the APIs, the edge by name and by address, and MASQUE.
 pub fn targets() -> Vec<Target> {
@@ -144,6 +147,17 @@ pub fn targets() -> Vec<Target> {
         },
     ]
     .into_iter()
+    .chain(
+        (crate::resolve::has_default_route(true)
+            || crate::egress::proxy_for(MASQUE_ADDRESS_V6, crate::warp::register::MASQUE_PORT)
+                .is_some())
+        .then(|| Target {
+            id: "masque-v6",
+            host: MASQUE_ADDRESS_V6.into(),
+            port: crate::warp::register::MASQUE_PORT,
+            tls: Tls::Masque,
+        }),
+    )
     // Issue 128: the WebSocket relay is a road of its own (CFRS_RELAY).
     .chain(
         crate::ws_relay::Relay::from_env(None)
@@ -1031,10 +1045,20 @@ fn legs(paths: &[Path], udp: &Egress) -> Vec<Leg> {
                 + ": TCP and TLS work",
         }
     };
+    // The front door of IPv6 counts when the one of IPv4 does not work.
+    let masque = match find("masque-v6") {
+        Some(p)
+            if p.usable().0 == Verdict::Ok
+                && find("masque").is_none_or(|m| m.usable().0 != Verdict::Ok) =>
+        {
+            "masque-v6"
+        }
+        _ => "masque",
+    };
     let mut legs = vec![
         quic,
         leg("http2", &["edge-address"]),
-        leg("quic+warp", &["masque", "warp-api"]),
+        leg("quic+warp", &[masque, "warp-api"]),
     ];
     if find("relay").is_some() {
         let mut relay = leg("http2+relay", &["relay"]);
@@ -1068,6 +1092,63 @@ mod tests {
         let off = clock_of(4600, 1000, "api");
         assert_eq!((off.verdict, off.skew), (Verdict::Refused, Some(3600)));
         assert!(off.detail.contains("set the clock"));
+    }
+
+    fn path(id: &'static str, host: &str, port: u16, ok: bool) -> Path {
+        Path {
+            target: Target {
+                id,
+                host: host.into(),
+                port,
+                tls: Tls::Web,
+            },
+            via: None,
+            verdict: if ok { Verdict::Ok } else { Verdict::Unknown },
+            detail: if ok {
+                "open".into()
+            } else {
+                "Network is unreachable".into()
+            },
+            sent: 1,
+            answered: ok as usize,
+            best: None,
+            median: None,
+            p95: None,
+            jitter: None,
+            tls: ok.then(|| TlsResult {
+                verdict: Verdict::Ok,
+                issuer: None,
+                detail: "ok".into(),
+            }),
+            dns: None,
+        }
+    }
+
+    // The IPv6-only kit: with no IPv4 route, the front door of IPv6 makes
+    // the leg quic+warp work.
+    #[test]
+    fn the_ipv6_front_door_makes_quic_warp_work() {
+        let udp = Egress::Unknown("x".into());
+        let paths = vec![
+            path("masque", MASQUE_ADDRESS, 443, false),
+            path("masque-v6", MASQUE_ADDRESS_V6, 443, true),
+            path("warp-api", "api.cloudflareclient.com", 443, true),
+        ];
+        let warp = legs(&paths, &udp)
+            .into_iter()
+            .find(|l| l.name == "quic+warp")
+            .unwrap();
+        assert_eq!(warp.verdict, Verdict::Ok, "{}", warp.reason);
+        assert!(warp.reason.contains("2606:4700:103::2"), "{}", warp.reason);
+        let paths = vec![
+            path("masque", MASQUE_ADDRESS, 443, false),
+            path("warp-api", "api.cloudflareclient.com", 443, true),
+        ];
+        let warp = legs(&paths, &udp)
+            .into_iter()
+            .find(|l| l.name == "quic+warp")
+            .unwrap();
+        assert_ne!(warp.verdict, Verdict::Ok);
     }
 
     // Issue 128: a road works when one of its legs works.

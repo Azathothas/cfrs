@@ -1380,13 +1380,10 @@ fn agent_commands(warp: bool, warp_tcp: bool) -> Vec<String> {
     commands
 }
 
-/// The command line of the `warp proxy --detach` of `cfrs warp up`.
-fn warp_up_args(
-    args: &WarpArgs,
-    port: u16,
-    socket: &std::path::Path,
-    ready_timeout: u64,
-) -> Vec<String> {
+/// `warp` and the options of `cfrs warp` that a child of `warp up` needs:
+/// the identity, the relay, and the front door (the IPv6-only kit, 0002:
+/// `warp up --tun` dropped `--masque-endpoint`).
+fn warp_global_args(args: &WarpArgs) -> Vec<String> {
     let mut argv: Vec<String> = vec!["warp".into()];
     if let Some(path) = &args.identity {
         argv.push("--identity".into());
@@ -1406,6 +1403,33 @@ fn warp_up_args(
         argv.push("--masque-sni".into());
         argv.push(sni.clone());
     }
+    argv
+}
+
+/// The command line of the `warp tun --default-route --detach` of `cfrs
+/// warp up --tun`.
+fn warp_up_tun_args(args: &WarpArgs, ready_timeout: u64) -> Vec<String> {
+    let mut argv = warp_global_args(args);
+    argv.extend([
+        "tun".to_string(),
+        "--default-route".into(),
+        "--detach".into(),
+        "--name".into(),
+        cfrs::warp::up::TUN_INSTANCE.into(),
+        "--ready-timeout".into(),
+        ready_timeout.to_string(),
+    ]);
+    argv
+}
+
+/// The command line of the `warp proxy --detach` of `cfrs warp up`.
+fn warp_up_args(
+    args: &WarpArgs,
+    port: u16,
+    socket: &std::path::Path,
+    ready_timeout: u64,
+) -> Vec<String> {
+    let mut argv = warp_global_args(args);
     argv.extend([
         "proxy".into(),
         "--listen".into(),
@@ -2174,7 +2198,16 @@ async fn run_tunnel(
                 handle.shutdown().await;
                 return Ok(());
             };
-            verified(show, url, checked?.dns);
+            let checked = match checked {
+                Ok(c) => c,
+                Err(err) => {
+                    // The IPv6-only kit, 0005: the edge connections end
+                    // cleanly, not at the exit of the process.
+                    handle.shutdown().await;
+                    return Err(err);
+                }
+            };
+            verified(show, url, checked.dns);
         }
     }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));
@@ -2233,7 +2266,14 @@ async fn run_share(
             handle.shutdown().await;
             return Ok(());
         };
-        verified(show, &public, check?.dns);
+        let check = match check {
+            Ok(c) => c,
+            Err(err) => {
+                handle.shutdown().await;
+                return Err(err);
+            }
+        };
+        verified(show, &public, check.dns);
     }
     let mut doc = tunnel_doc(&handle, Some(&public), verify);
     doc["pin"] = pin.clone().into();
@@ -2257,7 +2297,13 @@ async fn run_demo(
             handle.shutdown().await;
             return Ok(());
         };
-        let check = check?;
+        let check = match check {
+            Ok(c) => c,
+            Err(err) => {
+                handle.shutdown().await;
+                return Err(err);
+            }
+        };
         if show.json {
             let dns = check.map(|c| c.dns).unwrap_or("none");
             verified(show, handle.url().unwrap_or(""), dns);
@@ -2274,7 +2320,10 @@ async fn run_demo(
         handle.shutdown().await;
         return Ok(());
     };
-    check?;
+    if let Err(err) = check {
+        handle.shutdown().await;
+        return Err(err);
+    }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), true));
     serve_until(&handle, wait(run_for, vec![])).await?;
     handle.shutdown().await;
@@ -2906,23 +2955,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
             ready_timeout,
             ..
         } => {
-            let mut argv = vec!["warp".to_string()];
-            if args.no_relay {
-                argv.push("--no-relay".into());
-            }
-            if let Some(path) = &args.identity {
-                argv.push("--identity".into());
-                argv.push(path.display().to_string());
-            }
-            argv.extend([
-                "tun".to_string(),
-                "--default-route".into(),
-                "--detach".into(),
-                "--name".into(),
-                cfrs::warp::up::TUN_INSTANCE.into(),
-                "--ready-timeout".into(),
-                ready_timeout.to_string(),
-            ]);
+            let argv = warp_up_tun_args(&args, *ready_timeout);
             let doc = cfrs::warp::up::start("cfrs warp tun --default-route --detach", &argv)?;
             println!("{doc}");
             return Ok(());
@@ -4177,6 +4210,39 @@ mod tests {
             let err = mode(bad).unwrap_err();
             assert_eq!(cfrs::exit::code_of(&err), 64, "{bad:?}: {err}");
         }
+    }
+
+    // The IPv6-only kit, 0002: warp up --tun gives its child the front door
+    // and the TLS name.
+    #[test]
+    fn warp_up_tun_keeps_the_front_door() {
+        let cli = Cli::try_parse_from([
+            "cfrs",
+            "warp",
+            "--masque-endpoint",
+            "[2606:4700:103::2]:443",
+            "--masque-sni",
+            "example.test",
+            "--ephemeral",
+            "up",
+            "--tun",
+        ])
+        .unwrap();
+        let Command::Warp(args) = cli.command else {
+            panic!("not warp")
+        };
+        let argv = warp_up_tun_args(&args, 30);
+        let has = |a: &str, b: &str| argv.windows(2).any(|w| w[0] == a && w[1] == b);
+        assert!(
+            has("--masque-endpoint", "[2606:4700:103::2]:443"),
+            "{argv:?}"
+        );
+        assert!(has("--masque-sni", "example.test"), "{argv:?}");
+        assert!(argv.contains(&"--ephemeral".to_string()));
+        let tun = argv.iter().position(|a| a == "tun").unwrap();
+        assert!(argv.iter().position(|a| a == "--masque-endpoint").unwrap() < tun);
+        let parsed = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(argv));
+        assert!(parsed.is_ok(), "the argv parses");
     }
 
     // Issues 110 and 116: a unix-only warp up gets warp exec and
