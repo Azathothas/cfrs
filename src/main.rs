@@ -3070,6 +3070,25 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> RelayIo for
 /// The WARP+ line of `warp status` (issue 95). The field `warp_plus` of
 /// the API is true also for a free account; WARP+ is an account type
 /// other than free, or premium data.
+/// A license key of the command line: one character or more (issue 178:
+/// an empty key went to the API).
+fn non_empty_key(value: &str) -> std::result::Result<String, String> {
+    let key = value.trim();
+    if key.is_empty() {
+        return Err("give a license key".into());
+    }
+    Ok(key.to_string())
+}
+
+/// A JSON value for a text line: a string with no quotes (issue 178).
+fn plain_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "-".into(),
+        other => other.to_string(),
+    }
+}
+
 fn warp_plus_label(account: &serde_json::Value) -> &'static str {
     let kind = account
         .get("account_type")
@@ -3367,6 +3386,7 @@ enum WarpCommand {
     /// Attach a WARP+ license key to the device.
     License {
         /// The license key.
+        #[arg(value_parser = non_empty_key)]
         key: String,
     },
     /// Make a new MASQUE key and enrol it. The old key stops working.
@@ -3558,7 +3578,8 @@ enum WarpCommand {
         #[arg(long)]
         persist: bool,
         /// Also write the proxy variables to
-        /// ~/.config/environment.d/90-cfrs-warp.conf: the systemd user
+        /// $XDG_CONFIG_HOME/environment.d/90-cfrs-warp.conf (else
+        /// ~/.config/environment.d/90-cfrs-warp.conf): the systemd user
         /// manager gives them to the programs of the next login (a
         /// desktop, a user unit). cfrs warp down removes the file. A file
         /// of that name that cfrs did not write is not changed.
@@ -3776,7 +3797,14 @@ fn masque_options(args: &WarpArgs) -> cfrs::warp::MasqueOptions {
 fn identity_pairs(
     specs: &[String],
     main: Option<&std::path::Path>,
+    listens: &[String],
 ) -> Result<Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)>> {
+    // Issue 178: a listener of --listen is not a listener of an identity.
+    let mains: Vec<cfrs::vnet::proxy::ProxyListen> = listens
+        .iter()
+        .flat_map(|l| l.split(','))
+        .filter_map(|l| cfrs::vnet::proxy::ProxyListen::parse(l.trim()).ok())
+        .collect();
     let mut out: Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)> = Vec::new();
     for spec in specs {
         let (listen, path) = spec
@@ -3796,6 +3824,9 @@ fn identity_pairs(
         }
         if out.iter().any(|(l, _)| *l == listen) {
             bail!("{spec:?}: the listener is given twice");
+        }
+        if mains.contains(&listen) {
+            bail!("{spec:?}: the listener is in --listen and in --listen-identity");
         }
         out.push((listen, path));
     }
@@ -4053,14 +4084,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         // Issue 150: a bad --listen-identity is a usage error before any
         // registration.
         WarpCommand::Proxy {
-            listen_identity, ..
+            listen_identity,
+            listen,
+            ..
         } if !listen_identity.is_empty() => {
             let main = match &args.identity {
                 Some(path) => Some(path.clone()),
                 None if args.ephemeral => None,
                 None => cfrs::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
             };
-            identity_pairs(listen_identity, main.as_deref()).fault(Fault::Usage)?;
+            identity_pairs(listen_identity, main.as_deref(), listen).fault(Fault::Usage)?;
         }
         _ => {}
     }
@@ -4126,15 +4159,19 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 116: the instance of warp up, with the account.
             let instance = cfrs::warp::up::instance_state();
             if json {
+                let active = warp_plus_label(&account) == "yes";
                 if let Some(doc) = account.as_object_mut() {
                     doc.insert("instance".into(), instance);
+                    // Issue 178: warp_plus of the API is not the state of
+                    // the account; warp_plus_active is.
+                    doc.insert("warp_plus_active".into(), active.into());
                 }
                 println!("{}", serde_json::to_string_pretty(&account)?);
                 return Ok(());
             }
             print_device(&client, path.as_deref());
             println!("warp up     {}", cfrs::warp::up::instance_line(&instance));
-            let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
+            let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("type        {}", field("account_type"));
             println!("warp+       {}", warp_plus_label(&account));
             println!("premium     {}", field("premium_data"));
@@ -4147,7 +4184,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .await
                 .map_err(|err| cfrs::exit::fault(license_fault(&err), err))?;
             save(&client)?;
-            let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
+            let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("license     set");
             println!("type        {}", field("account_type"));
             println!("warp+       {}", warp_plus_label(&account));
@@ -4276,11 +4313,14 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
             let total = targets.len() + 1;
             let mut failed = 0;
+            // Issue 178: the summary names the failed checks.
+            let mut names: Vec<String> = Vec::new();
             // Issue 115: the UDP data path: a DNS query through the tunnel.
             match cfrs::warp::proxy::check_data_path(&stack, true).await {
                 Ok(took) => println!("OK          udp 1.1.1.1:53 (DNS) in {took:?}"),
                 Err(err) => {
                     failed += 1;
+                    names.push("udp 1.1.1.1:53".into());
                     println!("FAIL        udp 1.1.1.1:53 (DNS): {err:#}");
                 }
             }
@@ -4300,10 +4340,12 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     }
                     Ok(Err(err)) => {
                         failed += 1;
+                        names.push(spec.clone());
                         println!("FAIL        {spec}: {err:#}");
                     }
                     Err(_) => {
                         failed += 1;
+                        names.push(spec.clone());
                         println!("TIMEOUT     {spec}");
                     }
                 }
@@ -4312,7 +4354,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             if failed > 0 {
                 return Err(cfrs::exit::fault(
                     Fault::Unavailable,
-                    anyhow::anyhow!("{failed} of {total} targets failed through WARP"),
+                    anyhow::anyhow!(
+                        "{failed} of {total} targets failed through WARP: {}",
+                        names.join(", ")
+                    ),
                 ));
             }
         }
@@ -4333,7 +4378,8 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             ..
         } => {
             // Issue 150: the listeners of the other identities.
-            let pairs = identity_pairs(&listen_identity, path.as_deref()).fault(Fault::Usage)?;
+            let pairs =
+                identity_pairs(&listen_identity, path.as_deref(), &listen).fault(Fault::Usage)?;
             cfrs::warp::proxy::set_max_connections(max_connections);
             // Issues 132 and 136: the rules of the destinations.
             let default = cfrs::warp::rules::Action::parse(&rule_default).fault(Fault::Usage)?;
@@ -5532,9 +5578,17 @@ mod tests {
                 "unix:/run/c.sock=/s/c.json".into(),
             ],
             Some(main),
+            &["tcp://127.0.0.1:40000".into()],
         )
         .unwrap();
         assert_eq!(pairs.len(), 2);
+        // Issue 178: the listener of --listen.
+        assert!(identity_pairs(
+            &["tcp://127.0.0.1:40000=/s/b.json".into()],
+            Some(main),
+            &["tcp://127.0.0.1:40000".into()],
+        )
+        .is_err());
         assert_eq!(pairs[1].1, PathBuf::from("/s/c.json"));
         for bad in [
             vec!["127.0.0.1:40001=/s/warp.json"],
@@ -5545,7 +5599,7 @@ mod tests {
             vec!["nothing=/s/b.json"],
         ] {
             let specs: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
-            assert!(identity_pairs(&specs, Some(main)).is_err(), "{bad:?}");
+            assert!(identity_pairs(&specs, Some(main), &[]).is_err(), "{bad:?}");
         }
     }
 
@@ -5835,6 +5889,23 @@ mod tests {
         ]);
         assert_eq!(exposes_failed(&exposed), 2);
         assert_eq!(exposes_failed(&serde_json::json!([])), 0);
+    }
+
+    // Issue 178: an empty license key is a usage error; a text field has no
+    // quotes; warp_plus_active follows the account.
+    #[test]
+    fn warp_license_and_status_fields() {
+        let err = Cli::try_parse_from(["cfrs", "warp", "license", ""]).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "clap error");
+        assert!(non_empty_key("  ").is_err());
+        assert_eq!(non_empty_key(" k ").unwrap(), "k");
+        assert_eq!(plain_value(&serde_json::json!("free")), "free");
+        assert_eq!(plain_value(&serde_json::json!(5)), "5");
+        assert_eq!(plain_value(&serde_json::Value::Null), "-");
+        let free = serde_json::json!({"account_type": "free", "warp_plus": true});
+        assert_eq!(warp_plus_label(&free), "no");
+        let plus = serde_json::json!({"account_type": "limited", "premium_data": 10});
+        assert_eq!(warp_plus_label(&plus), "yes");
     }
 
     #[test]

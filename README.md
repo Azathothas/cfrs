@@ -588,7 +588,9 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   `--inbound-dir` to the pod. A connect to 127.0.0.1 goes to the host, not
   to WARP. The TCP connections and the DNS queries of the program go
   through WARP, also for static binaries. With the `seccomp` backend, other
-  UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE).
+  UDP datagrams also go through WARP (SOCKS5 UDP ASSOCIATE). ICMP (`ping`)
+  goes through WARP only with `--backend netns-raw`; the pod does not carry
+  it.
 * `cfrs warp up [--port 40000] [--persist]` starts `warp proxy` in the
   background (instance `warp`, see "Run in the background") on
   `127.0.0.1:PORT` and on a unix socket, and writes an env file with the
@@ -603,7 +605,8 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
     binaries, with no proxy variable.
   * `--persist`: a marked block in `~/.bashrc` and `~/.profile` loads the env
     file in each new shell, and an interactive shell runs under the pod.
-  * `--env-d`: `~/.config/environment.d/90-cfrs-warp.conf` has the proxy
+  * `--env-d`: `$XDG_CONFIG_HOME/environment.d/90-cfrs-warp.conf`
+    (`~/.config/environment.d/...` when the variable is not set) has the proxy
     variables. The systemd user manager gives them to the programs of the
     next login (a desktop, a browser, a user unit). A file of that name that
     cfrs did not write stays, and `warp up --env-d` stops with an error.

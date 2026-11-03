@@ -592,6 +592,21 @@ where
         // A TLS ClientHello: the client takes the proxy for https://.
         bail!("a TLS client on the proxy (use http:// or socks5h:// for the proxy URL)");
     }
+    // Issue 178: a SOCKS4 client gets its refusal at once; another byte
+    // that cannot start an HTTP method closes at once. Before, the reader
+    // of an HTTP request waited 30 s for its end.
+    if !is_socks && first[0] == 0x04 {
+        crate::decisions::count("dispatch", "socks4");
+        let _ = stream.write_all(&[0x00, 0x5b, 0, 0, 0, 0, 0, 0]).await;
+        bail!("a SOCKS4 client on the proxy (use socks5h:// or http://)");
+    }
+    if !is_socks && !first[0].is_ascii_alphabetic() {
+        crate::decisions::count("dispatch", "unknown");
+        bail!(
+            "the first byte 0x{:02x} starts no SOCKS5 and no HTTP request",
+            first[0]
+        );
+    }
     let check = auth.map(|c| move |u: &str, p: &str| c.check(u, p));
     let check_ref: Option<socks::CheckUser<'_>> = check.as_ref().map(|c| c as socks::CheckUser<'_>);
     let request: ProxyRequest = if is_socks {
@@ -1234,6 +1249,35 @@ mod order_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 178: a SOCKS4 client is refused at once.
+    #[tokio::test]
+    async fn a_socks4_client_is_refused_at_once() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(async move {
+            handle_client(server, |_, _| async { anyhow::bail!("no dial") }, None).await
+        });
+        // SOCKS4 CONNECT to 1.2.3.4:80, user "".
+        client
+            .write_all(&[0x04, 0x01, 0x00, 0x50, 1, 2, 3, 4, 0x00])
+            .await
+            .unwrap();
+        let mut reply = [0u8; 8];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_exact(&mut reply),
+        )
+        .await
+        .expect("an answer at once")
+        .unwrap();
+        assert_eq!(reply[1], 0x5b);
+        let err = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("SOCKS4"), "{err:#}");
+    }
 
     /// A stack over a bare device, and a DNS server on the other side of
     /// the link at 198.51.100.7:53 that drops the first `drop_first`

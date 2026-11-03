@@ -57,7 +57,8 @@ socket) when there is one, else to TCP on the host.
   the query to.
 
 Needs: unprivileged user namespaces and `/dev/net/tun`. This backend carries
-TCP and DNS. It does not carry other UDP.
+TCP and DNS. It does not carry other UDP, and no backend of the pod carries
+ICMP (`ping`).
 
 A listener of the program (for example `cfrs connect -L tcp://127.0.0.1:8080`)
 is in the network namespace of the pod: a process outside the pod does not

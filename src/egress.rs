@@ -549,7 +549,13 @@ impl std::error::Error for Refusal {}
 
 /// The refusal of a proxy in the chain of `err`, if there is one.
 pub fn refusal(err: &anyhow::Error) -> Option<&Refusal> {
-    err.chain().find_map(|e| e.downcast_ref::<Refusal>())
+    // An error with a hop holds the refusal in its own chain.
+    err.chain().find_map(|e| {
+        e.downcast_ref::<Refusal>().or_else(|| {
+            e.downcast_ref::<crate::hop::AtHop>()
+                .and_then(|h| refusal(h.inner()))
+        })
+    })
 }
 
 /// The reason of a refusal: the reason phrase of the status line, and the

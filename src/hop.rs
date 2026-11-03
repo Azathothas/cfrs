@@ -72,6 +72,13 @@ impl fmt::Display for AtHop {
     }
 }
 
+impl AtHop {
+    /// The error that has the hop (its own chain).
+    pub fn inner(&self) -> &anyhow::Error {
+        &self.inner
+    }
+}
+
 impl std::error::Error for AtHop {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.inner.source()

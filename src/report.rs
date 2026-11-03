@@ -127,6 +127,15 @@ pub fn error_line(err: &anyhow::Error) -> String {
     if let Some(hint) = crate::trust::clock_hint(err) {
         line.push_str("\ncfrs: ");
         line.push_str(&hint);
+    } else if let Some(status) = crate::egress::refusal(err)
+        .map(|r| r.status)
+        .filter(|s| (502..=504).contains(s))
+    {
+        // Issue 178: a 502, 503 or 504 of the proxy is the destination:
+        // the proxy could not reach it.
+        line.push_str(&format!(
+            "\ncfrs: the proxy answered HTTP {status}: it could not reach the destination; check the address of the destination (--masque-endpoint, --url, the edge)"
+        ));
     } else if let Some(hop) = crate::hop::of(err) {
         line.push_str(&format!("\ncfrs: the {hop} hop failed; {}", hop.hint()));
     }
@@ -337,6 +346,19 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 178: a 502 of the proxy names the destination, not the proxy.
+    #[test]
+    fn a_502_of_the_proxy_names_the_destination() {
+        let err = anyhow::Error::new(crate::egress::Refusal {
+            status: 502,
+            text: "the proxy refused CONNECT with HTTP 502".into(),
+        });
+        let err = crate::hop::at(crate::hop::Hop::Proxy, err);
+        let line = error_line(&err);
+        assert!(line.contains("could not reach the destination"), "{line}");
+        assert!(!line.contains("allow-list"), "{line}");
+    }
 
     #[test]
     fn mask_hides_url_credentials_and_hidden_values() {
