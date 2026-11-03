@@ -149,7 +149,12 @@ fn udp_payload(datagram: &[u8]) -> Option<&[u8]> {
 pub async fn udp_via_running(
     host: &str,
     port: u16,
-) -> Result<Option<(tokio::sync::mpsc::Sender<Vec<u8>>, tokio::sync::mpsc::Receiver<Vec<u8>>)>> {
+) -> Result<
+    Option<(
+        tokio::sync::mpsc::Sender<Vec<u8>>,
+        tokio::sync::mpsc::Receiver<Vec<u8>>,
+    )>,
+> {
     use pod_netns::upstream::{read_udp_frame, wrap_udp, wrap_udp_name, write_udp_frame};
     let socket = super::up::socket_path()?;
     if std::os::unix::net::UnixStream::connect(&socket).is_err() {
@@ -192,7 +197,10 @@ pub async fn udp_via_stack(
     stack: std::sync::Arc<super::WarpStack>,
     host: &str,
     port: u16,
-) -> Result<(tokio::sync::mpsc::Sender<Vec<u8>>, tokio::sync::mpsc::Receiver<Vec<u8>>)> {
+) -> Result<(
+    tokio::sync::mpsc::Sender<Vec<u8>>,
+    tokio::sync::mpsc::Receiver<Vec<u8>>,
+)> {
     let ip = super::proxy::resolve(&stack, host).await?;
     let udp = stack.udp_bind().await?;
     let to = SocketAddr::new(ip, port);
@@ -267,8 +275,14 @@ mod tests {
         assert_eq!(output, b"ECHO:PING");
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         echo.abort();
-        assert_eq!(udp_payload(&[0, 0, 0, 1, 1, 1, 1, 1, 0, 53, b'x']), Some(&b"x"[..]));
-        assert_eq!(udp_payload(&[0, 0, 0, 3, 1, b'a', 0, 53, b'y']), Some(&b"y"[..]));
+        assert_eq!(
+            udp_payload(&[0, 0, 0, 1, 1, 1, 1, 1, 0, 53, b'x']),
+            Some(&b"x"[..])
+        );
+        assert_eq!(
+            udp_payload(&[0, 0, 0, 3, 1, b'a', 0, 53, b'y']),
+            Some(&b"y"[..])
+        );
     }
 
     #[test]
