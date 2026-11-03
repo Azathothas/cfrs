@@ -178,3 +178,17 @@ Rules that the tests check:
     run 41567562797: the A/B lines with beta.6 tell if beta.7 is slower.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.
+* **The second batch (#132 to #163).** The code is on main, and
+  `docs/releases/v0.3.0-beta.8.md` has the notes. The owner tests it before
+  the release. `scripts/live-batch2.sh` (a step of `live.yml`) checks exit,
+  scan, the rules, forward, a nested session and export.
+* **Deferred, size L**: #135 and #151 (other TLS shapes), #140 and #152 to
+  #155 (other transports), #157 (HTTP/3; the spike `scripts/quic-vn.py`
+  asks the front door for its QUIC versions), #161 (the library on
+  crates.io), #162 (reproducible builds). #149 waits for an exchange of the
+  reporter.
+* **The congestion controller of the stack of WARP (#134).** The stack
+  holds its packets when the queue is full; `--cc` is not done.
+* **`AtomicU64::fetch_update`** (`src/share.rs`, `src/warp/live.rs`): Rust
+  deprecates it in a later release. `try_update` needs a newer Rust than
+  the MSRV (1.89). Change it when the MSRV moves.
