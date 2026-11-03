@@ -1245,6 +1245,9 @@ fn warp_up(
     auth: Option<(&String, &PathBuf)>,
 ) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
+    if files.env_d {
+        cfrs::warp::up::check_env_d().fault(Fault::Config)?;
+    }
     let mut argv = warp_up_args(args, port, &socket, ready_timeout);
     // Issue 146: the path of the password goes to the child, not the
     // password.

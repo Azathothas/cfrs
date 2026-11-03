@@ -546,9 +546,9 @@ fn env_d_is_ours(text: Option<&str>) -> bool {
     text.is_none_or(|t| t.lines().next() == Some(ENV_D_MARK))
 }
 
-/// Write the environment.d file for the proxy on 127.0.0.1:`port`. A file
-/// of that name that cfrs did not write is an error, and stays.
-pub fn write_env_d(port: u16) -> Result<PathBuf> {
+/// The path of the environment.d file; an error when a file of that name
+/// is not a file of cfrs. `warp up` calls it before it starts the proxy.
+pub fn check_env_d() -> Result<PathBuf> {
     let path = env_d_path()?;
     let old = std::fs::read_to_string(&path).ok();
     if !env_d_is_ours(old.as_deref()) {
@@ -557,6 +557,13 @@ pub fn write_env_d(port: u16) -> Result<PathBuf> {
             path.display()
         );
     }
+    Ok(path)
+}
+
+/// Write the environment.d file for the proxy on 127.0.0.1:`port`. A file
+/// of that name that cfrs did not write is an error, and stays.
+pub fn write_env_d(port: u16) -> Result<PathBuf> {
+    let path = check_env_d()?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
     }
