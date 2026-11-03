@@ -76,8 +76,9 @@ fn command(out: &mut String, manual: &Manual, c: &CommandPage) {
 pub fn render(manual: &Manual) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        ".TH {} 1 \"\" \"cfrs {}\" \"User Commands\"\n",
+        ".TH {} 1 \"{}\" \"cfrs {}\" \"User Commands\"\n",
         manual.name.to_ascii_uppercase(),
+        env!("CFRS_BUILD_DATE"),
         escape(&manual.version)
     ));
     out.push_str(".SH NAME\n");
@@ -128,8 +129,9 @@ pub fn render(manual: &Manual) -> String {
 /// One command, or one topic, as a man(7) page.
 pub fn render_section(manual: &Manual, title: &str, body: impl FnOnce(&mut String)) -> String {
     let mut out = format!(
-        ".TH {} 1 \"\" \"cfrs {}\" \"User Commands\"\n.SH \"{}\"\n",
+        ".TH {} 1 \"{}\" \"cfrs {}\" \"User Commands\"\n.SH \"{}\"\n",
         manual.name.to_ascii_uppercase(),
+        env!("CFRS_BUILD_DATE"),
         escape(&manual.version),
         escape(&title.to_ascii_uppercase())
     );

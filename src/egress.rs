@@ -214,7 +214,7 @@ impl Proxy {
         };
         let rest = rest.trim_end_matches('/');
         if rest.contains(['/', '?', '#']) {
-            bail!("a proxy URL has no path, query or fragment");
+            bail!("a proxy URL has no path, query or fragment (percent-encode / ? # @ : in the user and the password, for example %2F for /)");
         }
         let (auth, authority) = match rest.rsplit_once('@') {
             Some((auth, authority)) => (Some(auth), authority),
@@ -1595,5 +1595,16 @@ mod tests {
             .collect();
         let got: Vec<String> = interleave(a).iter().map(|a| a.to_string()).collect();
         assert_eq!(got, ["[::1]:1", "1.1.1.1:1", "[::2]:1", "2.2.2.2:1"]);
+    }
+
+    // Issue 181: an unencoded / in the password names the fix.
+    #[test]
+    fn a_slash_in_the_password_names_the_encoding() {
+        let err = format!(
+            "{:#}",
+            Proxy::parse("http://user:pa/ss@proxy:3128").unwrap_err()
+        );
+        assert!(err.contains("percent-encode"), "{err}");
+        assert!(Proxy::parse("http://user:pa%2Fss@proxy:3128").is_ok());
     }
 }

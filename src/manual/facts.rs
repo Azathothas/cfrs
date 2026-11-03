@@ -272,6 +272,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         used_by: "the build",
         meaning: "Read when cfrs is compiled: the commit that --version prints.",
     },
+    EnvVar {
+        names: &["SOURCE_DATE_EPOCH"],
+        used_by: "the build",
+        meaning: "Read when cfrs is compiled: the date of the manual (cfrs man --roff). Without it, the date of the commit.",
+    },
 ];
 
 /// One file or directory.

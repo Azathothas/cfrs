@@ -222,6 +222,9 @@ mod tests {
         let m = model::build(sample());
         let r = roff::render(&m);
         assert!(r.starts_with(".TH CFRS 1"));
+        // Issue 181: the date field is not empty (here: the commit date).
+        let th = r.lines().next().unwrap();
+        assert!(!th.contains(" 1 \"\" "), "{th}");
         for line in r.lines().filter(|l| l.starts_with('.')) {
             let mac = line.split_whitespace().next().unwrap();
             assert!(

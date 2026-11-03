@@ -180,7 +180,8 @@ gives `{token, expires}`. A minted token is minted again when it has less
 than 10 minutes. A 403 for a minted token mints a new one one time. A 403
 that names the ALLOW list is a policy refusal: a new token does not help.
 
-Limits of `tcp.ssh.relay.ajam.dev` (podssh measured them):
+Limits of `tcp.ssh.relay.ajam.dev` (podssh measured them; the relay sets
+them, and they can change):
 
 | Limit | Value | Effect on the leg |
 | --- | --- | --- |

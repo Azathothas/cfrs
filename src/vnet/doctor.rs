@@ -117,8 +117,25 @@ pub fn verdict(probes: &[Probe]) -> String {
     if !ok("bind(AF_UNIX, path)") {
         missing.push("AF_UNIX bind");
     }
+    // Issue 181: the detail of a failed compiler probe (a scratch
+    // directory, not the compiler, can be the cause).
+    let compiler_detail = probes
+        .iter()
+        .find(|p| p.name == "cc -shared -fPIC")
+        .and_then(|p| match &p.result {
+            ProbeResult::Fail(why) | ProbeResult::Unknown(why) => Some(why.clone()),
+            _ => None,
+        });
+    let compiler;
     if !ok("cc -shared -fPIC") {
-        missing.push("C compiler for the shim");
+        compiler = match compiler_detail {
+            Some(why) if why.contains("scratch") || why.contains("probe.c") => {
+                format!("C compiler for the shim ({why}: set TMPDIR to a writable directory)")
+            }
+            Some(why) => format!("C compiler for the shim ({why})"),
+            None => "C compiler for the shim".to_string(),
+        };
+        missing.push(compiler.as_str());
     }
     format!("cfrsnet: not ready: no {}", missing.join(", no "))
 }
@@ -619,6 +636,16 @@ mod tests {
             verdict(&sealed),
             "cfrsnet: not ready: no C compiler for the shim"
         );
+        // Issue 181: the detail of the probe, and the advice for a scratch
+        // directory.
+        let mut scratch = sealed.to_vec();
+        scratch.push(Probe {
+            name: "cc -shared -fPIC",
+            result: ProbeResult::Fail("cannot create a scratch dir".into()),
+        });
+        let v = verdict(&scratch);
+        assert!(v.contains("cannot create a scratch dir"), "{v}");
+        assert!(v.contains("TMPDIR"), "{v}");
     }
 
     #[test]

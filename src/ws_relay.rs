@@ -17,7 +17,8 @@
 //!
 //! * TCP only: no QUIC leg.
 //! * IPv4 only: the relay has no IPv6 egress.
-//! * A session ends after 180 s with no payload. The PING of the HTTP/2
+//! * The relay can end a session after 180 s with no payload (a limit of
+//!   the relay, not of cfrs). The PING of the HTTP/2
 //!   leg (each 30 s) is payload.
 //! * A session ends at 64 MiB (both directions) or after 12 h. The tunnel
 //!   then connects a replacement, as for each lost connection.

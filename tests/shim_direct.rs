@@ -630,3 +630,28 @@ fn a_second_build_is_cached() {
         modified
     );
 }
+
+/// Issue 181: with no C compiler, `net shim --out DIR` uses the library
+/// that a compiler made in DIR from the same source.
+#[test]
+fn a_built_shim_needs_no_compiler_later() {
+    if !have_compiler() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let first = shim::build(dir.path()).unwrap();
+    assert!(matches!(first.origin, shim::ShimOrigin::Compiled));
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["net", "shim", "--out"])
+        .arg(dir.path())
+        .env("PATH", "/nonexistent")
+        .env_remove("CC")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

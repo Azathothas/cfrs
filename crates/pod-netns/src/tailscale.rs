@@ -52,6 +52,10 @@ pub const DEFAULT_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
 /// How long one proxied client connection may take, end to end.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long one dial through tailscaled may take (issue 181: a logged-out
+/// tailscaled never answered, and the client hung with no error).
+pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Dials `host:port` through a running `tailscaled`'s userspace netstack.
 #[derive(Clone, Debug)]
 pub struct Dialer {
@@ -281,6 +285,17 @@ async fn handle_client<S>(stream: S, dialer: Dialer, default_port: u16)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    handle_client_within(stream, dialer, default_port, DIAL_TIMEOUT).await;
+}
+
+async fn handle_client_within<S>(
+    stream: S,
+    dialer: Dialer,
+    default_port: u16,
+    dial_timeout: Duration,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut reader = BufReader::new(stream);
     let first = match reader.fill_buf().await {
         Ok(buffer) if !buffer.is_empty() => buffer[0],
@@ -304,7 +319,17 @@ where
         request.port
     };
     let host = request.host.to_string();
-    match dialer.dial(&host, port).await {
+    let dialed = match tokio::time::timeout(dial_timeout, dialer.dial(&host, port)).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "tailscaled did not answer the dial in {} ms (is it logged in? tailscale status)",
+                dial_timeout.as_millis()
+            ),
+        )),
+    };
+    match dialed {
         Ok(mut remote) => {
             let reply = if is_socks {
                 socks::socks5_reply(&mut reader, 0x00, None).await
@@ -322,12 +347,23 @@ where
         }
         Err(err) => {
             let message = err.to_string();
+            crate::warn(&format!(
+                "pod-netns: tailscale: {host}:{port} failed: {message}"
+            ));
             if is_socks {
-                let _ =
-                    socks::socks5_reply(&mut reader, socks::socks5_code_for_error(&message), None)
-                        .await;
+                let code = if err.kind() == io::ErrorKind::TimedOut {
+                    0x04 // host unreachable
+                } else {
+                    socks::socks5_code_for_error(&message)
+                };
+                let _ = socks::socks5_reply(&mut reader, code, None).await;
             } else {
-                let _ = socks::http_connect_reply(&mut reader, 502, "Bad Gateway").await;
+                let (code, text) = if err.kind() == io::ErrorKind::TimedOut {
+                    (504, "Gateway Timeout")
+                } else {
+                    (502, "Bad Gateway")
+                };
+                let _ = socks::http_connect_reply(&mut reader, code, text).await;
             }
         }
     }
@@ -427,6 +463,39 @@ mod tests {
         assert!(!is_tailnet("192.168.1.1".parse().unwrap()));
         assert!(is_tailnet("fd7a:115c:a1e0::1b38:d31c".parse().unwrap()));
         assert!(!is_tailnet("fd00::1".parse().unwrap()));
+    }
+
+    // Issue 181: a tailscaled that never answers the dial gives a refusal
+    // after the dial timeout, not a hang.
+    #[tokio::test]
+    async fn a_silent_tailscaled_gives_a_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tailscaled.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                kept.push(stream);
+            }
+        });
+        let (mut ours, theirs) = tokio::io::duplex(1024);
+        let task = tokio::spawn(handle_client_within(
+            theirs,
+            Dialer::new(&path),
+            80,
+            Duration::from_millis(200),
+        ));
+        ours.write_all(b"CONNECT 100.82.22.3:80 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = vec![0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), ours.read(&mut answer))
+            .await
+            .expect("an answer")
+            .unwrap();
+        let text = String::from_utf8_lossy(&answer[..n]);
+        assert!(text.starts_with("HTTP/1.1 504"), "{text}");
+        let _ = task.await;
     }
 
     #[tokio::test]

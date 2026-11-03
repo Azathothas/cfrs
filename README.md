@@ -687,7 +687,8 @@ Two backends are available. `--backend auto` (the default) selects one.
 | `netns` | unprivileged user namespaces and `/dev/net/tun` | The program gets a network namespace. A TUN device is its only interface. A userspace TCP/IP stack sends each flow to the upstream. |
 | `seccomp` | seccomp with `SECCOMP_RET_USER_NOTIF` | A seccomp filter stops the socket system calls. The supervisor answers them and gives the program connected descriptors. |
 
-Both backends answer DNS from a fake-IP pool (`198.18.0.0/15`) and send the
+Both backends answer DNS from a fake-IP pool (`198.18.0.0/15`; the
+`seccomp` backend answers AAAA from `fd63:6672:7300::/96` too) and send the
 name to the upstream. Thus no DNS query leaves the host. See
 [`crates/pod-netns/README.md`](crates/pod-netns/README.md) for all options.
 
@@ -738,6 +739,11 @@ NO_PROXY=127.0.0.1,.internal cfrs warp register
 cfrs --no-proxy tunnel --url http://127.0.0.1:8080
 ```
 
+* The order: `--proxy` (or `CFRS_PROXY`), then `HTTPS_PROXY`,
+  `https_proxy`, `ALL_PROXY`, `all_proxy`. A variable that is empty or does
+  not parse is skipped. `--no-proxy` uses none.
+* Percent-encode `/ ? # @ :` in the user and the password of a proxy URL
+  (for example `%2F` for `/`).
 * `http://` uses `CONNECT`. `socks5://` resolves the name on this host;
   `socks5h://` gives the name to the proxy. cfrs refuses `socks4://` and
   `https://`.
@@ -846,8 +852,9 @@ cfrs relay stop NAME
   exits 78.
 * The relay authenticates tokens, not persons. Give the connect token only
   over a channel that you trust. Check the host key of SSH as usual.
-* Limits of the relay: 64 MiB and 12 h for each session, 180 s with no
-  payload. Open a new session after a limit.
+* The relay sets its own limits; cfrs does not enforce them. Measured on
+  `tcp.ssh.relay.ajam.dev`: 64 MiB and 12 h for each session, and it can end
+  a session after 180 s with no payload. Open a new session after a limit.
 
 ## Run in the background: `--detach`
 

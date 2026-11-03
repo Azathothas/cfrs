@@ -1328,3 +1328,29 @@ fn share_proxy_takes_a_unix_socket() {
     let out = cfrs(&["share", "--unix", "/nonexistent.sock", "--check"]);
     assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
 }
+
+/// Issue 181: with --log-format json, each line of stderr is JSON, also
+/// the last error line and a usage error.
+#[test]
+fn log_format_json_gives_json_lines_only() {
+    for args in [
+        &[
+            "--log-format",
+            "json",
+            "tunnel",
+            "--url",
+            "http://127.0.0.1:1",
+            "--check",
+        ][..],
+        &["--log-format=json", "tunnel", "--bogus"],
+    ] {
+        let out = cfrs(args);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        for line in err.lines().filter(|l| !l.trim().is_empty()) {
+            let v: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("{args:?}: not JSON ({e}): {line}"));
+            assert!(v["level"].is_string(), "{line}");
+        }
+    }
+}

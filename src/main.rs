@@ -63,7 +63,8 @@ struct Cli {
     /// SSH): http+exec:COMMAND or socks5h+exec:COMMAND. Without it, cfrs
     /// reads HTTPS_PROXY and ALL_PROXY (no +exec: there). NO_PROXY names
     /// the targets that do not use a proxy. CFRS_PROXY gives the same
-    /// value, and keeps a password out of the command line.
+    /// value, and keeps a password out of the command line. Percent-encode
+    /// / ? # @ : in the user and the password.
     #[arg(
         long,
         global = true,
@@ -729,7 +730,13 @@ fn main() {
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => cfrs::exit::SUCCESS,
                 _ => cfrs::exit::USAGE,
             };
-            let _ = err.print();
+            // Issue 181: with --log-format json, a usage error is one JSON
+            // line too (found in argv: the parse failed).
+            if code != cfrs::exit::SUCCESS && json_wanted(&argv) {
+                eprintln!("{}", error_json(&err.render().to_string(), code));
+            } else {
+                let _ = err.print();
+            }
             if code != cfrs::exit::SUCCESS {
                 cfrs::report::send(command_name(&argv).as_deref(), code, None);
             }
@@ -737,6 +744,10 @@ fn main() {
         }
     };
     let command = command_name(&argv);
+    LOG_JSON.store(
+        cli.log_format == "json",
+        std::sync::atomic::Ordering::Relaxed,
+    );
     // Issue 115: -q silences the warnings of the pod too. No thread runs
     // yet.
     if cli.quiet {
@@ -801,7 +812,7 @@ fn main() {
                 cfrs::exit::Fault::Config,
                 err.context(format!("--ca-file {}", path.display())),
             );
-            eprintln!("{}", cfrs::report::error_line(&err));
+            print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
             let code = cfrs::exit::code_of(&err);
             cfrs::report::send(command.as_deref(), code, Some(&err));
             std::process::exit(code);
@@ -809,7 +820,7 @@ fn main() {
     }
     if let Err(err) = network_options(&cli) {
         let err = cfrs::exit::fault(cfrs::exit::Fault::Usage, err);
-        eprintln!("{}", cfrs::report::error_line(&err));
+        print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
         let code = cfrs::exit::code_of(&err);
         cfrs::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
@@ -891,9 +902,45 @@ fn main() {
         }
         // The report has the error in "error"; "messages" holds the log
         // lines before it (issue 55: the line was in both).
-        eprintln!("{line}");
+        print_error(&line, code);
         cfrs::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
+    }
+}
+
+/// `--log-format json` (issue 181): the last error line is JSON too.
+static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `argv` asks for `--log-format json` (before a parse).
+fn json_wanted(argv: &[String]) -> bool {
+    argv.windows(2)
+        .any(|w| w[0] == "--log-format" && w[1] == "json")
+        || argv.iter().any(|a| a == "--log-format=json")
+}
+
+/// The last error line as one JSON object, in the shape of a log line of
+/// `--log-format json`.
+fn error_json(text: &str, code: i32) -> String {
+    let message = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.strip_prefix("cfrs: ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("; ");
+    serde_json::json!({
+        "level": "ERROR",
+        "fields": { "message": message.trim_end(), "exit_code": code },
+        "target": "cfrs",
+    })
+    .to_string()
+}
+
+/// Print the last error line: text, or JSON with --log-format json.
+fn print_error(line: &str, code: i32) {
+    if LOG_JSON.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{}", error_json(line, code));
+    } else {
+        eprintln!("{line}");
     }
 }
 

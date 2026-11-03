@@ -112,7 +112,7 @@ pub(crate) fn probe_ptrace() -> Probe {
         libc::waitpid(pid, &mut status, 0);
     }
     Probe {
-        name: "PTRACE_TRACEME (fallback backend)",
+        name: "PTRACE_TRACEME (not a backend)",
         ok: stopped,
         detail,
     }
@@ -287,9 +287,6 @@ pub(crate) fn doctor(json: bool) -> i32 {
             "available (getsockname/getpeername: unavailable)"
         }
     );
-    if probes[3].ok && !any {
-        println!("pod-netns: note: descendant ptrace works, so a ptrace backend could run here");
-    }
     println!("pod-netns: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
     if any {
         0
