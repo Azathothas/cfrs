@@ -108,6 +108,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host). The default is https://tcp.ssh.relay.ajam.dev.",
     },
     EnvVar {
+        names: &["CFRS_REPO"],
+        used_by: "update",
+        meaning: "OWNER/NAME of the releases for scripts/install.sh. cfrs update does not use it: its repository names the signer of the binary. A warning says so.",
+    },
+    EnvVar {
         names: &["CFRS_RELAY_TOKEN"],
         used_by: "tunnel, serve, share, demo",
         meaning: "A token for the relay of --transport relay. It goes only in the X-Relay-Token header. Without it, cfrs mints a token with POST /v1/mint on the relay.",

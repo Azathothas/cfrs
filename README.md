@@ -56,6 +56,17 @@ log. A prerelease is
 installed only with `--version`, or when the current binary is a
 prerelease.
 
+* `--version TAG` uses no request to the GitHub API: the URLs of the files
+  follow from the tag. A tag with no release exits 69 ("no release has the
+  tag").
+* With no `--version`, cfrs reads the GitHub API, else `releases.atom` (the
+  API answers 403 on a shared address; the feed has no quota).
+* `--version` of the installed version says so and exits 0; `--force`
+  installs it again.
+* The repository is fixed (it names the signer of the binary). cfrs does
+  not read `CFRS_REPO` (a variable of `scripts/install.sh`); a warning says
+  so.
+
 ## Build
 
 ```sh

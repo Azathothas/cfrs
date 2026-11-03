@@ -328,8 +328,12 @@ struct UpdateArgs {
     version: Option<String>,
     /// Put the binary before the last update (cfrs.prev) back, with no
     /// network. A second --rollback goes forward again.
-    #[arg(long, conflicts_with_all = ["check", "version"])]
+    #[arg(long, conflicts_with_all = ["check", "version", "force"])]
     rollback: bool,
+    /// Install the release also when it is the version of this binary.
+    /// Without it, cfrs says that the version is installed and exits 0.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1730,11 +1734,14 @@ async fn async_main(cli: Cli) -> Result<()> {
         }
         Command::Update(args) => {
             use cfrs::update::Outcome;
-            match cfrs::update::run(args.version.as_deref(), args.check)
+            match cfrs::update::run(args.version.as_deref(), args.check, args.force)
                 .await
                 .fault(Fault::Unavailable)?
             {
                 Outcome::UpToDate(tag) => println!("cfrs {tag} is the newest release"),
+                Outcome::Same(tag) => {
+                    println!("cfrs {tag} is installed; nothing to do (--force installs it again)")
+                }
                 Outcome::Available { current, tag } => {
                     println!("cfrs {current}; release {tag} is available (cfrs update)")
                 }

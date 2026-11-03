@@ -23,7 +23,8 @@
 #   CFRS_INSTALL_DIR   The directory of the binary. Default: /usr/local/bin
 #                      for root, else $XDG_BIN_HOME, else ~/.local/bin.
 #   CFRS_POD_NETNS=1   Also install pod-netns.
-#   CFRS_REPO          OWNER/NAME of the releases (Azathothas/cfrs).
+#   CFRS_REPO          OWNER/NAME of the releases (Azathothas/cfrs). cfrs
+#                      update does not read it.
 #   CFRS_NO_VERIFY=1   Install with no SHA256 check (no tool for it).
 #   CFRS_DOWNLOADER    Use this downloader (one of the list above).
 #   GITHUB_TOKEN       Sent to api.github.com only (curl, wget), for its

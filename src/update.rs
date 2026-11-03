@@ -62,6 +62,28 @@ pub struct Asset {
 }
 
 impl Release {
+    /// The release of `tag` with no request to the GitHub API (issue 166):
+    /// the URLs of its files follow from the tag. The checks of the
+    /// signature and of SHA-256 do not change.
+    pub fn pinned(tag: &str) -> Release {
+        let asset = |name: String| Asset {
+            browser_download_url: format!(
+                "https://github.com/{REPOSITORY}/releases/download/{tag}/{name}"
+            ),
+            name,
+        };
+        Release {
+            tag_name: tag.to_string(),
+            prerelease: tag.contains('-'),
+            draft: false,
+            assets: vec![
+                asset(format!("cfrs-{}", asset_target(TARGET))),
+                asset("SHA256SUMS".into()),
+                asset("SHA256SUMS.sigstore.json".into()),
+            ],
+        }
+    }
+
     fn asset(&self, name: &str) -> Result<&Asset> {
         self.assets
             .iter()
@@ -78,6 +100,18 @@ pub fn identity(tag: &str) -> String {
 /// The largest release binary that `cfrs update` downloads. The binaries are
 /// about 14 MB; [`crate::fetch::MAX_BODY`] (16 MiB) is too near.
 pub const MAX_BINARY: usize = 128 << 20;
+
+/// An HTTP status other than 200 and a redirect.
+#[derive(Debug)]
+pub struct HttpStatus(pub u16);
+
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}", self.0)
+    }
+}
+
+impl std::error::Error for HttpStatus {}
 
 /// GET `url` with a body of at most `max_body` bytes, and follow up to 5
 /// redirects.
@@ -101,7 +135,10 @@ async fn get(url: &str, timeout: Duration, max_body: usize) -> Result<Vec<u8>> {
                     bail!("a redirect away from HTTPS");
                 }
             }
-            status => bail!("GET {}: HTTP {status}", url.split('?').next().unwrap_or("")),
+            status => {
+                return Err(anyhow::Error::new(HttpStatus(status))
+                    .context(format!("GET {}", url.split('?').next().unwrap_or(""))))
+            }
         }
     }
     bail!("too many redirects")
@@ -117,6 +154,51 @@ pub async fn releases() -> Result<Vec<Release>> {
     .await
     .context("reading the list of releases")?;
     serde_json::from_slice(&body).context("decoding the list of releases")
+}
+
+/// The tags of a releases.atom feed, newest first.
+pub fn atom_tags(feed: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for part in feed.split("/releases/tag/").skip(1) {
+        let tag: String = part
+            .chars()
+            .take_while(|c| !matches!(c, '"' | '<' | '\'' | ' '))
+            .collect();
+        if !tag.is_empty() && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+/// The newest tag of releases.atom that `current` takes: a prerelease
+/// (a tag with `-`) only when this binary is a prerelease, as [`choose`].
+pub fn newest_in_atom(feed: &str, current: &str) -> Option<String> {
+    let pre = current.contains('-');
+    atom_tags(feed)
+        .into_iter()
+        .find(|tag| pre || !tag.contains('-'))
+}
+
+/// The newest release: the GitHub API, else releases.atom (issue 166: the
+/// API answers 403 on a shared address; the feed has no quota).
+async fn newest(current: &str) -> Result<Release> {
+    let api = match releases().await {
+        Ok(list) => return Ok(choose(&list, None, current)?.clone()),
+        Err(err) => err,
+    };
+    tracing::info!(error = %format!("{api:#}"), "the GitHub API did not answer; reading releases.atom");
+    let feed = get(
+        &format!("https://github.com/{REPOSITORY}/releases.atom"),
+        Duration::from_secs(30),
+        crate::fetch::MAX_BODY,
+    )
+    .await
+    .map_err(|atom| anyhow::anyhow!("{api:#}; releases.atom: {atom:#}"))
+    .context("reading the list of releases")?;
+    let tag = newest_in_atom(&String::from_utf8_lossy(&feed), current)
+        .context("releases.atom has no release")?;
+    Ok(Release::pinned(&tag))
 }
 
 /// The release to install: `tag`, or the newest release. A prerelease is
@@ -311,6 +393,8 @@ pub fn sum_of(sums: &[u8], name: &str) -> Result<Vec<u8>> {
 #[derive(Debug)]
 pub enum Outcome {
     UpToDate(String),
+    /// `--version` names the version of this binary (issue 197).
+    Same(String),
     Available {
         current: String,
         tag: String,
@@ -322,30 +406,87 @@ pub enum Outcome {
     },
 }
 
-/// Update this binary (`check`: only say what is available).
-pub async fn run(tag: Option<&str>, check: bool) -> Result<Outcome> {
-    let current = format!("v{}", env!("CARGO_PKG_VERSION"));
-    let releases = releases().await?;
-    let release = choose(&releases, tag, &current)?;
-    if tag.is_none() && release.tag_name == current {
-        return Ok(Outcome::UpToDate(current));
+/// The step before a download: nothing to do, only a report, or an install.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Plan {
+    UpToDate,
+    Same,
+    Available,
+    Install,
+}
+
+/// What to do with the release `tag` (issue 197: `--version` of the
+/// version of this binary does nothing, unless `force`).
+pub fn plan(tag: &str, current: &str, pinned: bool, check: bool, force: bool) -> Plan {
+    if tag == current && !force {
+        return if pinned { Plan::Same } else { Plan::UpToDate };
     }
     if check {
+        Plan::Available
+    } else {
+        Plan::Install
+    }
+}
+
+/// The warning when CFRS_REPO is set (issue 168): the repository of
+/// `cfrs update` is fixed, because it names the signer of the binary.
+pub fn ignored_repo_warning(value: Option<std::ffi::OsString>) -> Option<String> {
+    let value = value?;
+    (value.to_string_lossy() != REPOSITORY).then(|| {
+        format!(
+            "CFRS_REPO={} is for scripts/install.sh; cfrs update uses {REPOSITORY}",
+            value.to_string_lossy()
+        )
+    })
+}
+
+/// Update this binary (`check`: only say what is available; `force`:
+/// install the version of this binary again).
+pub async fn run(tag: Option<&str>, check: bool, force: bool) -> Result<Outcome> {
+    if let Some(warning) = ignored_repo_warning(std::env::var_os("CFRS_REPO")) {
+        tracing::warn!("{warning}");
+    }
+    let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // Issue 166: a pinned tag needs no list of the releases.
+    let release = match tag {
+        Some(tag) => Release::pinned(tag),
+        None => newest(&current).await?,
+    };
+    let step = plan(&release.tag_name, &current, tag.is_some(), check, force);
+    let name = format!("cfrs-{}", asset_target(TARGET));
+    let sums_url = release.asset("SHA256SUMS")?.browser_download_url.clone();
+    let sums = match step {
+        Plan::UpToDate => return Ok(Outcome::UpToDate(current)),
+        Plan::Same => return Ok(Outcome::Same(current)),
+        // A pinned tag: SHA256SUMS shows that the release exists.
+        Plan::Available if tag.is_none() => None,
+        Plan::Available | Plan::Install => Some(
+            get(&sums_url, Duration::from_secs(60), crate::fetch::MAX_BODY)
+                .await
+                .map_err(|err| {
+                    let missing = err
+                        .chain()
+                        .any(|e| matches!(e.downcast_ref::<HttpStatus>(), Some(HttpStatus(404))));
+                    if missing {
+                        anyhow::anyhow!("no release has the tag {}", release.tag_name)
+                    } else {
+                        err.context("SHA256SUMS")
+                    }
+                })?,
+        ),
+    };
+    if step == Plan::Available {
         return Ok(Outcome::Available {
             current,
             tag: release.tag_name.clone(),
         });
     }
-    let name = format!("cfrs-{}", asset_target(TARGET));
+    let sums = sums.expect("fetched for an install");
     let binary_url = release.asset(&name)?.browser_download_url.clone();
-    let sums_url = release.asset("SHA256SUMS")?.browser_download_url.clone();
     let bundle_url = release
         .asset("SHA256SUMS.sigstore.json")?
         .browser_download_url
         .clone();
-    let sums = get(&sums_url, Duration::from_secs(60), crate::fetch::MAX_BODY)
-        .await
-        .context("SHA256SUMS")?;
     let bundle = get(&bundle_url, Duration::from_secs(60), crate::fetch::MAX_BODY)
         .await
         .context("SHA256SUMS.sigstore.json")?;
@@ -706,5 +847,67 @@ mod tests {
             "v0.3.0-beta.1"
         );
         assert!(choose(&list, Some("v9"), "v0.3.0").is_err());
+    }
+
+    // Issue 166: the files of a pinned tag, with no API.
+    #[test]
+    fn a_pinned_release_has_the_three_files() {
+        let r = Release::pinned("v0.3.0-beta.9");
+        assert!(r.prerelease);
+        let urls: Vec<&str> = r
+            .assets
+            .iter()
+            .map(|a| a.browser_download_url.as_str())
+            .collect();
+        assert_eq!(urls.len(), 3);
+        for url in urls {
+            assert!(
+                url.starts_with(
+                    "https://github.com/Azathothas/cfrs/releases/download/v0.3.0-beta.9/"
+                ),
+                "{url}"
+            );
+        }
+        assert!(r.asset("SHA256SUMS.sigstore.json").is_ok());
+        assert!(r.asset(&format!("cfrs-{}", asset_target(TARGET))).is_ok());
+    }
+
+    // Issue 166: the newest tag of releases.atom.
+    #[test]
+    fn the_newest_tag_of_releases_atom() {
+        let feed = r#"<feed><entry><id>tag:github.com,2008:Repository/1/v0.4.0-beta.1</id>
+<link rel="alternate" type="text/html" href="https://github.com/Azathothas/cfrs/releases/tag/v0.4.0-beta.1"/></entry>
+<entry><link rel="alternate" href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0"/></entry></feed>"#;
+        assert_eq!(atom_tags(feed), ["v0.4.0-beta.1", "v0.3.0"]);
+        assert_eq!(
+            newest_in_atom(feed, "v0.3.0-beta.9").as_deref(),
+            Some("v0.4.0-beta.1")
+        );
+        assert_eq!(newest_in_atom(feed, "v0.2.0").as_deref(), Some("v0.3.0"));
+        assert_eq!(newest_in_atom("<feed/>", "v0.2.0"), None);
+    }
+
+    // Issue 197: the version of this binary is not installed again, except
+    // with force.
+    #[test]
+    fn the_same_tag_is_not_installed_again() {
+        assert_eq!(plan("v1", "v1", false, false, false), Plan::UpToDate);
+        assert_eq!(plan("v1", "v1", true, false, false), Plan::Same);
+        assert_eq!(plan("v1", "v1", true, true, false), Plan::Same);
+        assert_eq!(plan("v1", "v1", true, false, true), Plan::Install);
+        assert_eq!(plan("v2", "v1", true, true, false), Plan::Available);
+        assert_eq!(plan("v2", "v1", false, false, false), Plan::Install);
+    }
+
+    // Issue 168: CFRS_REPO is not used, and a warning says so.
+    #[test]
+    fn cfrs_repo_is_reported_as_ignored() {
+        assert_eq!(ignored_repo_warning(None), None);
+        assert_eq!(ignored_repo_warning(Some(REPOSITORY.into())), None);
+        let w = ignored_repo_warning(Some("me/fork".into())).unwrap();
+        assert!(
+            w.contains("CFRS_REPO=me/fork") && w.contains(REPOSITORY),
+            "{w}"
+        );
     }
 }
