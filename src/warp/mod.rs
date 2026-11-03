@@ -107,6 +107,12 @@ fn endpoint_order(
     out
 }
 
+/// The delay of the relay after the start of the direct path.
+const RELAY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+/// The delay of the relay when the relay worked last: a direct path that
+/// works opens in less.
+const RELAY_DELAY_KNOWN: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// A leg in the leg file is used for this time.
 const LEG_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
@@ -493,39 +499,66 @@ impl WarpClient {
             return self.open_on(None).await;
         };
         self.read_leg(&relay);
-        if self.relay_first.load(Ordering::SeqCst) {
-            match self.open_on(Some(&relay)).await {
-                Ok(session) => return Ok(session),
-                Err(err) => {
-                    tracing::warn!(error = %format!("{err:#}"), "MASQUE through the relay failed; trying the direct path");
-                    let session = self.open_on(None).await?;
-                    self.relay_first.store(false, Ordering::SeqCst);
-                    self.write_leg("direct", &relay);
-                    return Ok(session);
-                }
-            }
-        }
-        let direct = match self.open_on(None).await {
-            Ok(session) => return Ok(session),
-            Err(err) => err,
+        // The direct path goes first, each time; the relay starts after a
+        // delay, and the first session that opens wins. A host where the
+        // direct path works again leaves the relay (before, a relay that
+        // worked once went first, also from the leg file, and the direct
+        // path was not tried again). The delay is short when the relay
+        // worked last.
+        let relay_first = self.relay_first.load(Ordering::SeqCst);
+        let delay = if relay_first {
+            RELAY_DELAY_KNOWN
+        } else {
+            RELAY_DELAY
         };
-        tracing::warn!(
-            error = %format!("{direct:#}"),
-            relay = %relay.url(),
-            "the direct MASQUE path failed; trying the WebSocket relay (--no-relay turns this off)"
-        );
-        match self.open_on(Some(&relay)).await {
-            Ok(session) => {
-                tracing::info!(relay = %relay.url(), "MASQUE goes through the WebSocket relay");
-                self.relay_first.store(true, Ordering::SeqCst);
-                self.write_leg("relay", &relay);
-                Ok(session)
+        let direct = self.open_on(None);
+        let through = async {
+            tokio::time::sleep(delay).await;
+            self.open_on(Some(&relay)).await
+        };
+        tokio::pin!(direct);
+        tokio::pin!(through);
+        let mut direct_err: Option<anyhow::Error> = None;
+        let mut relay_err: Option<anyhow::Error> = None;
+        while direct_err.is_none() || relay_err.is_none() {
+            tokio::select! {
+                result = &mut direct, if direct_err.is_none() => match result {
+                    Ok(session) => {
+                        if relay_first {
+                            self.relay_first.store(false, Ordering::SeqCst);
+                            self.write_leg("direct", &relay);
+                        }
+                        return Ok(session);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %format!("{err:#}"),
+                            relay = %relay.url(),
+                            "the direct MASQUE path failed; the WebSocket relay is tried (--no-relay turns this off)"
+                        );
+                        direct_err = Some(err);
+                    }
+                },
+                result = &mut through, if relay_err.is_none() => match result {
+                    Ok(session) => {
+                        tracing::info!(relay = %relay.url(), "MASQUE goes through the WebSocket relay");
+                        if !relay_first {
+                            self.relay_first.store(true, Ordering::SeqCst);
+                            self.write_leg("relay", &relay);
+                        }
+                        return Ok(session);
+                    }
+                    Err(err) => relay_err = Some(err),
+                },
             }
-            Err(through) => Err(direct.context(format!(
-                "and through the relay {}: {through:#}",
-                relay.url()
-            ))),
         }
+        let (Some(direct), Some(through)) = (direct_err, relay_err) else {
+            unreachable!("the loop ends when both failed");
+        };
+        Err(direct.context(format!(
+            "and through the relay {}: {through:#}",
+            relay.url()
+        )))
     }
 
     /// Open a session on one path; a key that is not the pinned key reads

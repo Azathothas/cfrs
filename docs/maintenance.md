@@ -154,10 +154,13 @@ Rules that the tests check:
 ## Open work
 
 * **The TCP window of the userspace stack of WARP (#100).** The default is
-  8 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`), from beta.7. Three live runs
-  after the changes of #125 carried 20 MB with 8 at 2.7 to 4.0 MB/s; before
-  them, 8 stalled at about 10.5 MB. Each live run prints the table
-  ("warp proxy download, TCP window N").
+  8 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`), from beta.7. Four live runs
+  after the changes of #125 carried 20 MB with each window; before them, 8
+  stalled at about 10.5 MB. But in those four runs the sessions possibly
+  went through the WebSocket relay (the leg file of #126 put the relay
+  first after the relay step), so the data is not proven for the direct
+  path. From the commit after 7d576d8, each line of the table names its
+  leg ("warp proxy download, TCP window N, leg L").
   * Not known: which change of #125 removed the stall (the free of
     sockets, the TCP time limits and keepalive, or a read that took data
     for a caller that gave up).

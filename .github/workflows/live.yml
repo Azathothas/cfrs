@@ -735,6 +735,8 @@ jobs:
           python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 1.1.1.1:53 3
           curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
           if grep -q 'panicked' warpproxy.log; then grep -A2 'panicked' warpproxy.log; exit 1; fi
+          # The leg of the session (the relay only when the direct path fails).
+          if grep -q 'MASQUE goes through the WebSocket relay' warpproxy.log; then echo "warp proxy leg: relay"; else echo "warp proxy leg: direct"; fi
           # Issue 120: the session was up after a packet crossed it.
           grep -m1 'a packet crossed the MASQUE session' warpproxy.log | sed -E 's/^[^ ]+ +//'
           # Issue 121: what the front door assigned (if it sends it).
@@ -772,7 +774,9 @@ jobs:
             done
             rate=$(curl -sS --max-time 45 -o /dev/null -w '%{speed_download} %{size_download}' -x "socks5h://127.0.0.1:$port" \
               'https://speed.cloudflare.com/__down?bytes=20000000' || true)
-            echo "warp proxy download, TCP window ${burst}: ${rate:-none} (bytes/s, bytes)"
+            leg=direct
+            if grep -q 'MASQUE goes through the WebSocket relay' "burst-$burst.log"; then leg=relay; fi
+            echo "warp proxy download, TCP window ${burst}, leg ${leg}: ${rate:-none} (bytes/s, bytes)"
             case "$rate" in
               *" 20000000") ;;
               *) grep -E 'WARN|ERROR|closed|dead|stall|capacity' "burst-$burst.log" | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' | tail -8 ;;
