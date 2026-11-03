@@ -43,6 +43,7 @@ pub mod proxy;
 pub mod quic;
 pub mod register;
 pub mod route;
+pub mod rules;
 pub mod session;
 pub mod ssh_config;
 #[cfg(target_os = "linux")]

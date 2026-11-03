@@ -2893,6 +2893,29 @@ enum WarpCommand {
             requires = "proxy_user"
         )]
         proxy_password_file: Option<PathBuf>,
+        /// A rule for the destinations: KIND:VALUE=ACTION. KIND is domain
+        /// (NAME, or .NAME for the name and the names under it) or cidr
+        /// (ADDR/PREFIX, IPv4 or IPv6, or @FILE with one prefix on each
+        /// line). ACTION is tunnel, direct (from the host, with no proxy)
+        /// or reject. The first rule that matches wins. Repeatable.
+        #[arg(
+            short = 'r',
+            long = "rule",
+            value_name = "KIND:VALUE=ACTION",
+            env = "CFRS_WARP_RULES",
+            value_delimiter = ','
+        )]
+        rules: Vec<String>,
+        /// A file with one rule on each line (# starts a comment), after
+        /// the --rule rules. cfrs reads it again when it changes.
+        #[arg(long, value_name = "FILE", env = "CFRS_WARP_RULES_FILE")]
+        rules_file: Option<PathBuf>,
+        /// The action when no rule matches.
+        #[arg(long, value_name = "ACTION", default_value = "tunnel")]
+        rule_default: String,
+        /// Check the rules, print them, and exit (0, or 64 for a bad rule).
+        #[arg(long)]
+        check: bool,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
@@ -3191,6 +3214,23 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 return cfrs::warp::nc::pipe(io).await;
             }
         }
+        // Issues 132 and 136: check the rules with no device and no session.
+        WarpCommand::Proxy {
+            rules,
+            rules_file,
+            rule_default,
+            check: true,
+            ..
+        } => {
+            let default = cfrs::warp::rules::Action::parse(rule_default).fault(Fault::Usage)?;
+            let table = cfrs::warp::rules::Table::build(rules, rules_file.as_deref(), default)
+                .fault(Fault::Usage)?;
+            for rule in &table.rules {
+                println!("rule        {}", rule.spec);
+            }
+            println!("default     {}", table.default.name());
+            return Ok(());
+        }
         _ => {}
     }
     // These commands use a saved device and register none.
@@ -3374,9 +3414,20 @@ async fn warp(args: WarpArgs) -> Result<()> {
             dns,
             proxy_user,
             proxy_password_file,
+            rules,
+            rules_file,
+            rule_default,
             ..
         } => {
             cfrs::warp::proxy::set_max_connections(max_connections);
+            // Issues 132 and 136: the rules of the destinations.
+            let default = cfrs::warp::rules::Action::parse(&rule_default).fault(Fault::Usage)?;
+            let table = cfrs::warp::rules::Table::build(&rules, rules_file.as_deref(), default)
+                .fault(Fault::Usage)?;
+            cfrs::warp::rules::set(table);
+            if let Some(file) = rules_file {
+                cfrs::warp::rules::watch(rules, file, default);
+            }
             // Issue 146: the credentials of the clients.
             if let (Some(user), Some(file)) = (&proxy_user, &proxy_password_file) {
                 let credentials =

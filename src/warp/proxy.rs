@@ -5,7 +5,8 @@
 //! behind it with pod-netns.
 //!
 //! Names are resolved through the tunnel (DNS over UDP to 1.1.1.1), so no
-//! query goes to the local resolver.
+//! query goes to the local resolver. The rules of [`super::rules`] can send
+//! a destination directly from the host, or refuse it.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -171,6 +172,9 @@ pub fn health_log(live: Arc<super::Live<WarpStack>>) {
                     since_start = STATS.total.load(Relaxed),
                     refused = STATS.refused.load(Relaxed),
                     reconnects = live.reconnects(),
+                    tunnel = super::rules::COUNTERS.tunnel.load(Relaxed),
+                    direct = super::rules::COUNTERS.direct.load(Relaxed),
+                    rejected = super::rules::COUNTERS.reject.load(Relaxed),
                     "WARP proxy health"
                 );
             }
@@ -472,7 +476,7 @@ where
             }
         };
         let udp = Some(stack.clone());
-        let dial = move |host, port| dial(stack.clone(), host, port);
+        let dial = move |host, port| route(stack.clone(), host, port);
         if let Err(err) = handle_client_auth(stream, dial, udp, CREDENTIALS.get()).await {
             debug!(error = %err, "WARP proxy client failed");
         }
@@ -596,6 +600,10 @@ where
                 debug!(host = %request.host, port = request.port, "WARP proxy forward request");
                 let mut upstream = match dial(request.host.clone(), request.port).await {
                     Ok(upstream) => upstream,
+                    Err(err) if super::rules::is_refused(&err) => {
+                        let _ = socks::http_connect_reply(&mut stream, 403, "Forbidden").await;
+                        return Err(err);
+                    }
                     Err(err) => {
                         let _ = socks::http_connect_reply(&mut stream, 502, "Bad Gateway").await;
                         return Err(err);
@@ -610,6 +618,15 @@ where
     debug!(host = %request.host, port = request.port, "WARP proxy request");
     let mut upstream = match dial(request.host.clone(), request.port).await {
         Ok(upstream) => upstream,
+        Err(err) if super::rules::is_refused(&err) => {
+            // RFC 1928: 0x02, not allowed by the ruleset.
+            if is_socks {
+                let _ = socks::socks5_reply(&mut stream, 0x02, None).await;
+            } else {
+                let _ = socks::http_connect_reply(&mut stream, 403, "Forbidden").await;
+            }
+            return Err(err);
+        }
         Err(err) => {
             let message = format!("{err:#}");
             if is_socks {
@@ -779,6 +796,44 @@ pub async fn dial(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<D
         ProxyHost::Ip(ip) => vec![ip],
         ProxyHost::Domain(name) => resolve_all(&stack, &name).await?,
     };
+    dial_ips(&stack, addresses, port).await
+}
+
+/// Connect to `host:port` by the rules of the proxy (issues 132 and 136):
+/// through the tunnel, directly from the host, or not at all.
+pub async fn route(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<DuplexStream> {
+    let table = super::rules::current();
+    let (action, addresses) = super::rules::decide(&stack, &table, &host).await?;
+    super::rules::COUNTERS.count(action);
+    match action {
+        super::rules::Action::Reject => {
+            debug!(%host, port, "WARP proxy: refused by the rules");
+            Err(anyhow::Error::new(super::rules::Refused(format!(
+                "{host}:{port}"
+            ))))
+        }
+        super::rules::Action::Direct => {
+            debug!(%host, port, "WARP proxy: direct by the rules");
+            // No proxy of cfrs (it can be this proxy): the host connects.
+            let stream =
+                crate::egress::dial_direct(&host.to_string(), port, CONNECT_TIMEOUT).await?;
+            let (local, mut remote) = tokio::io::duplex(4 * CHUNK);
+            tokio::spawn(async move {
+                let mut stream = stream;
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut remote).await;
+            });
+            Ok(local)
+        }
+        super::rules::Action::Tunnel => match addresses {
+            Some(addresses) => dial_ips(&stack, addresses, port).await,
+            None => dial(stack, host, port).await,
+        },
+    }
+}
+
+/// Connect to the first of `addresses` that answers on `port` through the
+/// tunnel.
+async fn dial_ips(stack: &WarpStack, addresses: Vec<IpAddr>, port: u16) -> Result<DuplexStream> {
     // IPv4 first, then IPv6 (issue 81): a name with no A record (an IPv6
     // only host) works through WARP too.
     let mut last = None;
@@ -1479,6 +1534,39 @@ mod tests {
 
     // Issue 146: with credentials, a SOCKS5 client needs the right user and
     // password; a client that offers no acceptable method gets 0xff.
+    #[tokio::test]
+    async fn a_refused_destination_gets_its_own_reply() {
+        let refuse = |host: ProxyHost, port: u16| async move {
+            Err::<DuplexStream, _>(anyhow::Error::new(super::super::rules::Refused(format!(
+                "{host}:{port}"
+            ))))
+        };
+        // SOCKS5: 0x02, not allowed by the ruleset (RFC 1928).
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(async move { handle_client(server, refuse, None).await });
+        client.write_all(&[5, 1, 0]).await.unwrap();
+        let mut reply = [0u8; 2];
+        client.read_exact(&mut reply).await.unwrap();
+        let mut request = vec![5, 1, 0, 1, 127, 0, 0, 1];
+        request.extend_from_slice(&22u16.to_be_bytes());
+        client.write_all(&request).await.unwrap();
+        let mut head = [0u8; 2];
+        client.read_exact(&mut head).await.unwrap();
+        assert_eq!(head, [5, 2]);
+        assert!(task.await.unwrap().is_err());
+        // HTTP CONNECT: 403.
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(async move { handle_client(server, refuse, None).await });
+        client
+            .write_all(b"CONNECT 127.0.0.1:22 HTTP/1.1\r\nHost: 127.0.0.1:22\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = vec![0u8; 12];
+        client.read_exact(&mut answer).await.unwrap();
+        assert_eq!(&answer, b"HTTP/1.1 403");
+        assert!(task.await.unwrap().is_err());
+    }
+
     #[tokio::test]
     async fn a_socks5_client_gives_its_credentials() {
         let creds = crate::proxy_auth::Credentials::new("alice", "pw").unwrap();

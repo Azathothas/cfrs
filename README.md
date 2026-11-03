@@ -388,6 +388,25 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A listener on an address that is not loopback, with no credentials, gets
   a warning. `--max-connections N` limits the clients; `--dns ADDR`
   answers DNS through WARP.
+* Rules of `warp proxy` (`-r KIND:VALUE=ACTION`, repeatable): KIND is
+  `domain` (`NAME`, or `.NAME` for the name and the names under it) or
+  `cidr` (`ADDR/PREFIX`, IPv4 or IPv6, or `@FILE` with one prefix on each
+  line, for example the prefixes of a country). ACTION is `tunnel`,
+  `direct` (from the host, with the resolver of the host and no proxy) or
+  `reject` (SOCKS5 reply 0x02, HTTP 403). The first rule that matches wins.
+  A name that no domain rule matches is resolved through the tunnel when a
+  cidr rule exists. Then a loopback, a link-local or an unspecified address
+  and `localhost` are refused, then `--rule-default` (`tunnel`) applies.
+  `--rules-file FILE` adds the rules of FILE (one on each line, `#` starts a
+  comment); cfrs reads it again when it changes and keeps the rules before
+  when it has an error. `--check` prints the rules and exits. The rules
+  apply to TCP; UDP goes through the tunnel. The health line counts the
+  decisions.
+
+  ```sh
+  cfrs warp proxy -r domain:.corp.example=direct -r cidr:10.0.0.0/8=direct \
+      -r domain:.ads.example=reject --rules-file ~/.config/cfrs/rules
+  ```
 * `cfrs warp run --backend netns-raw` runs the program in a user and network
   namespace whose TUN goes to WARP as raw IP packets: TCP, UDP, ICMP and
   IPv6, with the kernel stack of the namespace and no root. The TUN has the

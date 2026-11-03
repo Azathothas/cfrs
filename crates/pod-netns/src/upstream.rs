@@ -177,7 +177,119 @@ impl Proxy {
 #[derive(Clone, Debug)]
 pub enum RuleMatch {
     Domain(String),
-    Cidr(Ipv4Addr, u8),
+    /// One or more IPv4 or IPv6 prefixes (`cidr:NET`, or `cidr:@FILE`).
+    Cidr(std::sync::Arc<[Net]>),
+}
+
+impl RuleMatch {
+    /// `domain:NAME`, `domain:.NAME`, `cidr:ADDR/PREFIX` (IPv4 or IPv6) or
+    /// `cidr:@FILE` (one prefix on each line; `#` starts a comment).
+    pub fn parse(spec: &str) -> Result<Self> {
+        let (kind, value) = spec
+            .split_once(':')
+            .with_context(|| format!("{spec:?}: give KIND:VALUE (domain, cidr)"))?;
+        match kind {
+            "domain" if !value.is_empty() && !value.contains(['/', ' ', ':']) => {
+                Ok(RuleMatch::Domain(value.to_ascii_lowercase()))
+            }
+            "domain" => bail!("{spec:?}: give domain:NAME or domain:.NAME"),
+            "cidr" => match value.strip_prefix('@') {
+                Some(path) => Ok(RuleMatch::Cidr(
+                    load_nets(std::path::Path::new(path))?.into(),
+                )),
+                None => Ok(RuleMatch::Cidr(vec![Net::parse(value)?].into())),
+            },
+            other => bail!("unknown rule kind {other:?} (domain, cidr)"),
+        }
+    }
+
+    /// True when `host` (a name, or an address in text) or `ip` matches.
+    pub fn matches(&self, host: &str, ip: Option<IpAddr>) -> bool {
+        match self {
+            RuleMatch::Domain(d) => ip.is_none() && domain_matches(d, host),
+            RuleMatch::Cidr(nets) => ip.is_some_and(|ip| nets.iter().any(|n| n.contains(ip))),
+        }
+    }
+}
+
+/// An IPv4 or an IPv6 prefix (issue 142).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Net {
+    pub addr: IpAddr,
+    pub prefix: u8,
+}
+
+impl Net {
+    /// `ADDR/PREFIX`, or `ADDR` (one address).
+    pub fn parse(text: &str) -> Result<Self> {
+        let text = text.trim();
+        let (addr, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (text, None),
+        };
+        let addr: IpAddr = addr
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse()
+            .with_context(|| format!("{text:?} is not ADDR/PREFIX"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= max)
+                .with_context(|| format!("{text:?}: the prefix is 0 to {max}"))?,
+            None => max,
+        };
+        Ok(Net { addr, prefix })
+    }
+
+    /// True when `ip` is in the prefix. An IPv4-mapped IPv6 address is
+    /// taken as its IPv4 address.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip.to_canonical()) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => in_cidr(ip, net, self.prefix),
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                if self.prefix == 0 {
+                    return true;
+                }
+                let mask = u128::MAX << (128 - self.prefix as u32);
+                (u128::from(ip) & mask) == (u128::from(net) & mask)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for Net {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+/// The most prefixes of one file.
+pub const MAX_NETS: usize = 1_000_000;
+
+/// The prefixes of a file: one on each line; a blank line, and the text
+/// after `#`, are ignored. A bad line is an error with its number.
+pub fn load_nets(path: &std::path::Path) -> Result<Vec<Net>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the prefix file {}", path.display()))?;
+    let mut nets = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if nets.len() == MAX_NETS {
+            bail!("{}: more than {MAX_NETS} prefixes", path.display());
+        }
+        nets.push(Net::parse(line).with_context(|| format!("{}:{}", path.display(), n + 1))?);
+    }
+    if nets.is_empty() {
+        bail!("{}: no prefix", path.display());
+    }
+    Ok(nets)
 }
 
 #[derive(Clone, Debug)]
@@ -221,19 +333,8 @@ pub fn select_chain<'a>(rules: &'a [Rule], default: &'a [Proxy], target: &str) -
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     let ip: Option<IpAddr> = bare.parse().ok();
     for rule in rules {
-        match &rule.matcher {
-            RuleMatch::Domain(d) => {
-                if domain_matches(d, host) {
-                    return std::slice::from_ref(&rule.proxy);
-                }
-            }
-            RuleMatch::Cidr(net, prefix) => {
-                if let Some(IpAddr::V4(v4)) = ip {
-                    if in_cidr(v4, *net, *prefix) {
-                        return std::slice::from_ref(&rule.proxy);
-                    }
-                }
-            }
+        if rule.matcher.matches(host, ip) {
+            return std::slice::from_ref(&rule.proxy);
         }
     }
     default
@@ -714,7 +815,7 @@ mod tests {
         assert_eq!(direct.kind, super::ProxyKind::Direct);
         assert_eq!(direct.endpoint(), "direct");
         let rules = vec![super::Rule {
-            matcher: super::RuleMatch::Cidr("10.0.0.0".parse().unwrap(), 8),
+            matcher: super::RuleMatch::parse("cidr:10.0.0.0/8").unwrap(),
             proxy: direct,
         }];
         let default = vec![super::Proxy::parse("socks5://127.0.0.1:1080").unwrap()];
@@ -773,14 +874,59 @@ mod tests {
                 proxy: Proxy::parse("socks5://127.0.0.1:2").unwrap(),
             },
             Rule {
-                matcher: RuleMatch::Cidr("10.0.0.0".parse().unwrap(), 8),
+                matcher: RuleMatch::parse("cidr:10.0.0.0/8").unwrap(),
                 proxy: Proxy::parse("socks5://127.0.0.1:3").unwrap(),
+            },
+            Rule {
+                matcher: RuleMatch::parse("cidr:2001:db8::/32").unwrap(),
+                proxy: Proxy::parse("socks5://127.0.0.1:4").unwrap(),
             },
         ];
         assert_eq!(select_chain(&rules, &default, "example.com:80")[0].port, 2);
         assert_eq!(select_chain(&rules, &default, "EXAMPLE.com:443")[0].port, 2);
         assert_eq!(select_chain(&rules, &default, "10.1.2.3:443")[0].port, 3);
         assert_eq!(select_chain(&rules, &default, "1.2.3.4:80")[0].port, 1);
+        assert_eq!(
+            select_chain(&rules, &default, "[2001:db8::7]:80")[0].port,
+            4
+        );
+        assert_eq!(
+            select_chain(&rules, &default, "[2001:db9::7]:80")[0].port,
+            1
+        );
+    }
+    #[test]
+    fn ipv6_prefixes_and_prefix_files() {
+        let net = Net::parse("2001:db8::/32").unwrap();
+        assert!(net.contains("2001:db8:ffff::1".parse().unwrap()));
+        assert!(!net.contains("2001:db9::1".parse().unwrap()));
+        assert!(!net.contains("10.0.0.1".parse().unwrap()));
+        let v4 = Net::parse("10.0.0.0/8").unwrap();
+        assert!(v4.contains("::ffff:10.1.2.3".parse().unwrap()));
+        assert_eq!(Net::parse("1.2.3.4").unwrap().prefix, 32);
+        assert!(Net::parse("::/0").unwrap().contains("::1".parse().unwrap()));
+        assert!(Net::parse("10.0.0.0/33").is_err());
+        assert!(Net::parse("2001:db8::/129").is_err());
+        assert!(Net::parse("nothing/8").is_err());
+        let dir = std::env::temp_dir().join(format!("pod-netns-nets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("nets.txt");
+        std::fs::write(&file, "# a country\n10.0.0.0/8\n\n2001:db8::/32  # v6\n").unwrap();
+        let rule = RuleMatch::parse(&format!("cidr:@{}", file.display())).unwrap();
+        assert!(rule.matches("10.9.9.9", Some("10.9.9.9".parse().unwrap())));
+        assert!(rule.matches("2001:db8::1", Some("2001:db8::1".parse().unwrap())));
+        assert!(!rule.matches("1.1.1.1", Some("1.1.1.1".parse().unwrap())));
+        std::fs::write(&file, "10.0.0.0/8\nbad\n").unwrap();
+        let err = format!("{:#}", load_nets(&file).unwrap_err());
+        assert!(err.contains(":2"), "{err}");
+        std::fs::write(&file, "# none\n").unwrap();
+        assert!(load_nets(&file).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(RuleMatch::parse("domain:.Example.com")
+            .unwrap()
+            .matches("a.example.com", None));
+        assert!(RuleMatch::parse("country:NL").is_err());
+        assert!(RuleMatch::parse("domain:").is_err());
     }
     #[test]
     fn cidr_matching_is_exact() {

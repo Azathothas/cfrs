@@ -46,7 +46,7 @@ mod seccomp;
 
 pub use cli::{set_program_name, usage, usage_for};
 pub use listen::ProxyListen;
-pub use upstream::{Proxy, ProxyKind, Rule, RuleMatch, Upstream};
+pub use upstream::{Net, Proxy, ProxyKind, Rule, RuleMatch, Upstream};
 
 /// The common imports of the internal modules.
 #[allow(unused_imports)]

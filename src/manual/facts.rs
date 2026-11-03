@@ -148,6 +148,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --device-name, --device-model and --device-locale: what a new device declares at its registration (a name of 1 to 64 characters, a model of 1 to 32, a locale as en_US). With none, the request is as before (model PC, locale en_US, no name). A bad value is a usage error (exit 64). A saved device does not change.",
     },
     EnvVar {
+        names: &["CFRS_WARP_RULES", "CFRS_WARP_RULES_FILE"],
+        used_by: "warp proxy, warp up (its proxy reads them)",
+        meaning: "The value of -r/--rule (comma-separated KIND:VALUE=ACTION) and of --rules-file: the rules of the destinations of the proxy. KIND is domain or cidr (IPv4, IPv6, or @FILE of prefixes); ACTION is tunnel, direct or reject. The file is read again when it changes. A bad rule is a usage error (exit 64).",
+    },
+    EnvVar {
         names: &["CFRS_WARP_FORWARD"],
         used_by: "warp forward",
         meaning: "The value of -L/--local, comma-separated: LISTEN=HOST:PORT. Each connection to LISTEN (PORT on 127.0.0.1, ADDR:PORT, tcp://ADDR:PORT or unix:/PATH) goes through WARP to HOST:PORT; HOST is resolved inside the tunnel. A loopback target is a usage error (exit 64).",

@@ -173,20 +173,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
                 let (lhs, rhs) = spec
                     .split_once('=')
                     .context("--rule needs KIND:VALUE=PROXY")?;
-                let (kind, value) = lhs.split_once(':').context("--rule needs KIND:VALUE")?;
-                let matcher = match kind {
-                    "domain" => RuleMatch::Domain(value.to_string()),
-                    "cidr" => {
-                        let (net, prefix) = value
-                            .split_once('/')
-                            .context("cidr rule needs ADDR/PREFIX")?;
-                        RuleMatch::Cidr(
-                            net.parse().context("cidr address")?,
-                            prefix.parse().context("cidr prefix")?,
-                        )
-                    }
-                    other => bail!("unknown rule kind {other:?} (domain, cidr)"),
-                };
+                let matcher = RuleMatch::parse(lhs)?;
                 rules.push(Rule {
                     matcher,
                     proxy: Proxy::parse(rhs)?,
