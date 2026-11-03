@@ -673,6 +673,12 @@ jobs:
           sudo mkdir -p /etc/netns/r105
           echo 'nameserver 1.1.1.1' | sudo tee /etc/netns/r105/resolv.conf > /dev/null
           python3 -I scripts/connect-proxy.py 3128 "$RUNNER_TEMP/connect105.log" 10.105.0.1 &
+          # The proxy listens before cfrs starts (run 41592154695: refused).
+          i=0
+          until nc -z 10.105.0.1 3128 2> /dev/null; do
+            i=$((i + 1)); [ "$i" -lt 40 ] || { echo "the test proxy does not listen"; exit 1; }
+            sleep 0.25
+          done
           sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
           sudo ip netns exec r105 env HTTPS_PROXY=http://10.105.0.1:3128 CFRS_RUN_DIR=/tmp/cfrs-run-105 \
             timeout 120 target/release/cfrs warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out

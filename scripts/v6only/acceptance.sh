@@ -72,7 +72,7 @@ echo "the routes of cfrs1 are gone"
 
 say "survive: a detached tunnel is started again after a kill"
 $run "$bin" demo --detach --name v6survive --ready-timeout 120 > v6survive.json 2> v6survive.err
-pid1=$(jq -r '.pid' v6survive.json)
+pid1=$(tail -1 v6survive.json | jq -r '.pid')
 sudo kill -9 "$pid1"
 i=0
 while :; do
