@@ -164,6 +164,21 @@ if "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 probe 
     up=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 -x socks5h://127.0.0.1:40013 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
     echo "h3 upload 16 MiB: HTTP ${up%% *}, $(echo "${up#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
     kill "$pid" 2> /dev/null || true
+    # Issue 100: the TCP window of the stack over h3 and over h2 (on h2, a
+    # window over 1 stalled on the direct path).
+    for transport in h3 h2; do
+        for burst in 16 none; do
+            CFRS_WARP_TCP_BURST=$burst "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport "$transport" \
+                proxy --listen tcp://127.0.0.1:40016 --run-for 80 > "$dir/burst.log" 2>&1 &
+            bpid=$!
+            pids="$pids $bpid"
+            wait_port 40016 "$dir/burst.log"
+            down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 45 -x socks5h://127.0.0.1:40016 'https://speed.cloudflare.com/__down?bytes=20000000') || true
+            echo "$transport download 20 MB, TCP window $burst: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+            kill "$bpid" 2> /dev/null || true
+            wait "$bpid" 2> /dev/null || true
+        done
+    done
 else
     echo "h3 probe: FAIL"
     sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/h3.out" | tail -5
