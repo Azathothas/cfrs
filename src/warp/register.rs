@@ -353,12 +353,18 @@ fn check(resp: crate::fetch::Response) -> Result<Device> {
 /// Create an anonymous device. Returns the device plus its bearer token, which
 /// is needed for the enrolment call and for later account queries.
 pub async fn create_device(proxy: Option<&Proxy>) -> Result<Device> {
+    // A throwaway X25519 public key. The API validates its shape, not that
+    // anybody holds the private half, and MASQUE never uses it.
+    create_device_with_key(&b64(&random_bytes::<32>()), proxy).await
+}
+
+/// Register a WireGuard device with the X25519 public key `key` (base64).
+/// `warp export` (issue 148) keeps the private half.
+pub async fn create_device_with_key(key: &str, proxy: Option<&Proxy>) -> Result<Device> {
     let hints = DeviceHints::current();
     hints.check()?;
     let body = RegistrationRequest {
-        // A throwaway X25519 public key. The API validates its shape, not that
-        // anybody holds the private half, and MASQUE never uses it.
-        key: b64(&random_bytes::<32>()),
+        key: key.to_string(),
         install_id: String::new(),
         fcm_token: String::new(),
         tos: now_rfc3339_millis(),

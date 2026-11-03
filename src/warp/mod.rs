@@ -34,6 +34,7 @@
 
 pub mod capsule;
 pub mod exit;
+pub mod export;
 pub mod forward;
 pub mod identity;
 pub mod ip;
@@ -809,6 +810,11 @@ pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Re
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// [`write_private`] for the commands of the binary.
+pub fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_private(path, bytes)
 }
 
 /// Refuse `path` when its owner is another user, or when its group or other

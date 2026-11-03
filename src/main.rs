@@ -2871,6 +2871,35 @@ enum WarpCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print a WireGuard config of a new WARP device (wg-quick or JSON),
+    /// for other clients. The device and its private key are in
+    /// warp-wg.json of the state directory, not in warp.json. Its data
+    /// path is WireGuard on UDP (port 2408), not MASQUE on TCP 443.
+    Export {
+        /// wg-quick or json.
+        #[arg(long, default_value = "wg-quick", value_parser = ["wg-quick", "json"])]
+        format: String,
+        /// Write the config to this file (mode 0600) in place of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// The file of the exported device (default: warp-wg.json in the
+        /// state directory).
+        #[arg(long, value_name = "FILE")]
+        export_identity: Option<PathBuf>,
+        /// The Endpoint of the config, HOST:PORT (default: the endpoint of
+        /// the device record, port 2408).
+        #[arg(long, value_name = "HOST:PORT")]
+        endpoint: Option<String>,
+        /// PersistentKeepalive in seconds; 0 writes no line.
+        #[arg(long, value_name = "SECS", default_value_t = 25)]
+        keepalive: u16,
+        /// Register a new device even when the file has one.
+        #[arg(long, conflicts_with = "delete")]
+        new: bool,
+        /// Remove the exported device from the service and delete its file.
+        #[arg(long)]
+        delete: bool,
+    },
     /// Measure front doors of WARP: the TCP connect and the TLS handshake
     /// with the pinned key, for each --candidate and the front doors of the
     /// device record. The fastest goes first. Exit 69 when none answers.
@@ -3284,6 +3313,57 @@ async fn warp(args: WarpArgs) -> Result<()> {
             if let Some(io) = cfrs::warp::nc::via_running(host, *port).await? {
                 return cfrs::warp::nc::pipe(io).await;
             }
+        }
+        // Issue 148: a WireGuard device of its own; warp.json is not used.
+        WarpCommand::Export {
+            format,
+            out,
+            export_identity,
+            endpoint,
+            keepalive,
+            new,
+            delete,
+        } => {
+            let path = match export_identity.clone() {
+                Some(path) => path,
+                None => cfrs::warp::export::default_path()
+                    .fault(Fault::Config)?
+                    .context("CFRS_STATE_DIR=none keeps no file; give --export-identity PATH")
+                    .fault(Fault::Config)?,
+            };
+            if *delete {
+                let id = cfrs::warp::export::delete(&path, None)
+                    .await
+                    .fault(Fault::Unavailable)?;
+                eprintln!(
+                    "cfrs: warp export: the device {id} is deleted, and {}",
+                    path.display()
+                );
+                return Ok(());
+            }
+            let exported = cfrs::warp::export::load_or_register(&path, *new, None)
+                .await
+                .fault(Fault::Unavailable)?;
+            let config = cfrs::warp::export::Config::of(&exported, endpoint.as_deref(), *keepalive)
+                .fault(Fault::Unavailable)?;
+            let text = match format.as_str() {
+                "json" => format!("{:#}\n", config.json(&exported.device.id)),
+                _ => config.wg_quick(),
+            };
+            match out {
+                Some(file) => {
+                    cfrs::warp::write_private_file(file, text.as_bytes())
+                        .with_context(|| format!("writing {}", file.display()))?;
+                    eprintln!("cfrs: warp export: wrote {}", file.display());
+                }
+                None => print!("{text}"),
+            }
+            eprintln!(
+                "cfrs: warp export: the device {} is in {} (cfrs warp export --delete removes it)",
+                exported.device.id,
+                path.display()
+            );
+            return Ok(());
         }
         // Issues 132 and 136: check the rules with no device and no session.
         WarpCommand::Proxy {
@@ -3883,6 +3963,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),
         WarpCommand::Up { .. }
         | WarpCommand::Down
+        | WarpCommand::Export { .. }
         | WarpCommand::Env
         | WarpCommand::Exec { .. }
         | WarpCommand::Shell
