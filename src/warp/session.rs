@@ -137,7 +137,7 @@ fn tls_config(identity: &Identity, pinned_spki: Vec<u8>) -> Result<Arc<ClientCon
 }
 
 /// [`tls_config`] with another ALPN (HTTP/3: `h3`).
-fn tls_config_alpn(
+pub(crate) fn tls_config_alpn(
     identity: &Identity,
     pinned_spki: Vec<u8>,
     alpn: &[u8],

@@ -192,6 +192,29 @@ down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 60 -
 echo "h2 download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
 kill "$pid" 2> /dev/null || true
 
+echo "== warp proxy --l4 (issue 140; a report, not a check yet)"
+for sni in consumer-masque-proxy.cloudflareclient.com consumer-masque.cloudflareclient.com; do
+    "$cfrs" warp --identity "$dir/a.json" proxy --l4 --l4-sni "$sni" --listen tcp://127.0.0.1:40017 --run-for 60 > "$dir/l4.log" 2>&1 &
+    lpid=$!
+    pids="$pids $lpid"
+    i=0
+    until grep -q "warp proxy  tcp" "$dir/l4.log" 2> /dev/null || ! kill -0 "$lpid" 2> /dev/null; do
+        i=$((i + 1)); [ "$i" -lt 60 ] || break
+        sleep 1
+    done
+    if grep -q "warp proxy  tcp" "$dir/l4.log"; then
+        out=$(curl -sS --max-time 30 -x socks5h://127.0.0.1:40017 https://one.one.one.one/cdn-cgi/trace 2>&1 | grep -E '^(warp|colo)=|curl' | tr '\n' ' ')
+        echo "l4 $sni: $out"
+        down=$(curl -sS -o /dev/null -w '%{http_code} %{speed_download}' --max-time 45 -x socks5h://127.0.0.1:40017 'https://speed.cloudflare.com/__down?bytes=20000000') || true
+        echo "l4 $sni download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    else
+        echo "l4 $sni: the door did not open"
+    fi
+    sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/l4.log" | grep -iE 'error|refused|cfrs: ' | tail -3
+    kill "$lpid" 2> /dev/null || true
+    wait "$lpid" 2> /dev/null || true
+done
+
 echo "== the WireGuard leg (issue 152; a report, not a check yet)"
 if "$cfrs" warp --transport wireguard probe > "$dir/wgp.out" 2>&1; then
     grep -E '^(tunnel|OK|exit) ' "$dir/wgp.out" | head -4

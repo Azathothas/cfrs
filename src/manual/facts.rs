@@ -138,6 +138,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --transport (masque, the default, or wireguard) and of --wireguard-endpoint (IP:PORT). wireguard carries the tunnel on UDP to the WireGuard front door (port 2408 of the record) with the device of warp export (warp-wg.json of the state directory), which cfrs registers when the file has none. It has no relay and no proxy.",
     },
     EnvVar {
+        names: &["CFRS_WARP_L4"],
+        used_by: "warp proxy",
+        meaning: "Set to true: the value of --l4. Each TCP client of the proxy is one HTTP/3 CONNECT stream to the L4 door of WARP on UDP 443 (TLS name of --l4-sni), with no IP stack; UDP is not served.",
+    },
+    EnvVar {
         names: &["CFRS_WARP_CC"],
         used_by: "warp (each command with a userspace stack), warp up (its proxy), tunnel --transport warp",
         meaning: "The value of --cc: the congestion controller of the TCP connections of the userspace stack of WARP, for the data that the stack sends: none (the default; only the window of the peer limits it), reno (RFC 5681) or cubic (RFC 9438). Another value is a configuration error (exit 78).",

@@ -316,14 +316,21 @@ fn client_config(tls: Arc<rustls::ClientConfig>) -> Result<quinn::ClientConfig> 
     Ok(config)
 }
 
-/// Open a CONNECT-IP session over HTTP/3 to `endpoint` (UDP), with the TLS
-/// config of the session (`tls` must have the ALPN [`ALPN`]).
-pub async fn connect(
+/// A QUIC connection with HTTP/3 (the control stream is open, the streams
+/// of the server are read and dropped).
+pub struct H3Conn {
+    pub conn: quinn::Connection,
+    control: quinn::SendStream,
+    endpoint: quinn::Endpoint,
+}
+
+/// QUIC with HTTP/3 to `endpoint` (UDP), with the TLS config `tls` (its
+/// ALPN must be [`ALPN`]).
+pub async fn open(
     endpoint: SocketAddr,
     tls: Arc<rustls::ClientConfig>,
     sni: &str,
-    authority: &str,
-) -> Result<(H3Tx, H3Rx)> {
+) -> Result<H3Conn> {
     let bind: SocketAddr = if endpoint.is_ipv4() {
         "0.0.0.0:0".parse().expect("an address")
     } else {
@@ -333,9 +340,9 @@ pub async fn connect(
     quic.set_default_client_config(client_config(tls)?);
     let conn = quic
         .connect(endpoint, sni)
-        .context("QUIC to the MASQUE front door")?
+        .context("QUIC to the front door")?
         .await
-        .map_err(|e| anyhow::anyhow!("QUIC to the MASQUE front door {endpoint} (UDP): {e}"))?;
+        .map_err(|e| anyhow::anyhow!("QUIC to the front door {endpoint} (UDP, {sni}): {e}"))?;
 
     // The control stream: its type (0x00) and SETTINGS.
     let mut control = conn.open_uni().await.context("the HTTP/3 control stream")?;
@@ -360,13 +367,23 @@ pub async fn connect(
             });
         }
     });
+    Ok(H3Conn {
+        conn,
+        control,
+        endpoint: quic,
+    })
+}
 
-    let (mut send, mut recv) = conn.open_bi().await.context("the CONNECT-IP stream")?;
-    let headers = connect_ip_headers(authority, "cf-connect-ip");
-    send.write_all(&frame(FRAME_HEADERS, &headers))
+/// Send the request `headers` on a new stream, and read the status of the
+/// answer. The stream, and the frames after the answer.
+pub async fn request(
+    conn: &quinn::Connection,
+    headers: &[u8],
+) -> Result<(quinn::SendStream, quinn::RecvStream, Frames, u16)> {
+    let (mut send, mut recv) = conn.open_bi().await.context("an HTTP/3 request stream")?;
+    send.write_all(&frame(FRAME_HEADERS, headers))
         .await
-        .context("sending the CONNECT-IP request")?;
-
+        .context("sending the HTTP/3 request")?;
     let mut frames = Frames::default();
     let status = loop {
         if let Some((kind, payload)) = frames.next_frame()? {
@@ -377,10 +394,28 @@ pub async fn connect(
         }
         match recv.read_chunk(64 * 1024, true).await {
             Ok(Some(chunk)) => frames.push(&chunk.bytes),
-            Ok(None) => bail!("the front door closed the CONNECT-IP stream with no answer"),
-            Err(err) => bail!("reading the CONNECT-IP answer: {err}"),
+            Ok(None) => bail!("the front door closed the request stream with no answer"),
+            Err(err) => bail!("reading the HTTP/3 answer: {err}"),
         }
     };
+    Ok((send, recv, frames, status))
+}
+
+/// Open a CONNECT-IP session over HTTP/3 to `endpoint` (UDP), with the TLS
+/// config of the session (`tls` must have the ALPN [`ALPN`]).
+pub async fn connect(
+    endpoint: SocketAddr,
+    tls: Arc<rustls::ClientConfig>,
+    sni: &str,
+    authority: &str,
+) -> Result<(H3Tx, H3Rx)> {
+    let H3Conn {
+        conn,
+        control,
+        endpoint: quic,
+    } = open(endpoint, tls, sni).await?;
+    let headers = connect_ip_headers(authority, "cf-connect-ip");
+    let (send, recv, frames, status) = request(&conn, &headers).await?;
     if status != 200 {
         bail!(
             "CONNECT-IP over HTTP/3 refused with {status}{}",

@@ -486,6 +486,49 @@ where
     });
 }
 
+/// Accept proxy clients on `bound` and connect each one with its own
+/// HTTP/3 CONNECT through the L4 door (issue 140). UDP is not served.
+pub fn run_l4(l4: Arc<super::l4::L4>, bound: Bound) -> WarpProxy {
+    let listen = bound.listen().clone();
+    if let ProxyListen::Tcp(addr) = &listen {
+        if !addr.ip().is_loopback() && !has_credentials() {
+            tracing::warn!(%addr, "the WARP proxy listens on an address that other hosts can reach, and takes each client: give --proxy-user and --proxy-password-file");
+        }
+    }
+    fn serve<S>(l4: Arc<super::l4::L4>, stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let Some(admitted) = admit() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let _admitted = admitted;
+            let dial = move |host: ProxyHost, port: u16| async move {
+                crate::decisions::count("rule", "l4");
+                l4.dial(&host.to_string(), port).await
+            };
+            if let Err(err) = handle_client_auth(stream, dial, None, CREDENTIALS.get()).await {
+                debug!(error = %err, "WARP proxy client (L4) failed");
+            }
+        });
+    }
+    let task = match bound {
+        Bound::Tcp(listener, _) => tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                serve(l4.clone(), stream);
+            }
+        }),
+        Bound::Unix(listener, _) => tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                serve(l4.clone(), stream);
+            }
+        }),
+    };
+    info!(?listen, "WARP proxy (L4) is listening");
+    WarpProxy { listen, task }
+}
+
 /// [`bind`] and [`run`] for one listener.
 pub async fn serve(live: Arc<super::Live<WarpStack>>, listen: ProxyListen) -> Result<WarpProxy> {
     Ok(run(live, bind(&listen).await?))

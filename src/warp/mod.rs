@@ -39,6 +39,7 @@ pub mod forward;
 pub mod h3;
 pub mod identity;
 pub mod ip;
+pub mod l4;
 pub mod live;
 pub mod nc;
 pub mod proxy;
@@ -280,6 +281,16 @@ impl WarpClient {
     pub fn with_wireguard(mut self, peer: Option<wg::Peer>) -> Self {
         self.wireguard = peer;
         self
+    }
+
+    /// The L4 door of `warp proxy --l4` (issue 140): the front door of the
+    /// device (or `--masque-endpoint`), the TLS name `sni`, the client
+    /// certificate and the pinned key.
+    pub fn l4(&self, sni: &str) -> Result<l4::L4> {
+        let (endpoint, pinned) = Self::endpoint_and_pin(&self.device)?;
+        let endpoint = self.masque.endpoint.unwrap_or(endpoint);
+        let tls = session::tls_config_alpn(&self.identity, pinned, h3::ALPN)?;
+        Ok(l4::L4::new(endpoint, tls, sni))
     }
 
     /// True when the tunnel goes on WireGuard.

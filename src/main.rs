@@ -3060,6 +3060,13 @@ enum WarpCommand {
             value_delimiter = ','
         )]
         rules: Vec<String>,
+        /// Serve each TCP client on its own HTTP/3 CONNECT stream to the L4
+        /// door of WARP (UDP 443), with no IP stack. UDP is not served.
+        #[arg(long, env = "CFRS_WARP_L4", conflicts_with_all = ["dns", "listen_identity"])]
+        l4: bool,
+        /// The TLS name of the L4 door.
+        #[arg(long, value_name = "NAME", default_value = cfrs::warp::l4::L4_SNI, requires = "l4")]
+        l4_sni: String,
         /// LISTEN=PATH: a listener whose clients use the WARP device of the
         /// identity file PATH (made when it does not exist), with a
         /// session of its own. The --listen listeners use --identity.
@@ -3794,6 +3801,8 @@ async fn warp(args: WarpArgs) -> Result<()> {
             rules_file,
             rule_default,
             listen_identity,
+            l4,
+            l4_sni,
             ..
         } => {
             // Issue 150: the listeners of the other identities.
@@ -3856,6 +3865,34 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     Fault::Unavailable,
                     anyhow::anyhow!("warp proxy: a listener did not start: {list}"),
                 ));
+            }
+            // Issue 140: one HTTP/3 CONNECT for each client, no stack.
+            if l4 {
+                let door = Arc::new(client.l4(&l4_sni).fault(Fault::Config)?);
+                door.connection().await.fault(Fault::Unavailable)?;
+                let proxies: Vec<_> = bound
+                    .into_iter()
+                    .map(|b| cfrs::warp::proxy::run_l4(door.clone(), b))
+                    .collect();
+                for proxy in &proxies {
+                    println!(
+                        "cfrs: warp proxy  {}  (L4: {l4_sni}, HTTP/3 on UDP; TCP only)",
+                        listen_doc(&proxy.listen)["listen"].as_str().unwrap_or("?")
+                    );
+                }
+                let mut doc = listen_doc(&proxies[0].listen);
+                doc["listens"] = proxies
+                    .iter()
+                    .map(|p| listen_doc(&p.listen)["listen"].clone())
+                    .collect::<Vec<_>>()
+                    .into();
+                doc["l4"] = true.into();
+                cfrs::detach::ready(doc);
+                sleep_or_signal(run_for).await;
+                for proxy in &proxies {
+                    proxy.abort();
+                }
+                return Ok(());
             }
             let live = Arc::new(client)
                 .connect_live()
