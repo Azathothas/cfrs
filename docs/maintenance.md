@@ -163,36 +163,21 @@ Rules that the tests check:
 
 ## Open work
 
-* **The TCP window of the userspace stack of WARP (#100).** The default is
-  1 (`TCP_BURST_DEFAULT` in `src/warp/ip.rs`). Each live run prints a table
-  ("warp proxy download, binary B, TCP window N, leg L") with this binary
-  and the binary of beta.6, on the same runner.
-  * Direct path to the front door: 4, 8, 16 and no limit stall (run
-    41567562797, after the changes of #125 too).
-  * Through the WebSocket relay: no window stalled (runs 41556920224 to
-    41563827050; the leg file of #126 put the relay first then).
-  * So the stall is on the direct TCP path (runner to front door), not in
-    the inner TCP of smoltcp alone.
-  * The value is not a count of segments: smoltcp compares the scaled
-    window field with `max_burst_size` segments, so with a receive buffer
-    of 512 KiB (window shift 3) the window is about N x 9.8 KB.
-  * Window 1 gave 3.3 and 6.2 MB/s in runs before beta.7 and 0.46 MB/s in
-    run 41567562797: the A/B lines with beta.6 tell if beta.7 is slower.
+* **v0.3.0-beta.9** is published (release run 41642496460, release-proofs
+  41645844185 with the rebuild of x86_64 and aarch64), with the image
+  `ghcr.io/azathothas/cfrs:v0.3.0-beta.9` (`:beta`). The testers test it.
+  `scripts/live-batch2.sh` (a step of `live.yml`) checks the commands of
+  the second batch, the upload of 16 MiB with each `--cc`, and reports h3,
+  WireGuard, `--carry` and `--l4`.
+* **#140 (`warp proxy --l4`)**: the client works on the loopback; the L4
+  door answers 403 to each of three forms of the CONNECT
+  (`CFRS_WARP_L4_FORM`). It needs a captured request of an official client.
+* **#161 (crates.io)**: the name `cfrs` is taken; the owner chooses a name.
+* **#149**: waits for an exchange of the reporter (a Zero Trust team).
+* **#151 (ECH)**: deferred; no HPKE in ring, and no hop of cfrs publishes
+  an ECH config.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.
-* **v0.3.0-beta.8 (the second batch, #132 to #163)** is published, with
-  the image `ghcr.io/azathothas/cfrs:v0.3.0-beta.8` (`:beta`). Release run
-  41619141535 and release-proofs 41621566796 passed. The owner tests it.
-  `scripts/live-batch2.sh` (a step of `live.yml`) checks exit, scan, the
-  rules, forward, a nested session, export and the ClientHello split.
-* **Deferred, size L**: #151 (an encrypted ClientHello; #135 has the
-  split in records only, with no delay and not on the API calls), #140 and #152 to
-  #155 (other transports), #157 (HTTP/3; the spike `scripts/quic-vn.py`
-  asks the front door for its QUIC versions), #161 (the library on
-  crates.io), #162 (reproducible builds). #149 waits for an exchange of the
-  reporter.
-* **The congestion controller of the stack of WARP (#134).** The stack
-  holds its packets when the queue is full; `--cc` is not done.
 * **`AtomicU64::fetch_update`** (`src/share.rs`, `src/warp/live.rs`): Rust
   deprecates it in a later release. `try_update` needs a newer Rust than
   the MSRV (1.89). Change it when the MSRV moves.
