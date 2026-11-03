@@ -1480,6 +1480,7 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
         Command::Demo(args) => Some(&args.common.detach),
         Command::Warp(args) => match &args.command {
             WarpCommand::Proxy { detach, .. } => Some(detach),
+            WarpCommand::Forward { detach, .. } => Some(detach),
             WarpCommand::Tun { detach, .. } => Some(detach),
             _ => None,
         },
@@ -2826,6 +2827,34 @@ enum WarpCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Forward local listeners through WARP (as ssh -L): each connection to
+    /// LISTEN goes through the tunnel to HOST:PORT.
+    Forward {
+        /// LISTEN=HOST:PORT. LISTEN is PORT (on 127.0.0.1), ADDR:PORT,
+        /// tcp://ADDR:PORT or unix:/PATH. HOST is resolved inside the
+        /// tunnel; a tunnel: prefix is accepted. Repeatable.
+        #[arg(
+            short = 'L',
+            long = "local",
+            value_name = "LISTEN=HOST:PORT",
+            required = true,
+            env = "CFRS_WARP_FORWARD",
+            value_delimiter = ','
+        )]
+        local: Vec<String>,
+        /// Exit 69 when any listener does not start.
+        #[arg(long)]
+        strict: bool,
+        /// The most connections of each listener at the same time. 0: no
+        /// limit.
+        #[arg(long, value_name = "N", default_value_t = 32)]
+        max_connections: usize,
+        /// Stay up for this many seconds instead of until Ctrl-C.
+        #[arg(long)]
+        run_for: Option<u64>,
+        #[command(flatten)]
+        detach: DetachArgs,
+    },
     /// Run a local SOCKS5 and HTTP CONNECT proxy whose traffic goes through
     /// WARP (the proxy mode of the WARP client).
     Proxy {
@@ -3435,6 +3464,82 @@ async fn warp(args: WarpArgs) -> Result<()> {
             sleep_or_signal(run_for).await;
             for proxy in &proxies {
                 proxy.abort();
+            }
+        }
+        WarpCommand::Forward {
+            local,
+            strict,
+            max_connections,
+            run_for,
+            ..
+        } => {
+            // Issue 143: check each rule before any bind or session (exit 64).
+            let rules = local
+                .iter()
+                .map(|spec| cfrs::warp::forward::Rule::parse(spec))
+                .collect::<Result<Vec<_>>>()
+                .fault(Fault::Usage)?;
+            let mut bound = Vec::new();
+            let mut failed = Vec::new();
+            for rule in rules {
+                match cfrs::warp::proxy::bind(&rule.listen).await {
+                    Ok(b) => bound.push((b, rule)),
+                    Err(err) => {
+                        eprintln!(
+                            "cfrs: warp forward: {} is not available: {err:#}",
+                            rule.target()
+                        );
+                        failed.push((rule, err));
+                    }
+                }
+            }
+            if bound.is_empty() || (strict && !failed.is_empty()) {
+                let list = failed
+                    .iter()
+                    .map(|(_, err)| format!("{err:#}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("warp forward: a listener did not start: {list}"),
+                ));
+            }
+            let live = Arc::new(client)
+                .connect_live()
+                .await
+                .fault(Fault::Unavailable)?;
+            cfrs::warp::proxy::health_log(live.clone());
+            let forwards: Vec<_> = bound
+                .into_iter()
+                .map(|(b, rule)| cfrs::warp::forward::run(live.clone(), b, rule, max_connections))
+                .collect();
+            let mut docs = Vec::new();
+            for forward in &forwards {
+                let listen = listen_doc(&forward.listen)["listen"].clone();
+                println!(
+                    "cfrs: warp forward  {}  ->  {} (through WARP)",
+                    listen.as_str().unwrap_or("?"),
+                    forward.rule.target()
+                );
+                docs.push(serde_json::json!({ "listen": listen, "to": forward.rule.target() }));
+            }
+            let mut doc = listen_doc(&forwards[0].listen);
+            doc["forward"] = docs.into();
+            doc["failed"] = failed
+                .iter()
+                .map(|(rule, err)| {
+                    serde_json::json!({
+                        "listen": listen_doc(&rule.listen)["listen"],
+                        "to": rule.target(),
+                        "error": format!("{err:#}"),
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into();
+            cfrs::detach::ready(doc);
+            sleep_or_signal(run_for).await;
+            for forward in &forwards {
+                forward.abort();
             }
         }
         #[cfg(target_os = "linux")]

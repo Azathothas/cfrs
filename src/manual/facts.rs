@@ -148,6 +148,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --device-name, --device-model and --device-locale: what a new device declares at its registration (a name of 1 to 64 characters, a model of 1 to 32, a locale as en_US). With none, the request is as before (model PC, locale en_US, no name). A bad value is a usage error (exit 64). A saved device does not change.",
     },
     EnvVar {
+        names: &["CFRS_WARP_FORWARD"],
+        used_by: "warp forward",
+        meaning: "The value of -L/--local, comma-separated: LISTEN=HOST:PORT. Each connection to LISTEN (PORT on 127.0.0.1, ADDR:PORT, tcp://ADDR:PORT or unix:/PATH) goes through WARP to HOST:PORT; HOST is resolved inside the tunnel. A loopback target is a usage error (exit 64).",
+    },
+    EnvVar {
         names: &["CFRS_WARP_RESOLVERS"],
         used_by: "warp proxy, warp up, warp run, warp tun, warp probe, warp nc, tunnel --transport warp",
         meaning: "The value of --resolver: the DNS resolvers inside the tunnel, comma-separated, in place of 1.1.1.1:53. IP[:PORT] is DNS on UDP; tls://IP[:PORT][#NAME] is DNS over TLS (RFC 7858, port 853), with the certificate checked for NAME or the IP address. The first that answers wins. warp tun --default-route writes the UDP ones on port 53 to resolv.conf.",
