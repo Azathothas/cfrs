@@ -163,9 +163,11 @@ Rules that the tests check:
 
 ## Open work
 
-* **v0.3.0-beta.10**: the batch of issues 164 to 210 is in `main`; the
-  notes are `docs/releases/v0.3.0-beta.10.md`. Release: dry run, publish,
-  `release-proofs.yml`, and a check of the published binary.
+* **v0.3.0-beta.10** is published (release run 41718791581,
+  release-proofs 41720532960 with the rebuild of x86_64 and aarch64).
+  **v0.3.0-beta.11** fixes the choice of the newest release in
+  `cfrs update` and `install.sh` (the API lists by tag name). From beta.9
+  and beta.10, the update needs `--version`.
 * **#206**: `scripts/live-throughput.sh` prints the median time of small
   requests over the URL and over `cfrs connect`. Read it in `live`; a code
   fix waits for a gap that the numbers show.

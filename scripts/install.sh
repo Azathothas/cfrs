@@ -282,13 +282,15 @@ resolve_tag() {
     case "$1" in
         latest)
             t=
-            if fetch_api "https://api.github.com/repos/$repo/releases?per_page=1" "$tmp/releases.json" 2> "$tmp/api.err"; then
-                t=$(tr ',' '\n' < "$tmp/releases.json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+            # The API lists by tag name (beta.10 after beta.7): the newest
+            # is the highest version of the list.
+            if fetch_api "https://api.github.com/repos/$repo/releases?per_page=30" "$tmp/releases.json" 2> "$tmp/api.err"; then
+                t=$(tr ',' '\n' < "$tmp/releases.json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | highest)
             fi
             if [ -z "$t" ]; then
                 info "the GitHub API did not answer; reading releases.atom"
                 if fetch "https://github.com/$repo/releases.atom" "$tmp/releases.atom" 2> "$tmp/atom.err"; then
-                    t=$(tr '>' '\n' < "$tmp/releases.atom" | sed -n 's#.*/releases/tag/\([^"<]*\)".*#\1#p' | head -n 1)
+                    t=$(tr '>' '\n' < "$tmp/releases.atom" | sed -n 's#.*/releases/tag/\([^"<]*\)".*#\1#p' | highest)
                 fi
             fi
             if [ -z "$t" ]; then
@@ -299,6 +301,20 @@ resolve_tag() {
         v*) echo "$1" ;;
         *) echo "v$1" ;;
     esac
+}
+
+# The highest version of the tags on stdin (vX.Y.Z or vX.Y.Z-WORD.N): a
+# release is after its prereleases, and a number compares as a number.
+highest() {
+    awk '{
+        tag = $0; core = tag; pre = ""
+        sub(/^v/, "", core)
+        if (index(core, "-")) { pre = substr(core, index(core, "-") + 1); core = substr(core, 1, index(core, "-") - 1) }
+        n = split(core, c, ".")
+        word = pre; num = 0
+        if (pre != "") { split(pre, p, "."); word = p[1]; num = p[2] + 0 }
+        printf "%09d.%09d.%09d %d %s %09d %s\n", c[1], c[2], c[3], (pre == "") ? 1 : 0, (word == "") ? "~" : word, num, tag
+    }' | sort | tail -n 1 | awk '{ print $NF }'
 }
 
 # The SHA256 of FILE.

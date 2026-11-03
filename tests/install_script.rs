@@ -41,6 +41,7 @@ const TOOLS: &[&str] = &[
     "stat",
     "tail",
     "kill",
+    "sort",
 ];
 
 struct Lab {
@@ -426,4 +427,20 @@ fn the_assignment_form_fails_with_no_downloader() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+// The API lists by tag name: beta.10 after beta.9. latest is the highest
+// version, not the first of the list.
+#[test]
+fn latest_is_the_highest_version() {
+    let lab = Lab::new("highest");
+    lab.curl_with(SERVE);
+    std::fs::write(
+        lab.root.join("release/releases?per_page=30"),
+        r#"[{"tag_name": "v1.0.0-beta.9"}, {"tag_name": "v1.0.0-beta.8"}, {"tag_name": "v1.0.0-beta.10"}]"#,
+    )
+    .unwrap();
+    let out = lab.run(&[("CFRS_VERSION", "latest")]);
+    let t = text(&out);
+    assert!(t.contains("release: v1.0.0-beta.10"), "{t}");
 }

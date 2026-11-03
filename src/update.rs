@@ -177,7 +177,42 @@ pub fn newest_in_atom(feed: &str, current: &str) -> Option<String> {
     let pre = current.contains('-');
     atom_tags(feed)
         .into_iter()
-        .find(|tag| pre || !tag.contains('-'))
+        .filter(|tag| pre || !tag.contains('-'))
+        .max_by(|a, b| version_order(a, b))
+}
+
+/// The order of two tags as versions (`v0.3.0-beta.10` after
+/// `v0.3.0-beta.9`; a release after its prereleases). The GitHub API and
+/// the feed do not give the newest first: the API lists by tag name, so
+/// `v0.3.0-beta.10` came after `v0.3.0-beta.7`, and an update took
+/// `v0.3.0-beta.9` as the newest.
+pub fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(tag: &str) -> (Vec<u64>, bool, Vec<(u64, String)>) {
+        let tag = tag.trim_start_matches('v');
+        let (core, pre) = match tag.split_once('-') {
+            Some((c, p)) => (c, Some(p)),
+            None => (tag, None),
+        };
+        let core = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
+        // A numeric part compares as a number, a word as text.
+        let parts = pre
+            .map(|p| {
+                p.split('.')
+                    .map(|x| match x.parse::<u64>() {
+                        Ok(n) => (n, String::new()),
+                        Err(_) => (0, x.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (core, pre.is_none(), parts)
+    }
+    let (ca, sa, pa) = key(a);
+    let (cb, sb, pb) = key(b);
+    ca.cmp(&cb).then(sa.cmp(&sb)).then_with(|| {
+        let word = |v: &Vec<(u64, String)>| v.iter().map(|(_, w)| w.clone()).collect::<Vec<_>>();
+        word(&pa).cmp(&word(&pb)).then(pa.cmp(&pb))
+    })
 }
 
 /// The newest release: the GitHub API, else releases.atom (issue 166: the
@@ -217,7 +252,8 @@ pub fn choose<'a>(
     let pre = current.contains('-');
     releases
         .iter()
-        .find(|r| !r.draft && (pre || !r.prerelease))
+        .filter(|r| !r.draft && (pre || !r.prerelease))
+        .max_by(|a, b| version_order(&a.tag_name, &b.tag_name))
         .context("no release found")
 }
 
@@ -420,6 +456,11 @@ pub enum Plan {
 pub fn plan(tag: &str, current: &str, pinned: bool, check: bool, force: bool) -> Plan {
     if tag == current && !force {
         return if pinned { Plan::Same } else { Plan::UpToDate };
+    }
+    // With no --version, an older release is not an update: cfrs never
+    // goes back on its own (--version goes back on purpose).
+    if !pinned && version_order(tag, current) != std::cmp::Ordering::Greater {
+        return Plan::UpToDate;
     }
     if check {
         Plan::Available
@@ -887,6 +928,40 @@ mod tests {
         assert_eq!(newest_in_atom("<feed/>", "v0.2.0"), None);
     }
 
+    // The API lists by tag name: beta.10 after beta.7. The newest is the
+    // highest version, and a release is after its prereleases.
+    #[test]
+    fn the_newest_is_the_highest_version() {
+        use std::cmp::Ordering::*;
+        assert_eq!(version_order("v0.3.0-beta.10", "v0.3.0-beta.9"), Greater);
+        assert_eq!(version_order("v0.3.0", "v0.3.0-beta.10"), Greater);
+        assert_eq!(version_order("v0.3.0-rc.1", "v0.3.0-beta.10"), Greater);
+        assert_eq!(version_order("v0.4.0-beta.1", "v0.3.0"), Greater);
+        assert_eq!(version_order("v0.3.0-beta.9", "v0.3.0-beta.9"), Equal);
+        let r = |tag: &str| Release {
+            tag_name: tag.into(),
+            prerelease: tag.contains('-'),
+            draft: false,
+            assets: Vec::new(),
+        };
+        let list = vec![
+            r("v0.3.0-beta.9"),
+            r("v0.3.0-beta.8"),
+            r("v0.3.0-beta.7"),
+            r("v0.3.0-beta.10"),
+        ];
+        assert_eq!(
+            choose(&list, None, "v0.3.0-beta.10").unwrap().tag_name,
+            "v0.3.0-beta.10"
+        );
+        let feed =
+            "<a href=\"/releases/tag/v0.3.0-beta.9\"/><a href=\"/releases/tag/v0.3.0-beta.10\"/>";
+        assert_eq!(
+            newest_in_atom(feed, "v0.3.0-beta.9").as_deref(),
+            Some("v0.3.0-beta.10")
+        );
+    }
+
     // Issue 197: the version of this binary is not installed again, except
     // with force.
     #[test]
@@ -897,6 +972,15 @@ mod tests {
         assert_eq!(plan("v1", "v1", true, false, true), Plan::Install);
         assert_eq!(plan("v2", "v1", true, true, false), Plan::Available);
         assert_eq!(plan("v2", "v1", false, false, false), Plan::Install);
+        // No downgrade with no --version; on purpose with it.
+        assert_eq!(
+            plan("v0.3.0-beta.9", "v0.3.0-beta.10", false, true, false),
+            Plan::UpToDate
+        );
+        assert_eq!(
+            plan("v0.3.0-beta.9", "v0.3.0-beta.10", true, true, false),
+            Plan::Available
+        );
     }
 
     // Issue 168: CFRS_REPO is not used, and a warning says so.
