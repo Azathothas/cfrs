@@ -712,6 +712,16 @@ fn main() {
         // SAFETY: one thread: the runtime does not exist yet.
         unsafe { std::env::set_var(pod_netns::QUIET_VARIABLE, "1") };
     }
+    // Issue 189: `cfrs -v pod -- PROG` (a global option before pod) runs the
+    // pod too; before, it panicked. Still one thread: the pod forks.
+    if let Command::Pod { args } = &cli.command {
+        if let Some(option) = pod_network_option(&cli) {
+            eprintln!("cfrs: cfrs pod does not use {option}; give the proxy to the pod with -x (cfrs pod --help)");
+            std::process::exit(cfrs::exit::USAGE);
+        }
+        pod_netns::set_program_name("cfrs pod");
+        std::process::exit(pod_netns::main_with_args(&pod_args_of(&argv, args)));
+    }
     // Issue 126: a server command holds one descriptor for each connection.
     // A command that runs a program of the user leaves its limit as it is.
     let runs_a_program = matches!(
@@ -1606,9 +1616,34 @@ fn command_name(argv: &[String]) -> Option<String> {
     use clap::CommandFactory;
     let mut cmd = Cli::command();
     let mut words = Vec::new();
-    for arg in argv.iter().skip(1) {
-        if arg.starts_with('-') {
+    let mut rest = argv.iter().skip(1);
+    // Issue 181: an option before the subcommand (cfrs -q tunnel, cfrs
+    // --proxy URL warp run) is skipped, with its value; before, the name
+    // stopped at the first option.
+    while let Some(arg) = rest.next() {
+        if arg == "--" {
             break;
+        }
+        if let Some(option) = arg.strip_prefix('-') {
+            let (name, inline) = match option.split_once('=') {
+                Some((n, _)) => (n, true),
+                None => (option, false),
+            };
+            let found = match name.strip_prefix('-') {
+                Some(long) => cmd.get_arguments().find(|a| a.get_long() == Some(long)),
+                // -vv, -q: the first letter names the option.
+                None => name
+                    .chars()
+                    .next()
+                    .and_then(|c| cmd.get_arguments().find(|a| a.get_short() == Some(c))),
+            };
+            let Some(found) = found else { break };
+            let takes_value = found.get_action().takes_values();
+            let short_with_value = !name.starts_with('-') && name.chars().count() > 1;
+            if takes_value && !inline && !short_with_value {
+                rest.next();
+            }
+            continue;
         }
         match cmd.find_subcommand(arg) {
             Some(sub) => {
@@ -1619,6 +1654,32 @@ fn command_name(argv: &[String]) -> Option<String> {
         }
     }
     (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// The global network option of `cfrs OPTION pod`, which the pod does not
+/// use (issue 189): its proxy is `-x`.
+fn pod_network_option(cli: &Cli) -> Option<&'static str> {
+    if cli.proxy.is_some() {
+        Some("--proxy")
+    } else if cli.no_proxy {
+        Some("--no-proxy")
+    } else if cli.resolve.is_some() {
+        Some("--resolve")
+    } else if cli.ca_file.is_some() {
+        Some("--ca-file")
+    } else {
+        None
+    }
+}
+
+/// The arguments of the pod: what follows the word `pod` in `argv` (clap
+/// can drop the first `--` of the trailing arguments).
+fn pod_args_of(argv: &[String], parsed: &[String]) -> Vec<String> {
+    let tail = &argv[argv.len().saturating_sub(parsed.len() + 1)..];
+    if tail.first().map(String::as_str) == Some("--") && tail[1..] == *parsed {
+        return tail.to_vec();
+    }
+    parsed.to_vec()
 }
 
 async fn async_main(cli: Cli) -> Result<()> {
@@ -1740,7 +1801,10 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Net(args) => net(args).await,
         Command::Warp(args) => warp(*args).await,
         Command::Relay(args) => relay(args).await,
-        Command::Pod { .. } => unreachable!("main runs pod before the runtime"),
+        Command::Pod { .. } => Err(cfrs::exit::fault(
+            Fault::Usage,
+            anyhow::anyhow!("cfrs pod runs before the runtime"),
+        )),
         Command::Man(args) => {
             use clap::CommandFactory;
             let manual = cfrs::manual::model::build(Cli::command());
@@ -5356,5 +5420,31 @@ mod tests {
             Some("tunnel")
         );
         assert_eq!(command_name(&argv("cfrs nothing")), None);
+        // Issue 181: options before the command are skipped.
+        for (line, want) in [
+            ("cfrs -q tunnel", "tunnel"),
+            ("cfrs -vv doctor", "doctor"),
+            ("cfrs --proxy http://x:1 warp run -- curl", "warp run"),
+            (
+                "cfrs --color never --log-format json net doctor",
+                "net doctor",
+            ),
+            ("cfrs --ca-file=a.pem status", "status"),
+        ] {
+            assert_eq!(command_name(&argv(line)).as_deref(), Some(want), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_pod_keeps_its_double_dash() {
+        let v = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            pod_args_of(&v("cfrs -v pod -- true"), &v("true")),
+            v("-- true")
+        );
+        assert_eq!(
+            pod_args_of(&v("cfrs pod -x u -- a"), &v("-x u -- a")),
+            v("-x u -- a")
+        );
     }
 }

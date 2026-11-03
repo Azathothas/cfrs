@@ -1138,3 +1138,21 @@ fn warp_ssh_config_owns_its_block() {
     assert_eq!(run(&["--remove"]).status.code(), Some(0));
     assert_eq!(std::fs::read_to_string(&conf).unwrap(), mine);
 }
+
+/// Issue 189: a global option before `pod` does not panic, and a network
+/// option of cfrs is refused with a pointer to `-x`.
+#[test]
+fn a_global_flag_before_pod_does_not_panic() {
+    for args in [
+        &["-v", "pod", "--", "true"][..],
+        &["-q", "pod", "--", "true"],
+    ] {
+        let out = cfrs(args);
+        let err = stderr(&out);
+        assert_ne!(out.status.code(), Some(101), "{args:?}: {err}");
+        assert!(!err.contains("panicked"), "{args:?}: {err}");
+    }
+    let out = cfrs(&["--proxy", "http://127.0.0.1:1", "pod", "--", "true"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    assert!(stderr(&out).contains("-x"), "{}", stderr(&out));
+}
