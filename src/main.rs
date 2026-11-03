@@ -1896,6 +1896,18 @@ fn autostart(command: AutostartCommand) -> Result<()> {
 }
 
 /// Split `host:port`, `[v6]:port` or `ip:port` into the host and the port.
+/// One line of an exit (issue 147): `AMS NL 104.28.1.2 warp=on 42 ms`.
+fn exit_line(exit: &cfrs::warp::exit::Exit) -> String {
+    format!(
+        "{} {} {} warp={} {} ms",
+        exit.colo,
+        exit.loc.as_deref().unwrap_or("-"),
+        exit.ip.as_deref().unwrap_or("-"),
+        exit.warp.as_deref().unwrap_or("-"),
+        exit.rtt.as_millis()
+    )
+}
+
 fn split_host_port(spec: &str) -> Result<(String, u16)> {
     let (host, port) = spec
         .rsplit_once(':')
@@ -2806,6 +2818,14 @@ enum WarpCommand {
         #[arg(long, value_delimiter = ',')]
         target: Vec<String>,
     },
+    /// Open the tunnel and print its exit: the data center (colo), the
+    /// country and the address that a destination sees (from
+    /// http://1.1.1.1/cdn-cgi/trace). Exit 69 when there is no answer.
+    Exit {
+        /// Print one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run a local SOCKS5 and HTTP CONNECT proxy whose traffic goes through
     /// WARP (the proxy mode of the WARP client).
     Proxy {
@@ -3231,6 +3251,21 @@ async fn warp(args: WarpArgs) -> Result<()> {
             }
             println!("device      {} deleted", client.device().id);
         }
+        WarpCommand::Exit { json } => {
+            let stack = client.connect().await.fault(Fault::Unavailable)?;
+            let exit = cfrs::warp::exit::trace(&stack)
+                .await
+                .fault(Fault::Unavailable)?;
+            if json {
+                println!("{}", exit.to_json());
+            } else {
+                println!("colo        {}", exit.colo);
+                println!("country     {}", exit.loc.as_deref().unwrap_or("-"));
+                println!("ip          {}", exit.ip.as_deref().unwrap_or("-"));
+                println!("warp        {}", exit.warp.as_deref().unwrap_or("-"));
+                println!("rtt         {} ms", exit.rtt.as_millis());
+            }
+        }
         WarpCommand::Probe { target } => {
             let targets = if target.is_empty() {
                 vec!["1.1.1.1:443".to_string(), "198.41.192.27:7844".to_string()]
@@ -3254,6 +3289,12 @@ async fn warp(args: WarpArgs) -> Result<()> {
             );
             let stack = client.connect().await.fault(Fault::Unavailable)?;
             println!("tunnel      up (MASQUE over TCP 443)");
+            // Issue 147: the exit of the session. It does not change the
+            // exit code.
+            match cfrs::warp::exit::trace(&stack).await {
+                Ok(exit) => println!("exit        {}", exit_line(&exit)),
+                Err(err) => println!("exit        - ({err:#})"),
+            }
             let total = targets.len() + 1;
             let mut failed = 0;
             // Issue 115: the UDP data path: a DNS query through the tunnel.

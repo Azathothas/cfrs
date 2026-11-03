@@ -129,7 +129,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     },
     EnvVar {
         names: &["CFRS_WARP_NO_CHECK"],
-        used_by: "warp proxy, warp run, warp up, warp probe, warp nc, agent up",
+        used_by: "warp proxy, warp run, warp up, warp probe, warp exit, warp nc, agent up",
         meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and cfrs tries again. For a measurement.",
     },
     EnvVar {

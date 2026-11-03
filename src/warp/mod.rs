@@ -33,6 +33,7 @@
 //! ```
 
 pub mod capsule;
+pub mod exit;
 pub mod identity;
 pub mod ip;
 pub mod live;

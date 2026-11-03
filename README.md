@@ -359,6 +359,7 @@ cfrs warp license <KEY>           # attach a WARP+ license key
 cfrs warp rotate                  # make and enrol a new MASQUE key
 cfrs warp delete                  # remove the device and the saved file
 cfrs warp probe                   # test TCP connects through the tunnel
+cfrs warp exit                    # the exit colo, country and address
 cfrs warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
 cfrs warp run -- curl https://cloudflare.com/cdn-cgi/trace
 cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
