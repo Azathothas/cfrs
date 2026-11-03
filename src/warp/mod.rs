@@ -42,6 +42,7 @@ pub mod quic;
 pub mod register;
 pub mod route;
 pub mod session;
+pub mod ssh_config;
 #[cfg(target_os = "linux")]
 pub mod tun;
 pub mod up;

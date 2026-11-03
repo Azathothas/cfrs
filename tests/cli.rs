@@ -1078,3 +1078,43 @@ fn the_soft_limit_of_open_files_is_raised() {
     assert_eq!(nofile["soft"], hard, "{nofile}");
     assert!(nofile["raised_from"].is_null(), "{nofile}");
 }
+
+/// Issue 130: warp ssh-config --write, --check and --remove own one block
+/// of the file and change no other byte.
+#[test]
+fn warp_ssh_config_owns_its_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let conf = dir.path().join("config");
+    let mine = "Host box\n  User me\n";
+    std::fs::write(&conf, mine).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(["warp", "ssh-config", "--config", conf.to_str().unwrap()])
+            .args(args)
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap()
+    };
+    assert_eq!(
+        run(&["--check", "--host", "github.com"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(
+        run(&["--write", "--host", "github.com"]).status.code(),
+        Some(0)
+    );
+    let text = std::fs::read_to_string(&conf).unwrap();
+    assert!(
+        text.starts_with("# >>> cfrs warp ssh-config: github.com >>>\nHost github.com\n"),
+        "{text}"
+    );
+    assert!(text.ends_with(mine), "{text}");
+    assert_eq!(
+        run(&["--check", "--host", "github.com"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(run(&["--write"]).status.code(), Some(64));
+    assert_eq!(run(&["--write", "--host", "box"]).status.code(), Some(1));
+    assert_eq!(run(&["--remove"]).status.code(), Some(0));
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), mine);
+}

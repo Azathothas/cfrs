@@ -1243,6 +1243,58 @@ fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -
     out
 }
 
+/// `cfrs warp ssh-config --write`, `--remove` and `--check` (issue 130).
+fn ssh_config_file(
+    exe: &std::path::Path,
+    host: Option<&str>,
+    write: bool,
+    remove: bool,
+    config: &str,
+) -> Result<()> {
+    use cfrs::warp::ssh_config as sc;
+    let path = sc::expand(config).fault(Fault::Config)?;
+    let old = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(anyhow::anyhow!("reading {}: {err}", path.display())),
+    };
+    let text = old.as_deref().unwrap_or("");
+    let shown = path.display();
+    if remove {
+        let new = sc::remove(text, host).with_context(|| shown.to_string())?;
+        if old.is_some() && sc::save(&path, old.as_deref(), &new)? {
+            println!("cfrs: warp ssh-config: removed from {shown}");
+        } else {
+            println!("cfrs: warp ssh-config: no block in {shown}");
+        }
+        return Ok(());
+    }
+    let host = host.ok_or_else(|| {
+        cfrs::exit::fault(
+            Fault::Usage,
+            anyhow::anyhow!("give --host PATTERN (for example --host github.com)"),
+        )
+    })?;
+    let block = sc::block(exe, host);
+    if write {
+        let new = sc::write(text, host, &block).with_context(|| shown.to_string())?;
+        if sc::save(&path, old.as_deref(), &new)? {
+            println!("cfrs: warp ssh-config: the block for {host} is in {shown}");
+        } else {
+            println!("cfrs: warp ssh-config: the block for {host} in {shown} is current");
+        }
+        return Ok(());
+    }
+    match sc::state(text, host, &block).with_context(|| shown.to_string())? {
+        sc::State::Current => {
+            println!("cfrs: warp ssh-config: the block for {host} in {shown} is current");
+            Ok(())
+        }
+        sc::State::Stale => bail!("the block for {host} in {shown} names another binary; run cfrs warp ssh-config --write --host {host}"),
+        sc::State::Missing => bail!("no block for {host} in {shown}; run cfrs warp ssh-config --write --host {host}"),
+    }
+}
+
 /// The `commands` of the document of `agent up` (issues 110 and 116): the
 /// eval line only when the TCP listener of warp up runs; `warp exec` and
 /// `warp ssh-config` use the unix socket, so they are always there in the
@@ -1254,9 +1306,7 @@ fn agent_commands(warp: bool, warp_tcp: bool) -> Vec<String> {
     }
     if warp {
         commands.push("cfrs warp exec -- CMD   # any program, also static binaries and UDP".into());
-        commands.push(
-            "cfrs warp ssh-config --host github.com >> ~/.ssh/config   # git over SSH".into(),
-        );
+        commands.push("cfrs warp ssh-config --write --host github.com   # git over SSH".into());
     }
     commands.push("cfrs agent status".into());
     commands.push("cfrs agent down".into());
@@ -2637,10 +2687,28 @@ enum WarpCommand {
         via_relay: bool,
     },
     /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
+    /// With --write, --remove or --check: own the block in the SSH config
+    /// file, between two marker lines (issue 130).
     SshConfig {
-        /// The Host pattern of the block.
-        #[arg(long, default_value = "*")]
-        host: String,
+        /// The Host pattern of the block (default * for the printed block;
+        /// --write and --check need one).
+        #[arg(long)]
+        host: Option<String>,
+        /// Add the block for --host to the SSH config file, or replace it.
+        /// The block goes before the first Host or Match line. A Host line
+        /// of the file that names the same pattern is an error (exit 1).
+        #[arg(long, conflicts_with_all = ["remove", "check"])]
+        write: bool,
+        /// Remove the block for --host (with no --host: each block of cfrs).
+        #[arg(long, conflicts_with = "check")]
+        remove: bool,
+        /// Exit 1 when the block for --host is missing or names another
+        /// binary. Writes nothing.
+        #[arg(long)]
+        check: bool,
+        /// The SSH config file.
+        #[arg(long, value_name = "FILE", default_value = "~/.ssh/config")]
+        config: String,
     },
     /// Make a TUN interface whose packets go through WARP. Needs
     /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
@@ -2774,10 +2842,22 @@ async fn warp(args: WarpArgs) -> Result<()> {
             return Err(cfrs::warp::up::exec_in_pod(rules, program));
         }
         WarpCommand::Shell => return Err(cfrs::warp::up::shell()),
-        WarpCommand::SshConfig { host } => {
+        WarpCommand::SshConfig {
+            host,
+            write,
+            remove,
+            check,
+            config,
+        } => {
             let exe = std::env::current_exe()?.canonicalize()?;
-            print!("{}", cfrs::warp::nc::ssh_config(&exe, host));
-            return Ok(());
+            if !(*write || *remove || *check) {
+                print!(
+                    "{}",
+                    cfrs::warp::nc::ssh_config(&exe, host.as_deref().unwrap_or("*"))
+                );
+                return Ok(());
+            }
+            return ssh_config_file(&exe, host.as_deref(), *write, *remove, config);
         }
         WarpCommand::Nc {
             host,

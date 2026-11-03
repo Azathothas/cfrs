@@ -397,9 +397,7 @@ pub fn advice(report: &Report) -> Vec<String> {
     if let Some(ssh) = ssh {
         if !ssh.direct.works() {
             if ssh.warp.works() || !report.warp_up {
-                out.push(
-                    "git over SSH: cfrs warp ssh-config --host github.com >> ~/.ssh/config".into(),
-                );
+                out.push("git over SSH: cfrs warp ssh-config --write --host github.com".into());
             } else {
                 out.push("git over SSH: use HTTPS remotes, or cfrs warp nc --via-relay %h %p as ProxyCommand".into());
             }

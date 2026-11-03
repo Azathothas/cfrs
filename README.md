@@ -423,6 +423,13 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   with no WARP. `cfrs warp ssh-config [--host PATTERN]` prints the SSH
   config block and a `GIT_SSH_COMMAND`. SSH checks the host key as on a
   direct connection.
+* `cfrs warp ssh-config --write --host github.com` puts the block in
+  `~/.ssh/config` (or `--config FILE`), between two marker lines, before
+  the first `Host` or `Match` line. A second `--write` replaces it (for
+  example after cfrs moved). `--check` exits 1 when the block is missing or
+  stale; `--remove [--host PATTERN]` removes it. No other line of the file
+  changes. A `Host` line of the file with the same pattern is an error, and
+  the files of `Include` are not read. `cfrs warp down` keeps the block.
 * `cfrs warp tun --default-route` (CAP_NET_ADMIN) sends the whole host
   through WARP: a host route keeps each address of the MASQUE connection
   (the proxy, the front door, the relay) outside the TUN when the TUN

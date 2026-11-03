@@ -518,6 +518,13 @@ jobs:
           target/release/cfrs doctor --agent
           sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP
           target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
+          # Issue 130: the block in a config file; ssh reads it.
+          conf="$RUNNER_TEMP/ssh130/config"
+          target/release/cfrs warp ssh-config --write --host github.com --config "$conf"
+          ssh -G -F "$conf" github.com | grep -i '^proxycommand .*warp nc' | sed -E "s#'[^']*'#<cfrs>#"
+          target/release/cfrs warp ssh-config --check --host github.com --config "$conf"
+          target/release/cfrs warp ssh-config --remove --config "$conf"
+          if target/release/cfrs warp ssh-config --check --host github.com --config "$conf"; then exit 1; fi
           # A second warp up is the same instance.
           HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
           # Issue 86: a bundle with one root (as of a proxy that terminates
