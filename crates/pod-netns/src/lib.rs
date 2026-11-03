@@ -314,7 +314,7 @@ fn warn_unreachable(proxies: &[upstream::Proxy]) {
         };
         if let Err(err) = result {
             warn(&format!(
-                "warning: the upstream {shown} does not answer ({err}); each connection of the program will fail"
+                "warning: the upstream {shown} does not answer ({err}); the connect() of each connection of the program is refused"
             ));
         }
     }
@@ -418,5 +418,38 @@ mod tests {
         assert_eq!(parse_tcp_syn(&pkt), None);
         // Too short.
         assert_eq!(parse_tcp_syn(&pkt[..20]), None);
+    }
+
+    // Issue 190: the answer to a failed dial is a RST|ACK of the SYN.
+    #[test]
+    fn the_rst_reply_answers_the_syn() {
+        use crate::netns::{ipv4_checksum, rst_reply_for_syn};
+        let mut syn = vec![0x45, 0, 0, 40, 0, 0, 0x40, 0, 64, 6, 0, 0];
+        syn.extend_from_slice(&[10, 0, 0, 2, 93, 184, 216, 34]);
+        let c = ipv4_checksum(&syn[..20]);
+        syn[10..12].copy_from_slice(&c.to_be_bytes());
+        syn.extend_from_slice(&40000u16.to_be_bytes());
+        syn.extend_from_slice(&443u16.to_be_bytes());
+        syn.extend_from_slice(&1000u32.to_be_bytes());
+        syn.extend_from_slice(&[0, 0, 0, 0, 0x50, 0x02, 0xff, 0xff, 0, 0, 0, 0]);
+        let rst = rst_reply_for_syn(&syn).unwrap();
+        assert_eq!(rst.len(), 40);
+        assert_eq!(&rst[12..16], &[93, 184, 216, 34]);
+        assert_eq!(&rst[16..20], &[10, 0, 0, 2]);
+        assert_eq!(u16::from_be_bytes([rst[20], rst[21]]), 443);
+        assert_eq!(u16::from_be_bytes([rst[22], rst[23]]), 40000);
+        assert_eq!(
+            u32::from_be_bytes([rst[28], rst[29], rst[30], rst[31]]),
+            1001
+        );
+        assert_eq!(rst[33], 0x14, "RST and ACK");
+        // A correct header sums to zero.
+        assert_eq!(ipv4_checksum(&rst[..20]), 0);
+        let mut pseudo = rst[12..20].to_vec();
+        pseudo.extend_from_slice(&[0, 6, 0, 20]);
+        pseudo.extend_from_slice(&rst[20..40]);
+        assert_eq!(ipv4_checksum(&pseudo), 0);
+        // Another packet gets no answer.
+        assert!(rst_reply_for_syn(&rst).is_none());
     }
 }

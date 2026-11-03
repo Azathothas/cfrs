@@ -388,6 +388,20 @@ impl TxToken for TunTx<'_> {
     }
 }
 
+/// The addresses of a TCP connection of the program: (source, source port,
+/// destination, destination port).
+pub(crate) type SynKey = (Ipv4Addr, u16, Ipv4Addr, u16);
+
+/// A SYN of the program and the dial of its upstream.
+pub(crate) struct HeldSyn {
+    pub(crate) pkt: Vec<u8>,
+    pub(crate) target: String,
+    pub(crate) task: tokio::task::JoinHandle<Result<Upstream>>,
+}
+
+/// The time that the upstream of a released SYN waits for its socket.
+const PREDIALED_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// One outbound flow: a smoltcp TCP socket and the upstream proxy connection.
 pub(crate) struct Flow {
     pub(crate) upstream: Upstream,
@@ -409,6 +423,15 @@ pub(crate) struct Backend {
     /// the stack but have no flow yet.
     pub(crate) dialing: HashMap<SocketHandle, (String, tokio::task::JoinHandle<Result<Upstream>>)>,
     pub(crate) flows: HashMap<SocketHandle, Flow>,
+    /// Issue 190: each new SYN waits here while its upstream is dialed. The
+    /// stack sees the SYN only when the dial succeeds; a failed dial gets a
+    /// RST, so `connect()` of the program fails.
+    pub(crate) held: HashMap<SynKey, HeldSyn>,
+    /// The upstreams of released SYNs, until their socket is established.
+    pub(crate) predialed: HashMap<SynKey, (String, Upstream, std::time::Instant)>,
+    /// Sockets aborted after the last poll. They stay until the next poll
+    /// has sent their RST.
+    pub(crate) aborting: Vec<SocketHandle>,
     pub(crate) proxies: Vec<Proxy>,
     pub(crate) rules: Vec<Rule>,
     pub(crate) verbose: bool,
@@ -452,10 +475,113 @@ impl Backend {
             listeners: HashMap::new(),
             dialing: HashMap::new(),
             flows: HashMap::new(),
+            held: HashMap::new(),
+            predialed: HashMap::new(),
+            aborting: Vec::new(),
             proxies,
             rules,
             verbose,
         })
+    }
+
+    /// The target of a connection to `dst:port`: the name of a fake address,
+    /// else the address.
+    fn target_of(&self, dst: Ipv4Addr, port: u16) -> String {
+        match self.dns.name_for(dst) {
+            Some(name) => format!("{name}:{port}"),
+            None => format!("{dst}:{port}"),
+        }
+    }
+
+    /// Start the dial of the upstream of `target`.
+    fn spawn_dial(&self, target: &str) -> tokio::task::JoinHandle<Result<Upstream>> {
+        let chain = select_chain(&self.rules, &self.proxies, target).to_vec();
+        if self.verbose {
+            let hops: Vec<String> = chain.iter().map(Proxy::endpoint).collect();
+            eprintln!("pod-netns: {target} via {}", hops.join(" -> "));
+        }
+        let dial_target = target.to_string();
+        tokio::spawn(async move {
+            within_timeout(
+                "upstream connect",
+                connect_upstream_async(&chain, &dial_target),
+            )
+            .await
+        })
+    }
+
+    /// A socket of the stack has the addresses of `key`.
+    fn has_connection(&self, key: &SynKey) -> bool {
+        let (src, sport, dst, dport) = *key;
+        self.listeners.keys().any(|handle| {
+            let socket = self.sockets.get::<tcp::Socket>(*handle);
+            socket
+                .remote_endpoint()
+                .is_some_and(|r| r.addr == IpAddress::Ipv4(src) && r.port == sport)
+                && socket
+                    .local_endpoint()
+                    .is_some_and(|l| l.addr == IpAddress::Ipv4(dst) && l.port == dport)
+        })
+    }
+
+    /// Issue 190: hold each new SYN until its upstream is dialed. Then give
+    /// the SYN to the stack, or answer it with a RST when the dial fails.
+    pub(crate) async fn hold_syns(&mut self) {
+        let mut kept = VecDeque::with_capacity(self.device.rx.len());
+        while let Some(pkt) = self.device.rx.pop_front() {
+            let Some(key) = parse_tcp_syn(&pkt) else {
+                kept.push_back(pkt);
+                continue;
+            };
+            if self.predialed.contains_key(&key) || self.has_connection(&key) {
+                // A released SYN, or a SYN again for a known connection.
+                kept.push_back(pkt);
+            } else if self.held.contains_key(&key) {
+                // A SYN again while the dial runs: the first one is held.
+            } else if self.held.len() + self.listeners.len() >= MAX_TRACKED_FDS {
+                // The table is full: the stack drops the SYN.
+                kept.push_back(pkt);
+            } else {
+                let target = self.target_of(key.2, key.3);
+                let task = self.spawn_dial(&target);
+                self.held.insert(key, HeldSyn { pkt, target, task });
+            }
+        }
+        self.device.rx = kept;
+
+        let done: Vec<SynKey> = self
+            .held
+            .iter()
+            .filter(|(_, held)| held.task.is_finished())
+            .map(|(key, _)| *key)
+            .collect();
+        for key in done {
+            let held = self.held.remove(&key).expect("listed above");
+            let result = match held.task.await {
+                Ok(result) => result,
+                Err(e) => Err(anyhow::anyhow!("dial task: {e}")),
+            };
+            match result {
+                Ok(upstream) => {
+                    self.predialed
+                        .insert(key, (held.target, upstream, std::time::Instant::now()));
+                    self.device.rx.push_front(held.pkt);
+                }
+                Err(e) => {
+                    if self.verbose {
+                        eprintln!(
+                            "pod-netns: upstream for {} failed: {e:#}; the connect of the program is refused",
+                            held.target
+                        );
+                    }
+                    if let Some(rst) = rst_reply_for_syn(&held.pkt) {
+                        self.device.tx.push_back(rst);
+                    }
+                }
+            }
+        }
+        self.predialed
+            .retain(|_, (_, _, at)| at.elapsed() < PREDIALED_TTL);
     }
 
     /// Each SYN needs a socket in the listen state for its port before
@@ -504,6 +630,7 @@ impl Backend {
             .filter(|handle| {
                 !self.flows.contains_key(handle)
                     && !self.dialing.contains_key(handle)
+                    && !self.aborting.contains(handle)
                     && self.sockets.get::<tcp::Socket>(*handle).state() == tcp::State::Closed
             })
             .collect();
@@ -514,10 +641,14 @@ impl Backend {
     }
 
     pub(crate) async fn tick(&mut self) -> Result<()> {
-        self.observe_syns();
         self.answer_dns();
+        self.hold_syns().await;
+        self.observe_syns();
         self.interface
             .poll(SmolInstant::now(), &mut self.device, &mut self.sockets);
+        // Issue 190: this poll sent the RST of each aborted socket. Before,
+        // the socket was removed first, and a client that waits (TLS) hung.
+        self.aborting.clear();
         self.accept_flows().await;
         self.shuttle().await;
         self.reap_closed();
@@ -553,36 +684,39 @@ impl Backend {
                 continue;
             }
             // The destination is the local endpoint of the socket.
-            let target = {
+            let (key, target) = {
                 let socket = self.sockets.get::<tcp::Socket>(handle);
                 if !matches!(socket.state(), tcp::State::Established) {
                     continue;
                 }
-                let Some(local) = socket.local_endpoint() else {
+                let (Some(local), Some(remote)) =
+                    (socket.local_endpoint(), socket.remote_endpoint())
+                else {
                     continue;
                 };
-                let IpAddress::Ipv4(dst_ip) = local.addr else {
+                let (IpAddress::Ipv4(dst_ip), IpAddress::Ipv4(src_ip)) = (local.addr, remote.addr)
+                else {
                     continue;
                 };
-                let dst_ip: Ipv4Addr = dst_ip;
-                match self.dns.name_for(dst_ip) {
-                    Some(name) => format!("{name}:{}", local.port),
-                    None => format!("{dst_ip}:{}", local.port),
-                }
-            };
-            let chain = select_chain(&self.rules, &self.proxies, &target).to_vec();
-            if self.verbose {
-                let hops: Vec<String> = chain.iter().map(Proxy::endpoint).collect();
-                eprintln!("pod-netns: {target} via {}", hops.join(" -> "));
-            }
-            let dial_target = target.clone();
-            let task = tokio::spawn(async move {
-                within_timeout(
-                    "upstream connect",
-                    connect_upstream_async(&chain, &dial_target),
+                (
+                    (src_ip, remote.port, dst_ip, local.port),
+                    self.target_of(dst_ip, local.port),
                 )
-                .await
-            });
+            };
+            // The usual case: the upstream was dialed before the handshake.
+            if let Some((_, upstream, _)) = self.predialed.remove(&key) {
+                self.flows.insert(
+                    handle,
+                    Flow {
+                        upstream,
+                        to_upstream: Vec::new(),
+                        to_app: Vec::new(),
+                        up_eof: false,
+                    },
+                );
+                continue;
+            }
+            let task = self.spawn_dial(&target);
             self.dialing.insert(handle, (target, task));
         }
 
@@ -611,12 +745,14 @@ impl Backend {
                         eprintln!("pod-netns: upstream for {target} failed: {e:#}");
                     }
                     self.sockets.get_mut::<tcp::Socket>(handle).abort();
+                    self.aborting.push(handle);
                 }
                 Err(e) => {
                     if self.verbose {
                         eprintln!("pod-netns: dial task for {target} failed: {e}");
                     }
                     self.sockets.get_mut::<tcp::Socket>(handle).abort();
+                    self.aborting.push(handle);
                 }
             }
         }
@@ -778,6 +914,35 @@ pub(crate) fn seed() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9e37_79b9_7f4a_7c15)
+}
+
+/// The RST|ACK answer to the IPv4 TCP SYN `pkt`: the connect of the
+/// program fails with ECONNREFUSED.
+pub(crate) fn rst_reply_for_syn(pkt: &[u8]) -> Option<Vec<u8>> {
+    parse_tcp_syn(pkt)?;
+    let ihl = usize::from(pkt[0] & 0x0f) * 4;
+    let tcp = &pkt[ihl..];
+    let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+    let mut out = Vec::with_capacity(40);
+    out.extend_from_slice(&[0x45, 0, 0, 40, 0, 0, 0x40, 0, 64, 6, 0, 0]);
+    out.extend_from_slice(&pkt[16..20]); // source: the destination of the SYN
+    out.extend_from_slice(&pkt[12..16]); // destination: the program
+    let checksum = ipv4_checksum(&out[..20]);
+    out[10..12].copy_from_slice(&checksum.to_be_bytes());
+    out.extend_from_slice(&tcp[2..4]); // source port: the destination port
+    out.extend_from_slice(&tcp[0..2]);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&seq.wrapping_add(1).to_be_bytes());
+    // Data offset 5 words; flags RST and ACK; window 0; checksum; urgent 0.
+    out.extend_from_slice(&[0x50, 0x14, 0, 0, 0, 0, 0, 0]);
+    // The TCP checksum covers a pseudo-header and the segment.
+    let mut pseudo = Vec::with_capacity(32);
+    pseudo.extend_from_slice(&out[12..20]);
+    pseudo.extend_from_slice(&[0, 6, 0, 20]);
+    pseudo.extend_from_slice(&out[20..40]);
+    let checksum = ipv4_checksum(&pseudo);
+    out[36..38].copy_from_slice(&checksum.to_be_bytes());
+    Some(out)
 }
 
 /// Parse a bare TCP SYN and return (src ip, src port, dst ip, dst port).

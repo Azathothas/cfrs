@@ -46,8 +46,12 @@ socket) when there is one, else to TCP on the host.
   `CLONE_NEWNET` with privileges). The parent writes the uid and gid maps.
 * The child brings up `lo` and makes a TUN device with `ioctl` calls (not with
   `ip`), then gives the TUN descriptor to the parent with `SCM_RIGHTS`.
-* The parent runs a `smoltcp` stack on the TUN. It accepts each TCP flow, dials
-  the upstream in a task, and copies the bytes.
+* The parent runs a `smoltcp` stack on the TUN. For each SYN of the program,
+  it dials the upstream first, in a task. When the dial succeeds, the stack
+  accepts the connection and copies the bytes. When the dial fails (a dead
+  proxy, a 407 of the proxy), the program gets a RST, and its `connect()`
+  fails with `ECONNREFUSED`. The program cannot read the HTTP status of the
+  proxy; `-v` prints it.
 * The parent answers each UDP query to port 53, to any resolver address, from
   the fake-IP pool. The answer comes from the address that the program sent
   the query to.

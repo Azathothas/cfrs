@@ -185,6 +185,55 @@ fn netns_backend_proxies_a_static_and_a_dynamic_binary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A client whose upstream is dead: `connect()` must fail with
+/// ECONNREFUSED at once (issue 190). Before, it succeeded, and a client
+/// that waits for the server (TLS) hung.
+const DEAD_CLIENT: &str = r#"
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+int main(void) {
+    alarm(20);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a; memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET; a.sin_port = htons(443);
+    inet_pton(AF_INET, "93.184.216.34", &a.sin_addr);
+    int r = connect(s, (struct sockaddr *)&a, sizeof a);
+    int e = errno;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    printf("CONNECT:%d ERRNO:%d MS:%ld\n", r, r < 0 ? e : 0, ms);
+    return 0;
+}
+"#;
+
+#[test]
+fn netns_backend_refuses_connect_when_the_upstream_is_dead() {
+    if !have_compiler() || !netns_available() {
+        eprintln!("skipping: no compiler or no netns backend");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-nsdead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = build_program(&dir, "dead", DEAD_CLIENT, false);
+    let stdout = run_on("netns", &[&dir.join("nobody.sock")], &program);
+    let want = format!("CONNECT:-1 ERRNO:{} ", libc::ECONNREFUSED);
+    assert!(stdout.contains(&want), "{stdout:?}");
+    let ms: u64 = stdout
+        .rsplit("MS:")
+        .next()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap();
+    assert!(ms < 3000, "{stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn netns_backend_resolves_names_and_carries_parallel_flows() {
     if !have_compiler() || !netns_available() {
