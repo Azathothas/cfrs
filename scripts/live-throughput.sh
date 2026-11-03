@@ -93,6 +93,22 @@ sleep 2
 rate connect GET "http://127.0.0.1:$local/$largest.bin" "$largest"
 rate connect POST "http://127.0.0.1:$local/sink" "$largest"
 
+# Issue 206: the median time of 20 small requests, a new connection each,
+# over the public URL and over cfrs connect.
+latency() {
+    # latency NAME URL
+    for _ in $(seq 20); do
+        curl -fsS --max-time 30 -o /dev/null -w '%{time_total}\n' "$2" || echo fail
+    done > "$dir/lat.txt"
+    if grep -q fail "$dir/lat.txt"; then
+        echo "latency $label $1: a request FAILED"
+        exit 1
+    fi
+    sort -n "$dir/lat.txt" | awk -v n="$1" -v l="$label" '{ a[NR] = $1 } END { printf "latency %s %s: p50 %.0f ms, max %.0f ms (20 requests)\n", l, n, a[int((NR + 1) / 2)] * 1000, a[NR] * 1000 }'
+}
+latency http "$url/"
+latency connect "http://127.0.0.1:$local/"
+
 if python3 -c 'import websockets' 2> /dev/null; then
     python3 -I "$here/ws-client.py" "wss://$host/__cfrs/ws" "$largest" | sed "s/^/rate $label /"
 fi
