@@ -305,7 +305,7 @@ impl MasqueSession {
             .await
             .map_err(|e| {
                 crate::hop::at(
-                    crate::hop::Hop::Tls,
+                    crate::hop::tls_hop(&e),
                     anyhow::anyhow!(
                         "TLS handshake with the MASQUE front door: {}",
                         crate::hop::tls_text(&e)

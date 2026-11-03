@@ -310,7 +310,7 @@ pub async fn provision(
             ProvisionError::Http(inner)
                 if matches!(
                     crate::hop::of(inner),
-                    Some(crate::hop::Hop::Proxy | crate::hop::Hop::Tls)
+                    Some(crate::hop::Hop::Proxy | crate::hop::Hop::Tls | crate::hop::Hop::Network)
                 ) =>
             {
                 return Err(err)

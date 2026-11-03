@@ -79,8 +79,11 @@ TCP and DNS. It does not carry other UDP.
   connection is not known (the client is a unix socket).
 * UDP to port 53 is answered from the fake-IP pool. Other UDP goes through
   SOCKS5 UDP ASSOCIATE. `sendmmsg` sends all messages when the supervisor can
-  write `msg_len` into the child. Else it sends one message and returns 1, and
-  the caller sends the others.
+  write `msg_len` into the child. Else it sends one message and returns 1.
+  glibc does not send the other messages, so the seccomp backend adds
+  `single-request` to `RES_OPTIONS` of the program: glibc then sends the A
+  and the AAAA query in two calls (issue 113). A program that clears its
+  environment loses this option.
 * With a proxy on a unix socket, UDP goes on the control connection first
   (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
   kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A

@@ -13,6 +13,10 @@ pub enum Hop {
     Dns,
     /// TLS with the edge, the MASQUE front door or an API.
     Tls,
+    /// The network ended a connection: a reset, or a close, before or
+    /// during the TLS handshake (issue 127: an egress policy, not a trust
+    /// or a clock problem).
+    Network,
     /// The registration of the tunnel with the edge.
     EdgeRegister,
     /// An edge connection after it registered.
@@ -27,6 +31,7 @@ impl Hop {
             Hop::Proxy => "proxy",
             Hop::Dns => "dns",
             Hop::Tls => "tls",
+            Hop::Network => "network",
             Hop::EdgeRegister => "edge-register",
             Hop::EdgeStream => "edge-stream",
             Hop::Origin => "origin",
@@ -39,6 +44,7 @@ impl Hop {
             Hop::Proxy => "check the proxy URL, its user and password, and the allow-list of the proxy; --no-proxy goes around it",
             Hop::Dns => "give the address with --resolve HOST=IP, or let a proxy resolve names (socks5h://)",
             Hop::Tls => "behind a proxy that inspects TLS, give its root with --ca-file; check the clock of the host",
+            Hop::Network => "the network ended the connection before the TLS handshake was done: a policy of this host or of its network (an egress allow-list) may block this destination; cfrs doctor shows each path",
             Hop::EdgeRegister => "a refused token or tunnel does not change with a retry; check the token, or use a quick tunnel",
             Hop::EdgeStream => "the edge connection was lost; cfrs connects again, and --leg-failover and --transport warp choose other legs",
             Hop::Origin => "check that the origin listens on the address of --url",
@@ -109,20 +115,67 @@ impl<T, E: Into<anyhow::Error>> ResultExt<T> for Result<T, E> {
 }
 
 /// The text of a TLS error: "TLS alert: <description>" for an alert of the
-/// peer, else the text of the error.
+/// peer, the end of the connection for a reset or a close, else the text
+/// of the error.
 pub fn tls_text(err: &std::io::Error) -> String {
     if let Some(inner) = err.get_ref() {
         if let Some(rustls::Error::AlertReceived(alert)) = inner.downcast_ref::<rustls::Error>() {
             return format!("TLS alert from the peer: {alert:?}");
         }
     }
-    err.to_string()
+    match err.kind() {
+        std::io::ErrorKind::ConnectionReset => {
+            format!("the connection was reset during the TLS handshake ({err})")
+        }
+        std::io::ErrorKind::UnexpectedEof => {
+            "the connection was closed during the TLS handshake".to_string()
+        }
+        _ => err.to_string(),
+    }
+}
+
+/// The hop of an error of a TLS handshake (issue 127): an error of rustls
+/// (an alert, a certificate) is [`Hop::Tls`]; a reset, a close or a time
+/// out of the connection is [`Hop::Network`].
+pub fn tls_hop(err: &std::io::Error) -> Hop {
+    use std::io::ErrorKind::*;
+    if err
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<rustls::Error>().is_some())
+    {
+        return Hop::Tls;
+    }
+    match err.kind() {
+        ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof | TimedOut
+        | ConnectionRefused => Hop::Network,
+        _ => Hop::Tls,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Context;
+
+    // Issue 127: a reset during the handshake is the network, not trust.
+    #[test]
+    fn a_reset_in_the_tls_handshake_is_the_network() {
+        use std::io::{Error, ErrorKind};
+        let reset = Error::from(ErrorKind::ConnectionReset);
+        assert_eq!(tls_hop(&reset), Hop::Network);
+        assert!(tls_text(&reset).contains("reset during the TLS handshake"));
+        assert_eq!(
+            tls_hop(&Error::from(ErrorKind::UnexpectedEof)),
+            Hop::Network
+        );
+        let cert = Error::new(
+            ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        assert_eq!(tls_hop(&cert), Hop::Tls);
+        assert!(!Hop::Network.hint().contains("--ca-file"));
+        assert!(!Hop::Network.hint().contains("clock"));
+    }
 
     #[test]
     fn the_innermost_hop_is_kept_through_context() {

@@ -630,8 +630,26 @@ pub fn wrap_udp(payload: &[u8], ip: IpAddr, port: u16) -> Vec<u8> {
     out
 }
 
+/// Like [`wrap_udp`], with a name as the destination (ATYP 3).
+pub fn wrap_udp_name(payload: &[u8], name: &str, port: u16) -> Vec<u8> {
+    let name = &name.as_bytes()[..name.len().min(255)];
+    let mut out = vec![0u8, 0, 0, 0x03, name.len() as u8];
+    out.extend_from_slice(name);
+    out.extend_from_slice(&port.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_udp_header_with_a_name() {
+        let d = super::wrap_udp_name(b"x", "stun.example", 19302);
+        assert_eq!(&d[..5], &[0, 0, 0, 3, 12]);
+        assert_eq!(&d[5..17], b"stun.example");
+        assert_eq!(&d[17..], &[0x4b, 0x66, b'x']);
+    }
+
     /// Issue 102: http://unix:/path is an HTTP CONNECT proxy on a unix
     /// socket; another scheme over a unix socket names the forms that work.
     #[test]

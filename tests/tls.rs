@@ -158,3 +158,28 @@ fn an_expired_certificate_names_the_host_clock() {
     );
     assert!(text.trim_end().ends_with("GMT"), "{text}");
 }
+
+/// Issue 127: a reset of the connection during the TLS handshake names the
+/// network and the destination; the hint is not the CA or the clock.
+#[test]
+fn a_reset_in_the_tls_handshake_names_the_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { break };
+            // The ClientHello stays unread: the close sends a reset.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(conn);
+        }
+    });
+    let text = tunnel(port, &[], &[]);
+    assert!(
+        text.contains("reset during the TLS handshake")
+            || text.contains("closed during the TLS handshake"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("localhost:{port}")), "{text}");
+    assert!(text.contains("allow-list"), "{text}");
+    assert!(!text.contains("--ca-file"), "{text}");
+}

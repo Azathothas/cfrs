@@ -245,6 +245,32 @@ pub(crate) fn child_env(keep_proxy: bool) -> Vec<std::ffi::CString> {
     env
 }
 
+/// Add `single-request` to `RES_OPTIONS` of a program environment (issue
+/// 113). glibc then sends the A and the AAAA query one after the other.
+/// Without it, glibc sends both with one `sendmmsg`; when the seccomp
+/// supervisor cannot write `msg_len` into the program, glibc sees the
+/// first message as not sent, and `getaddrinfo` with `AF_UNSPEC` fails.
+/// A value that has `single-request` or `single-request-reopen` stays.
+pub(crate) fn with_single_request(env: &mut Vec<std::ffi::CString>) {
+    const KEY: &[u8] = b"RES_OPTIONS=";
+    match env.iter_mut().find(|e| e.as_bytes().starts_with(KEY)) {
+        Some(entry) => {
+            let value = String::from_utf8_lossy(&entry.as_bytes()[KEY.len()..]).into_owned();
+            if value
+                .split_whitespace()
+                .any(|o| o == "single-request" || o == "single-request-reopen")
+            {
+                return;
+            }
+            let value = format!("{} single-request", value.trim());
+            if let Ok(new) = std::ffi::CString::new(format!("RES_OPTIONS={}", value.trim())) {
+                *entry = new;
+            }
+        }
+        None => env.push(std::ffi::CString::new("RES_OPTIONS=single-request").unwrap()),
+    }
+}
+
 /// Warn when an upstream does not answer a connect in 2 s. The program
 /// still runs (it may open no connection), but each connection that it
 /// opens fails; before, a dead upstream gave no line at all.
@@ -280,7 +306,36 @@ fn warn_unreachable(proxies: &[upstream::Proxy]) {
 
 #[cfg(test)]
 mod tests {
+    use super::with_single_request;
     use crate::prelude::*;
+
+    fn res_options(env: &[std::ffi::CString]) -> Vec<String> {
+        env.iter()
+            .filter_map(|e| {
+                e.to_str()
+                    .ok()?
+                    .strip_prefix("RES_OPTIONS=")
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    // Issue 113: the pod adds single-request, and keeps a value that has it.
+    #[test]
+    fn res_options_gets_single_request() {
+        let c = |s: &str| std::ffi::CString::new(s).unwrap();
+        let mut env = vec![c("PATH=/bin")];
+        with_single_request(&mut env);
+        assert_eq!(res_options(&env), ["single-request"]);
+        let mut env = vec![c("RES_OPTIONS=ndots:2")];
+        with_single_request(&mut env);
+        assert_eq!(res_options(&env), ["ndots:2 single-request"]);
+        let mut env = vec![c("RES_OPTIONS=single-request-reopen")];
+        with_single_request(&mut env);
+        assert_eq!(res_options(&env), ["single-request-reopen"]);
+        with_single_request(&mut env);
+        assert_eq!(res_options(&env).len(), 1);
+    }
 
     #[test]
     fn fake_dns_is_stable_and_reversible() {

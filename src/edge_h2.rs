@@ -536,7 +536,7 @@ async fn connect_one(
     .map_err(|_| anyhow::anyhow!("TLS with the edge at {addr} timed out"))?
     .map_err(|e| {
         crate::hop::at(
-            crate::hop::Hop::Tls,
+            crate::hop::tls_hop(&e),
             anyhow::anyhow!("TLS with the edge at {addr}: {}", crate::hop::tls_text(&e)),
         )
     })?;

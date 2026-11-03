@@ -189,8 +189,13 @@ async fn send(request: Request) -> Result<Response> {
             .await
             .map_err(|e| {
                 crate::hop::at(
-                    crate::hop::Hop::Tls,
-                    anyhow::anyhow!("TLS with {}: {}", target.host, crate::hop::tls_text(&e)),
+                    crate::hop::tls_hop(&e),
+                    anyhow::anyhow!(
+                        "TLS with {}:{}: {}",
+                        target.host,
+                        target.port,
+                        crate::hop::tls_text(&e)
+                    ),
                 )
             })?;
         exchange(tls, &target, &request).await

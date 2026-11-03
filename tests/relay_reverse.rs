@@ -234,6 +234,79 @@ async fn round_trip(relay: Arc<Relay>, data: Vec<u8>) -> Vec<u8> {
     back
 }
 
+/// A TCP target that reads one line, answers HELLO:<line> after 300 ms,
+/// and closes.
+async fn hello() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut line = Vec::new();
+                let mut byte = [0u8; 1];
+                while socket.read_exact(&mut byte).await.is_ok() {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let mut answer = b"HELLO:".to_vec();
+                answer.extend_from_slice(&line);
+                let _ = socket.write_all(&answer).await;
+            });
+        }
+    });
+    addr
+}
+
+// Issue 109: an input that ends at once (printf PING | cfrs relay connect)
+// still gets the answer of the target. Before, the close of the input
+// closed the session, and the output was empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_answer_comes_back_after_the_input_ends() {
+    let (url, state) = fake_relay(None).await;
+    let target = Target::parse(&hello().await).unwrap();
+    let node_relay = Relay::new(&url, None).unwrap();
+    let node_pair = pair(&url);
+    tokio::spawn(async move { node(&node_relay, &node_pair, &target).await });
+    wait_for_node(&state, 1).await;
+    let relay = Relay::new(&url, None).unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        connect(&relay, NAME, "connect", &b"PING\n"[..], &mut out),
+    )
+    .await
+    .expect("the session ends")
+    .unwrap();
+    assert_eq!(out, b"HELLO:PING\n");
+}
+
+// Issue 109: a target that waits for the end of the input (it has no
+// half-close) ends the session after EOF_IDLE.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_ends_after_the_idle_time_when_the_input_ended() {
+    let (url, state) = fake_relay(None).await;
+    let target = Target::parse(&echo().await).unwrap();
+    let node_relay = Relay::new(&url, None).unwrap();
+    let node_pair = pair(&url);
+    tokio::spawn(async move { node(&node_relay, &node_pair, &target).await });
+    wait_for_node(&state, 1).await;
+    let relay = Relay::new(&url, None).unwrap();
+    let mut out = Vec::new();
+    let start = std::time::Instant::now();
+    tokio::time::timeout(
+        cfrs::relay_reverse::EOF_IDLE + Duration::from_secs(10),
+        connect(&relay, NAME, "connect", &b"PING\n"[..], &mut out),
+    )
+    .await
+    .expect("the session ends")
+    .unwrap();
+    assert_eq!(out, b"PING\n");
+    assert!(start.elapsed() >= cfrs::relay_reverse::EOF_IDLE);
+}
+
 async fn wait_for_node(state: &Arc<Mutex<State>>, sockets: usize) {
     for _ in 0..200 {
         if state.lock().unwrap().node_sockets >= sockets {

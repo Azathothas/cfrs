@@ -554,7 +554,8 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
     // execv does not search PATH, and the child must not allocate after the
     // fork: find the program here.
     let resolved = resolve_program(&program[0])?;
-    let env = crate::child_env(args.keep_proxy_env);
+    let mut env = crate::child_env(args.keep_proxy_env);
+    crate::with_single_request(&mut env);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("pod-netns-filter".into())
@@ -1063,7 +1064,8 @@ pub(crate) async fn handle_sendto(
         return notif_respond(lfd, id, len as i64, 0);
     }
     let payload = read_mem(mem, buf, len)?;
-    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, port).await {
+    let name = dns.name_for_ip(ip).map(str::to_string);
+    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
         Ok(()) => notif_respond(lfd, id, len as i64, 0),
         Err(e) => {
             let _ = notif_respond(lfd, id, -1, libc::ENETUNREACH);
@@ -1099,8 +1101,10 @@ pub(crate) async fn handle_sendmmsg(
         return notif_respond(lfd, id, 0, 0);
     }
     // Without write access to the child, msg_len cannot be set. Send one
-    // message and report 1: the caller (glibc's resolver, for example) then
-    // sends the remaining messages with separate calls.
+    // message and report 1. glibc's resolver does not send the others: it
+    // reads the msg_len of 0 as a failure. The pod therefore sets
+    // RES_OPTIONS=single-request (issue 113), and glibc sends one query in
+    // each call.
     let count = if mem_writable { vlen } else { 1 };
     let mut sent = 0usize;
     for index in 0..count {
@@ -1194,7 +1198,8 @@ pub(crate) async fn send_msghdr(
         let _ = pair.send(&reply).await;
         return Ok(Some(Ok(payload.len())));
     }
-    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, port).await {
+    let name = dns.name_for_ip(ip).map(str::to_string);
+    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
         Ok(()) => Ok(Some(Ok(payload.len()))),
         Err(_) => Ok(Some(Err(libc::ENETUNREACH))),
     }
@@ -1281,6 +1286,10 @@ pub(crate) async fn ensure_udp_relay(
 }
 
 /// Wrap a datagram in a SOCKS5 UDP request header and send it to the relay.
+/// Send one datagram of the program through the UDP relay. A fake IP of the
+/// pod goes to the proxy as its name (ATYP 3, issue 113): before, the
+/// proxy got the fake IP, which no host has.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn relay_datagram(
     map: &mut HashMap<i32, Sock>,
     fd: i32,
@@ -1288,10 +1297,14 @@ pub(crate) async fn relay_datagram(
     pair: Arc<tokio::net::UnixDatagram>,
     payload: &[u8],
     ip: IpAddr,
+    name: Option<String>,
     port: u16,
 ) -> Result<()> {
     ensure_udp_relay(map, fd, proxy, pair).await?;
-    let wrapped = wrap_udp(payload, ip, port);
+    let wrapped = match name {
+        Some(name) => crate::upstream::wrap_udp_name(payload, &name, port),
+        None => wrap_udp(payload, ip, port),
+    };
     match map.get(&fd) {
         Some(Sock::Datagram {
             relay: Some(UdpRelay::Socket {

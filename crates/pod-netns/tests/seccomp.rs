@@ -435,6 +435,95 @@ fn seccomp_backend_relays_udp_in_the_stream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const UDP_NAME_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/socket.h>
+int main(void) {
+    alarm(10);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+    int r = getaddrinfo("stun.example", "19302", &hints, &res);
+    if (r != 0) { printf("GAI:%d\n", r); return 1; }
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sendto(s, "PING", 4, 0, res->ai_addr, res->ai_addrlen) < 0) { perror("sendto"); return 1; }
+    char b[128] = {0};
+    int n = recvfrom(s, b, sizeof b - 1, 0, NULL, NULL);
+    printf("UDP:%d:%s", n, n > 0 ? b : "");
+    return 0;
+}
+"#;
+
+/// Issue 113: a datagram to a fake IP of the pod goes to the proxy with
+/// the name (ATYP 3), as a TCP connect does. Before, the proxy got the fake
+/// IP (198.18.x.x), which no host has.
+#[test]
+fn seccomp_backend_sends_udp_to_a_name_as_the_name() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-udp-name-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (dests, seen) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { break };
+            let dests = dests.clone();
+            std::thread::spawn(move || {
+                let Some((cmd, _, _)) = read_request(&mut c) else {
+                    return;
+                };
+                if cmd != 0x83 {
+                    let _ = c.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
+                    return;
+                }
+                let _ = c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+                loop {
+                    let mut len = [0u8; 2];
+                    if c.read_exact(&mut len).is_err() {
+                        return;
+                    }
+                    let mut d = vec![0u8; u16::from_be_bytes(len) as usize];
+                    if c.read_exact(&mut d).is_err() {
+                        return;
+                    }
+                    let header = match d[3] {
+                        1 => 10,
+                        3 => 7 + d[4] as usize,
+                        4 => 22,
+                        _ => continue,
+                    };
+                    let dest = match d[3] {
+                        3 => String::from_utf8_lossy(&d[5..5 + d[4] as usize]).into_owned(),
+                        _ => format!("atyp {}", d[3]),
+                    };
+                    let port = u16::from_be_bytes([d[header - 2], d[header - 1]]);
+                    let _ = dests.send(format!("{dest}:{port}"));
+                    let mut answer = d[..header].to_vec();
+                    answer.extend_from_slice(b"ECHO:");
+                    answer.extend_from_slice(&d[header..]);
+                    let mut frame = (answer.len() as u16).to_be_bytes().to_vec();
+                    frame.extend_from_slice(&answer);
+                    if c.write_all(&frame).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let program = build_program(&dir, "udp-name-client", UDP_NAME_CLIENT, false);
+    let stdout = run(&dir, &[&sock], &program);
+    assert!(stdout.contains("UDP:9:ECHO:PING"), "{stdout:?}");
+    assert_eq!(seen.try_recv().unwrap(), "stun.example:19302");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn seccomp_backend_proxies_a_static_and_a_dynamic_binary() {
     if !have_compiler() || !seccomp_available() {
@@ -1317,6 +1406,83 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
     let (out, err) = run_with("none");
     assert!(out.contains("PEER:-1:EOPNOTSUPP"), "{out:?} {err:?}");
     assert!(err.contains("refuses writes to the memory"), "{err:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const UNSPEC_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/socket.h>
+int main(void) {
+    alarm(20);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    int r = getaddrinfo("example.com", "80", &hints, &res);
+    printf("GAI:%d\n", r);
+    if (r != 0) return 1;
+    int s = socket(res->ai_family, SOCK_STREAM, 0);
+    if (connect(s, res->ai_addr, res->ai_addrlen) < 0) { perror("connect"); return 1; }
+    char b[64] = {0};
+    int n = read(s, b, sizeof b - 1);
+    printf("READ:%d:%s", n, b);
+    return 0;
+}
+"#;
+
+/// Issue 113: getaddrinfo with AF_UNSPEC (the default of most programs)
+/// works in the pod, also when the supervisor cannot write the memory of
+/// the program (glibc sends A and AAAA with one sendmmsg; the pod sets
+/// RES_OPTIONS=single-request). Before, it failed with "Temporary failure
+/// in name resolution" under POD_NETNS_TEST_MEM=none.
+#[test]
+fn seccomp_backend_resolves_unspec_without_memory_writes() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-unspec-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || socks5_proxy(listener, tx, false));
+    let program = build_program(&dir, "unspec", UNSPEC_CLIENT, false);
+    for (hook, res_options) in [
+        ("", None),
+        ("no-fd", None),
+        ("none", None),
+        ("none", Some("ndots:1")),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pod-netns"));
+        command
+            .args(["--backend", "seccomp", "-x"])
+            .arg(format!("unix:{}", sock.display()))
+            .arg("--")
+            .arg(&program)
+            .env("POD_NETNS_TEST_MEM", hook);
+        match res_options {
+            Some(v) => command.env("RES_OPTIONS", v),
+            None => command.env_remove("RES_OPTIONS"),
+        };
+        let output = command.output().unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            out.contains("GAI:0"),
+            "{hook:?} {res_options:?}: {out:?} {err:?}"
+        );
+        assert!(
+            out.contains("HELLO-FROM-TARGET"),
+            "{hook:?}: {out:?} {err:?}"
+        );
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            "example.com:80"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -488,6 +488,10 @@ async fn session(
 
 /// The operator side: open a session to the node `name`, wait for
 /// `ready`, then copy `input` to the node and the node to `output`.
+/// After the end of the input of `relay connect`, the time with no data from
+/// the target after which the session ends (issue 109).
+pub const EOF_IDLE: Duration = Duration::from_secs(5);
+
 pub async fn connect<R, W>(
     relay: &Relay,
     name: &str,
@@ -560,17 +564,27 @@ where
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     let mut input_open = true;
+    // Issue 109: the end of the input does not close the session at once
+    // (the protocol has no half-close, and a close lost the answer of the
+    // target). The session ends when the target closes, or after EOF_IDLE
+    // with no data from it.
+    let mut last_data = tokio::time::Instant::now();
     loop {
         tokio::select! {
             read = input.read(&mut buf), if input_open => match read {
                 Ok(0) | Err(_) => {
                     input_open = false;
-                    let _ = sink.send(Message::Close(None)).await;
+                    last_data = tokio::time::Instant::now();
                 }
                 Ok(n) => sink.send(Message::binary(buf[..n].to_vec())).await?,
             },
+            _ = tokio::time::sleep_until(last_data + EOF_IDLE), if !input_open => {
+                let _ = sink.send(Message::Close(None)).await;
+                break;
+            }
             message = stream.next() => match message {
                 Some(Ok(Message::Binary(data))) => {
+                    last_data = tokio::time::Instant::now();
                     if !data.is_empty() {
                         output.write_all(&data).await?;
                         output.flush().await?;
