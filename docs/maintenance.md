@@ -163,12 +163,21 @@ Rules that the tests check:
 
 ## Open work
 
-* **v0.3.0-beta.9** is published (release run 41642496460, release-proofs
-  41645844185 with the rebuild of x86_64 and aarch64), with the image
-  `ghcr.io/azathothas/cfrs:v0.3.0-beta.9` (`:beta`). The testers test it.
-  `scripts/live-batch2.sh` (a step of `live.yml`) checks the commands of
-  the second batch, the upload of 16 MiB with each `--cc`, and reports h3,
-  WireGuard, `--carry` and `--l4`.
+* **v0.3.0-beta.10**: the batch of issues 164 to 210 is in `main`; the
+  notes are `docs/releases/v0.3.0-beta.10.md`. Release: dry run, publish,
+  `release-proofs.yml`, and a check of the published binary.
+* **#206**: `scripts/live-throughput.sh` prints the median time of small
+  requests over the URL and over `cfrs connect`. Read it in `live`; a code
+  fix waits for a gap that the numbers show.
+* **#184**: `scripts/live-batch2.sh` prints whether `warp exit` found the
+  IPv6 egress address. When the trace gives no IPv6 `ip=`, the fallback is
+  the TXT of `whoami.cloudflare`.
+* **#172 item 3**: the errors of a config file name the place (the rule,
+  the key), not the line number. Line numbers need positions in the YAML
+  reader (`src/yaml.rs`).
+* **#181 item 6**: the tailscale front door has a dial limit and a log
+  line; a warning for a tailscaled that is not logged in
+  (`/localapi/v0/status`) is not done.
 * **#140 (`warp proxy --l4`)**: the client works on the loopback; the L4
   door answers 403 to each of three forms of the CONNECT
   (`CFRS_WARP_L4_FORM`). It needs a captured request of an official client.

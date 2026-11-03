@@ -387,7 +387,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cfrs"
-version = "0.3.0-beta.9"
+version = "0.3.0-beta.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "pod-netns"
-version = "0.3.0-beta.9"
+version = "0.3.0-beta.10"
 dependencies = [
  "anyhow",
  "libc",
