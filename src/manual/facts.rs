@@ -388,6 +388,10 @@ pub const EXAMPLES: &[Example] = &[
         meaning: "Receive files, with a PIN.",
     },
     Example {
+        command: "cfrs share --mode proxy --unix /run/api.sock",
+        meaning: "Share an HTTP server on a unix socket, behind a PIN.",
+    },
+    Example {
         command: "cfrs warp status",
         meaning: "The WARP device and account.",
     },

@@ -318,7 +318,11 @@ async fn service(service: &Service, origin: &OriginOptions) -> Result<String, St
             },
             ShareMode::Proxy => {
                 let target = share.target.clone().unwrap_or_default();
-                dial(&Service::Tcp(target.clone()), origin).await?;
+                let service = match crate::proxy::share_origin(&target) {
+                    Service::Http(_) => Service::Tcp(target.clone()),
+                    unix => unix,
+                };
+                dial(&service, origin).await?;
                 Ok(format!("{target}: connects"))
             }
         },

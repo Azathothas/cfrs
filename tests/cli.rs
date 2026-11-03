@@ -1310,3 +1310,21 @@ fn exit_codes_of_flags_and_configuration() {
         assert_eq!(code, Some(want), "{args:?}: {err}");
     }
 }
+
+/// Issue 204: share --mode proxy takes a unix socket origin.
+#[test]
+fn share_proxy_takes_a_unix_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("api.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let sock = sock.to_str().unwrap();
+    let out = cfrs(&["share", "--unix", sock, "--check", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let service = doc["plan"]["ingress"][0]["service"].as_str().unwrap();
+    assert!(service.contains(&format!("unix:{sock}")), "{doc}");
+    let out = cfrs(&["share", "--unix", sock, "--port", "1", "--check"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    let out = cfrs(&["share", "--unix", "/nonexistent.sock", "--check"]);
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+}

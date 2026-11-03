@@ -531,6 +531,14 @@ async fn write_axum_response(
 
 // ── quickbridge proxy mode ──────────────────────────────────────────────────
 
+/// The origin of a proxy share: `unix:/PATH` (issue 204) or `host:port`.
+pub fn share_origin(target: &str) -> Service {
+    match target.strip_prefix("unix:") {
+        Some(path) => Service::Unix(path.into()),
+        None => Service::Http(format!("http://{target}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn share_proxy(
     target: &str,
@@ -591,7 +599,7 @@ async fn share_proxy(
                 let html = gate.page_html(&next, true);
                 write_simple_response(
                     &mut writer,
-                    200,
+                    403,
                     "text/html; charset=utf-8",
                     html.as_bytes(),
                 )
@@ -604,7 +612,7 @@ async fn share_proxy(
         let html = gate.page_html(&path, false);
         return write_simple_response(
             &mut writer,
-            200,
+            crate::gate::locked_status(method),
             "text/html; charset=utf-8",
             html.as_bytes(),
         )
@@ -612,7 +620,7 @@ async fn share_proxy(
     }
 
     control.touch();
-    let service = Service::Http(format!("http://{target}"));
+    let service = share_origin(target);
     let result = forward_http(
         &service,
         &OriginOptions::default(),
@@ -1411,6 +1419,17 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         }
+    }
+
+    // Issue 204: the origin of a proxy share.
+    #[test]
+    fn the_origin_of_a_proxy_share() {
+        assert!(
+            matches!(share_origin("unix:/run/a.sock"), Service::Unix(p) if p == std::path::Path::new("/run/a.sock"))
+        );
+        assert!(
+            matches!(share_origin("127.0.0.1:3000"), Service::Http(u) if u == "http://127.0.0.1:3000")
+        );
     }
 
     // Issue 199: an HTTP request to a raw TCP origin gets 501, with no dial.

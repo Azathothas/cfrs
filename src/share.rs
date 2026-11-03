@@ -370,24 +370,37 @@ fn unlock_response(gate: &Gate, password: &str, next: &str) -> Response {
             }
             response
         }
-        None => Html(gate.page_html(next, true)).into_response(),
+        // Issue 194: a wrong PIN is a refusal (the browser shows the page).
+        None => (
+            http::StatusCode::FORBIDDEN,
+            Html(gate.page_html(next, true)),
+        )
+            .into_response(),
     }
 }
 
-fn gate_blocked(gate: &Gate, headers: &HeaderMap, uri: &Uri) -> Option<Response> {
+fn gate_blocked(
+    gate: &Gate,
+    method: &http::Method,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Option<Response> {
     if uri.path() == UNLOCK_PATH || gate.is_open(headers) {
         return None;
     }
     let next = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    Some(Html(gate.page_html(next, false)).into_response())
+    let status = http::StatusCode::from_u16(crate::gate::locked_status(method.as_str()))
+        .unwrap_or(http::StatusCode::FORBIDDEN);
+    Some((status, Html(gate.page_html(next, false))).into_response())
 }
 
 async fn upload_landing(
     State(state): State<Arc<UploadState>>,
+    method: http::Method,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    if let Some(response) = gate_blocked(&state.gate, &headers, &uri) {
+    if let Some(response) = gate_blocked(&state.gate, &method, &headers, &uri) {
         return response;
     }
     state.control.touch();
@@ -526,11 +539,12 @@ async fn drop_body(multipart: &mut Multipart) -> u64 {
 
 async fn upload_receive(
     State(state): State<Arc<UploadState>>,
+    method: http::Method,
     headers: HeaderMap,
     uri: Uri,
     mut multipart: Multipart,
 ) -> Response {
-    if let Some(response) = gate_blocked(&state.gate, &headers, &uri) {
+    if let Some(response) = gate_blocked(&state.gate, &method, &headers, &uri) {
         return response;
     }
     state.control.touch();
@@ -803,10 +817,11 @@ async fn unlock_download(
 
 async fn download_landing(
     State(state): State<Arc<DownloadState>>,
+    method: http::Method,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    if let Some(response) = gate_blocked(&state.gate, &headers, &uri) {
+    if let Some(response) = gate_blocked(&state.gate, &method, &headers, &uri) {
         return response;
     }
     state.control.touch();
@@ -827,7 +842,7 @@ async fn download_file(
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    if let Some(response) = gate_blocked(&state.gate, &headers, &uri) {
+    if let Some(response) = gate_blocked(&state.gate, &method, &headers, &uri) {
         return response;
     }
     state.control.touch();
@@ -1463,6 +1478,35 @@ mod tests {
             .get(header::LOCATION)
             .map(|v| v.to_str().unwrap().to_string());
         (response.status().as_u16(), location)
+    }
+
+    /// Issue 194: a POST to a gated upload with no cookie gets 403 and
+    /// saves nothing; a GET gets the page with 200; a wrong PIN gets 403.
+    #[tokio::test]
+    async fn a_locked_post_gets_403_and_saves_nothing() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.gate = Gate::pin();
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let body = multipart(&[("a.bin", 100)]);
+        let response = app
+            .router()
+            .oneshot(upload_request(&token, axum::body::Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+        assert!(files_in(dir.path()).is_empty());
+        let router = app.router();
+        assert_eq!(
+            send(&router, "GET", &format!("/s/{token}/"), "").await.0,
+            200
+        );
+        let (status, _) = send(&router, "POST", UNLOCK_PATH, "password=wrong&next=/").await;
+        assert_eq!(status, 403);
+        assert_eq!(crate::gate::locked_status("HEAD"), 200);
+        assert_eq!(crate::gate::locked_status("PUT"), 403);
     }
 
     /// Only the session id of the share opens its paths, and an unlock goes

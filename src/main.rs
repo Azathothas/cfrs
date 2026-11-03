@@ -580,8 +580,12 @@ struct ShareArgs {
     #[arg(long)]
     file: Option<PathBuf>,
     /// Local HTTP port to share (proxy mode).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "unix")]
     port: Option<u16>,
+    /// A unix socket of a local HTTP server to share (proxy mode), for a
+    /// host with no TCP listener.
+    #[arg(long, value_name = "PATH")]
+    unix: Option<PathBuf>,
     /// Require a 6-digit PIN (always on for proxy mode).
     #[arg(long)]
     password: bool,
@@ -2468,6 +2472,9 @@ fn share_mode(args: &ShareArgs) -> Result<ModeArg> {
     if args.port.is_some() {
         wanted.push(("--port", ModeArg::Proxy));
     }
+    if args.unix.is_some() {
+        wanted.push(("--unix", ModeArg::Proxy));
+    }
     if args.dir.is_some() {
         wanted.push(("--dir", ModeArg::Upload));
     }
@@ -2505,10 +2512,31 @@ async fn share(args: ShareArgs) -> Result<()> {
                 .fault(Fault::Usage)?;
             ShareConfig::download(file)
         }
+        // Issue 204: --unix gives a unix socket origin.
+        ModeArg::Proxy if args.unix.is_some() => {
+            let path = args.unix.clone().expect("matched above");
+            use std::os::unix::fs::FileTypeExt as _;
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.file_type().is_socket() => {}
+                Ok(_) => {
+                    return Err(cfrs::exit::fault(
+                        Fault::Usage,
+                        anyhow::anyhow!("--unix {}: not a unix socket", path.display()),
+                    ))
+                }
+                Err(err) => {
+                    return Err(cfrs::exit::fault(
+                        Fault::Unavailable,
+                        anyhow::anyhow!("--unix {}: {err}", path.display()),
+                    ))
+                }
+            }
+            ShareConfig::proxy(format!("unix:{}", path.display()))
+        }
         ModeArg::Proxy => {
             let port = args
                 .port
-                .context("proxy mode needs --port")
+                .context("proxy mode needs --port or --unix")
                 .fault(Fault::Usage)?;
             // A check sends no request to the origin: it only connects.
             if !args.common.check {

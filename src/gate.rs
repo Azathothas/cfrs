@@ -42,6 +42,17 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The status of the PIN page for a locked request (issue 194): 200 for
+/// GET and HEAD (a browser shows the page), 403 for each other method (a
+/// script sees the refusal). 401 needs WWW-Authenticate (RFC 9110).
+pub fn locked_status(method: &str) -> u16 {
+    if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
+        200
+    } else {
+        403
+    }
+}
+
 /// A `next` target of an unlock: a path of this site only. A
 /// scheme-relative URL (`//host`), a backslash (`/\\host`) and a control
 /// character give `/`.

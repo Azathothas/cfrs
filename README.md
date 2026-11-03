@@ -403,6 +403,7 @@ Each other path answers 404. With `--spa`, an unknown path answers the
 cfrs share --mode upload --password                 # receive files, with a PIN
 cfrs share --mode download --file ./report.pdf      # send one file
 cfrs share --mode proxy --port 3000                 # share a local port, with a PIN
+cfrs share --mode proxy --unix /run/api.sock        # share an HTTP unix socket, with a PIN
 cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 ```
 
@@ -412,6 +413,9 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
   a constant-time compare. After 10 wrong codes, no code opens the session:
   start a new one. After the unlock, the browser goes back to a path of the
   same site only.
+* A locked GET or HEAD gets the PIN page with 200 (for a browser). A locked
+  request with another method (an upload POST, an API call) gets the page
+  with 403, and nothing is done. A wrong PIN gets 403.
 * The upload limits are 512 MiB for each file, 32 files and 4 GiB in total
   for each session. A request over a limit gets 413, and no file of that
   request is saved: each file waits in a hidden `.part` file until the
