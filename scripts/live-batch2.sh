@@ -91,7 +91,7 @@ echo "== warp forward (issue 143)"
 "$cfrs" warp --identity "$dir/a.json" forward -L 127.0.0.1:18443=1.1.1.1:443 --run-for 200 > "$dir/fwd.log" 2>&1 &
 pids="$pids $!"
 wait_port 18443 "$dir/fwd.log"
-curl -fsS --max-time 30 --resolve one.one.one.one:18443:127.0.0.1 https://one.one.one.one:18443/cdn-cgi/trace | grep '^warp='
+curl -fsS --noproxy '*' --max-time 30 --resolve one.one.one.one:18443:127.0.0.1 https://one.one.one.one:18443/cdn-cgi/trace | grep '^warp='
 
 echo "== a nested session (issue 156)"
 "$cfrs" --proxy socks5h://127.0.0.1:40010 warp --identity "$dir/b.json" proxy \

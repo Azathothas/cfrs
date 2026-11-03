@@ -1,19 +1,24 @@
 //! The exit of a WARP session (issue 147): the colo, the country and the
 //! address that a destination sees, from `/cdn-cgi/trace` of 1.1.1.1
-//! through the tunnel. The request goes to an address, so no DNS step comes
-//! first.
+//! through the tunnel, over HTTPS (plain HTTP on port 80 gave no trace in
+//! live run 41599321447). The request goes to an address, so no DNS step
+//! comes first. The certificate must have the name `one.one.one.one`.
 
-use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// The target of the trace: plain HTTP on an address of Cloudflare.
-pub const TRACE_TARGET: &str = "1.1.1.1:80";
+/// The address of the trace.
+pub const TRACE_ADDRESS: std::net::IpAddr =
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
+/// The name of the trace (the certificate and the Host header).
+pub const TRACE_NAME: &str = "one.one.one.one";
 /// The time limit of the trace.
-pub const TRACE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const TRACE_TIMEOUT: Duration = Duration::from_secs(15);
 /// The most bytes of the answer.
-const MAX_ANSWER: usize = 16 * 1024;
+const MAX_ANSWER: u64 = 16 * 1024;
 
 /// The exit of a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,40 +73,47 @@ pub fn parse(body: &str, rtt: Duration) -> Option<Exit> {
 
 /// The exit of the session of `stack`.
 pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
-    let target: SocketAddr = TRACE_TARGET.parse().expect("an address");
     let start = Instant::now();
     let work = async {
-        let conn = stack.tcp_connect(target).await?;
-        let request = b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nUser-Agent: cfrs\r\nConnection: close\r\n\r\n";
-        conn.send(request.to_vec()).await?;
+        let stream = super::proxy::dial(
+            Arc::new(stack.clone()),
+            pod_netns::socks::ProxyHost::Ip(TRACE_ADDRESS),
+            443,
+        )
+        .await?;
+        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let name = rustls::pki_types::ServerName::try_from(TRACE_NAME).expect("a name");
+        let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, stream)
+            .await
+            .context("TLS with 1.1.1.1 through WARP")?;
+        // HTTP/1.0: the body is not chunked, and ends with the connection.
+        let request = format!(
+            "GET /cdn-cgi/trace HTTP/1.0\r\nHost: {TRACE_NAME}\r\nUser-Agent: cfrs\r\n\r\n"
+        );
+        tls.write_all(request.as_bytes()).await?;
+        tls.flush().await?;
         let mut answer = Vec::new();
-        loop {
-            let data = conn.recv(4096).await?;
-            if data.is_empty() || answer.len() > MAX_ANSWER {
-                break;
-            }
-            answer.extend_from_slice(&data);
-            if answer.windows(4).any(|w| w == b"\r\n\r\n") && answer.ends_with(b"\n") {
-                let text = String::from_utf8_lossy(&answer);
-                if text.contains("\nwarp=") || text.contains("\nkex=") {
-                    break;
-                }
-            }
-        }
-        conn.close().await;
+        // A server that closes with no close_notify is an error of rustls;
+        // the bytes before it count.
+        let _ = (&mut tls).take(MAX_ANSWER).read_to_end(&mut answer).await;
         anyhow::Ok(answer)
     };
     let answer = tokio::time::timeout(TRACE_TIMEOUT, work)
         .await
         .map_err(|_| anyhow::anyhow!("no trace in {} s", TRACE_TIMEOUT.as_secs()))??;
     let text = String::from_utf8_lossy(&answer);
+    let status = text.lines().next().unwrap_or("").trim().to_string();
     let body = text
         .split_once("\r\n\r\n")
         .map(|(_, b)| b)
-        .context("the trace answer has no body")?;
+        .with_context(|| format!("the trace answer has no body ({status:?})"))?;
     match parse(body, start.elapsed()) {
         Some(exit) => Ok(exit),
-        None => bail!("the trace answer has no colo"),
+        None => bail!(
+            "the trace answer has no colo ({status:?}, {} bytes)",
+            answer.len()
+        ),
     }
 }
 

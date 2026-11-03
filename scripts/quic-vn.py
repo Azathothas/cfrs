@@ -31,9 +31,9 @@ def main():
     packet += bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid
     packet += b"\x00" * (1200 - len(packet))
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
     try:
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
         sock.sendto(packet, (host, port))
         answer, _ = sock.recvfrom(4096)
     except (socket.timeout, OSError) as err:
