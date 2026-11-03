@@ -152,7 +152,40 @@ pub struct Report {
     pub udp_dns: Outcome,
     pub ipv6: Outcome,
     pub localhost: Outcome,
+    /// The system resolver gives real addresses (issue 117): a sandbox or
+    /// a proxy can give synthetic ones (198.18.0.0/15, fd00::/8).
+    pub resolver: Outcome,
     pub advice: Vec<String>,
+}
+
+/// True for an address of a synthetic resolver: 198.18.0.0/15 (the range
+/// of fake-IP resolvers, and of the pod) or a unique local IPv6 address.
+pub fn is_synthetic(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 198 && (o[1] & 0xfe) == 18
+        }
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+/// The system resolver for a public name (issue 117).
+async fn resolver(timeout: Duration) -> Outcome {
+    match tokio::time::timeout(timeout, tokio::net::lookup_host(("example.com", 443))).await {
+        Ok(Ok(addrs)) => {
+            let ips: Vec<std::net::IpAddr> = addrs.map(|a| a.ip()).collect();
+            match ips.iter().find(|ip| is_synthetic(**ip)) {
+                Some(ip) => Outcome::Failed(format!(
+                    "synthetic: example.com is {ip} (a fake-IP resolver of a proxy or a sandbox)"
+                )),
+                None if ips.is_empty() => Outcome::Failed("no address".into()),
+                None => Outcome::Ok,
+            }
+        }
+        Ok(Err(err)) => Outcome::Failed(err.to_string()),
+        Err(_) => Outcome::Failed(format!("no answer in {} s", timeout.as_secs())),
+    }
 }
 
 async fn dial(path: Path, host: &str, port: u16, timeout: Duration) -> Result<BoxedIo> {
@@ -358,7 +391,12 @@ pub async fn run(timeout: Duration) -> Report {
         }
     }))
     .await;
-    let (udp_dns, ipv6, localhost) = tokio::join!(udp_dns(timeout), ipv6(timeout), localhost());
+    let (udp_dns, ipv6, localhost, resolver) = tokio::join!(
+        udp_dns(timeout),
+        ipv6(timeout),
+        localhost(),
+        resolver(timeout)
+    );
     let mut report = Report {
         proxy,
         warp_up,
@@ -367,6 +405,7 @@ pub async fn run(timeout: Duration) -> Report {
         udp_dns,
         ipv6,
         localhost,
+        resolver,
         advice: Vec::new(),
     };
     report.advice = advice(&report);
@@ -416,6 +455,9 @@ pub fn advice(report: &Report) -> Vec<String> {
                 .into(),
         );
     }
+    if matches!(&report.resolver, Outcome::Failed(why) if why.starts_with("synthetic")) {
+        out.push("the resolver of this host gives synthetic addresses: give names to a proxy (socks5h://, not socks5://), or map them with cfrs pod --map NAME=IP; cfrs pod sets RES_OPTIONS=single-request for glibc".into());
+    }
     if !report.ipv6.works() && !report.warp_up {
         out.push("no IPv6 here; IPv4 targets work through WARP".into());
     }
@@ -459,10 +501,11 @@ pub fn text(report: &Report) -> String {
         ));
     }
     out.push_str(&format!(
-        "\nThis host, direct (no WARP): UDP DNS (1.1.1.1:53): {}   IPv6: {}   localhost: {}\n",
+        "\nThis host, direct (no WARP): UDP DNS (1.1.1.1:53): {}   IPv6: {}   localhost: {}   resolver: {}\n",
         mark(&report.udp_dns),
         mark(&report.ipv6),
-        mark(&report.localhost)
+        mark(&report.localhost),
+        mark(&report.resolver)
     ));
     if !report.udp_dns.works() {
         out.push_str(if report.warp_up {
@@ -501,8 +544,22 @@ mod tests {
             udp_dns: udp,
             ipv6: Outcome::Failed("no".into()),
             localhost: Outcome::Ok,
+            resolver: Outcome::Ok,
             advice: Vec::new(),
         }
+    }
+
+    // Issue 117: a fake-IP resolver is named, with advice.
+    #[test]
+    fn a_synthetic_resolver_is_named() {
+        assert!(is_synthetic("198.18.0.7".parse().unwrap()));
+        assert!(is_synthetic("198.19.255.1".parse().unwrap()));
+        assert!(!is_synthetic("198.20.0.1".parse().unwrap()));
+        assert!(is_synthetic("fd00::1".parse().unwrap()));
+        assert!(!is_synthetic("2606:4700::1".parse().unwrap()));
+        let mut r = report(Vec::new(), false, Outcome::Failed("no".into()));
+        r.resolver = Outcome::Failed("synthetic: example.com is 198.18.0.7".into());
+        assert!(advice_has(&r, "synthetic addresses"));
     }
 
     // Issue 110: with no TCP listener of warp up, the advice has no eval.

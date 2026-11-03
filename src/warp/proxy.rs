@@ -102,6 +102,82 @@ pub async fn bind_all(listens: &[ProxyListen]) -> (Vec<Bound>, Vec<(ProxyListen,
     (bound, failed)
 }
 
+/// The counters of the proxy clients of this process (issue 117).
+#[derive(Default)]
+pub struct Stats {
+    pub active: std::sync::atomic::AtomicU64,
+    pub total: std::sync::atomic::AtomicU64,
+    pub refused: std::sync::atomic::AtomicU64,
+}
+
+/// The counters of this process.
+pub static STATS: Stats = Stats {
+    active: std::sync::atomic::AtomicU64::new(0),
+    total: std::sync::atomic::AtomicU64::new(0),
+    refused: std::sync::atomic::AtomicU64::new(0),
+};
+
+/// The most clients at the same time (`--max-connections`); 0 is no limit.
+static MAX_CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Set the most clients at the same time (issue 117); 0 is no limit.
+pub fn set_max_connections(n: u64) {
+    MAX_CONNECTIONS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The interval of the health line of the proxy in the log (issue 116).
+pub const HEALTH_EVERY: Duration = Duration::from_secs(600);
+
+/// Take a place for a new client: `None` when the limit is reached.
+fn admit() -> Option<Admitted> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let limit = MAX_CONNECTIONS.load(SeqCst);
+    let active = STATS.active.fetch_add(1, SeqCst) + 1;
+    if limit > 0 && active > limit {
+        STATS.active.fetch_sub(1, SeqCst);
+        STATS.refused.fetch_add(1, SeqCst);
+        return None;
+    }
+    STATS.total.fetch_add(1, SeqCst);
+    Some(Admitted)
+}
+
+/// A place of a client; the drop frees it.
+struct Admitted;
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        STATS
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Log one line about the health of the proxy each [`HEALTH_EVERY`]
+/// (issue 116: `cfrs logs warp` showed nothing after the start).
+pub fn health_log(live: Arc<super::Live<WarpStack>>) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let weak = Arc::downgrade(&live);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(HEALTH_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let Some(live) = weak.upgrade() else { return };
+                use std::sync::atomic::Ordering::Relaxed;
+                info!(
+                    clients = STATS.active.load(Relaxed),
+                    since_start = STATS.total.load(Relaxed),
+                    refused = STATS.refused.load(Relaxed),
+                    reconnects = live.reconnects(),
+                    "WARP proxy health"
+                );
+            }
+        });
+    });
+}
+
 /// Accept proxy clients on `bound` and connect them through the WARP
 /// session of `live`. Each client takes the session of the time it comes;
 /// after a reconnect (issue 75), new clients take the new session.
@@ -128,7 +204,21 @@ fn client<S>(live: Arc<super::Live<WarpStack>>, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    // Issue 117: over --max-connections, the client is closed at once.
+    let Some(admitted) = admit() else {
+        static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
+            *last = Some(std::time::Instant::now());
+            warn!(
+                limit = MAX_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed),
+                "WARP proxy: a client is refused, --max-connections is reached"
+            );
+        }
+        return;
+    };
     tokio::spawn(async move {
+        let _admitted = admitted;
         // The session of now: a new one after a reconnect.
         let stack = match live.get().await {
             Ok(stack) => stack,
@@ -844,6 +934,23 @@ mod tests {
             drop(client);
             let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
         }
+    }
+
+    // Issue 117: the limit refuses the client over it, and frees the place
+    // of a client that ends.
+    #[test]
+    fn the_connection_limit() {
+        use std::sync::atomic::Ordering::SeqCst;
+        set_max_connections(2);
+        let a = admit();
+        let b = admit();
+        assert!(a.is_some() && b.is_some());
+        let refused = STATS.refused.load(SeqCst);
+        assert!(admit().is_none());
+        assert_eq!(STATS.refused.load(SeqCst), refused + 1);
+        drop(a);
+        assert!(admit().is_some());
+        set_max_connections(0);
     }
 
     // Issue 115: a unix socket that answers is not taken.

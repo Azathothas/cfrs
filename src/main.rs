@@ -2662,6 +2662,10 @@ enum WarpCommand {
         /// Exit 69 when any listener does not start.
         #[arg(long)]
         strict: bool,
+        /// The most clients at the same time; a client over it is closed
+        /// at once, with a warning in the log. 0: no limit.
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        max_connections: u64,
         /// Stay up for this many seconds instead of until Ctrl-C.
         #[arg(long)]
         run_for: Option<u64>,
@@ -3067,8 +3071,10 @@ async fn warp(args: WarpArgs) -> Result<()> {
             listen,
             run_for,
             strict,
+            max_connections,
             ..
         } => {
+            cfrs::warp::proxy::set_max_connections(max_connections);
             let listens = listen
                 .iter()
                 .map(|l| cfrs::vnet::proxy::ProxyListen::parse(l))
@@ -3099,6 +3105,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
+            cfrs::warp::proxy::health_log(live.clone());
             let proxies: Vec<_> = bound
                 .into_iter()
                 .map(|b| cfrs::warp::proxy::run(live.clone(), b))
