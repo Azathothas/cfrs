@@ -1914,11 +1914,29 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
     } else {
         Config::default()
     };
-    if let Some(token) = &args.token {
+    // Issue 172: a token of the command line and --credentials-file are a
+    // conflict; a token of TUNNEL_TOKEN gives way to the flag.
+    let token = match (&args.token, &args.credentials_file) {
+        (Some(token), Some(path)) => {
+            if std::env::var("TUNNEL_TOKEN").ok().as_deref() != Some(token.as_str()) {
+                return Err(cfrs::exit::fault(
+                    Fault::Usage,
+                    anyhow::anyhow!("give --token or --credentials-file, not both"),
+                ));
+            }
+            tracing::warn!(
+                "TUNNEL_TOKEN is set; --credentials-file {} is used",
+                path.display()
+            );
+            None
+        }
+        (token, _) => token.as_ref(),
+    };
+    if let Some(token) = token {
         cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token)?;
+        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
     } else if let Some(path) = &args.credentials_file {
-        config.credentials = cfrs::config::parse_credentials_file(path)?;
+        config.credentials = cfrs::config::parse_credentials_file(path).fault(Fault::Config)?;
     }
 
     if args.config.is_none() {
@@ -2374,7 +2392,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
         cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token)?;
+        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Static {
         root: args.dir.clone(),
@@ -2452,7 +2470,7 @@ async fn share(args: ShareArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
         cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token)?;
+        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Share(share_config.clone()));
     config = args.common.apply(config)?;
@@ -2478,7 +2496,7 @@ async fn demo(args: DemoArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
         cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token)?;
+        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::HelloWorld);
     config = args.common.apply(config)?;

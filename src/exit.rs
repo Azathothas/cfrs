@@ -71,7 +71,7 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: FAILURE,
         name: "failure",
-        meaning: "A failure that has no other code. With --check: a check failed.",
+        meaning: "A failure that has no other code. With --check: a check of an origin or of the network failed (a bad flag or configuration has its own code).",
     },
     ExitCode {
         code: NO_BACKEND,
@@ -101,7 +101,7 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: CONFIG,
         name: "config",
-        meaning: "A configuration that cannot be used: a variable of the environment such as CFRS_EDGE, or a configuration file given with --config.",
+        meaning: "A configuration that cannot be used: a variable of the environment such as CFRS_EDGE, a configuration file given with --config, a tunnel token or a credentials file (as a flag or as a key of the file), or a roots file of --ca-file.",
     },
 ];
 

@@ -70,7 +70,7 @@ struct CredentialsJson {
 pub fn parse_token(token: &str) -> Result<Credentials> {
     let token = token.trim();
     let raw = decode_b64(token).context("token is not valid base64")?;
-    let parsed: TokenJson = serde_json::from_slice(&raw).context("token payload is not JSON")?;
+    let parsed: TokenJson = serde_json::from_slice(&raw).context("the token payload")?;
     let secret = decode_b64(&parsed.s)?;
     let tunnel_id = Uuid::parse_str(&parsed.t).context("token tunnel id is not a UUID")?;
     Ok(Credentials::Explicit {
@@ -84,10 +84,21 @@ pub fn parse_token(token: &str) -> Result<Credentials> {
 pub fn parse_credentials_file(path: &std::path::Path) -> Result<Credentials> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading credentials file {}", path.display()))?;
-    let parsed: CredentialsJson =
-        serde_json::from_str(&text).context("credentials file is not JSON")?;
-    let secret = decode_b64(&parsed.tunnel_secret).context("TunnelSecret is not base64")?;
-    let tunnel_id = Uuid::parse_str(&parsed.tunnel_id).context("TunnelID is not a UUID")?;
+    // The error of serde names a missing field, or the place of bad JSON.
+    let parsed: CredentialsJson = serde_json::from_str(&text)
+        .with_context(|| format!("credentials file {}", path.display()))?;
+    let secret = decode_b64(&parsed.tunnel_secret).with_context(|| {
+        format!(
+            "credentials file {}: TunnelSecret is not base64",
+            path.display()
+        )
+    })?;
+    let tunnel_id = Uuid::parse_str(&parsed.tunnel_id).with_context(|| {
+        format!(
+            "credentials file {}: TunnelID is not a UUID",
+            path.display()
+        )
+    })?;
     Ok(Credentials::Explicit {
         account_tag: parsed.account_tag,
         tunnel_id,
@@ -419,6 +430,7 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
         None | Some(serde_json::Value::Null) => serde_json::Map::new(),
         Some(serde_json::Value::Object(o)) => {
             check_keys(file, o, ORIGIN_REQUEST_KEYS, "originRequest")?;
+            check_origin_values(file, o, "originRequest")?;
             o.clone()
         }
         Some(_) => bail!("{}: originRequest: give a map of keys", file.display()),
@@ -441,6 +453,23 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
             bail!("{}: {place}: give a map of keys", file.display());
         };
         check_keys(file, rule, RULE_KEYS, &place)?;
+        match rule.get("service") {
+            None | Some(serde_json::Value::Null) => {
+                bail!(
+                    "{}: {place}: service: is missing, for example `service: http://127.0.0.1:8080`",
+                    file.display()
+                )
+            }
+            Some(serde_json::Value::String(_)) => {}
+            Some(_) => bail!("{}: {place}: service: give a string", file.display()),
+        }
+        for key in ["hostname", "path"] {
+            if let Some(value) = rule.get(key) {
+                if !value.is_string() && !value.is_null() {
+                    bail!("{}: {place}: {key}: give a string", file.display());
+                }
+            }
+        }
         let mut origin = match rule.remove("originRequest") {
             None | Some(serde_json::Value::Null) => serde_json::Map::new(),
             Some(serde_json::Value::Object(o)) => {
@@ -450,6 +479,7 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
                     ORIGIN_REQUEST_KEYS,
                     &format!("{place}, originRequest"),
                 )?;
+                check_origin_values(file, &o, &format!("{place}, originRequest"))?;
                 o
             }
             Some(_) => bail!(
@@ -462,6 +492,74 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
         }
         if !origin.is_empty() {
             rule.insert("originRequest".into(), serde_json::Value::Object(origin));
+        }
+    }
+    Ok(())
+}
+
+/// The types of the values of `originRequest` that cfrs reads (issue 172):
+/// a time needs a unit, a flag is true or false.
+fn check_origin_values(
+    file: &std::path::Path,
+    map: &serde_json::Map<String, serde_json::Value>,
+    place: &str,
+) -> Result<()> {
+    for (key, value) in map {
+        match key.as_str() {
+            "connectTimeout" | "tlsTimeout" | "keepAliveTimeout" | "tcpKeepAlive" => {
+                if value.is_number() {
+                    bail!(
+                        "{}: {place}: {key}: {value} needs a unit, for example {value}s",
+                        file.display()
+                    );
+                }
+                if !value.is_string() {
+                    bail!(
+                        "{}: {place}: {key}: give a time, for example 30s",
+                        file.display()
+                    );
+                }
+            }
+            "noTLSVerify" | "disableChunkedEncoding" | "stripAcceptEncoding" => {
+                if !value.is_boolean() {
+                    bail!("{}: {place}: {key}: give true or false", file.display());
+                }
+            }
+            "httpHostHeader" if !value.is_string() => {
+                bail!("{}: {place}: {key}: give a string", file.display());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The types of the top-level values that cfrs reads (issue 172).
+fn check_top_values(file: &std::path::Path, value: &serde_json::Value) -> Result<()> {
+    let map = match value {
+        serde_json::Value::Null => bail!(
+            "{}: the file has no keys (it needs ingress:, for example `ingress:` and `  - service: http://127.0.0.1:8080`)",
+            file.display()
+        ),
+        serde_json::Value::Object(map) => map,
+        _ => bail!(
+            "{}: the config must be a mapping of keys (for example ingress:), not a list or a value",
+            file.display()
+        ),
+    };
+    for key in ["tunnel", "credentials-file", "protocol"] {
+        if let Some(v) = map.get(key) {
+            if !v.is_string() && !v.is_null() {
+                bail!("{}: {key}: give a string", file.display());
+            }
+        }
+    }
+    if let Some(v) = map.get("ha-connections") {
+        if !v.is_u64() {
+            bail!(
+                "{}: ha-connections: give a number from 1 to 8",
+                file.display()
+            );
         }
     }
     Ok(())
@@ -487,7 +585,8 @@ fn nearest_key(key: &str, known: &[&'static str]) -> Option<&'static str> {
         .iter()
         .map(|k| (distance(key, k), *k))
         .min()
-        .filter(|(d, _)| *d <= 3)
+        // Issue 172: a short key is near each short key; "a" is not "tag".
+        .filter(|(d, _)| *d <= (key.chars().count() / 3).max(1) && *d < key.chars().count())
         .map(|(_, k)| k)
 }
 
@@ -507,6 +606,7 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
         .with_context(|| format!("reading config {}", path.display()))?;
     let mut value =
         crate::yaml::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
+    check_top_values(path, &value)?;
     if let Some(map) = value.as_object() {
         check_keys(path, map, CLOUDFLARED_KEYS, "a cloudflared config")?;
     }
@@ -751,6 +851,50 @@ mod tests {
         assert!(rules[1].origin.no_tls_verify);
         assert_eq!(rules[0].origin.http_host_header.as_deref(), Some("rule"));
         assert_eq!(rules[1].origin.http_host_header.as_deref(), Some("top"));
+    }
+
+    // Issue 172: clear errors for a list, a BOM, an empty file, bad types,
+    // a short key and a rule with no service.
+    #[test]
+    fn config_errors_are_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map(|_| ()).map_err(|e| format!("{e:#}"))
+        };
+        let err = load("- a\n- b\n").unwrap_err();
+        assert!(err.contains("must be a mapping"), "{err}");
+        load("\u{feff}ingress:\n  - service: http_status:404\n").unwrap();
+        let err = load("# nothing\n").unwrap_err();
+        assert!(err.contains("has no keys"), "{err}");
+        let err = load("ingress: 5\n").unwrap_err();
+        assert!(err.contains("ingress: give a list"), "{err}");
+        let err = load(
+            "ingress:\n  - service: http_status:404\n    originRequest:\n      connectTimeout: 5\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("connectTimeout: 5 needs a unit"), "{err}");
+        let err = load("ingress:\n  - hostname: a.example.com\n  - service: http_status:404\n")
+            .unwrap_err();
+        assert!(err.contains("ingress rule 1: service: is missing"), "{err}");
+        let err = load("a: 1\n").unwrap_err();
+        assert!(!err.contains("did you mean"), "{err}");
+        let err = load("tunel: x\n").unwrap_err();
+        assert!(err.contains("did you mean tunnel?"), "{err}");
+        let err = load("credentails-file: x\n").unwrap_err();
+        assert!(err.contains("did you mean credentials-file?"), "{err}");
+    }
+
+    // Issue 172: a credentials file with no TunnelID names the field.
+    #[test]
+    fn a_credentials_file_error_names_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"AccountTag":"a","TunnelSecret":"AAAA"}"#).unwrap();
+        let err = format!("{:#}", parse_credentials_file(&path).unwrap_err());
+        assert!(err.contains("TunnelID"), "{err}");
+        assert!(!err.contains("not JSON"), "{err}");
     }
 
     // Issue 171: a file value out of range is an error, not a silent clamp.

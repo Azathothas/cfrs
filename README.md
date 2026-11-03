@@ -313,6 +313,12 @@ ingress:
   rule wins.
 * `protocol:` and `ha-connections:` of the file are used. A flag
   (`--protocol`, `--ha-connections`) wins over the file.
+* `--token` and `--credentials-file` on one command line are a usage error
+  (exit 64). With the token from `TUNNEL_TOKEN`, `--credentials-file` wins,
+  and a warning says so. A bad token or credentials file exits 78.
+* A UTF-8 BOM at the start of the file is skipped. A list, an empty file, a
+  rule with no `service`, a time with no unit (`connectTimeout: 5`) and a
+  value of the wrong type each have their own message.
 
 cfrs reads the YAML with its own reader (`src/yaml.rs`). The reader accepts
 block mappings, block sequences, plain and quoted scalars on one line, and

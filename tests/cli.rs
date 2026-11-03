@@ -1208,3 +1208,51 @@ fn tunnel_tcp_takes_the_scheme_and_warns() {
     let out = cfrs(&["tunnel", "--tcp", "http://127.0.0.1:1", "--check"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
+
+/// Issue 172: a bad credentials file exits 78 as a flag and as a key; a
+/// bad token exits 78; --token with --credentials-file exits 64.
+#[test]
+fn bad_credentials_exit_78() {
+    let dir = tempfile::tempdir().unwrap();
+    let creds = dir.path().join("c.json");
+    std::fs::write(&creds, "{}").unwrap();
+    let creds = creds.to_str().unwrap();
+    let config = dir.path().join("config.yml");
+    std::fs::write(
+        &config,
+        format!("credentials-file: {creds}\ningress:\n  - service: http_status:404\n"),
+    )
+    .unwrap();
+    for args in [
+        vec![
+            "tunnel",
+            "--hello-world",
+            "--credentials-file",
+            creds,
+            "--check",
+        ],
+        vec!["tunnel", "--config", config.to_str().unwrap(), "--check"],
+        vec!["tunnel", "--hello-world", "--token", "garbage", "--check"],
+        vec!["serve", "--dir", ".", "--token", "garbage", "--check"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(&args)
+            .env_remove("TUNNEL_TOKEN")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args([
+            "tunnel",
+            "--hello-world",
+            "--token",
+            "x",
+            "--credentials-file",
+            creds,
+        ])
+        .env_remove("TUNNEL_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+}

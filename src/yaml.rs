@@ -30,6 +30,8 @@ struct Line<'a> {
 
 /// Read `text` as YAML of the subset above.
 pub fn parse(text: &str) -> Result<Value> {
+    // Issue 172: a UTF-8 BOM (an editor of Windows) is not part of a key.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let number = i + 1;

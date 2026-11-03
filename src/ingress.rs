@@ -282,7 +282,7 @@ pub(crate) struct RawIngress {
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
-    pub service: String,
+    pub service: Option<String>,
     #[serde(default, rename = "originRequest")]
     pub origin_request: RawOriginOptions,
 }
@@ -347,8 +347,13 @@ impl RawOriginOptions {
 
 pub(crate) fn ingress_from_raw(rules: Vec<RawIngress>) -> Result<Ingress> {
     let mut ingress = Ingress::new();
-    for raw in rules {
-        let service = Service::parse(&raw.service)?;
+    use anyhow::Context as _;
+    for (i, raw) in rules.into_iter().enumerate() {
+        let service = raw
+            .service
+            .as_deref()
+            .with_context(|| format!("ingress rule {}: service: is missing", i + 1))
+            .and_then(|s| Service::parse(s).with_context(|| format!("ingress rule {}", i + 1)))?;
         ingress.rules.push(IngressRule {
             hostname: raw.hostname,
             path: raw.path,
