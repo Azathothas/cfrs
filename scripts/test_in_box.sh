@@ -138,14 +138,20 @@ fi
 
 # The leg under test: quic+warp through the proxy, with the fetch of the
 # public URL as the payload proof (demo checks the body "Hello, world").
-if inbox sh "$here/live-run.sh" warp timeout 240 "$home/cfrs" demo --exit-on-verify; then
+rc=0
+inbox sh "$here/live-run.sh" warp timeout 240 "$home/cfrs" demo --exit-on-verify || rc=$?
+if [ "$rc" = 0 ]; then
     if grep -q 'leg=quic+warp' warp.err; then
         verdict warp ok "quic+warp registered through the proxy, and the URL answered"
     else
         verdict warp FAIL "demo passed, but not on quic+warp"
     fi
+elif [ "$rc" = 75 ] && grep -q '1015' warp.err; then
+    # Issue 182: the provision service limits the address of the runner
+    # (HTTP 429, error 1015). No leg was tried: not a fault of cfrs.
+    verdict warp skip "the quick-tunnel service refused the provision for now (429, error 1015)"
 else
-    verdict warp FAIL "demo failed in the box"
+    verdict warp FAIL "demo failed in the box (exit $rc)"
 fi
 
 # Negative control: with the MASQUE address refused, no leg is left.
