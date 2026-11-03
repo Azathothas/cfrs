@@ -443,6 +443,26 @@ impl Device {
         None
     }
 
+    /// The addresses of the MASQUE front door to try, in order (issue 124):
+    /// the IPv4 address of the first peer, then its IPv6 address. Both
+    /// have the key of the first peer.
+    pub fn masque_endpoints(&self) -> Vec<std::net::SocketAddr> {
+        let Some(peer) = self.config.peers.first() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let v4 = peer.endpoint.v4.split(':').next().unwrap_or("").trim();
+        if let Ok(ip) = v4.parse::<std::net::Ipv4Addr>() {
+            out.push(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+        }
+        let v6 = peer.endpoint.v6.trim().trim_start_matches('[');
+        let v6 = v6.split(']').next().unwrap_or(v6);
+        if let Ok(ip) = v6.parse::<std::net::Ipv6Addr>() {
+            out.push(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+        }
+        out
+    }
+
     /// The server's pinned public key, PEM (`PUBLIC KEY`).
     pub fn peer_public_key_pem(&self) -> Option<&str> {
         self.config
@@ -517,6 +537,14 @@ mod tests {
         assert_eq!(
             device.masque_endpoint(),
             Some("162.159.198.2:443".parse().unwrap())
+        );
+        // Issue 124: both addresses of the peer, IPv4 first.
+        assert_eq!(
+            device.masque_endpoints(),
+            [
+                "162.159.198.2:443".parse().unwrap(),
+                "[2606:4700:103::2]:443".parse().unwrap()
+            ]
         );
         assert_eq!(device.ipv4(), Some("172.16.0.2".parse().unwrap()));
         assert_eq!(device.ipv6(), Some("2606:4700:110::1".parse().unwrap()));

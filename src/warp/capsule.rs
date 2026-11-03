@@ -73,6 +73,36 @@ pub fn put_capsule(out: &mut impl BufMut, capsule_type: u64, value: &[u8]) {
 pub struct CapsuleDecoder {
     buf: Vec<u8>,
     error: Option<String>,
+    /// The addresses of the last ADDRESS_ASSIGN capsule (issue 121).
+    assigned: Option<Vec<(std::net::IpAddr, u8)>>,
+}
+
+/// The addresses of an ADDRESS_ASSIGN value (RFC 9484 section 4.7.1):
+/// request id (varint), IP version (1 byte), address (4 or 16 bytes),
+/// prefix length (1 byte), repeated. `None` for a value that does not
+/// parse: the layout of the front door is not known for sure.
+pub fn parse_address_assign(mut value: &[u8]) -> Option<Vec<(std::net::IpAddr, u8)>> {
+    let mut out = Vec::new();
+    while !value.is_empty() {
+        let (_, n) = get_varint(value)?;
+        value = &value[n..];
+        let (&version, rest) = value.split_first()?;
+        let len = match version {
+            4 => 4,
+            6 => 16,
+            _ => return None,
+        };
+        if rest.len() < len + 1 {
+            return None;
+        }
+        let ip = match version {
+            4 => std::net::IpAddr::from(<[u8; 4]>::try_from(&rest[..4]).ok()?),
+            _ => std::net::IpAddr::from(<[u8; 16]>::try_from(&rest[..16]).ok()?),
+        };
+        out.push((ip, rest[len]));
+        value = &rest[len + 1..];
+    }
+    Some(out)
 }
 
 /// The longest capsule value that the decoder takes. An IP packet of the
@@ -121,14 +151,28 @@ impl CapsuleDecoder {
         Some((capsule_type, value))
     }
 
-    /// Yield the next IP packet, skipping the control capsules.
+    /// Yield the next IP packet, skipping the control capsules. An
+    /// ADDRESS_ASSIGN is kept for [`take_assigned`](Self::take_assigned).
     pub fn next_packet(&mut self) -> Option<Bytes> {
         loop {
             let (capsule_type, value) = self.next_capsule()?;
             if capsule_type == CAPSULE_DATA && !value.is_empty() {
                 return Some(value);
             }
+            if capsule_type == CAPSULE_ADDRESS_ASSIGN {
+                match parse_address_assign(&value) {
+                    Some(addrs) => self.assigned = Some(addrs),
+                    None => {
+                        tracing::debug!(len = value.len(), "an ADDRESS_ASSIGN that does not parse")
+                    }
+                }
+            }
         }
+    }
+
+    /// The addresses of an ADDRESS_ASSIGN that came since the last call.
+    pub fn take_assigned(&mut self) -> Option<Vec<(std::net::IpAddr, u8)>> {
+        self.assigned.take()
     }
 
     pub fn buffered(&self) -> usize {
@@ -140,6 +184,30 @@ impl CapsuleDecoder {
 mod tests {
     use super::*;
     use bytes::BytesMut;
+
+    // Issue 121: an ADDRESS_ASSIGN is parsed and kept.
+    #[test]
+    fn an_address_assign_is_kept() {
+        let mut value = vec![0x01, 4, 172, 16, 0, 2, 32];
+        value.extend([0x02, 6]);
+        value.extend(
+            "2606:4700:110:8a36::2"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets(),
+        );
+        value.push(128);
+        let mut d = CapsuleDecoder::new();
+        d.push(&frame(CAPSULE_ADDRESS_ASSIGN, &value));
+        d.push(&frame(CAPSULE_DATA, b"\x45packet"));
+        assert_eq!(&d.next_packet().unwrap()[..], b"\x45packet");
+        let assigned = d.take_assigned().unwrap();
+        assert_eq!(assigned[0], ("172.16.0.2".parse().unwrap(), 32));
+        assert_eq!(assigned[1].1, 128);
+        assert!(d.take_assigned().is_none());
+        assert!(parse_address_assign(&[0x01, 9, 1]).is_none());
+        assert!(parse_address_assign(&[0x01, 4, 1, 2]).is_none());
+    }
 
     // Issue 123: a length over the limit stops the decoder, and the bytes
     // after it are not kept. Before, the buffer grew without a limit.

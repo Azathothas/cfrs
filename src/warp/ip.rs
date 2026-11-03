@@ -288,6 +288,24 @@ fn build_iface(config: &StackConfig, device: &mut LinkDevice) -> Interface {
     iface
 }
 
+/// Log an ADDRESS_ASSIGN of the front door: info when the stack has the
+/// address, a warning when not (issue 121: the stack uses the address of
+/// the device record).
+fn log_assigned(assigned: &[(IpAddr, u8)], ours: &[IpAddr]) -> bool {
+    let shown: Vec<String> = assigned.iter().map(|(ip, p)| format!("{ip}/{p}")).collect();
+    let all_ours = assigned.iter().all(|(ip, _)| ours.contains(ip));
+    if all_ours {
+        tracing::info!(assigned = %shown.join(" "), "the front door assigned the addresses of the stack");
+    } else {
+        tracing::warn!(
+            assigned = %shown.join(" "),
+            stack = ?ours,
+            "the front door assigned an address that the stack does not have"
+        );
+    }
+    all_ours
+}
+
 /// Run the driver in a task, with its supervisor.
 fn spawn_driver(
     driver: Driver,
@@ -384,10 +402,18 @@ impl WarpStack {
             let notify = notify.clone();
             let inbound = inbound.clone();
             let closed = closed.clone();
+            let ours: Vec<IpAddr> = std::iter::once(config.local)
+                .chain(config.local_v6.map(IpAddr::V6))
+                .collect();
             tokio::spawn(async move {
                 let mut rx = rx;
                 loop {
-                    match rx.recv_packet().await {
+                    let packet = rx.recv_packet().await;
+                    // Issue 121: the address that the front door assigned.
+                    if let Some(assigned) = rx.take_assigned() {
+                        log_assigned(&assigned, &ours);
+                    }
+                    match packet {
                         Ok(Some(packet)) => {
                             inbound.push(packet.to_vec());
                             notify.notify_one();
@@ -1380,6 +1406,13 @@ mod tests {
         let err = wait.try_recv().unwrap().unwrap_err();
         assert!(format!("{err}").contains("closed"), "{err}");
         assert!(d.pending.is_empty());
+    }
+
+    #[test]
+    fn an_assigned_address_is_checked() {
+        let ours: Vec<IpAddr> = vec!["172.16.0.2".parse().unwrap()];
+        assert!(log_assigned(&[("172.16.0.2".parse().unwrap(), 32)], &ours));
+        assert!(!log_assigned(&[("172.16.0.9".parse().unwrap(), 32)], &ours));
     }
 
     // Issue 111: a bad value is an error, not the default.

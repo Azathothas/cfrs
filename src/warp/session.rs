@@ -501,6 +501,12 @@ impl MasqueTx {
 }
 
 impl MasqueRx {
+    /// The addresses of an ADDRESS_ASSIGN capsule that came since the last
+    /// call (issue 121).
+    pub fn take_assigned(&mut self) -> Option<Vec<(std::net::IpAddr, u8)>> {
+        self.decoder.take_assigned()
+    }
+
     /// Receive one IP packet, waiting for more body bytes if needed.
     pub async fn recv_packet(&mut self) -> Result<Option<Bytes>> {
         loop {

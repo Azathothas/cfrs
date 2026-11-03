@@ -451,6 +451,38 @@ impl Names {
 /// datagram cost the full time limit).
 const DNS_RESEND: Duration = Duration::from_millis(1200);
 
+/// The variable that turns off the check of the data path of a new MASQUE
+/// session (issue 120), for a measurement.
+pub const NO_CHECK_VARIABLE: &str = "CFRS_WARP_NO_CHECK";
+
+/// The name of the DNS query of the check of the data path.
+const CHECK_NAME: &str = "cloudflare.com";
+
+/// Check that a packet crosses a new session (issue 120): a DNS query to
+/// the resolver of the tunnel gets an answer. Before, a session was "up"
+/// after the HTTP/2 answer 200, and a front door that carried no data gave
+/// a proxy that answered nothing. Gives the time of the answer.
+pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> {
+    let server = if ipv4 {
+        TUNNEL_RESOLVER
+    } else {
+        "[2606:4700:4700::1111]:53".parse().expect("an address")
+    };
+    check_data_path_at(stack, server).await
+}
+
+async fn check_data_path_at(stack: &WarpStack, server: SocketAddr) -> Result<Duration> {
+    let start = std::time::Instant::now();
+    query_at(stack, server, CHECK_NAME, pod_netns::dns::TYPE_A)
+        .await
+        .map_err(|e| {
+            e.context(format!(
+                "the MASQUE session is open, and a DNS query to {server} through it got no answer"
+            ))
+        })?;
+    Ok(start.elapsed())
+}
+
 async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> {
     query_at(stack, TUNNEL_RESOLVER, name, kind).await
 }
@@ -734,6 +766,21 @@ mod tests {
     }
 
     const PEER_DNS: &str = "198.51.100.7:53";
+
+    // Issue 120: the check of the data path needs an answer through the
+    // stack.
+    #[tokio::test]
+    async fn the_check_of_the_data_path_needs_an_answer() {
+        let (stack, _) = stack_with_dns(0);
+        assert!(check_data_path_at(&stack, PEER_DNS.parse().unwrap())
+            .await
+            .is_ok());
+        let (silent, _) = stack_with_dns(usize::MAX);
+        let err = check_data_path_at(&silent, PEER_DNS.parse().unwrap())
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("got no answer"), "{err:#}");
+    }
 
     // Issue 114: a lost DNS datagram is sent again. Before, it cost the
     // full time limit (5 s) and gave no answer.

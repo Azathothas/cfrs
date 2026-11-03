@@ -128,6 +128,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU: a number from 1 to 430 (default 1), or none: for a measurement of throughput. Another value is a configuration error (exit 78).",
     },
     EnvVar {
+        names: &["CFRS_WARP_NO_CHECK"],
+        used_by: "warp proxy, warp run, warp up, warp probe, warp nc, agent up",
+        meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and cfrs tries again. For a measurement.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

@@ -73,6 +73,38 @@ pub struct WarpClient {
     leg_file: Option<std::path::PathBuf>,
     /// The leg file was read.
     leg_read: std::sync::Once,
+    /// The address of the front door that worked last (issue 124).
+    endpoint_won: std::sync::Mutex<Option<std::net::SocketAddr>>,
+}
+
+/// True when this host has an IPv6 default route (/proc/net/ipv6_route):
+/// then an IPv6 front door is worth a try.
+fn has_ipv6_route() -> bool {
+    std::fs::read_to_string("/proc/net/ipv6_route")
+        .map(|t| {
+            t.lines().any(|l| {
+                l.starts_with("00000000000000000000000000000000 00 ") && !l.ends_with(" lo")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The order of the front door addresses: the one that worked last first,
+/// then the others; IPv6 only with an IPv6 route (or a proxy or a relay,
+/// which reach it for cfrs).
+fn endpoint_order(
+    all: Vec<std::net::SocketAddr>,
+    won: Option<std::net::SocketAddr>,
+    ipv6: bool,
+) -> Vec<std::net::SocketAddr> {
+    let mut out: Vec<std::net::SocketAddr> =
+        all.into_iter().filter(|a| a.is_ipv4() || ipv6).collect();
+    if let Some(won) = won {
+        if let Some(i) = out.iter().position(|a| *a == won) {
+            out.swap(0, i);
+        }
+    }
+    out
 }
 
 /// A leg in the leg file is used for this time.
@@ -164,6 +196,7 @@ impl WarpClient {
             relay_first: std::sync::atomic::AtomicBool::new(false),
             leg_file: None,
             leg_read: std::sync::Once::new(),
+            endpoint_won: std::sync::Mutex::new(None),
         })
     }
 
@@ -179,6 +212,7 @@ impl WarpClient {
             relay_first: std::sync::atomic::AtomicBool::new(false),
             leg_file: None,
             leg_read: std::sync::Once::new(),
+            endpoint_won: std::sync::Mutex::new(None),
         }
     }
 
@@ -404,11 +438,25 @@ impl WarpClient {
         let session = self.open_session().await?;
         let local = self.local_address()?;
         let (tx, rx) = session.split();
-        WarpStack::start(
+        let stack = WarpStack::start(
             tx,
             rx,
             StackConfig::new(local).with_ipv6(self.device.ipv6()),
-        )
+        )?;
+        // Issue 120: the session is up when a packet crossed it.
+        if std::env::var_os(proxy::NO_CHECK_VARIABLE).is_some_and(|v| !v.is_empty()) {
+            tracing::debug!(
+                "{} is set: no check of the data path",
+                proxy::NO_CHECK_VARIABLE
+            );
+        } else {
+            let took = proxy::check_data_path(&stack, local.is_ipv4()).await?;
+            tracing::info!(
+                ms = took.as_millis() as u64,
+                "a packet crossed the MASQUE session"
+            );
+        }
+        Ok(stack)
     }
 
     /// Open the session without the userspace stack, for callers that only want
@@ -489,12 +537,51 @@ impl WarpClient {
             sni: self.masque.sni.as_deref(),
         };
         let (endpoint, pinned) = Self::endpoint_and_pin(&self.device)?;
-        let endpoint = self.masque.endpoint.unwrap_or(endpoint);
-        let first = MasqueSession::connect(endpoint, &self.identity, pinned, dial).await;
-        let err = match first {
-            Ok(session) => return Ok(session),
-            Err(err) if format!("{err:#}").contains(session::PIN_MISMATCH) => err,
-            Err(err) => return Err(err),
+        // Issue 124: the IPv4 and the IPv6 address of the front door, the
+        // one that worked last first. An override is the only one.
+        let candidates = match self.masque.endpoint {
+            Some(one) => vec![one],
+            None => {
+                let won = *self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner());
+                let ipv6 = relay.is_some() || self.proxy.is_some() || has_ipv6_route();
+                let order = endpoint_order(self.device.masque_endpoints(), won, ipv6);
+                if order.is_empty() {
+                    vec![endpoint]
+                } else {
+                    order
+                }
+            }
+        };
+        let mut failures = Vec::new();
+        let mut mismatch = None;
+        for (i, endpoint) in candidates.iter().enumerate() {
+            match MasqueSession::connect(*endpoint, &self.identity, pinned.clone(), dial).await {
+                Ok(session) => {
+                    *self.endpoint_won.lock().unwrap_or_else(|e| e.into_inner()) = Some(*endpoint);
+                    return Ok(session);
+                }
+                Err(err) if format!("{err:#}").contains(session::PIN_MISMATCH) => {
+                    mismatch = Some(err);
+                    break;
+                }
+                Err(err) => {
+                    if i + 1 < candidates.len() {
+                        tracing::warn!(error = %format!("{err:#}"), "the front door {endpoint} failed; trying {}", candidates[i + 1]);
+                    }
+                    failures.push(err);
+                }
+            }
+        }
+        let Some(err) = mismatch else {
+            let mut errs = failures.into_iter();
+            let first = errs
+                .next()
+                .unwrap_or_else(|| anyhow::anyhow!("no front door address"));
+            return Err(errs.fold(first, |acc, e| {
+                acc.context(format!(
+                    "the other address of the front door failed too ({e:#})"
+                ))
+            }));
         };
         tracing::warn!(error = %format!("{err:#}"), "the MASQUE key is not the pinned key; reading the device record again");
         let fresh = register::get_device(&self.device.id, &self.device.token, self.proxy.as_ref())
@@ -581,6 +668,18 @@ pub(crate) fn check_private(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod private_file_tests {
     use super::*;
+
+    // Issue 124: the address that worked goes first; IPv6 only with a
+    // route.
+    #[test]
+    fn the_order_of_the_front_door_addresses() {
+        let v4: std::net::SocketAddr = "162.159.198.2:443".parse().unwrap();
+        let v6: std::net::SocketAddr = "[2606:4700:103::2]:443".parse().unwrap();
+        assert_eq!(endpoint_order(vec![v4, v6], None, true), [v4, v6]);
+        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), true), [v6, v4]);
+        assert_eq!(endpoint_order(vec![v4, v6], None, false), [v4]);
+        assert_eq!(endpoint_order(vec![v4, v6], Some(v6), false), [v4]);
+    }
 
     // Issue 126: a relay that worked in the last hours goes first; an old
     // entry, another relay or a bad file does not.
