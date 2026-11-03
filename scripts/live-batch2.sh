@@ -195,8 +195,12 @@ echo "h2 download 20 MB: HTTP ${down%% *}, $(echo "${down#* }" | awk '{ printf "
 kill "$pid" 2> /dev/null || true
 
 echo "== warp proxy --l4 (issue 140; a report, not a check yet)"
+# A plain CONNECT got 403 with both names (live run 41635661105): each
+# form of the request, with each name.
+for form in plain extended header; do
 for sni in consumer-masque-proxy.cloudflareclient.com consumer-masque.cloudflareclient.com; do
-    "$cfrs" warp --identity "$dir/a.json" proxy --l4 --l4-sni "$sni" --listen tcp://127.0.0.1:40017 --run-for 60 > "$dir/l4.log" 2>&1 &
+    echo "l4 form $form:"
+    CFRS_WARP_L4_FORM=$form "$cfrs" warp --identity "$dir/a.json" proxy --l4 --l4-sni "$sni" --listen tcp://127.0.0.1:40017 --run-for 40 > "$dir/l4.log" 2>&1 &
     lpid=$!
     pids="$pids $lpid"
     i=0
@@ -215,6 +219,7 @@ for sni in consumer-masque-proxy.cloudflareclient.com consumer-masque.cloudflare
     sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/l4.log" | grep -iE 'error|refused|cfrs: ' | tail -3
     kill "$lpid" 2> /dev/null || true
     wait "$lpid" 2> /dev/null || true
+done
 done
 
 echo "== the WireGuard leg (issue 152; a report, not a check yet)"

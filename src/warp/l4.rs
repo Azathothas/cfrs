@@ -15,24 +15,58 @@ use super::h3;
 /// The TLS name of the L4 door.
 pub const L4_SNI: &str = "consumer-masque-proxy.cloudflareclient.com";
 
+/// The variable of the form of the CONNECT of the L4 door (a test of the
+/// form that the door takes, issue 140): `plain` (RFC 9114, the default),
+/// `extended` (`:protocol cf-connect-tcp`, RFC 9220), or `header` (a plain
+/// CONNECT with `cf-connect-proto: cf-connect-tcp`).
+pub const FORM_VARIABLE: &str = "CFRS_WARP_L4_FORM";
+
+/// A length or an index with a prefix of 7 bits, after `flags`.
+fn put_len(out: &mut Vec<u8>, flags: u8, bits: u8, len: usize) {
+    let max = (1usize << bits) - 1;
+    if len < max {
+        out.push(flags | len as u8);
+        return;
+    }
+    out.push(flags | max as u8);
+    let mut v = len - max;
+    while v >= 128 {
+        out.push((v % 128) as u8 | 0x80);
+        v /= 128;
+    }
+    out.push(v as u8);
+}
+
+/// A literal field line with a literal name (001NHxxx), no Huffman code.
+fn put_literal(out: &mut Vec<u8>, name: &str, value: &str) {
+    put_len(out, 0x20, 3, name.len());
+    out.extend_from_slice(name.as_bytes());
+    put_len(out, 0x00, 7, value.len());
+    out.extend_from_slice(value.as_bytes());
+}
+
 /// The field section of a CONNECT to `authority` (`host:port`).
 pub fn connect_headers(authority: &str) -> Vec<u8> {
-    let mut out = vec![0x00, 0x00, 0xc0 | 15]; // :method CONNECT (static 15)
-                                               // :authority (static name 0), a literal value with no Huffman code.
-    out.push(0x50);
-    let len = authority.len();
-    if len < 127 {
-        out.push(len as u8);
-    } else {
-        out.push(0x7f);
-        let mut v = len - 127;
-        while v >= 128 {
-            out.push((v % 128) as u8 | 0x80);
-            v /= 128;
-        }
-        out.push(v as u8);
+    connect_headers_form(authority, &std::env::var(FORM_VARIABLE).unwrap_or_default())
+}
+
+/// [`connect_headers`] of one form of [`FORM_VARIABLE`].
+pub fn connect_headers_form(authority: &str, form: &str) -> Vec<u8> {
+    // :method CONNECT (static 15).
+    let mut out = vec![0x00, 0x00, 0xc0 | 15];
+    if form == "extended" {
+        out.push(0xc0 | 23); // :scheme https
+        out.push(0xc0 | 1); // :path /
     }
+    // :authority (static name 0), a literal value with no Huffman code.
+    out.push(0x50);
+    put_len(&mut out, 0x00, 7, authority.len());
     out.extend_from_slice(authority.as_bytes());
+    match form {
+        "extended" => put_literal(&mut out, ":protocol", "cf-connect-tcp"),
+        "header" => put_literal(&mut out, "cf-connect-proto", "cf-connect-tcp"),
+        _ => {}
+    }
     out
 }
 
@@ -179,7 +213,7 @@ mod tests {
             loop {
                 while let Some((kind, payload)) = frames.next_frame().unwrap() {
                     if kind == 0x01 {
-                        assert_eq!(payload, connect_headers("example.com:443"));
+                        assert_eq!(payload, connect_headers_form("example.com:443", "plain"));
                         send.write_all(&h3::frame(0x01, &[0, 0, 0xc0 | 25]))
                             .await
                             .unwrap();
@@ -218,11 +252,16 @@ mod tests {
 
     #[test]
     fn the_connect_request() {
-        let h = connect_headers("example.com:443");
+        let h = connect_headers_form("example.com:443", "plain");
         assert_eq!(&h[..5], &[0, 0, 0xcf, 0x50, 15]);
         assert_eq!(&h[5..], b"example.com:443");
         let long = "a".repeat(200) + ":1";
-        let h = connect_headers(&long);
+        let h = connect_headers_form(&long, "plain");
+        let e = connect_headers_form("a:1", "extended");
+        assert_eq!(&e[..5], &[0, 0, 0xcf, 0xd7, 0xc1]);
+        assert!(e.windows(14).any(|w| w == b"cf-connect-tcp"));
+        let p = connect_headers_form("a:1", "header");
+        assert!(p.windows(16).any(|w| w == b"cf-connect-proto"));
         assert_eq!(h[4], 0x7f);
         assert_eq!(authority("2606:4700::1111", 443), "[2606:4700::1111]:443");
         assert_eq!(authority("1.1.1.1", 80), "1.1.1.1:80");

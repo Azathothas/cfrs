@@ -143,6 +143,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --carry (none, or wg) and of --carry-endpoint (IP:PORT). wg: a second WireGuard device (warp-carry.json of the state directory, registered when the file has none) goes inside the tunnel, on a UDP socket of the first stack; the tools use the stack of the second device (IPv4, MTU 1200). Its exit is the exit of the second device. With --transport wireguard, both hops are WireGuard.",
     },
     EnvVar {
+        names: &["CFRS_WARP_L4_FORM"],
+        used_by: "warp proxy --l4",
+        meaning: "The form of the CONNECT of the L4 door, for a test of the door: plain (RFC 9114, the default), extended (:protocol cf-connect-tcp) or header (cf-connect-proto: cf-connect-tcp).",
+    },
+    EnvVar {
         names: &["CFRS_WARP_L4"],
         used_by: "warp proxy",
         meaning: "Set to true: the value of --l4. Each TCP client of the proxy is one HTTP/3 CONNECT stream to the L4 door of WARP on UDP 443 (TLS name of --l4-sni), with no IP stack; UDP is not served.",
