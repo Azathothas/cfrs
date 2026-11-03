@@ -455,6 +455,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   of `--fragment-size` bytes (64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
+* `--carry wg` (global, `CFRS_WARP_CARRY`): a second WireGuard device
+  (`warp-carry.json` in the state directory) inside the tunnel, on a UDP
+  socket of the first stack. The tools use the stack of the second device
+  (IPv4, MTU 1200), so a destination sees its exit. With `--transport
+  wireguard`, both hops are WireGuard. Not for `warp tun`.
 * `warp proxy --l4` (`CFRS_WARP_L4`): each TCP client is one HTTP/3
   `CONNECT` stream to the L4 door of WARP (UDP 443, TLS name of `--l4-sni`,
   `consumer-masque-proxy.cloudflareclient.com`), with no IP stack in

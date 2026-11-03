@@ -88,6 +88,9 @@ pub struct WarpClient {
     /// WireGuard in place of MASQUE (issue 152): the peer of the device
     /// of `warp export`.
     wireguard: Option<wg::Peer>,
+    /// A second device on WireGuard inside the first session (issues 154
+    /// and 155): the stack of the tools is the stack of this one.
+    carry: Option<wg::Peer>,
 }
 
 /// The order of the front door addresses: the one that worked last first,
@@ -124,6 +127,11 @@ fn door_file_of(identity: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| "warp".into());
     identity.with_file_name(format!("{stem}-door.json"))
 }
+
+/// The MTU of the stack of a carried device (issues 154 and 155): 1280 of
+/// the outer stack, less the IPv4 and UDP headers (28), the header and the
+/// tag of WireGuard (32), and its padding (at most 15).
+pub const CARRY_MTU: usize = 1200;
 
 /// A door in the door file is used for this time.
 const DOOR_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
@@ -248,6 +256,7 @@ impl WarpClient {
             endpoint_won: std::sync::Mutex::new(None),
             door_bad: std::sync::Mutex::new(None),
             wireguard: None,
+            carry: None,
         })
     }
 
@@ -266,6 +275,7 @@ impl WarpClient {
             endpoint_won: std::sync::Mutex::new(None),
             door_bad: std::sync::Mutex::new(None),
             wireguard: None,
+            carry: None,
         }
     }
 
@@ -291,6 +301,13 @@ impl WarpClient {
         let endpoint = self.masque.endpoint.unwrap_or(endpoint);
         let tls = session::tls_config_alpn(&self.identity, pinned, h3::ALPN)?;
         Ok(l4::L4::new(endpoint, tls, sni))
+    }
+
+    /// Carry a second WireGuard device inside the session (issues 154 and
+    /// 155).
+    pub fn with_carry(mut self, peer: Option<wg::Peer>) -> Self {
+        self.carry = peer;
+        self
     }
 
     /// True when the tunnel goes on WireGuard.
@@ -549,6 +566,52 @@ impl WarpClient {
 
     /// Open the MASQUE session and start the userspace stack on top of it.
     pub async fn connect(&self) -> Result<WarpStack> {
+        let outer = self.connect_outer().await?;
+        match &self.carry {
+            None => Ok(outer),
+            Some(peer) => self.connect_carried(outer, peer).await,
+        }
+    }
+
+    /// The stack of a second WireGuard device inside the stack `outer`
+    /// (issues 154 and 155). Its MTU leaves room for WireGuard and the
+    /// headers of the outer packet; it has IPv4 only (IPv6 needs an MTU of
+    /// 1280).
+    async fn connect_carried(&self, outer: WarpStack, peer: &wg::Peer) -> Result<WarpStack> {
+        let session = MasqueSession::connect_wg_inside(peer, &outer)
+            .await
+            .context("the carried WireGuard tunnel")?;
+        let local = peer
+            .v4
+            .map(std::net::IpAddr::V4)
+            .context("the carried device has no IPv4 address")?;
+        let mut config = StackConfig::new(local);
+        config.mtu = CARRY_MTU;
+        let (tx, rx) = session.split();
+        let inner = WarpStack::start(tx, rx, config)?;
+        // The outer stack lives as long as the inner one.
+        let watch = inner.clone();
+        tokio::spawn(async move {
+            while !watch.is_closed() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            drop(outer);
+        });
+        if std::env::var_os(proxy::NO_CHECK_VARIABLE).is_none_or(|v| v.is_empty()) {
+            let took = proxy::check_data_path(&inner, true)
+                .await
+                .context("the carried tunnel carries no packet")?;
+            tracing::info!(
+                ms = took.as_millis() as u64,
+                "a packet crossed the carried WireGuard tunnel"
+            );
+        }
+        crate::decisions::count("masque", "carry");
+        Ok(inner)
+    }
+
+    /// The session of this client and the stack on it.
+    async fn connect_outer(&self) -> Result<WarpStack> {
         let session = self.open_session().await?;
         let local = self.local_address()?;
         let (tx, rx) = session.split();
@@ -600,6 +663,11 @@ impl WarpClient {
     /// Open the session without the userspace stack, for callers that only want
     /// the raw packet pipe.
     pub async fn connect_raw(&self) -> Result<MasqueSession> {
+        if self.carry.is_some() {
+            bail!(
+                "--carry is for the userspace stack (warp proxy, run, nc, probe), not for warp tun"
+            );
+        }
         self.open_session().await
     }
 

@@ -18,8 +18,10 @@ cleanup() {
             "$cfrs" warp --identity "$dir/$id.json" delete > /dev/null 2>&1 || true
         fi
     done
-    # The WireGuard device of --transport wireguard (the state directory).
+    # The WireGuard device of --transport wireguard (the state directory),
+    # and the carried device of --carry wg.
     "$cfrs" warp export --delete > /dev/null 2>&1 || true
+    "$cfrs" warp export --export-identity "${XDG_STATE_HOME:-$HOME/.local/state}/cfrs/warp-carry.json" --delete > /dev/null 2>&1 || true
     if [ -f "$dir/wg.json" ]; then
         "$cfrs" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1 || true
     fi
@@ -232,6 +234,20 @@ else
     echo "wireguard probe: FAIL"
     sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/wgp.out" | tail -5
 fi
+
+echo "== a WireGuard device in the tunnel (issues 154 and 155; a report)"
+for leg in masque wireguard; do
+    if "$cfrs" warp --identity "$dir/a.json" --transport "$leg" --carry wg exit --json > "$dir/carry.json" 2> "$dir/carry.err"; then
+        python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("carry over", sys.argv[2] + ": exit colo", d["colo"], "warp", d["warp"], "rtt_ms", d["rtt_ms"])
+' "$dir/carry.json" "$leg"
+    else
+        echo "carry over $leg: FAIL"
+        sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/carry.err" | tail -4
+    fi
+done
 
 echo "== QUIC on the front door (issue 157)"
 python3 scripts/quic-vn.py 162.159.198.2 443 5 || true

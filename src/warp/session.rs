@@ -524,7 +524,25 @@ impl MasqueSession {
     /// A session over WireGuard (issue 152): the handshake with `peer`.
     pub async fn connect_wg(peer: &super::wg::Peer) -> Result<Self> {
         let (tx, rx, keepalive) = super::wg::connect(peer).await?;
-        Ok(MasqueSession {
+        Ok(Self::from_wg(tx, rx, keepalive))
+    }
+
+    /// A session over WireGuard on a UDP socket of `stack`: a tunnel in a
+    /// tunnel (issues 154 and 155).
+    pub async fn connect_wg_inside(
+        peer: &super::wg::Peer,
+        stack: &super::ip::WarpStack,
+    ) -> Result<Self> {
+        let (tx, rx, keepalive) = super::wg::connect_inside(peer, stack).await?;
+        Ok(Self::from_wg(tx, rx, keepalive))
+    }
+
+    fn from_wg(
+        tx: super::wg::WgTx,
+        rx: super::wg::WgRx,
+        keepalive: super::wg::WgKeepalive,
+    ) -> Self {
+        MasqueSession {
             tx: MasqueTx {
                 inner: TxInner::Wg {
                     tx: Box::new(tx),
@@ -540,7 +558,7 @@ impl MasqueSession {
                 closed: false,
                 progress: Default::default(),
             },
-        })
+        }
     }
 
     /// True for a session over HTTP/3.

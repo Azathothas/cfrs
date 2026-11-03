@@ -243,9 +243,16 @@ pub struct Session {
     replay: Replay,
 }
 
+/// The mac1 of a message, over its bytes with the reserved bytes (1 to 3)
+/// zero: WARP writes them after the MAC, and its front door checks the MAC
+/// with them zero, as WireGuard has them.
 fn mac1(peer_public: &[u8; 32], message: &[u8]) -> Vec<u8> {
     let key = hash(&[LABEL_MAC1, peer_public]);
-    blake2s(16, &key, &[message])
+    let mut zeroed = message.to_vec();
+    if zeroed.len() >= 4 {
+        zeroed[1..4].fill(0);
+    }
+    blake2s(16, &key, &[&zeroed])
 }
 
 /// Make the initiation of a handshake.
@@ -532,22 +539,70 @@ impl State {
     }
 }
 
+/// The UDP socket of a WireGuard transport: a socket of the host, or a
+/// socket of the stack of another session (issues 154 and 155: a tunnel in
+/// a tunnel).
+#[derive(Clone)]
+pub enum Sock {
+    Host(Arc<tokio::net::UdpSocket>),
+    Stack(Arc<super::ip::UdpConn>, SocketAddr),
+}
+
+impl Sock {
+    async fn send(&self, message: &[u8]) -> Result<()> {
+        match self {
+            Sock::Host(s) => {
+                s.send(message)
+                    .await
+                    .context("UDP to the WireGuard front door")?;
+            }
+            Sock::Stack(c, to) => {
+                c.send_to(message.to_vec(), *to)
+                    .await
+                    .context("UDP to the WireGuard front door, inside the tunnel")?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        match self {
+            Sock::Host(s) => Ok(s
+                .recv(buf)
+                .await
+                .context("UDP from the WireGuard front door")?),
+            Sock::Stack(c, from) => loop {
+                let (data, source) = c
+                    .recv_from(buf.len())
+                    .await
+                    .context("UDP from the WireGuard front door, inside the tunnel")?;
+                if source != *from {
+                    continue;
+                }
+                let n = data.len().min(buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                return Ok(n);
+            },
+        }
+    }
+}
+
 /// The write half of a WireGuard transport.
 pub struct WgTx {
-    sock: Arc<tokio::net::UdpSocket>,
+    sock: Sock,
     state: Arc<Mutex<State>>,
 }
 
 /// The read half of a WireGuard transport.
 pub struct WgRx {
-    sock: Arc<tokio::net::UdpSocket>,
+    sock: Sock,
     state: Arc<Mutex<State>>,
     buf: Vec<u8>,
 }
 
 /// The liveness check: keepalives, the rekey, and a dead path.
 pub struct WgKeepalive {
-    sock: Arc<tokio::net::UdpSocket>,
+    sock: Sock,
     state: Arc<Mutex<State>>,
 }
 
@@ -555,7 +610,7 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The handshake with `peer` on UDP: three tries, [`REKEY_TIMEOUT`] apart.
+/// The handshake with `peer` on a UDP socket of the host.
 pub async fn connect(peer: &Peer) -> Result<(WgTx, WgRx, WgKeepalive)> {
     let bind: SocketAddr = if peer.endpoint.is_ipv4() {
         "0.0.0.0:0".parse().expect("an address")
@@ -568,20 +623,38 @@ pub async fn connect(peer: &Peer) -> Result<(WgTx, WgRx, WgKeepalive)> {
     sock.connect(peer.endpoint)
         .await
         .with_context(|| format!("UDP to the WireGuard front door {}", peer.endpoint))?;
+    connect_on(peer, Sock::Host(Arc::new(sock))).await
+}
+
+/// The handshake with `peer` on a UDP socket of `stack` (a tunnel in a
+/// tunnel).
+pub async fn connect_inside(
+    peer: &Peer,
+    stack: &super::ip::WarpStack,
+) -> Result<(WgTx, WgRx, WgKeepalive)> {
+    let conn = stack
+        .udp_bind()
+        .await
+        .context("a UDP socket in the outer tunnel")?;
+    connect_on(peer, Sock::Stack(Arc::new(conn), peer.endpoint)).await
+}
+
+/// The handshake with `peer` on `sock`: three tries, [`REKEY_TIMEOUT`]
+/// apart.
+async fn connect_on(peer: &Peer, sock: Sock) -> Result<(WgTx, WgRx, WgKeepalive)> {
     let mut buf = vec![0u8; 2048];
     let mut last_err = None;
     for _ in 0..3 {
         let init = initiate(&peer.keys);
         sock.send(&init.message)
             .await
-            .with_context(|| format!("UDP to the WireGuard front door {}", peer.endpoint))?;
+            .with_context(|| format!("the front door {}", peer.endpoint))?;
         let deadline = tokio::time::Instant::now() + REKEY_TIMEOUT;
         loop {
             let n = match tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await {
                 Err(_) => break,
                 Ok(Err(err)) => {
-                    last_err =
-                        Some(anyhow::Error::new(err).context("UDP from the WireGuard front door"));
+                    last_err = Some(err);
                     break;
                 }
                 Ok(Ok(n)) => n,
@@ -597,7 +670,6 @@ pub async fn connect(peer: &Peer) -> Result<(WgTx, WgRx, WgKeepalive)> {
                             pending: None,
                             last_send: now,
                         }));
-                        let sock = Arc::new(sock);
                         tracing::debug!(endpoint = %peer.endpoint, "the WireGuard handshake is done");
                         return Ok((
                             WgTx {
@@ -661,11 +733,7 @@ impl WgRx {
     /// that does not authenticate are taken and not returned.
     pub async fn recv_packet(&mut self) -> Result<Option<bytes::Bytes>> {
         loop {
-            let n = self
-                .sock
-                .recv(&mut self.buf)
-                .await
-                .context("UDP from the WireGuard front door")?;
+            let n = self.sock.recv(&mut self.buf).await?;
             let message = &self.buf[..n];
             let mut state = lock(&self.state);
             match message.first() {
@@ -871,6 +939,12 @@ mod tests {
         let init = initiate(&keys);
         assert_eq!(init.message.len(), INITIATION_LEN);
         assert_eq!(&init.message[..4], &[MSG_INITIATION, 1, 2, 3]);
+        // mac1 is the MAC of WireGuard over the bytes with zero reserved
+        // bytes (WARP writes them after the MAC).
+        let mut plain = init.message[..116].to_vec();
+        plain[1..4].fill(0);
+        let key = hash(&[LABEL_MAC1, &keys.peer_public]);
+        assert_eq!(blake2s(16, &key, &[&plain]), init.message[116..132]);
         let (response, peer_send, peer_recv, peer_index) =
             respond(&peer_private, &keys.public(), &init.message);
         assert_eq!(response.len(), RESPONSE_LEN);

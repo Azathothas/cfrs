@@ -268,7 +268,8 @@ impl LinkDevice {
             rx: PacketQueue::unbounded(),
             tx: PacketQueue::unbounded(),
             stats: Arc::new(DeviceStats::default()),
-            mtu: mtu.max(1280),
+            // 576: the IPv4 minimum (a carried stack has 1200, issue 154).
+            mtu: mtu.max(576),
             medium: Medium::Ip,
             loopback,
             local: Arc::new(std::sync::RwLock::new(Vec::new())),

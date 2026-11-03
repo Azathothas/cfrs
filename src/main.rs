@@ -139,7 +139,7 @@ enum Command {
     /// Userspace virtual networking (no kernel interfaces).
     Net(NetArgs),
     /// Cloudflare WARP client: registration, account, proxy, run.
-    Warp(WarpArgs),
+    Warp(Box<WarpArgs>),
     /// Inbound access to this host through the WebSocket relay (--relay):
     /// pair, run a node for a local port, connect as the operator.
     Relay(RelayArgs),
@@ -1446,6 +1446,10 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--masque-sni".into());
         argv.push(sni.clone());
     }
+    if let Some(endpoint) = args.carry_endpoint {
+        argv.push("--carry-endpoint".into());
+        argv.push(endpoint.to_string());
+    }
     if let Some(endpoint) = args.wireguard_endpoint {
         argv.push("--wireguard-endpoint".into());
         argv.push(endpoint.to_string());
@@ -1463,6 +1467,7 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         ("--cc", &args.cc),
         ("--masque-transport", &args.masque_transport),
         ("--transport", &args.transport),
+        ("--carry", &args.carry),
     ] {
         if let Some(value) = value {
             argv.push(flag.into());
@@ -1703,7 +1708,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         }
         Command::Demo(args) => demo(args).await,
         Command::Net(args) => net(args).await,
-        Command::Warp(args) => warp(args).await,
+        Command::Warp(args) => warp(*args).await,
         Command::Relay(args) => relay(args).await,
         Command::Pod { .. } => unreachable!("main runs pod before the runtime"),
         Command::Man(args) => {
@@ -2898,6 +2903,26 @@ struct WarpArgs {
         env = "CFRS_WARP_WG_ENDPOINT"
     )]
     wireguard_endpoint: Option<std::net::SocketAddr>,
+    /// wg: a second WireGuard device inside the tunnel (its own device in
+    /// warp-carry.json of the state directory); the tools use its stack.
+    /// With --transport wireguard, both hops are WireGuard.
+    #[arg(
+        long,
+        value_name = "none|wg",
+        global = true,
+        env = "CFRS_WARP_CARRY",
+        value_parser = ["none", "wg"]
+    )]
+    carry: Option<String>,
+    /// The front door (IP:PORT) of the carried device in place of the one
+    /// of its record.
+    #[arg(
+        long,
+        value_name = "IP:PORT",
+        global = true,
+        env = "CFRS_WARP_CARRY_ENDPOINT"
+    )]
+    carry_endpoint: Option<std::net::SocketAddr>,
 
     #[command(subcommand)]
     command: WarpCommand,
@@ -3253,12 +3278,34 @@ enum WarpCommand {
 async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
     let (client, path) = warp_client_inner(args).await?;
     let peer = wireguard_peer(args).await?;
+    let carry = carry_peer(args).await?;
     Ok((
         client
             .with_masque(masque_options(args))
-            .with_wireguard(peer),
+            .with_wireguard(peer)
+            .with_carry(carry),
         path,
     ))
+}
+
+/// The carried device of `--carry wg` (issues 154 and 155): warp-carry.json
+/// of the state directory, registered when the file has none.
+async fn carry_peer(args: &WarpArgs) -> Result<Option<cfrs::warp::wg::Peer>> {
+    if args.carry.as_deref() != Some("wg") {
+        return Ok(None);
+    }
+    let path = cfrs::state::state_dir()
+        .fault(Fault::Config)?
+        .map(|dir| dir.join("warp-carry.json"))
+        .context("CFRS_STATE_DIR=none keeps no carried device; --carry wg needs one")
+        .fault(Fault::Config)?;
+    let exported = cfrs::warp::export::load_or_register(&path, false, None)
+        .await
+        .fault(Fault::Unavailable)?;
+    let peer =
+        cfrs::warp::wg::Peer::from_exported(&exported, args.carry_endpoint).fault(Fault::Config)?;
+    tracing::info!(endpoint = %peer.endpoint, "a second WireGuard device goes inside the tunnel");
+    Ok(Some(peer))
 }
 
 /// The WireGuard peer of `--transport wireguard` (issue 152): the device of
