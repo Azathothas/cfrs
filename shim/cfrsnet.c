@@ -594,12 +594,60 @@ int bind(int fd, const struct sockaddr *sa, socklen_t len) {
     return -1;
 }
 
+/* Issue 193: a stream socket with no name gets one at connect, as the
+   kernel does: the local address of the shim and a port of the ephemeral
+   range. getsockname then gives it, and the server sees it as the peer.
+   It is not a listener: no registration with the control socket. */
+static void autobind(int fd) {
+    pthread_mutex_lock(&fd_lock);
+    int skip = fd < 0 || (size_t)fd >= fd_table_len || fd_table[fd].local_len != 0 ||
+               fd_table[fd].is_dgram;
+    int family = skip ? 0 : fd_table[fd].family;
+    pthread_mutex_unlock(&fd_lock);
+    if (skip) return;
+    struct sockaddr_storage ss;
+    socklen_t len;
+    memset(&ss, 0, sizeof ss);
+    if (family == AF_INET6) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_addr.s6_addr[10] = 0xff;
+        s6->sin6_addr.s6_addr[11] = 0xff;
+        memcpy(s6->sin6_addr.s6_addr + 12, &cfg.local_v4, 4);
+        len = sizeof *s6;
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_addr = cfg.local_v4;
+        len = sizeof *s4;
+    }
+    int saved = errno;
+    unsigned seed = (unsigned)getpid() ^ (unsigned)time(NULL) ^ (unsigned)fd * 2246822519u;
+    int start = 49152 + (int)(rand_r(&seed) % 16384);
+    for (int i = 0; i < 16384; i++) {
+        int port = 49152 + (start - 49152 + i) % 16384;
+        sa_set_port(&ss, port);
+        struct sockaddr_un un;
+        socklen_t un_len;
+        if (to_abstract((struct sockaddr *)&ss, len, &un, &un_len) < 0) break;
+        if (r_bind(fd, (struct sockaddr *)&un, un_len) == 0) {
+            fd_record_local(fd, (struct sockaddr *)&ss, len);
+            logf_("autobind -> %s\n", un.sun_path + 1);
+            break;
+        }
+        if (errno != EADDRINUSE) break;
+    }
+    /* A failed autobind leaves the socket with no name, as before. */
+    errno = saved;
+}
+
 int connect(int fd, const struct sockaddr *sa, socklen_t len) {
     ensure_init();
     if (!fd_is_virtual(fd)) return r_connect(fd, sa, len);
     struct sockaddr_un un;
     socklen_t un_len;
     if (to_abstract(sa, len, &un, &un_len) < 0) return -1;
+    autobind(fd);
     int rc = r_connect(fd, (struct sockaddr *)&un, un_len);
     if (rc == 0) {
         fd_record_peer(fd, sa, len);

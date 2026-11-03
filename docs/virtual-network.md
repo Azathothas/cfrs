@@ -61,7 +61,7 @@ The IPv6 address is in the RFC 5952 form. The longest name is 60 bytes.
 | `bind`, `connect` | Translate the address to the abstract name. |
 | `sendto`, `recvfrom`, `sendmsg`, `recvmsg` | Translate the datagram addresses. |
 | `accept`, `accept4` | The new descriptor is virtual. The logical peer is recorded. |
-| `getsockname`, `getpeername` | Return the logical address. Truncate to `*len` as Linux does. A null address gives the length. |
+| `getsockname`, `getpeername` | Return the logical address. Truncate to `*len` as Linux does. A null address gives the length. A stream client with no `bind` gets a local address at `connect` (the shim address and a port of 49152-65535), and the server sees it as the peer. |
 | `setsockopt`, `getsockopt` | Record `IPPROTO_TCP` options (`TCP_NODELAY`, `TCP_KEEPIDLE`) and answer them. |
 | `close`, `dup`, `dup2`, `dup3`, `fcntl(F_DUPFD*)` | Clear or copy the virtual state. |
 

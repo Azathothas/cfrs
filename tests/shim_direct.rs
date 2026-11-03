@@ -655,3 +655,74 @@ fn a_built_shim_needs_no_compiler_later() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// Issue 193: a client that did not bind gets a local address at connect
+/// (10.66.0.2 and an ephemeral port), and the server sees it as the peer.
+/// Before, getsockname gave 0.0.0.0:0, and so did the peer of accept.
+#[test]
+fn a_connected_client_has_a_local_address_and_the_server_sees_it() {
+    if !have_compiler() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let shim = shim::build(dir.path()).unwrap();
+    let server_src = r#"
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+int main(void){
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET;
+  a.sin_port=htons(18086); inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  if(bind(s,(struct sockaddr*)&a,sizeof a)<0){perror("bind");return 1;}
+  listen(s,4); printf("ready\n"); fflush(stdout);
+  struct sockaddr_in peer; socklen_t pl=sizeof peer;
+  int c=accept(s,(struct sockaddr*)&peer,&pl); if(c<0){perror("accept");return 3;}
+  char ip[32]; inet_ntop(AF_INET,&peer.sin_addr,ip,sizeof ip);
+  printf("peer %s:%d\n", ip, ntohs(peer.sin_port)); fflush(stdout);
+  char b[32]={0}; if(read(c,b,sizeof b-1)<0){} printf("client said %s\n", b);
+  close(c); return 0;
+}
+"#;
+    let client_src = r#"
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+int main(void){
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET;
+  a.sin_port=htons(18086); inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  if(connect(s,(struct sockaddr*)&a,sizeof a)<0){perror("connect");return 2;}
+  struct sockaddr_in me; socklen_t l=sizeof me;
+  getsockname(s,(struct sockaddr*)&me,&l);
+  char ip[32]; inet_ntop(AF_INET,&me.sin_addr,ip,sizeof ip);
+  char line[64]; snprintf(line,sizeof line,"%s:%d",ip,ntohs(me.sin_port));
+  printf("local %s\n", line);
+  if(write(s,line,strlen(line))<0){} return 0;
+}
+"#;
+    let server = build_program(dir.path(), "auto_server", server_src);
+    let client = build_program(dir.path(), "auto_client", client_src);
+    let mut server_cmd = Command::new(&server);
+    server_cmd.env("LD_PRELOAD", &shim.path);
+    let mut client_cmd = Command::new(&client);
+    client_cmd.env("LD_PRELOAD", &shim.path);
+    let (server_out, client_out) = run_pair(&mut server_cmd, &mut client_cmd);
+    let s = String::from_utf8_lossy(&server_out.stdout);
+    let c = String::from_utf8_lossy(&client_out.stdout);
+    assert!(server_out.status.success(), "{s}");
+    let local = c
+        .lines()
+        .find_map(|l| l.strip_prefix("local "))
+        .unwrap_or_else(|| panic!("{c}"));
+    assert!(local.starts_with("10.66.0.2:"), "{local}");
+    let port: u16 = local.rsplit(':').next().unwrap().parse().unwrap();
+    assert!(port >= 49152, "{local}");
+    assert!(s.contains(&format!("peer {local}")), "{s} / {c}");
+    assert!(s.contains(&format!("client said {local}")), "{s}");
+}
