@@ -178,10 +178,11 @@ Rules that the tests check:
     run 41567562797: the A/B lines with beta.6 tell if beta.7 is slower.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.
-* **The second batch (#132 to #163).** The code is on main, and
-  `docs/releases/v0.3.0-beta.8.md` has the notes. The owner tests it before
-  the release. `scripts/live-batch2.sh` (a step of `live.yml`) checks exit,
-  scan, the rules, forward, a nested session and export.
+* **v0.3.0-beta.8 (the second batch, #132 to #163)** is published, with
+  the image `ghcr.io/azathothas/cfrs:v0.3.0-beta.8` (`:beta`). Release run
+  41619141535 and release-proofs 41621566796 passed. The owner tests it.
+  `scripts/live-batch2.sh` (a step of `live.yml`) checks exit, scan, the
+  rules, forward, a nested session, export and the ClientHello split.
 * **Deferred, size L**: #151 (an encrypted ClientHello; #135 has the
   split in records only, with no delay and not on the API calls), #140 and #152 to
   #155 (other transports), #157 (HTTP/3; the spike `scripts/quic-vn.py`
