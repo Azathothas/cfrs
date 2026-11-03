@@ -894,6 +894,11 @@ The instance keeps running when the shell or the terminal closes.
 * `cfrs autostart add NAME --from INSTANCE` makes a detached instance start
   at boot too.
 * `cfrs status` lists the instances.
+* `--name NAME` with no `--detach` registers the process in the foreground
+  (for a program that runs cfrs as its child): it is not forked and not
+  restarted, its stdout and stderr stay, and its log lines go to `NAME.log`
+  too. `cfrs ps`, `logs`, `wait` and `stop` see it. A second process with
+  the name fails ("runs already"). `--replace` needs `--detach`.
 
 ## Autostart
 

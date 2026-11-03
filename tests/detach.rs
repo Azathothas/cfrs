@@ -374,8 +374,20 @@ fn no_secret_in_the_arguments_of_the_child_or_in_the_record() {
 #[test]
 fn detach_options_need_detach_and_other_commands_refuse_it() {
     let env = Env::new();
+    // Issue 209: --name alone is valid; --replace and --no-restart alone
+    // are not.
     assert_eq!(
-        env.run(&["net", "switch", "--name", "x"]).status.code(),
+        env.run(&["net", "switch", "--replace"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        env.run(&["net", "switch", "--no-restart"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        env.run(&["net", "switch", "--name", "x", "--replace"])
+            .status
+            .code(),
         Some(64)
     );
     assert_eq!(env.run(&["status", "--detach"]).status.code(), Some(64));
@@ -560,4 +572,55 @@ fn the_log_has_the_startup_lines_of_this_start() {
         assert!(stop.status.success());
         wait_until("the instance ends", || !alive(pid as i32));
     }
+}
+
+// Issue 209: --name with no --detach registers the foreground process:
+// ps, logs, wait and stop see it; a second process with the name fails.
+#[test]
+fn a_named_foreground_process_is_in_ps_and_stops() {
+    let env = Env::new();
+    let switch = env.switch();
+    let mut child = env
+        .cmd(&["net", "switch", "--listen", &switch, "--name", "fg"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the record is ready", || {
+        env.ps()["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "fg" && i["state"] == "ready")
+    });
+    let entry = instance(&env, "fg");
+    assert_eq!(entry["pid"].as_i64(), Some(child.id() as i64), "{entry}");
+    assert!(entry["supervisor"].is_null(), "{entry}");
+    let wait = env.run(&["wait", "fg", "--timeout", "5"]);
+    assert!(wait.status.success());
+    let second = env.run(&[
+        "net",
+        "switch",
+        "--listen",
+        "unix:/nonexistent/x",
+        "--name",
+        "fg",
+    ]);
+    assert_ne!(second.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("runs already"),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let logs = env.run(&["logs", "fg"]);
+    assert!(logs.status.success());
+    let stop = env.run(&["stop", "fg", "--timeout", "5"]);
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0), "{status:?}");
+    assert!(env.ps()["instances"].as_array().unwrap().is_empty());
 }

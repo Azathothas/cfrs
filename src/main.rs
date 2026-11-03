@@ -469,10 +469,13 @@ struct DetachArgs {
     detach: bool,
     /// The name of the detached instance. Default: the command and a hash
     /// of its arguments. A second start with the same name and the same
-    /// arguments gives the same instance.
-    #[arg(long, value_name = "NAME", requires = "detach")]
+    /// arguments gives the same instance. With no --detach: register this
+    /// process under the name (it is not forked and not restarted); cfrs
+    /// ps, logs, wait and stop see it.
+    #[arg(long, value_name = "NAME")]
     name: Option<String>,
-    /// Seconds to wait for the instance to be ready (else exit 75).
+    /// With --detach: seconds to wait for the instance to be ready (else
+    /// exit 124).
     #[arg(long, value_name = "SECS", default_value_t = 60)]
     ready_timeout: u64,
     /// Stop a running instance of the same name that has other arguments,
@@ -483,8 +486,8 @@ struct DetachArgs {
     /// supervisor starts it again with a backoff (1 s to 30 s), but not
     /// after exit 64 or 78, and not after a planned end (--stop-after,
     /// --idle-secs, --run-for). A quick tunnel gets a new URL; cfrs ps
-    /// shows it.
-    #[arg(long, requires = "detach")]
+    /// shows it. With --name and no --detach, there is no supervisor.
+    #[arg(long)]
     no_restart: bool,
 }
 
@@ -771,6 +774,23 @@ fn main() {
     } else if cfrs::detach::is_child() {
         eprintln!("cfrs: --detach-child is for cfrs itself");
         std::process::exit(cfrs::exit::USAGE);
+    } else if let Some(detach) = detach_of(&cli.command) {
+        // Issue 209: --name with no --detach registers this process.
+        match &detach.name {
+            Some(name) => {
+                if let Err(err) =
+                    cfrs::detach::register(name, command.as_deref().unwrap_or_default())
+                {
+                    eprintln!("cfrs: --name: {err:#}");
+                    std::process::exit(cfrs::detach::TEMPFAIL);
+                }
+            }
+            None if detach.no_restart => {
+                eprintln!("cfrs: --no-restart needs --detach or --name");
+                std::process::exit(cfrs::exit::USAGE);
+            }
+            None => {}
+        }
     }
     if let Some(path) = &cli.ca_file {
         cfrs::trust::set_ca_file(path.clone());
@@ -860,6 +880,7 @@ fn main() {
                 async_main(cli).await
             })
         });
+    cfrs::detach::unregister();
     if let Err(err) = result {
         let code = cfrs::exit::code_of(&err);
         let line = cfrs::report::error_line(&err);

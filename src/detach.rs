@@ -51,6 +51,8 @@ pub const TEMPFAIL: i32 = crate::exit::TEMPFAIL;
 
 static CHILD: AtomicBool = AtomicBool::new(false);
 static SENT: AtomicBool = AtomicBool::new(false);
+/// Set by [`register`]: a foreground process with `--name` (issue 209).
+static REGISTERED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<ChildState>> = Mutex::new(None);
 
 struct ChildState {
@@ -109,7 +111,7 @@ pub fn is_child() -> bool {
 /// Change the record of this child (a no-op for another process). The
 /// record on disk goes first: the supervisor writes it too.
 fn update_record(change: impl FnOnce(&mut Record)) {
-    if !is_child() {
+    if !is_child() && !REGISTERED.load(Ordering::SeqCst) {
         return;
     }
     let guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,6 +202,55 @@ pub fn child_begin() -> Result<()> {
     Ok(())
 }
 
+/// Register this foreground process as the instance `name` (issue 209:
+/// `--name` with no `--detach`). It is not forked and has no supervisor;
+/// `cfrs ps`, `logs`, `wait` and `stop` see it. Its stderr stays the one of
+/// the caller; the log file gets a copy of the log lines.
+pub fn register(name: &str, command: &str) -> Result<()> {
+    instances::check_name(name)?;
+    let dir = instances::run_dir()?;
+    let paths = instances::paths(&dir, name);
+    let lock = instances::try_lock(&paths.lock)?
+        .with_context(|| format!("the instance {name} runs already"))?;
+    let record = Record {
+        name: name.to_string(),
+        pid: std::process::id(),
+        supervisor: None,
+        started: instances::now(),
+        command: command.to_string(),
+        args: std::env::args().skip(1).collect(),
+        hash: String::new(),
+        cwd: std::env::current_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
+        state: "starting".into(),
+        ready: None,
+        log: paths.log.display().to_string(),
+        restarts: 0,
+        retry_after_s: None,
+    };
+    instances::write(&dir, &record)?;
+    begin_log(&paths.log, name);
+    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(ChildState {
+        dir,
+        record,
+        _lock: lock,
+    });
+    REGISTERED.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+/// At the end of a registered process: remove its record.
+pub fn unregister() {
+    if !REGISTERED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_ref() {
+        instances::remove(&state.dir, &state.record.name);
+    }
+}
+
 /// The start of an instance in its log (issue 103): a separator line with
 /// the time and the pid, and from now on each log line goes to the log too
 /// (before, the lines before the ready went only to the starter, and the log
@@ -224,6 +275,29 @@ fn begin_log(path: &Path, name: &str) {
 /// process that is not a detached child, does nothing.
 pub fn ready(mut doc: serde_json::Value) {
     arm_stop();
+    if REGISTERED.load(Ordering::SeqCst) && !is_child() {
+        // Issue 209: a registered process records its ready document; its
+        // terminal and its stdout stay.
+        if SENT.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = guard.as_mut() {
+            if let Some(object) = doc.as_object_mut() {
+                object.insert("name".into(), state.record.name.clone().into());
+                object.insert("pid".into(), state.record.pid.into());
+                object.insert("command".into(), state.record.command.clone().into());
+            }
+            state.record.state = "ready".into();
+            state.record.ready = Some(doc);
+            let _ = instances::write(&state.dir, &state.record);
+            let log_path = PathBuf::from(&state.record.log);
+            if let Ok(file) = open_private(&log_path) {
+                cap(log_path, file);
+            }
+        }
+        return;
+    }
     if !is_child() || SENT.swap(true, Ordering::SeqCst) {
         return;
     }
