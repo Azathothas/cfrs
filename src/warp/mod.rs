@@ -455,7 +455,8 @@ impl WarpClient {
     /// A file that cannot be read, or that other users can read, is an
     /// error: cfrs does not write over it.
     pub async fn register_or_load(path: &std::path::Path) -> Result<Self> {
-        if path.exists() {
+        // Issue 178: a stat error is an error, not a missing file.
+        if crate::state::exists(path)? {
             let client = Self::load(path)?;
             if client.device.tunnel_type == "masque" {
                 return Ok(client);

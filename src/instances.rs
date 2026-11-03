@@ -51,6 +51,23 @@ pub fn run_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// The run directory when it exists, with no directory made (issue 178:
+/// `warp status` made it). The candidates of [`run_dir`], in its order.
+pub fn existing_run_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os(RUN_DIR_VARIABLE).filter(|v| !v.is_empty()) {
+        candidates.push(PathBuf::from(dir));
+    } else {
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(runtime).join("cfrs/run"));
+        }
+        if let Ok(Some(dir)) = crate::state::find_existing("run") {
+            candidates.push(dir);
+        }
+    }
+    candidates.into_iter().find(|d| d.is_dir())
+}
+
 /// A name is 1 to 32 characters from `A-Z a-z 0-9 _ -`.
 pub fn check_name(name: &str) -> Result<()> {
     let good = !name.is_empty()

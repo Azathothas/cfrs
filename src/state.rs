@@ -88,6 +88,42 @@ pub fn choose(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Option<PathBuf>>
     )
 }
 
+/// True when `path` exists, false when it does not. Any other error of the
+/// stat (EACCES, ENOTDIR, ELOOP) is returned with the path: before (issue
+/// 178), `Path::exists` gave false for it, and a new WARP device could be
+/// written over a file that cfrs could not read.
+pub fn exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(anyhow::Error::new(err).context(format!("reading {}", path.display()))),
+    }
+}
+
+/// The file `name` in the first candidate directory that has it, with no
+/// directory made (issue 178: `warp status` made the state directory).
+/// `Ok(None)` when no candidate has it, or with `CFRS_STATE_DIR=none`.
+pub fn find_existing(name: &str) -> Result<Option<PathBuf>> {
+    find_existing_in(&|key| std::env::var_os(key), name)
+}
+
+/// [`find_existing`] with the variables of `env`.
+pub fn find_existing_in(
+    env: &dyn Fn(&str) -> Option<OsString>,
+    name: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(candidates) = candidates(env) else {
+        return Ok(None);
+    };
+    for (_, dir) in candidates {
+        let path = dir.join(name);
+        if exists(&path)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 /// Make `dir` (mode 0700), check its owner and its mode, and write a file
 /// in it.
 pub fn prepare(dir: &Path) -> Result<()> {
@@ -195,6 +231,45 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 178: a stat error is not a missing file.
+    #[test]
+    fn a_stat_error_is_not_a_missing_file() {
+        let dir = std::env::temp_dir().join(format!("cfrs-exists-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plain");
+        std::fs::write(&file, "x").unwrap();
+        // FILE/warp.json: ENOTDIR (also as root, where mode 000 is no test).
+        assert!(exists(&file.join("warp.json")).is_err());
+        assert!(!exists(&dir.join("missing.json")).unwrap());
+        assert!(exists(&file).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Issue 178: a search makes no directory.
+    #[test]
+    fn find_existing_creates_nothing() {
+        let root = std::env::temp_dir().join(format!("cfrs-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let env = |key: &str| match key {
+            "XDG_STATE_HOME" => Some(root.join("state").into_os_string()),
+            "HOME" => Some(root.join("home").into_os_string()),
+            "TMPDIR" => Some(root.join("tmp").into_os_string()),
+            _ => None,
+        };
+        assert!(find_existing_in(&env, "warp.json").unwrap().is_none());
+        assert!(!root.exists());
+        // A file in the second candidate is found.
+        let second = root.join("home/.local/state/cfrs");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("warp.json"), "{}").unwrap();
+        assert_eq!(
+            find_existing_in(&env, "warp.json").unwrap(),
+            Some(second.join("warp.json"))
+        );
+        assert!(!root.join("state").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use std::collections::HashMap;
     use std::os::unix::fs::PermissionsExt;
 

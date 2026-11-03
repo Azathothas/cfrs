@@ -64,7 +64,7 @@ pub fn load(path: &Path) -> Result<Exported> {
 
 /// The exported device of `path`; a new one when there is none or `new`.
 pub async fn load_or_register(path: &Path, new: bool, proxy: Option<&Proxy>) -> Result<Exported> {
-    if path.exists() && !new {
+    if crate::state::exists(path)? && !new {
         return load(path);
     }
     let (private_key, public_key) = keypair()?;
@@ -86,6 +86,14 @@ pub async fn load_or_register(path: &Path, new: bool, proxy: Option<&Proxy>) -> 
 
 /// Remove the exported device from the service, and its file.
 pub async fn delete(path: &Path, proxy: Option<&Proxy>) -> Result<String> {
+    // Issue 178: a second --delete names the missing file (before: an
+    // error of the WARP identity, exit 69).
+    if !crate::state::exists(path)? {
+        return Err(crate::exit::fault(
+            crate::exit::Fault::Config,
+            anyhow::anyhow!("no exported device at {}", path.display()),
+        ));
+    }
     let exported = load(path)?;
     register::delete_device(&exported.device.id, &exported.device.token, proxy).await?;
     std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;

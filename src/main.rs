@@ -3400,7 +3400,7 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
     ))
 }
 
-async fn warp(args: WarpArgs) -> Result<()> {
+async fn warp(mut args: WarpArgs) -> Result<()> {
     // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
     cfrs::warp::check_tcp_burst()?;
     // Issue 134: the congestion controller of the stack.
@@ -3535,6 +3535,13 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     .fault(Fault::Config)?,
             };
             if *delete {
+                // Issue 178: a second --delete names the missing file.
+                if !cfrs::state::exists(&path).fault(Fault::Config)? {
+                    return Err(cfrs::exit::fault(
+                        Fault::Config,
+                        anyhow::anyhow!("no exported device at {}", path.display()),
+                    ));
+                }
                 let id = cfrs::warp::export::delete(&path, None)
                     .await
                     .fault(Fault::Unavailable)?;
@@ -3623,12 +3630,22 @@ async fn warp(args: WarpArgs) -> Result<()> {
             | WarpCommand::Delete
     ) && !args.ephemeral
     {
+        // Issue 178: find the saved identity with no directory made, in each
+        // candidate directory; a stat error is a configuration error.
         let path = match args.identity.clone() {
             Some(path) => Some(path),
-            None => cfrs::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
+            None => match cfrs::state::find_existing("warp.json").fault(Fault::Config)? {
+                Some(found) => {
+                    args.identity = Some(found.clone());
+                    Some(found)
+                }
+                None => cfrs::state::candidates(&|k| std::env::var_os(k))
+                    .and_then(|c| c.into_iter().next())
+                    .map(|(_, dir)| dir.join("warp.json")),
+            },
         };
         match path {
-            Some(path) if path.exists() => {}
+            Some(path) if cfrs::state::exists(&path).fault(Fault::Config)? => {}
             Some(path) => {
                 return Err(cfrs::exit::fault(
                     Fault::Config,

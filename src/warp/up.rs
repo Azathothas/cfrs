@@ -171,7 +171,8 @@ pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String 
 /// The state of the instance of `cfrs warp up` (issue 116): for `warp
 /// status`.
 pub fn instance_state() -> serde_json::Value {
-    let Ok(dir) = crate::instances::run_dir() else {
+    // Issue 178: a read makes no directory.
+    let Some(dir) = crate::instances::existing_run_dir() else {
         return serde_json::json!({"running": false});
     };
     match crate::instances::read(&dir, INSTANCE) {
