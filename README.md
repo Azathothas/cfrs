@@ -510,6 +510,24 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   proxy asks for A and AAAA records through the tunnel and tries IPv4
   first, then IPv6, so a host with only AAAA records works too.
   `warp tun` adds the IPv6 address (/128) to the interface.
+* What a destination sees (measured by a tester on 0.3.0-beta.8; issue
+  183): not the address of the device (`172.16.0.2`, `2606:4700:110:...`),
+  but an egress address of Cloudflare. The egress address stays the same
+  in one MASQUE session, and a new session gets a new one (IPv6 from a
+  `2a09:bac1::/32` or `2a09:bac5::/32` prefix). The `--listen` listeners of
+  one proxy share one session and one address; each `--listen-identity`
+  has its own device, session and address. `warp rotate` changes the
+  MASQUE key only. `cdn-cgi/trace` gives the IPv4 `ip=` also for an IPv6
+  flow.
+* `--session-max-age SECS` (or `CFRS_WARP_SESSION_MAX_AGE`) closes each
+  session at that age and opens a new one, with a new egress address, for
+  `warp proxy`, `forward`, `run` and `up`. The TCP flows of the old session
+  end. Default: off. The log gives the cause of each close of a session.
+* New devices: the WARP service limits the registrations of each address.
+  Observed: HTTP 429 (error 1015) after about 10 new devices in 90 minutes,
+  cleared after about 30 minutes. cfrs then says so. A saved identity,
+  `warp rotate` and new sessions do not register. `--ephemeral`, a new
+  `--listen-identity` file and `warp export` each register one device.
 * `cfrs warp proxy` listens on `tcp://127.0.0.1:40000` by default. Use
   `--listen unix:/path` on a host that refuses `AF_INET` binds. Each
   `--listen` is bound on its own: a listener that the host refuses is

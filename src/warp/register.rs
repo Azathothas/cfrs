@@ -379,7 +379,35 @@ pub async fn create_device_with_key(key: &str, proxy: Option<&Proxy>) -> Result<
         .send()
         .await
         .context("POST /reg")?;
+    if let Some(err) = registration_error(resp.status, resp.header("retry-after"), &resp.text()) {
+        return Err(err);
+    }
     check(resp)
+}
+
+/// The error of a refused registration (issue 187): a 429 (error 1015)
+/// names the remedy and the Retry-After. None for another status.
+pub fn registration_error(
+    status: u16,
+    retry_after: Option<&str>,
+    body: &str,
+) -> Option<anyhow::Error> {
+    if status != 429 && !body.contains("1015") {
+        return None;
+    }
+    let wait = retry_after
+        .and_then(crate::quicktunnel::parse_retry_after)
+        .map(|d| format!("; the service asks to wait {} s", d.as_secs()))
+        .unwrap_or_default();
+    Some(
+        anyhow::Error::new(ApiError {
+            status,
+            body: body.chars().take(200).collect(),
+        })
+        .context(format!(
+            "the WARP service limits new devices for each address (HTTP {status}, error 1015){wait}; reuse a saved identity (--identity FILE, the default warp.json) in place of a new device, or wait"
+        )),
+    )
 }
 
 /// Enrol a MASQUE identity: upload the P-256 public key (X.509 SPKI, base64) and
@@ -625,6 +653,17 @@ mod tests {
     }
 
     use super::*;
+
+    // Issue 187: a 429 of the registration names the remedy.
+    #[test]
+    fn a_429_on_registration_names_the_remedy() {
+        let err = registration_error(429, Some("120"), "error code: 1015").unwrap();
+        let text = format!("{err:#}");
+        assert!(text.contains("reuse a saved identity"), "{text}");
+        assert!(text.contains("wait 120 s"), "{text}");
+        assert_eq!(api_status(&err), Some(429));
+        assert!(registration_error(400, None, "bad key").is_none());
+    }
 
     // Issue 141: the hints are checked; the default body is as before.
     #[test]

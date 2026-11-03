@@ -278,6 +278,13 @@ goes inside the MASQUE session. The host opens only TCP 443.
 
 ### 5.4 Limits
 
+* The WARP service limits new devices (`POST /reg`) for each address:
+  HTTP 429 with error 1015 (observed after about 10 in 90 minutes).
+* A destination sees an egress address of Cloudflare, not the address of
+  the device. One MASQUE session keeps one egress address; a new session
+  gets a new one (measured by a tester, issue 183). `--session-max-age`
+  renews the session on purpose.
+
 * A proxy that terminates TLS (and makes a new TLS connection with its own CA)
   cannot carry the MASQUE session, because the session needs the client
   certificate and the pinned server key. The registration calls still work

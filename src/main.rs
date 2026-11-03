@@ -1665,6 +1665,10 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--resolver".into());
         argv.push(resolver.clone());
     }
+    if let Some(secs) = args.session_max_age {
+        argv.push("--session-max-age".into());
+        argv.push(secs.to_string());
+    }
     for (flag, value) in [
         ("--device-name", &args.device_name),
         ("--device-model", &args.device_model),
@@ -3305,6 +3309,17 @@ struct WarpArgs {
     /// stack (what the stack sends): none (the default), reno or cubic.
     #[arg(long, value_name = "NAME", global = true, env = "CFRS_WARP_CC")]
     cc: Option<String>,
+    /// Close each MASQUE session on purpose at this age, and open a new one
+    /// (a new egress address). The TCP flows of the old session end.
+    /// Default: off. Not for warp tun.
+    #[arg(
+        long,
+        value_name = "SECS",
+        global = true,
+        env = "CFRS_WARP_SESSION_MAX_AGE",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    session_max_age: Option<u64>,
     /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
     /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
@@ -3541,9 +3556,9 @@ enum WarpCommand {
         #[arg(long, value_name = "NAME", default_value = cfrs::warp::l4::L4_SNI, requires = "l4")]
         l4_sni: String,
         /// LISTEN=PATH: a listener whose clients use the WARP device of the
-        /// identity file PATH (made when it does not exist), with a
-        /// session of its own. The --listen listeners use --identity.
-        /// Repeatable; each PATH once.
+        /// identity file PATH (made when it does not exist: that registers
+        /// a new device), with a session of its own. The --listen listeners
+        /// use --identity. Repeatable; each PATH once.
         #[arg(long, value_name = "LISTEN=PATH")]
         listen_identity: Vec<String>,
         /// A file with one rule on each line (# starts a comment), after
@@ -3868,6 +3883,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
     // Issue 134: the congestion controller of the stack.
     if let Some(cc) = &args.cc {
         cfrs::warp::ip::set_cc(cfrs::warp::ip::parse_cc(cc)?);
+    }
+    // Issue 185: the renewal of the session.
+    if let Some(secs) = args.session_max_age {
+        if matches!(args.command, WarpCommand::Tun { .. }) {
+            return Err(cfrs::exit::fault(
+                Fault::Usage,
+                anyhow::anyhow!("--session-max-age works with warp proxy, forward, run and up, not with warp tun"),
+            ));
+        }
+        cfrs::warp::live::set_max_age(Some(Duration::from_secs(secs)));
     }
     // Issue 145: the resolvers of the tunnel.
     let resolvers = cfrs::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;

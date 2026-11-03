@@ -26,11 +26,39 @@ const CHECK: Duration = Duration::from_millis(500);
 /// A session that can close.
 pub trait Closable: Send + Sync + 'static {
     fn is_closed(&self) -> bool;
+    /// Why it closed (issue 178), when it is known.
+    fn reason(&self) -> Option<String> {
+        None
+    }
+    /// Close it on purpose (issue 185).
+    fn close(&self, _why: &str) {}
 }
 
 impl Closable for super::WarpStack {
     fn is_closed(&self) -> bool {
         super::WarpStack::is_closed(self)
+    }
+    fn reason(&self) -> Option<String> {
+        self.close_reason()
+    }
+    fn close(&self, why: &str) {
+        self.close_session(why)
+    }
+}
+
+/// `--session-max-age` (issue 185): each session of [`Live`] is closed on
+/// purpose at this age, and a new one opens. Seconds; 0 is off.
+static MAX_AGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Set the age at which a session of [`Live`] is renewed (None: never).
+pub fn set_max_age(age: Option<Duration>) {
+    MAX_AGE.store(age.map_or(0, |a| a.as_secs().max(1)), Ordering::SeqCst);
+}
+
+fn max_age() -> Option<Duration> {
+    match MAX_AGE.load(Ordering::SeqCst) {
+        0 => None,
+        secs => Some(Duration::from_secs(secs)),
     }
 }
 
@@ -49,16 +77,28 @@ pub struct Live<T: Closable> {
 impl<T: Closable> Live<T> {
     /// Start with `first`; `connect` opens each new session.
     pub fn start(first: T, connect: Connect<T>) -> Arc<Self> {
-        Self::start_with(
+        Self::start_aged(
             first,
             connect,
             Duration::from_secs(1),
             Duration::from_secs(30),
+            max_age(),
         )
     }
 
     /// [`Live::start`] with the first and the largest delay of the backoff.
     pub fn start_with(first: T, connect: Connect<T>, base: Duration, max: Duration) -> Arc<Self> {
+        Self::start_aged(first, connect, base, max, None)
+    }
+
+    /// [`Live::start_with`], and each session ends at `max_age`.
+    pub fn start_aged(
+        first: T,
+        connect: Connect<T>,
+        base: Duration,
+        max: Duration,
+        max_age: Option<Duration>,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         let live = Arc::new(Self {
             current: Mutex::new(Arc::new(first)),
@@ -69,22 +109,43 @@ impl<T: Closable> Live<T> {
         let weak = Arc::downgrade(&live);
         let task = tokio::spawn(async move {
             let mut delay = Duration::ZERO;
+            let mut opened = tokio::time::Instant::now();
+            let check = max_age.map_or(CHECK, |age| {
+                CHECK.min(age / 4).max(Duration::from_millis(10))
+            });
             loop {
-                tokio::time::sleep(CHECK).await;
+                tokio::time::sleep(check).await;
                 let Some(live) = weak.upgrade() else { return };
-                if !live.current.lock().await.is_closed() {
-                    delay = Duration::ZERO;
-                    continue;
+                {
+                    let current = live.current.lock().await;
+                    if !current.is_closed() {
+                        match max_age {
+                            Some(age) if opened.elapsed() >= age => {
+                                info!("the WARP session ends on purpose (--session-max-age)");
+                                current.close("--session-max-age");
+                            }
+                            _ => {
+                                delay = Duration::ZERO;
+                                continue;
+                            }
+                        }
+                    }
                 }
                 if delay.is_zero() {
-                    // Issue 116: the log of warp up shows each close.
-                    info!("the WARP session is closed; cfrs opens a new one");
+                    // Issue 116: the log of warp up shows each close; issue
+                    // 178: with its cause.
+                    let reason = live.current.lock().await.reason();
+                    info!(
+                        reason = reason.as_deref().unwrap_or("unknown"),
+                        "the WARP session is closed; cfrs opens a new one"
+                    );
                 } else {
                     tokio::time::sleep(delay).await;
                 }
                 match connect().await {
                     Ok(next) => {
                         *live.current.lock().await = Arc::new(next);
+                        opened = tokio::time::Instant::now();
                         let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
                         live.generation.send_modify(|g| *g += 1);
                         info!(reconnects = n, "a new WARP session is open");
@@ -228,6 +289,59 @@ mod tests {
         assert_eq!(next.id, 2, "two failed opens, then a new session");
         assert_eq!(live.reconnects(), 1);
         assert_eq!(opens.load(Ordering::SeqCst), 1);
+    }
+
+    struct Aged {
+        id: u32,
+        closed: AtomicBool,
+    }
+
+    impl Closable for Aged {
+        fn is_closed(&self) -> bool {
+            self.closed.load(Ordering::SeqCst)
+        }
+        fn reason(&self) -> Option<String> {
+            self.is_closed().then(|| "max age".into())
+        }
+        fn close(&self, _why: &str) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Issue 185: a session is replaced at its max age, with no backoff.
+    #[tokio::test]
+    async fn a_session_is_replaced_at_max_age() {
+        let opens = Arc::new(AtomicU32::new(1));
+        let connect: Connect<Aged> = {
+            let opens = opens.clone();
+            Box::new(move || {
+                let opens = opens.clone();
+                Box::pin(async move {
+                    let id = opens.fetch_add(1, Ordering::SeqCst) + 1;
+                    Ok(Aged {
+                        id,
+                        closed: AtomicBool::new(false),
+                    })
+                })
+            })
+        };
+        let live = Live::start_aged(
+            Aged {
+                id: 1,
+                closed: AtomicBool::new(false),
+            },
+            connect,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Some(Duration::from_millis(200)),
+        );
+        assert_eq!(live.get().await.unwrap().id, 1);
+        let started = std::time::Instant::now();
+        while live.reconnects() == 0 {
+            assert!(started.elapsed() < Duration::from_secs(5), "no renewal");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(live.get().await.unwrap().id >= 2);
     }
 
     /// A caller does not wait for ever while no session opens.

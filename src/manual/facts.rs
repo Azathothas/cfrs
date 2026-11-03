@@ -158,6 +158,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "Set to true: the value of --l4. Each TCP client of the proxy is one HTTP/3 CONNECT stream to the L4 door of WARP on UDP 443 (TLS name of --l4-sni), with no IP stack; UDP is not served.",
     },
     EnvVar {
+        names: &["CFRS_WARP_SESSION_MAX_AGE"],
+        used_by: "warp proxy, warp forward, warp run, warp up",
+        meaning: "The value of --session-max-age: each MASQUE session is closed on purpose at this age (seconds), and a new one opens, with a new egress address. The TCP flows of the old session end. Off when not set.",
+    },
+    EnvVar {
         names: &["CFRS_WARP_CC"],
         used_by: "warp (each command with a userspace stack), warp up (its proxy), tunnel --transport warp",
         meaning: "The value of --cc: the congestion controller of the TCP connections of the userspace stack of WARP, for the data that the stack sends: none (the default; only the window of the peer limits it), reno (RFC 5681) or cubic (RFC 9438). Another value is a configuration error (exit 78).",

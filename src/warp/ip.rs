@@ -167,7 +167,23 @@ pub struct WarpStack {
     cmd: mpsc::Sender<Command>,
     notify: std::sync::Arc<Notify>,
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Why the session closed (issue 178): the first cause wins.
+    reason: Reason,
     local: IpAddr,
+}
+
+/// The cause of the close of a session.
+type Reason = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+/// Mark the session closed for `why` (the first cause stays).
+fn mark_closed(closed: &std::sync::atomic::AtomicBool, reason: &Reason, why: String) {
+    {
+        let mut slot = reason.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(why);
+        }
+    }
+    closed.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 enum Command {
@@ -383,6 +399,7 @@ fn spawn_driver(
     cmd_rx: mpsc::Receiver<Command>,
     notify: std::sync::Arc<Notify>,
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    reason: Reason,
 ) {
     let task = {
         let notify = notify.clone();
@@ -394,7 +411,7 @@ fn spawn_driver(
     };
     // Issue 112: the stack is closed when the driver ends, also by a panic,
     // so that Live replaces it with a new session.
-    tokio::spawn(supervise(task, closed, notify));
+    tokio::spawn(supervise(task, closed, notify, reason));
 }
 
 /// Wait for the driver task to end. Then mark the stack closed. A panic of
@@ -403,13 +420,16 @@ async fn supervise(
     driver: tokio::task::JoinHandle<()>,
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     notify: std::sync::Arc<Notify>,
+    reason: Reason,
 ) {
-    if let Err(err) = driver.await {
-        if err.is_panic() {
+    let why = match driver.await {
+        Err(err) if err.is_panic() => {
             tracing::warn!("the userspace stack stopped with a panic; a new session replaces it");
+            "the userspace stack stopped with a panic"
         }
-    }
-    closed.store(true, std::sync::atomic::Ordering::Relaxed);
+        _ => "the userspace stack stopped",
+    };
+    mark_closed(&closed, &reason, why.into());
     notify.notify_one();
 }
 
@@ -435,6 +455,7 @@ impl WarpStack {
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let notify = std::sync::Arc::new(Notify::new());
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reason: Reason = Default::default();
 
         // Issue 104: a session that gives no pong and no data is closed, so
         // that Live opens a new one (before, a stalled session stayed).
@@ -442,10 +463,11 @@ impl WarpStack {
         if let Some(keepalive) = tx.keepalive(&rx) {
             let notify = notify.clone();
             let closed = closed.clone();
+            let reason = reason.clone();
             tokio::spawn(async move {
                 if let Err(err) = keepalive.run(KEEPALIVE).await {
                     tracing::warn!(error = %format!("{err:#}"), "the MASQUE session is dead");
-                    closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    mark_closed(&closed, &reason, format!("no pong: {err:#}"));
                     notify.notify_one();
                 }
             });
@@ -454,8 +476,9 @@ impl WarpStack {
         {
             let notify = notify.clone();
             let closed = closed.clone();
+            let reason = reason.clone();
             tokio::spawn(async move {
-                loop {
+                let why = loop {
                     // Issue 122: the packets that wait go out together, up
                     // to BATCH_BYTES, in one DATA frame.
                     let mut batch = vec![outbound.recv().await];
@@ -469,11 +492,11 @@ impl WarpStack {
                         // The session cannot send again: mark the stack closed,
                         // so that a new session replaces it.
                         tracing::warn!(error = %format!("{err:#}"), "the MASQUE send loop ended");
-                        break;
+                        break format!("a send failed: {err:#}");
                     }
                     notify.notify_one();
-                }
-                closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                };
+                mark_closed(&closed, &reason, why);
                 notify.notify_one();
             });
         }
@@ -482,6 +505,7 @@ impl WarpStack {
             let notify = notify.clone();
             let inbound = inbound.clone();
             let closed = closed.clone();
+            let reason = reason.clone();
             let ours: Vec<IpAddr> = std::iter::once(config.local)
                 .chain(config.local_v6.map(IpAddr::V6))
                 .collect();
@@ -493,19 +517,21 @@ impl WarpStack {
                     if let Some(assigned) = rx.take_assigned() {
                         log_assigned(&assigned, &ours);
                     }
-                    match packet {
+                    let why = match packet {
                         Ok(Some(packet)) => {
                             inbound.push(packet.to_vec());
                             notify.notify_one();
+                            continue;
                         }
-                        Ok(None) => break,
+                        Ok(None) => "the front door ended the session".to_string(),
                         Err(err) => {
                             tracing::warn!(error = %format!("{err:#}"), "the MASQUE receive loop ended");
-                            break;
+                            format!("a receive failed: {err:#}")
                         }
-                    }
+                    };
+                    mark_closed(&closed, &reason, why);
+                    break;
                 }
-                closed.store(true, std::sync::atomic::Ordering::Relaxed);
                 notify.notify_one();
             });
         }
@@ -513,13 +539,15 @@ impl WarpStack {
         {
             let notify = notify.clone();
             let closed = closed.clone();
-            spawn_driver(Driver::new(iface, device), cmd_rx, notify, closed);
+            let reason = reason.clone();
+            spawn_driver(Driver::new(iface, device), cmd_rx, notify, closed, reason);
         }
 
         Ok(Self {
             cmd: cmd_tx,
             notify,
             closed,
+            reason,
             local: config.local,
         })
     }
@@ -532,16 +560,19 @@ impl WarpStack {
         let (cmd, cmd_rx) = mpsc::channel(256);
         let notify = std::sync::Arc::new(Notify::new());
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reason: Reason = Default::default();
         spawn_driver(
             Driver::new(iface, device),
             cmd_rx,
             notify.clone(),
             closed.clone(),
+            reason.clone(),
         );
         Self {
             cmd,
             notify,
             closed,
+            reason,
             local: config.local,
         }
     }
@@ -556,6 +587,21 @@ impl WarpStack {
     /// packet in one direction or the other.
     pub fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Relaxed) || self.cmd.is_closed()
+    }
+
+    /// Why the session closed (issue 178), when it did.
+    pub fn close_reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Close the session on purpose (issue 185: --session-max-age). Its
+    /// flows end, and `Live` opens a new session.
+    pub fn close_session(&self, why: &str) {
+        mark_closed(&self.closed, &self.reason, why.to_string());
+        self.notify.notify_one();
     }
 
     fn alive(&self) -> Result<()> {
@@ -1283,14 +1329,26 @@ mod tests {
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let notify = std::sync::Arc::new(Notify::new());
         let driver = tokio::spawn(async { panic!("a test panic of the driver") });
-        supervise(driver, closed.clone(), notify).await;
+        let reason: Reason = Default::default();
+        supervise(driver, closed.clone(), notify, reason.clone()).await;
         assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
+        // Issue 178: the cause is kept, and the first cause wins.
+        assert_eq!(
+            reason.lock().unwrap().as_deref(),
+            Some("the userspace stack stopped with a panic")
+        );
+        mark_closed(&closed, &reason, "later".into());
+        assert_eq!(
+            reason.lock().unwrap().as_deref(),
+            Some("the userspace stack stopped with a panic")
+        );
 
         let (cmd, cmd_rx) = mpsc::channel(1);
         let stack = WarpStack {
             cmd,
             notify: std::sync::Arc::new(Notify::new()),
             closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reason: Default::default(),
             local: "172.16.0.2".parse().unwrap(),
         };
         assert!(!stack.is_closed());
