@@ -392,7 +392,7 @@ impl Report {
                 Some(Err(e)) => out.push_str(&format!("    dns failed: {e}\n")),
                 None => {}
             }
-            if p.verdict != Verdict::Ok {
+            if p.verdict != Verdict::Ok && !matches!(p.dns, Some(Err(_))) {
                 out.push_str(&format!("    {}\n", p.detail));
             }
             if let Some(tls) = &p.tls {
@@ -605,8 +605,8 @@ async fn path(target: Target, options: Options, start: Instant) -> Path {
                 Ok(Ok(addrs)) => Ok((addrs, took.elapsed())),
                 Ok(Err(e)) => Err(format!("{e:#}")),
                 Err(_) => Err(format!(
-                    "no answer in {} s",
-                    (options.timeout * 3).as_secs()
+                    "no answer in {:.1} s",
+                    (options.timeout * 3).as_secs_f64()
                 )),
             },
         )
@@ -614,7 +614,14 @@ async fn path(target: Target, options: Options, start: Instant) -> Path {
         None
     };
     let mut samples = Vec::new();
-    for i in 0..options.samples.max(1) {
+    // Issue 180: a failed lookup is the answer; the samples would only
+    // fail the same lookup again (a second line for one failure).
+    let dns_failed = matches!(dns, Some(Err(_)));
+    for i in 0..if dns_failed {
+        0
+    } else {
+        options.samples.max(1)
+    } {
         let left = options.budget.saturating_sub(start.elapsed());
         if left.is_zero() {
             break;
@@ -645,6 +652,11 @@ async fn path(target: Target, options: Options, start: Instant) -> Path {
         (Verdict::Refused, why.clone())
     } else if let Some(Sample::Lost(why)) = samples.first() {
         (Verdict::Unknown, why.clone())
+    } else if dns_failed {
+        (
+            Verdict::Unknown,
+            "the name does not resolve (see dns)".to_string(),
+        )
     } else {
         (Verdict::Unknown, "no sample in the time limit".to_string())
     };
@@ -717,12 +729,22 @@ fn classify(err: &anyhow::Error, took: Duration) -> Sample {
         };
         return Sample::Refused(took, text);
     }
-    let reset = err.chain().any(|e| {
-        e.downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+    // Issue 180: a local answer is a refusal: the port is closed, the
+    // network or the host is unreachable, a firewall refused (EPERM).
+    let refused = err.chain().find_map(|e| {
+        e.downcast_ref::<std::io::Error>().and_then(|io| {
+            use std::io::ErrorKind::*;
+            match io.kind() {
+                ConnectionRefused => Some("connection refused"),
+                NetworkUnreachable => Some("network unreachable"),
+                HostUnreachable => Some("host unreachable"),
+                PermissionDenied => Some("not permitted"),
+                _ => None,
+            }
+        })
     });
-    if reset {
-        return Sample::Refused(took, format!("connection refused: {err:#}"));
+    if let Some(what) = refused {
+        return Sample::Refused(took, format!("{what}: {err:#}"));
     }
     Sample::Lost(format!("{err:#}"))
 }
@@ -1073,6 +1095,24 @@ fn legs(paths: &[Path], udp: &Egress) -> Vec<Leg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 180: a refused direct dial is an answer, not unknown.
+    #[tokio::test]
+    async fn a_direct_refusal_is_an_answer() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+        let err = crate::egress::dial_addrs(&[addr], Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        match classify(&err, Duration::from_millis(1)) {
+            Sample::Refused(_, why) => assert!(why.contains("connection refused"), "{why}"),
+            other => panic!("not a refusal: {:?}", std::mem::discriminant(&other)),
+        }
+    }
 
     // Issue 128: the Date of an answer gives the skew of the clock.
     #[test]

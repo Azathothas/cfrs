@@ -301,7 +301,10 @@ fn a_407_names_the_schemes() {
     assert_ne!(code, Some(0));
     assert!(text.contains("HTTP 407"), "{text}");
     assert!(text.contains("NTLM or Negotiate"), "{text}");
-    assert!(text.contains("cfrs supports Basic only"), "{text}");
+    assert!(
+        text.contains("cfrs supports Basic and Digest only"),
+        "{text}"
+    );
 }
 
 /// An address that does not answer delays the dial by one attempt delay,

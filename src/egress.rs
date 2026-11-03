@@ -389,7 +389,7 @@ impl Proxy {
         if status == 407 {
             return Err(Refusal {
                 status,
-                text: explain_407(&head, self.auth.is_some()),
+                text: explain_407(&head, self.auth.is_some(), digest_tried),
             }
             .into());
         }
@@ -617,7 +617,7 @@ fn socks5_reply(code: u8) -> &'static str {
 
 /// The text for a `407` answer: the schemes in the `Proxy-Authenticate`
 /// headers, and what cfrs sent.
-fn explain_407(head: &[u8], sent_basic: bool) -> String {
+fn explain_407(head: &[u8], sent_basic: bool, digest_tried: bool) -> String {
     let text = String::from_utf8_lossy(head);
     let mut schemes: Vec<String> = Vec::new();
     for line in text.lines().skip(1) {
@@ -638,16 +638,26 @@ fn explain_407(head: &[u8], sent_basic: bool) -> String {
     } else {
         format!("it asks for {}", schemes.join(" or "))
     };
-    let sent = if sent_basic {
+    // Issue 180: cfrs answers Digest too; the advice follows what cfrs
+    // sent and what the proxy asks for.
+    let sent = if digest_tried {
+        "cfrs sent a Digest answer with the user and the password of the proxy URL, and the proxy refused it: check the user and the password"
+    } else if sent_basic {
         "cfrs sent Basic with the user and the password of the proxy URL"
     } else {
         "cfrs sent no credentials (put user:password@ in the proxy URL)"
     };
-    let only_basic = schemes.iter().any(|s| s.eq_ignore_ascii_case("basic"));
-    let advice = if schemes.is_empty() || only_basic {
+    let has = |name: &str| schemes.iter().any(|s| s.eq_ignore_ascii_case(name));
+    let advice = if schemes.is_empty() || has("basic") {
         ""
+    } else if has("digest") {
+        if sent_basic && !digest_tried {
+            "; the Digest challenge has an algorithm or a qop that cfrs does not answer (cfrs answers MD5, MD5-sess, SHA-256 and SHA-256-sess with qop auth)"
+        } else {
+            ""
+        }
     } else {
-        "; cfrs supports Basic only: ask for a Basic account, or use a local proxy that speaks the scheme (for example cntlm for NTLM)"
+        "; cfrs supports Basic and Digest only: ask for such an account, or use a local proxy that speaks the scheme (for example cntlm for NTLM)"
     };
     format!("the proxy requires authentication (HTTP 407): {asks}; {sent}{advice}")
 }
@@ -965,7 +975,12 @@ pub async fn dial_direct(host: &str, port: u16, timeout: Duration) -> Result<Tcp
     let host = host.trim_start_matches('[').trim_end_matches(']');
     let addrs: Vec<SocketAddr> = tokio::time::timeout(timeout, crate::resolve::resolve(host))
         .await
-        .with_context(|| format!("resolving {host}: no answer in {} s", timeout.as_secs()))
+        .with_context(|| {
+            format!(
+                "resolving {host}: no answer in {:.1} s",
+                timeout.as_secs_f64()
+            )
+        })
         .and_then(|r| r)
         .map_err(|e| crate::hop::at(crate::hop::Hop::Dns, e))?
         .into_iter()
@@ -1057,9 +1072,15 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
                     Err(err) => {
                         // Issue 126: EMFILE names the limit.
                         let text = crate::rlimit::hint(&err).unwrap_or_else(|| err.to_string());
+                        let kind = err.kind();
                         errors.push((addrs[i], text));
                         if pending.is_empty() && next >= addrs.len() {
-                            bail!("{}", group_errors(&errors));
+                            // Issue 180: the kind of the error stays (a
+                            // refusal is an answer for cfrs doctor).
+                            return Err(anyhow::Error::new(std::io::Error::new(
+                                kind,
+                                group_errors(&errors),
+                            )));
                         }
                     }
                 },
@@ -1557,7 +1578,7 @@ mod tests {
     #[test]
     fn a_407_names_the_schemes() {
         let head = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: NTLM, Negotiate\r\nproxy-authenticate: Basic realm=\"a, b\", Digest realm=\"x\", qop=\"auth\"\r\n\r\n";
-        let text = explain_407(head, true);
+        let text = explain_407(head, true, false);
         assert!(
             text.contains("it asks for NTLM or Negotiate or Basic or Digest"),
             "{text}"
@@ -1566,12 +1587,29 @@ mod tests {
         let text = explain_407(
             b"HTTP/1.1 407 x\r\nProxy-Authenticate: NTLM, Negotiate\r\n\r\n",
             false,
+            false,
         );
         assert!(
-            text.contains("NTLM or Negotiate") && text.contains("cfrs supports Basic only"),
+            text.contains("NTLM or Negotiate")
+                && text.contains("cfrs supports Basic and Digest only"),
             "{text}"
         );
         assert!(text.contains("sent no credentials"), "{text}");
+    }
+
+    // Issue 180: a Digest 407 does not get the advice of Basic only.
+    #[test]
+    fn a_407_with_digest_does_not_say_basic_only() {
+        let head = b"HTTP/1.1 407 x\r\nProxy-Authenticate: Digest realm=\"r\", nonce=\"n\", algorithm=MD5, qop=\"auth\"\r\n\r\n";
+        let text = explain_407(head, true, true);
+        assert!(!text.contains("Basic and Digest only"), "{text}");
+        assert!(text.contains("check the user and the password"), "{text}");
+        let text = explain_407(head, false, false);
+        assert!(!text.contains("only"), "{text}");
+        assert!(text.contains("sent no credentials"), "{text}");
+        let odd = b"HTTP/1.1 407 x\r\nProxy-Authenticate: Digest realm=\"r\", nonce=\"n\", algorithm=SHA-512-256\r\n\r\n";
+        let text = explain_407(odd, true, false);
+        assert!(text.contains("does not answer"), "{text}");
     }
 
     #[test]
