@@ -138,7 +138,9 @@ jobs:
           url=$(tail -1 detach.out | jq -r .url)
           pid=$(tail -1 detach.out | jq -r .pid)
           test "$(tail -1 detach.out | jq -r .verified)" = true
-          curl -fsS "$url" | grep -q 'Hello, world'
+          # The runner can fail one connect just after the verify of cfrs
+          # (curl exit 7 in 2 ms): try again.
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 2 "$url" | grep -q 'Hello, world'
           target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "live") | .state == "ready"'
           kill -0 "$pid"
           target/release/cfrs logs live -n 5 > /dev/null

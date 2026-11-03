@@ -147,12 +147,17 @@ for cc in none reno cubic; do
     pid=$!
     pids="$pids $pid"
     wait_port 40012 "$dir/cc.log"
-    out=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 \
-        -x socks5h://127.0.0.1:40012 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
-    echo "upload cc $cc: HTTP ${out%% *}, $(echo "${out#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+    # Up to 3 tries: the public endpoint can drop one connection (HTTP 000).
+    for try in 1 2 3; do
+        out=$(curl -sS -o /dev/null -w '%{http_code} %{speed_upload}' --max-time 90 \
+            -x socks5h://127.0.0.1:40012 --data-binary @"$dir/up16" https://speed.cloudflare.com/__up) || true
+        echo "upload cc $cc (try $try): HTTP ${out%% *}, $(echo "${out#* }" | awk '{ printf "%.2f MB/s", $1 / 1e6 }')"
+        [ "${out%% *}" = 200 ] && break
+        sleep 2
+    done
     kill "$pid" 2> /dev/null || true
     wait "$pid" 2> /dev/null || true
-    [ "${out%% *}" = 200 ] || { echo "the upload failed with cc $cc"; exit 1; }
+    [ "${out%% *}" = 200 ] || { echo "the upload failed with cc $cc"; tail -n 20 "$dir/cc.log"; exit 1; }
 done
 
 echo "== MASQUE over HTTP/3 (issue 157; a report, not a check yet)"
