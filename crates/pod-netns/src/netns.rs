@@ -910,7 +910,9 @@ pub(crate) fn child_setup(sock: RawFd, args: &Args) -> Result<()> {
                            // resolv.conf with the gateway of the TUN, where the pod answers DNS
                            // (issue 61). A failure leaves the host file, with a warning.
     if let Err(e) = private_resolv_conf() {
-        eprintln!("pod-netns: warning: the program keeps the resolver of the host ({e:#})");
+        crate::warn(&format!(
+            "warning: the program keeps the resolver of the host ({e:#})"
+        ));
     }
 
     let program = &args.program;

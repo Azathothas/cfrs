@@ -166,9 +166,9 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     }
     let warn_inbound = |backend: &str| {
         if args.inbound_dir_given {
-            eprintln!(
-                "pod-netns: warning: the {backend} backend has no inbound listeners; --inbound-dir is not used (give --backend seccomp)"
-            );
+            warn(&format!(
+                "warning: the {backend} backend has no inbound listeners; --inbound-dir is not used (give --backend seccomp)"
+            ));
         }
     };
     let result = match args.backend {
@@ -237,12 +237,28 @@ pub(crate) fn child_env(keep_proxy: bool) -> Vec<std::ffi::CString> {
         })
         .collect();
     if !removed.is_empty() {
-        eprintln!(
-            "pod-netns: the program does not get {} (the pod is its egress; --keep-proxy-env keeps them)",
+        warn(&format!(
+            "the program does not get {} (the pod is its egress; --keep-proxy-env keeps them)",
             removed.join(", ")
-        );
+        ));
     }
     env
+}
+
+/// The variable that silences the warnings of pod-netns (issue 115): set
+/// and not empty. `cfrs -q` sets it. Errors are still printed.
+pub const QUIET_VARIABLE: &str = "POD_NETNS_QUIET";
+
+/// True when [`QUIET_VARIABLE`] is set.
+pub fn quiet() -> bool {
+    std::env::var_os(QUIET_VARIABLE).is_some_and(|v| !v.is_empty())
+}
+
+/// Print a warning on stderr, unless [`quiet`].
+pub(crate) fn warn(text: &str) {
+    if !quiet() {
+        eprintln!("pod-netns: {text}");
+    }
 }
 
 /// Add `single-request` to `RES_OPTIONS` of a program environment (issue
@@ -297,9 +313,9 @@ fn warn_unreachable(proxies: &[upstream::Proxy]) {
             }
         };
         if let Err(err) = result {
-            eprintln!(
-                "pod-netns: warning: the upstream {shown} does not answer ({err}); each connection of the program will fail"
-            );
+            warn(&format!(
+                "warning: the upstream {shown} does not answer ({err}); each connection of the program will fail"
+            ));
         }
     }
 }

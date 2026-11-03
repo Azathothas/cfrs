@@ -798,6 +798,26 @@ exit 2"#,
     assert_eq!(cron, "MAILTO=\"\"\n@daily /usr/bin/true # mine\n");
     assert!(!entry.join("web.env").exists() && !entry.join("web.args").exists());
 
+    // Issue 117: a crontab that takes the input and keeps nothing: exit 69.
+    let lossy = dir.path().join("lossy");
+    std::fs::create_dir(&lossy).unwrap();
+    let path_lossy = format!("{}:/usr/bin:/bin", lossy.display());
+    std::fs::copy(fake.join("systemctl"), lossy.join("systemctl")).unwrap();
+    let crontab_lossy = lossy.join("crontab");
+    std::fs::write(
+        &crontab_lossy,
+        "#!/bin/sh\n[ \"$1\" = \"-\" ] && cat > /dev/null\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&crontab_lossy, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = run(&["autostart", "add", "web4", "--", "status"], &path_lossy);
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("does not keep the entry"),
+        "{}",
+        stderr(&out)
+    );
+
     // No systemctl and no crontab: exit 69, and the line to run.
     let empty = dir.path().join("empty");
     std::fs::create_dir(&empty).unwrap();

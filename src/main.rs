@@ -694,6 +694,12 @@ fn main() {
         }
     };
     let command = command_name(&argv);
+    // Issue 115: -q silences the warnings of the pod too. No thread runs
+    // yet.
+    if cli.quiet {
+        // SAFETY: one thread: the runtime does not exist yet.
+        unsafe { std::env::set_var(pod_netns::QUIET_VARIABLE, "1") };
+    }
     // Issue 126: a server command holds one descriptor for each connection.
     // A command that runs a program of the user leaves its limit as it is.
     let runs_a_program = matches!(
@@ -1026,6 +1032,17 @@ async fn agent(command: AgentCommand) -> Result<()> {
                     "cfrs warp up failed ({err}); see cfrs net doctor, and use cfrs warp run -- CMD for one program"
                 ));
             }
+            // Issue 117: say what --persist changed.
+            let files: Vec<&str> = doc["warp"]["persist_files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            if !files.is_empty() {
+                advice.push(format!(
+                    "--persist: new shells load WARP from {}; cfrs warp down removes it",
+                    files.join(", ")
+                ));
+            }
             doc["advice"] = advice.into();
             println!("{doc}");
             // Issue 97: WARP was needed and did not start: not a success.
@@ -1201,9 +1218,20 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
 
 /// `cfrs warp up`: start `warp proxy` detached (instance `warp`) with the
 /// WARP options of this command line, then write the env file.
-fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Result<()> {
+fn warp_up(
+    args: &WarpArgs,
+    port: u16,
+    persist: bool,
+    ready_timeout: u64,
+    replace: bool,
+) -> Result<()> {
     let socket = cfrs::warp::up::socket_path()?;
-    let argv = warp_up_args(args, port, &socket, ready_timeout);
+    let mut argv = warp_up_args(args, port, &socket, ready_timeout);
+    // Issue 115: the advice of a running instance with other arguments
+    // names --replace; warp up has it now.
+    if replace {
+        argv.push("--replace".into());
+    }
     let doc = cfrs::warp::up::start("cfrs warp proxy --detach", &argv)?;
     // Issue 97: the TCP listener or the socket can be refused by the host;
     // the env file and the advice follow what came up.
@@ -1212,12 +1240,16 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
         eprintln!("{line}");
     }
     let env = cfrs::warp::up::write_env(tcp, &socket)?;
+    let mut persist_files = Vec::new();
     if persist {
         for file in cfrs::warp::up::persist(&env)? {
             eprintln!("cfrs: warp up: a block in {}", file.display());
+            persist_files.push(file.display().to_string());
         }
     }
     let mut doc = doc;
+    // Issue 117: the document names the files of --persist.
+    doc["persist_files"] = persist_files.into();
     doc["env"] = env.display().to_string().into();
     doc["socket"] = socket.display().to_string().into();
     doc["persist"] = persist.into();
@@ -2658,6 +2690,10 @@ enum WarpCommand {
         /// tun --default-route (instance warp-tun), in place of the proxy.
         #[arg(long, conflicts_with = "persist")]
         tun: bool,
+        /// Stop a running warp up with other arguments (another --port),
+        /// and start this one.
+        #[arg(long)]
+        replace: bool,
     },
     /// Stop what cfrs warp up started, and remove its env file and its
     /// block in ~/.bashrc and ~/.profile.
@@ -2830,8 +2866,9 @@ async fn warp(args: WarpArgs) -> Result<()> {
             port,
             persist,
             ready_timeout,
+            replace,
             ..
-        } => return warp_up(&args, *port, *persist, *ready_timeout),
+        } => return warp_up(&args, *port, *persist, *ready_timeout, *replace),
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
             let text = cfrs::warp::up::env_text()?;
@@ -2929,12 +2966,18 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Status { json } => {
             client.refresh().await?;
             save(&client)?;
-            let account = client.account().await?;
+            let mut account = client.account().await?;
+            // Issue 116: the instance of warp up, with the account.
+            let instance = cfrs::warp::up::instance_state();
             if json {
+                if let Some(doc) = account.as_object_mut() {
+                    doc.insert("instance".into(), instance);
+                }
                 println!("{}", serde_json::to_string_pretty(&account)?);
                 return Ok(());
             }
             print_device(&client, path.as_deref());
+            println!("warp up     {}", cfrs::warp::up::instance_line(&instance));
             let field = |name: &str| account.get(name).map(|v| v.to_string()).unwrap_or_default();
             println!("type        {}", field("account_type"));
             println!("warp+       {}", warp_plus_label(&account));
@@ -3253,7 +3296,9 @@ async fn warp(args: WarpArgs) -> Result<()> {
         | WarpCommand::Shell
         | WarpCommand::SshConfig { .. } => unreachable!("handled before the client is made"),
         WarpCommand::Nc { host, port, .. } => {
-            // No cfrs warp up runs: a session of this process.
+            // No cfrs warp up runs: a session of this process. Issue 115:
+            // say so, because the two ways fail in other ways.
+            tracing::info!("cfrs warp up is not running; warp nc opens a WARP session of its own");
             let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
             let target = match host.parse::<std::net::IpAddr>() {
                 Ok(ip) => pod_netns::socks::ProxyHost::Ip(ip),

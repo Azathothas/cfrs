@@ -1406,6 +1406,18 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
     let (out, err) = run_with("none");
     assert!(out.contains("PEER:-1:EOPNOTSUPP"), "{out:?} {err:?}");
     assert!(err.contains("refuses writes to the memory"), "{err:?}");
+    // Issue 115: POD_NETNS_QUIET silences the warning.
+    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "-x"])
+        .arg(format!("unix:{}", sock.display()))
+        .arg("--")
+        .arg(&program)
+        .env("POD_NETNS_TEST_MEM", "none")
+        .env("POD_NETNS_QUIET", "1")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(!err.contains("refuses writes to the memory"), "{err:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

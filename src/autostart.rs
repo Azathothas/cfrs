@@ -403,6 +403,18 @@ pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
             let log = dir.join(format!("{name}.log"));
             let next = crontab_with(&current, name, &line, &log);
             ok(run_limited("crontab", &["-"], Some(&next), limit)?)?;
+            // Issue 117: a crontab that took the input and kept nothing is
+            // no way to start at boot.
+            let marker = marker(name);
+            if !crontab_list(limit)?
+                .lines()
+                .any(|l| l.trim_end().ends_with(&marker))
+            {
+                return Err(crate::exit::fault(
+                    crate::exit::Fault::Unavailable,
+                    anyhow::anyhow!("crontab - exited 0, and crontab -l has no line for {name}: cron does not keep the entry"),
+                ));
+            }
             // Start it now too: cron starts it at the next boot.
             let started = start_now(&exe, name, &dir, &log);
             format!(

@@ -71,6 +71,15 @@ pub async fn bind(listen: &ProxyListen) -> Result<Bound> {
             Ok(Bound::Tcp(listener, ProxyListen::Tcp(actual)))
         }
         ProxyListen::Unix(path) => {
+            // Issue 115: a socket that answers belongs to a running proxy:
+            // it is not taken. Before, it was removed, and the running
+            // proxy lost its clients.
+            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                bail!(
+                    "unix:{} is served by another process (cfrs ps; cfrs warp down stops cfrs warp up)",
+                    path.display()
+                );
+            }
             let _ = std::fs::remove_file(path);
             let listener = pod_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
@@ -835,6 +844,27 @@ mod tests {
             drop(client);
             let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
         }
+    }
+
+    // Issue 115: a unix socket that answers is not taken.
+    #[tokio::test]
+    async fn a_unix_socket_that_answers_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warp.sock");
+        let first = tokio::net::UnixListener::bind(&path).unwrap();
+        let err = match bind(&ProxyListen::Unix(path.clone())).await {
+            Err(err) => err,
+            Ok(_) => panic!("a live socket was taken"),
+        };
+        assert!(format!("{err}").contains("another process"), "{err}");
+        let client = tokio::net::UnixStream::connect(&path);
+        let (accepted, connected) = tokio::join!(first.accept(), client);
+        assert!(accepted.is_ok() && connected.is_ok());
+        drop(first);
+        assert!(
+            bind(&ProxyListen::Unix(path)).await.is_ok(),
+            "a dead socket is taken"
+        );
     }
 
     /// Issue 97: each listener is bound on its own. A TCP listener that the

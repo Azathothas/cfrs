@@ -133,6 +133,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and cfrs tries again. For a measurement.",
     },
     EnvVar {
+        names: &["POD_NETNS_QUIET"],
+        used_by: "pod, warp exec, warp shell, warp run",
+        meaning: "Set and not empty: the pod prints no warnings (errors stay). cfrs -q sets it.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

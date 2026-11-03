@@ -168,6 +168,47 @@ pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String 
     text
 }
 
+/// The state of the instance of `cfrs warp up` (issue 116): for `warp
+/// status`.
+pub fn instance_state() -> serde_json::Value {
+    let Ok(dir) = crate::instances::run_dir() else {
+        return serde_json::json!({"running": false});
+    };
+    match crate::instances::read(&dir, INSTANCE) {
+        Some(record) if crate::instances::is_alive(&dir, INSTANCE) => serde_json::json!({
+            "running": true,
+            "pid": record.pid,
+            "state": record.state,
+            "started": record.started,
+            "restarts": record.restarts,
+            "listens": record.ready.as_ref().and_then(|d| d.get("listens")).cloned(),
+        }),
+        _ => serde_json::json!({"running": false}),
+    }
+}
+
+/// The line of [`instance_state`] for `warp status`.
+pub fn instance_line(state: &serde_json::Value) -> String {
+    if state["running"] != true {
+        return "not running (cfrs warp up starts it)".into();
+    }
+    let listens: Vec<&str> = state["listens"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    format!(
+        "{}, pid {}, restarts {}, listens {}",
+        state["state"].as_str().unwrap_or("?"),
+        state["pid"],
+        state["restarts"],
+        if listens.is_empty() {
+            "-".into()
+        } else {
+            listens.join(" ")
+        }
+    )
+}
+
 /// The variables of `vars` whose value is a listener of `argv` (a
 /// `--listen tcp://ADDR` or `unix:PATH`): the env file of warp up wrote
 /// them.
@@ -398,8 +439,42 @@ pub fn without_block(text: &str) -> String {
 
 fn shell_files() -> Result<Vec<PathBuf>> {
     let home = std::env::var_os("HOME").context("no HOME")?;
-    let home = PathBuf::from(home);
-    Ok(vec![home.join(".bashrc"), home.join(".profile")])
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    Ok(shell_files_in(&PathBuf::from(home), &shell))
+}
+
+/// The files of the sh block (issue 115): `~/.bashrc`, `~/.profile`, and
+/// `~/.zshrc` when it exists or the shell is zsh (the block is valid zsh).
+fn shell_files_in(home: &Path, shell: &str) -> Vec<PathBuf> {
+    let mut files = vec![home.join(".bashrc"), home.join(".profile")];
+    let zshrc = home.join(".zshrc");
+    if shell.ends_with("zsh") || zshrc.exists() {
+        files.push(zshrc);
+    }
+    files
+}
+
+/// The file of fish (issue 115): a file of its own in conf.d, when fish is
+/// the shell or its config directory exists.
+fn fish_file() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let dir = home.join(".config/fish");
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    (shell.ends_with("fish") || dir.exists()).then(|| dir.join("conf.d/cfrs-warp.fish"))
+}
+
+/// The fish form of [`hook_block`]. fish has `export`, so the env file
+/// works with `source`.
+pub fn fish_block(env: &Path, socket: &Path, exe: &Path) -> String {
+    let env = quote(&env.display().to_string());
+    let socket = quote(&socket.display().to_string());
+    let exe = quote(&exe.display().to_string());
+    format!(
+        "{BEGIN}\n\
+if test -f {env}; source {env}; end\n\
+if status is-interactive; and not set -q {SHELL_VARIABLE}; and test -S {socket}; and test -x {exe}; exec {exe} warp shell; end\n\
+{END}\n"
+    )
 }
 
 /// Add the block to `~/.bashrc` and `~/.profile` (an old block is
@@ -417,6 +492,14 @@ pub fn persist(env: &Path) -> Result<Vec<PathBuf>> {
         }
         text.push_str(&block);
         std::fs::write(&file, text).with_context(|| format!("writing {}", file.display()))?;
+        done.push(file);
+    }
+    if let Some(file) = fish_file() {
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+        }
+        std::fs::write(&file, fish_block(env, &socket, &exe))
+            .with_context(|| format!("writing {}", file.display()))?;
         done.push(file);
     }
     Ok(done)
@@ -445,6 +528,11 @@ pub fn down() -> Result<()> {
         if new != old {
             std::fs::write(&file, new).with_context(|| format!("writing {}", file.display()))?;
             println!("cfrs: warp down: removed the block in {}", file.display());
+        }
+    }
+    if let Some(file) = fish_file() {
+        if std::fs::remove_file(&file).is_ok() {
+            println!("cfrs: warp down: removed {}", file.display());
         }
     }
     Ok(())
@@ -594,6 +682,41 @@ mod tests {
         assert_eq!(listeners_of(&doc), (None, true));
         let doc = serde_json::json!({"listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"]});
         assert_eq!(listeners_of(&doc), (Some(40000), true));
+    }
+
+    // Issue 116: warp status shows the instance of warp up.
+    #[test]
+    fn the_instance_line() {
+        assert!(instance_line(&serde_json::json!({"running": false})).starts_with("not running"));
+        let state = serde_json::json!({
+            "running": true, "pid": 42, "state": "ready", "restarts": 0,
+            "listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"],
+        });
+        assert_eq!(
+            instance_line(&state),
+            "ready, pid 42, restarts 0, listens tcp://127.0.0.1:40000 unix:/r/warp.sock"
+        );
+    }
+
+    // Issue 115: zsh gets the block too; fish gets a file of its own.
+    #[test]
+    fn the_shell_files_follow_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        assert_eq!(shell_files_in(home, "/bin/bash").len(), 2);
+        assert!(shell_files_in(home, "/usr/bin/zsh").contains(&home.join(".zshrc")));
+        std::fs::write(home.join(".zshrc"), "").unwrap();
+        assert!(shell_files_in(home, "/bin/bash").contains(&home.join(".zshrc")));
+        let fish = fish_block(
+            Path::new("/r/warp.env"),
+            Path::new("/r/warp.sock"),
+            Path::new("/b/cfrs"),
+        );
+        assert!(
+            fish.contains("if test -f '/r/warp.env'; source '/r/warp.env'; end\n"),
+            "{fish}"
+        );
+        assert!(fish.contains("exec '/b/cfrs' warp shell; end"), "{fish}");
     }
 
     // Issue 116: the program of warp exec gets CFRS_WARP_SOCKET.

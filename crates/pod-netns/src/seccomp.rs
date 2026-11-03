@@ -835,9 +835,9 @@ pub(crate) fn open_mem(pid: u32) -> (RawFd, bool) {
 fn warn_no_mem_write() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        eprintln!(
-            "pod-netns: warning: this host refuses writes to the memory of the program; \
-             getsockname and getpeername fail with EOPNOTSUPP, and QUIC clients (curl --http3) fail"
+        crate::warn(
+            "warning: this host refuses writes to the memory of the program; \
+             getsockname and getpeername fail with EOPNOTSUPP, and QUIC clients (curl --http3) fail",
         );
     });
 }
