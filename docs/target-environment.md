@@ -113,6 +113,51 @@ fail that check. The steps:
 | Outbound UDP is refused (EPERM, ICMP) | `--protocol auto` does not try QUIC on UDP 7844 | measured (test) | `src/udp.rs`; `tunnel::plan_with_udp` |
 | No IPv6 (`EAFNOSUPPORT`) | Direct dials alternate the families and go on to the next address after 250 ms | inferred | `src/egress.rs` `dial_addrs` |
 
+## Other networks to the front door
+
+cfrs has no built-in Tor or Psiphon client. Each of these networks gives a
+local SOCKS5 or HTTP proxy, and `--proxy` sends the connections of cfrs
+(the WARP API and the MASQUE session) through it. The WARP traffic then
+leaves the other network at its exit, and the front door sees that exit.
+
+* Tor (issue 159). Start `tor`; it listens on SOCKS5 127.0.0.1:9050.
+
+  ```sh
+  cfrs --proxy socks5h://127.0.0.1:9050 warp register
+  cfrs --proxy socks5h://127.0.0.1:9050 warp proxy
+  ```
+
+  The API can refuse a Tor exit. Then register with no proxy, and use
+  `--proxy` for the session only (`warp proxy` loads the saved device).
+  `--no-relay` keeps the session on Tor: the WebSocket relay is a second
+  path that does not use Tor.
+* Psiphon (issue 158). The console client of psiphon-tunnel-core gives a
+  SOCKS5 port and an HTTP port (`LocalSocksProxyPort` and
+  `LocalHttpProxyPort` of its config).
+
+  ```sh
+  cfrs --proxy socks5h://127.0.0.1:PORT warp --no-relay proxy
+  ```
+
+* A command as the carrier: `--proxy 'http+exec:COMMAND'` runs COMMAND for
+  each connection and speaks HTTP `CONNECT` on its stdin and stdout, as the
+  `ProxyCommand` of SSH.
+* A nested session (issue 156): a second device whose session goes through
+  the first. The front door of the second device sees the exit of the
+  first.
+
+  ```sh
+  cfrs warp --identity a.json proxy --listen tcp://127.0.0.1:40000 &
+  cfrs --proxy socks5h://127.0.0.1:40000 warp --identity b.json proxy \
+      --listen tcp://127.0.0.1:40001
+  ```
+
+  The clients of 40001 use the second device. Each packet is in two
+  sessions, so the MTU and the speed are lower.
+
+`scripts/live-batch2.sh` (in `.github/workflows/live.yml`) checks the nested
+session.
+
 ## Rules of cfrs
 
 1. Use one egress path for each connection: the proxy of `--proxy` or the

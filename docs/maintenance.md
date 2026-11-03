@@ -48,6 +48,10 @@ state of the open work.
     four runs (`ci`, `live`, `deny`, `secrets`): `MIN_RUNS` 4.
   * `v6only/up.sh BINARY`, `v6only/run.sh CMD`, `v6only/acceptance.sh
     BINARY`, `v6only/down.sh`: an IPv6-only host on a runner (issue 163).
+  * `live-batch2.sh BINARY`: the live checks of warp exit, scan, the rules,
+    forward, a nested session and export (issues 132 to 159).
+  * `quic-vn.py HOST PORT`: the QUIC versions of a UDP endpoint (Version
+    Negotiation; issue 157).
     It needs root, `ip`, `iptables` and `ip6tables`; it cannot run in this
     sandbox (no IPv6 in its kernel).
   * Run the two watchers under the Monitor tool (a monitor stops after
