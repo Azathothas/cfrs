@@ -314,7 +314,14 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
         )
         .route("/s/{token}", get(upload_landing))
         .route("/s/{token}/", get(upload_landing))
-        .route("/s/{token}/upload", post(upload_receive))
+        // Live run 41556133042: with the body limit of the router on this
+        // route, the multipart stream ended at the limit, the rest of a
+        // refused body was not read, and the edge gave 500 over HTTP/2 in
+        // place of the 413. The handler counts the bytes of the request.
+        .route(
+            "/s/{token}/upload",
+            post(upload_receive).layer(DefaultBodyLimit::disable()),
+        )
         .layer(DefaultBodyLimit::max(limit))
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(config.token.clone()),
@@ -559,7 +566,9 @@ async fn upload_receive(
         slots: 0,
         bytes: 0,
     };
-    loop {
+    let mut request_bytes = 0u64;
+    let mut over = false;
+    'fields: loop {
         let field = match tokio::time::timeout(CHUNK_LIMIT, multipart.next_field()).await {
             Ok(Ok(Some(field))) => field,
             Ok(Ok(None)) => break,
@@ -633,6 +642,12 @@ async fn upload_receive(
             };
             // A long upload is activity: --idle-secs does not stop it.
             state.control.touch();
+            // A request with no Content-Length over --max-request.
+            request_bytes += chunk.len() as u64;
+            if request_bytes > state.max_request {
+                over = true;
+                break 'fields;
+            }
             written += chunk.len() as u64;
             if written > state.max_bytes {
                 return refuse(
@@ -663,6 +678,21 @@ async fn upload_receive(
             );
         }
         staging.parts[index].2 = written;
+    }
+    if over {
+        tracing::info!(
+            limit = state.max_request,
+            "upload refused: the request is over --max-request"
+        );
+        let dropped = drop_body(&mut multipart).await;
+        tracing::debug!(dropped, "the body of a refused upload was read and dropped");
+        return refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "the upload is over {}, the most of one upload (send fewer or smaller files)",
+                human_bytes(state.max_request)
+            ),
+        );
     }
 
     if staging.parts.is_empty() {
@@ -1080,6 +1110,64 @@ mod tests {
             std::fs::metadata(dir.path().join("a.txt")).unwrap().len(),
             10
         );
+    }
+
+    /// A body in chunks of 1000 bytes that counts the bytes read.
+    fn counted(body: Vec<u8>) -> (axum::body::Body, Arc<std::sync::atomic::AtomicUsize>) {
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = read.clone();
+        let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = body
+            .chunks(1000)
+            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+            .collect();
+        use futures::StreamExt as _;
+        let stream = futures::stream::iter(chunks).inspect(move |c| {
+            if let Ok(c) = c {
+                seen.fetch_add(c.len(), Ordering::SeqCst);
+            }
+        });
+        (axum::body::Body::from_stream(stream), read)
+    }
+
+    // Live run 41556133042: a refused body is read to its end before the
+    // 413, with and with no Content-Length. Before, the body limit of the
+    // router stopped the read at --max-request, and over HTTP/2 the edge
+    // gave 500.
+    #[tokio::test]
+    async fn a_refused_body_is_read_to_its_end() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.max_request = 10_000;
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        for with_length in [true, false] {
+            let body = multipart(&[("big.bin", 60_000)]);
+            let len = body.len();
+            let (stream, read) = counted(body);
+            let mut request = upload_request(&token, stream);
+            if with_length {
+                request
+                    .headers_mut()
+                    .insert("content-length", len.to_string().parse().unwrap());
+            }
+            let response = app.router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), 413, "content-length {with_length}");
+            assert_eq!(
+                read.load(Ordering::SeqCst),
+                len,
+                "content-length {with_length}"
+            );
+            assert!(files_in(dir.path()).is_empty());
+        }
+        // An upload under the limit still works.
+        let body = multipart(&[("small.bin", 5000)]);
+        let response = app
+            .router()
+            .oneshot(upload_request(&token, axum::body::Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
     }
 
     /// Issue 92: a request over max_request (by its Content-Length) is read
