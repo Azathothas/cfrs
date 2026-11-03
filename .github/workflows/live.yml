@@ -683,6 +683,12 @@ jobs:
           curl -fsS --max-time 30 -x socks5h://127.0.0.1:40000 'https://[2606:4700:4700::1111]/cdn-cgi/trace' | tee v6trace.txt | grep -E '^(ip|warp)=' | sed -E 's/^ip=.*/ip=<v6 address>/'
           grep -q '^warp=on' v6trace.txt
           grep -q '^ip=.*:' v6trace.txt
+          # Issue 112: a UDP datagram to IPv6 (ATYP 4) does not stop the
+          # proxy. Then IPv4 UDP and a TCP CONNECT still work.
+          python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 '[2606:4700:4700::1111]:53' 3 || true
+          python3 scripts/socks5-udp-dns.py 127.0.0.1 40000 1.1.1.1:53 3
+          curl -sS --max-time 30 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
+          if grep -q 'panicked' warpproxy.log; then grep -A2 'panicked' warpproxy.log; exit 1; fi
           # Issues 93 and 100: one TCP download of 20 MB through the
           # userspace stack and MASQUE, for each TCP window
           # (CFRS_WARP_TCP_BURST, in segments; the default is 1). Run

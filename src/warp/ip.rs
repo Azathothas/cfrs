@@ -184,6 +184,56 @@ fn from_endpoint(ep: IpEndpoint) -> SocketAddr {
     }
 }
 
+/// Make the interface of the tunnel: the addresses and the default routes.
+fn build_iface(config: &StackConfig, device: &mut LinkDevice) -> Interface {
+    let mut iface_config = IfaceConfig::new(HardwareAddress::Ip);
+    iface_config.random_seed = 0x0c_f2_5e_ed_00_00_00_01;
+    let mut iface = Interface::new(iface_config, device, Instant::ZERO);
+
+    iface.update_ip_addrs(|addrs| {
+        let cidr = match config.local {
+            IpAddr::V4(v4) => IpCidr::new(IpAddress::Ipv4(v4.into()), 32),
+            IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6.into()), 128),
+        };
+        addrs.push(cidr).ok();
+        if let Some(v6) = config.local_v6 {
+            addrs
+                .push(IpCidr::new(IpAddress::Ipv6(v6.into()), 128))
+                .ok();
+        }
+    });
+    match config.gateway {
+        IpAddr::V4(gw) => {
+            iface.routes_mut().add_default_ipv4_route(gw.into()).ok();
+        }
+        IpAddr::V6(gw) => {
+            iface.routes_mut().add_default_ipv6_route(gw.into()).ok();
+        }
+    }
+    if let Some(v6) = config.local_v6 {
+        // The tunnel is point to point: the own address is a next hop
+        // that needs no neighbour discovery.
+        iface.routes_mut().add_default_ipv6_route(v6.into()).ok();
+    }
+    iface
+}
+
+/// Wait for the driver task to end. Then mark the stack closed. A panic of
+/// the driver is logged (issue 112).
+async fn supervise(
+    driver: tokio::task::JoinHandle<()>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    notify: std::sync::Arc<Notify>,
+) {
+    if let Err(err) = driver.await {
+        if err.is_panic() {
+            tracing::warn!("the userspace stack stopped with a panic; a new session replaces it");
+        }
+    }
+    closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    notify.notify_one();
+}
+
 impl WarpStack {
     /// Start the stack over an established session.
     pub fn start(
@@ -198,37 +248,8 @@ impl WarpStack {
         let inbound = device.inbound();
         let outbound = device.outbound();
 
-        let mut iface_config = IfaceConfig::new(HardwareAddress::Ip);
-        iface_config.random_seed = 0x0c_f2_5e_ed_00_00_00_01;
-        let mut iface = Interface::new(iface_config, &mut device, Instant::ZERO);
+        let iface = build_iface(&config, &mut device);
 
-        iface.update_ip_addrs(|addrs| {
-            let cidr = match config.local {
-                IpAddr::V4(v4) => IpCidr::new(IpAddress::Ipv4(v4.into()), 32),
-                IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6.into()), 128),
-            };
-            addrs.push(cidr).ok();
-            if let Some(v6) = config.local_v6 {
-                addrs
-                    .push(IpCidr::new(IpAddress::Ipv6(v6.into()), 128))
-                    .ok();
-            }
-        });
-        match config.gateway {
-            IpAddr::V4(gw) => {
-                iface.routes_mut().add_default_ipv4_route(gw.into()).ok();
-            }
-            IpAddr::V6(gw) => {
-                iface.routes_mut().add_default_ipv6_route(gw.into()).ok();
-            }
-        }
-        if let Some(v6) = config.local_v6 {
-            // The tunnel is point to point: the own address is a next hop
-            // that needs no neighbour discovery.
-            iface.routes_mut().add_default_ipv6_route(v6.into()).ok();
-        }
-
-        let sockets: SocketSet<'static> = SocketSet::new(Vec::new());
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let notify = std::sync::Arc::new(Notify::new());
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -294,18 +315,16 @@ impl WarpStack {
         {
             let notify = notify.clone();
             let closed = closed.clone();
-            tokio::spawn(async move {
-                let mut driver = Driver {
-                    iface,
-                    sockets,
-                    device,
-                    registry: HashMap::new(),
-                    pending: VecDeque::new(),
-                    next_id: 1,
-                    next_ephemeral: 40_000,
-                };
-                driver.run(cmd_rx, notify, closed).await;
-            });
+            let driver = {
+                let notify = notify.clone();
+                let closed = closed.clone();
+                tokio::spawn(async move {
+                    Driver::new(iface, device).run(cmd_rx, notify, closed).await;
+                })
+            };
+            // Issue 112: the stack is closed when the driver ends, also by a
+            // panic, so that Live replaces it with a new session.
+            tokio::spawn(supervise(driver, closed, notify));
         }
 
         Ok(Self {
@@ -319,11 +338,11 @@ impl WarpStack {
     /// True when the MASQUE session of this stack can no longer carry a
     /// packet in one direction or the other.
     pub fn is_closed(&self) -> bool {
-        self.closed.load(std::sync::atomic::Ordering::Relaxed)
+        self.closed.load(std::sync::atomic::Ordering::Relaxed) || self.cmd.is_closed()
     }
 
     fn alive(&self) -> Result<()> {
-        if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.is_closed() {
             bail!("the MASQUE session is closed");
         }
         Ok(())
@@ -464,6 +483,26 @@ struct Driver {
 }
 
 impl Driver {
+    fn new(iface: Interface, device: LinkDevice) -> Self {
+        Self {
+            iface,
+            sockets: SocketSet::new(Vec::new()),
+            device,
+            registry: HashMap::new(),
+            pending: VecDeque::new(),
+            next_id: 1,
+            next_ephemeral: 40_000,
+        }
+    }
+
+    /// True when the tunnel has an address of the family of `ip`.
+    fn has_family(&self, ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(_) => self.iface.ipv4_addr().is_some(),
+            IpAddr::V6(_) => self.iface.ipv6_addr().is_some(),
+        }
+    }
+
     fn now() -> Instant {
         use std::sync::OnceLock;
         static START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -618,20 +657,18 @@ impl Driver {
                 } else {
                     self.next_ephemeral + 1
                 };
-                let local_addr = self
-                    .iface
-                    .ipv4_addr()
-                    .map(IpAddress::Ipv4)
-                    .or_else(|| self.iface.ipv6_addr().map(IpAddress::Ipv6));
-                let Some(local_addr) = local_addr else {
+                if self.iface.ipv4_addr().is_none() && self.iface.ipv6_addr().is_none() {
                     let _ = reply.send(Err(anyhow::anyhow!("the tunnel has no address")));
                     return;
-                };
+                }
+                // Issue 112: no local address, so that smoltcp takes the
+                // source of the family of each destination. A bind to the
+                // IPv4 address made a send to IPv6 panic in smoltcp.
                 let handle = self.sockets.add(Self::udp_socket());
                 let result = {
                     let socket = self.sockets.get_mut::<udp::Socket>(handle);
                     socket.bind(IpListenEndpoint {
-                        addr: Some(local_addr),
+                        addr: None,
                         port: local_port,
                     })
                 };
@@ -650,6 +687,12 @@ impl Driver {
                 to,
                 reply,
             } => match self.handle_of(id) {
+                Some(_) if !self.has_family(to.ip()) => {
+                    let family = if to.is_ipv4() { "IPv4" } else { "IPv6" };
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "the tunnel has no {family} address for {to}"
+                    )));
+                }
                 Some(handle) => self.pending.push_back(Pending::UdpSend {
                     handle,
                     data,
@@ -792,5 +835,113 @@ impl Driver {
         let moved = still_waiting.len() < before;
         self.pending = still_waiting;
         moved
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn driver(config: &StackConfig) -> Driver {
+        let mut device = LinkDevice::tunnel_bounded(TUNNEL_MTU, 16);
+        let iface = build_iface(config, &mut device);
+        Driver::new(iface, device)
+    }
+
+    fn bind(d: &mut Driver) -> u32 {
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::UdpBind { reply });
+        wait.try_recv().unwrap().unwrap().0
+    }
+
+    /// Send one datagram and poll. The result of the send, and the packet
+    /// that went out (if any).
+    fn send(d: &mut Driver, id: u32, to: &str) -> (Option<Result<usize>>, Option<Vec<u8>>) {
+        let (reply, mut wait) = oneshot::channel();
+        d.apply(Command::UdpSend {
+            id,
+            data: b"query".to_vec(),
+            to: to.parse().unwrap(),
+            reply,
+        });
+        d.progress();
+        d.iface.poll(Driver::now(), &mut d.device, &mut d.sockets);
+        d.progress();
+        (wait.try_recv().ok(), d.device.outbound().pop())
+    }
+
+    fn source_of(packet: &[u8]) -> IpAddr {
+        match packet[0] >> 4 {
+            4 => IpAddr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
+            6 => IpAddr::from(<[u8; 16]>::try_from(&packet[8..24]).unwrap()),
+            v => panic!("IP version {v}"),
+        }
+    }
+
+    // Issue 112: a datagram to IPv6 on a tunnel with an IPv4 address only
+    // is refused. Before, smoltcp panicked ("IP version mismatch").
+    #[test]
+    fn udp_to_ipv6_on_an_ipv4_tunnel_is_refused() {
+        let config = StackConfig::new("172.16.0.2".parse().unwrap());
+        let mut d = driver(&config);
+        let id = bind(&mut d);
+        let (result, packet) = send(&mut d, id, "[2606:4700:4700::1111]:53");
+        let err = result.expect("a reply").unwrap_err();
+        assert!(format!("{err}").contains("no IPv6 address"), "{err}");
+        assert!(packet.is_none());
+        // The stack still works for IPv4.
+        let (result, packet) = send(&mut d, id, "1.1.1.1:53");
+        assert_eq!(result.expect("a reply").unwrap(), 5);
+        assert_eq!(source_of(&packet.expect("a packet")), config.local);
+    }
+
+    // Issue 112: on a tunnel with both families, each datagram has the
+    // source of the family of its destination.
+    #[test]
+    fn udp_on_a_dual_stack_tunnel_takes_the_source_of_each_family() {
+        let v6: std::net::Ipv6Addr = "2606:4700:110:8a36::2".parse().unwrap();
+        let config = StackConfig::new("172.16.0.2".parse().unwrap()).with_ipv6(Some(v6));
+        let mut d = driver(&config);
+        let id = bind(&mut d);
+        let (result, packet) = send(&mut d, id, "[2606:4700:4700::1111]:53");
+        assert_eq!(result.expect("a reply").unwrap(), 5);
+        assert_eq!(source_of(&packet.expect("a packet")), IpAddr::V6(v6));
+        let (result, packet) = send(&mut d, id, "1.1.1.1:53");
+        assert_eq!(result.expect("a reply").unwrap(), 5);
+        assert_eq!(source_of(&packet.expect("a packet")), config.local);
+    }
+
+    #[test]
+    fn udp_to_ipv4_on_an_ipv6_tunnel_is_refused() {
+        let config = StackConfig::new("2606:4700:110:8a36::2".parse().unwrap());
+        let mut d = driver(&config);
+        let id = bind(&mut d);
+        let (result, packet) = send(&mut d, id, "1.1.1.1:53");
+        let err = result.expect("a reply").unwrap_err();
+        assert!(format!("{err}").contains("no IPv4 address"), "{err}");
+        assert!(packet.is_none());
+    }
+
+    // Issue 112: a driver that panics closes the stack, so that Live opens
+    // a new session.
+    #[tokio::test]
+    async fn a_panic_of_the_driver_closes_the_stack() {
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let notify = std::sync::Arc::new(Notify::new());
+        let driver = tokio::spawn(async { panic!("a test panic of the driver") });
+        supervise(driver, closed.clone(), notify).await;
+        assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
+
+        let (cmd, cmd_rx) = mpsc::channel(1);
+        let stack = WarpStack {
+            cmd,
+            notify: std::sync::Arc::new(Notify::new()),
+            closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            local: "172.16.0.2".parse().unwrap(),
+        };
+        assert!(!stack.is_closed());
+        drop(cmd_rx);
+        assert!(stack.is_closed());
+        assert!(stack.udp_bind().await.is_err());
     }
 }
