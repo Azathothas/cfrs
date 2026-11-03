@@ -209,7 +209,7 @@ pub(crate) fn probe_mem_write() -> Probe {
         } else {
             (
                 false,
-                format!("{open_error}; process_vm_writev is refused too: getsockname and getpeername fail with EOPNOTSUPP, QUIC clients fail"),
+                format!("{open_error}; process_vm_writev is refused too: getsockname and getpeername fail with EOPNOTSUPP, QUIC clients fail, and a program that reads its own address can crash (a Go program); use --backend netns"),
             )
         }
     };

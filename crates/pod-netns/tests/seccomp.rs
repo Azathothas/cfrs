@@ -1455,6 +1455,12 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
     let (out, err) = run_with("none");
     assert!(out.contains("PEER:-1:EOPNOTSUPP"), "{out:?} {err:?}");
     assert!(err.contains("refuses writes to the memory"), "{err:?}");
+    // Issue 186: the warning names the crash of a program that reads its
+    // address, and the netns backend.
+    assert!(
+        err.contains("can crash") && err.contains("--backend netns"),
+        "{err:?}"
+    );
     // Issue 115: POD_NETNS_QUIET silences the warning.
     let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
         .args(["--backend", "seccomp", "-x"])

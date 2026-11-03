@@ -119,7 +119,10 @@ answers `0x07`.
   `EOPNOTSUPP` (not the `AF_UNIX` address of the socketpair), the pod prints
   a warning once, and `pod doctor` shows the row `write program memory` as
   `no`. A QUIC client (`curl --http3`) then fails; `curl --http3` falls back
-  to HTTP/2.
+  to HTTP/2. A program that reads its own address can crash: for example a
+  Go program with a type assertion on `LocalAddr()`. Use `--backend netns`
+  where the host permits it. No other way gives the address to the program
+  without a write to its memory.
 * An errno of the supervisor is a failure of the system call (-1 and the
   errno), for example `EPERM` for `io_uring_setup`.
 * After the child exits, the supervisor waits up to 3 seconds for the relays
