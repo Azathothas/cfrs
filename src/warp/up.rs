@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 
 /// The name of the detached instance of `cfrs warp up`.
 pub const INSTANCE: &str = "warp";
@@ -505,6 +505,66 @@ pub fn persist(env: &Path) -> Result<Vec<PathBuf>> {
     Ok(done)
 }
 
+/// The first line of the environment.d file of cfrs (issue 138): only a
+/// file with it is changed or removed.
+pub const ENV_D_MARK: &str = "# cfrs warp up --env-d: the proxy of the WARP proxy";
+
+/// `$XDG_CONFIG_HOME/environment.d/90-cfrs-warp.conf`, or
+/// `~/.config/environment.d/90-cfrs-warp.conf`.
+pub fn env_d_path() -> Result<PathBuf> {
+    let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
+    };
+    Ok(config.join("environment.d/90-cfrs-warp.conf"))
+}
+
+/// The text of the environment.d file for the proxy on 127.0.0.1:`port`
+/// (`KEY=VALUE` lines, as environment.d(5)).
+pub fn env_d_text(port: u16) -> String {
+    let socks = format!("socks5h://127.0.0.1:{port}");
+    let http = format!("http://127.0.0.1:{port}");
+    let no_proxy = "localhost,127.0.0.1,::1";
+    let mut out = format!("{ENV_D_MARK}\n# cfrs warp down removes this file.\n");
+    for (k, v) in [
+        ("ALL_PROXY", socks.as_str()),
+        ("all_proxy", socks.as_str()),
+        ("HTTPS_PROXY", http.as_str()),
+        ("https_proxy", http.as_str()),
+        ("HTTP_PROXY", http.as_str()),
+        ("http_proxy", http.as_str()),
+        ("NO_PROXY", no_proxy),
+        ("no_proxy", no_proxy),
+    ] {
+        out.push_str(&format!("{k}={v}\n"));
+    }
+    out
+}
+
+/// True when `text` is a file of cfrs (or there is no text).
+fn env_d_is_ours(text: Option<&str>) -> bool {
+    text.is_none_or(|t| t.lines().next() == Some(ENV_D_MARK))
+}
+
+/// Write the environment.d file for the proxy on 127.0.0.1:`port`. A file
+/// of that name that cfrs did not write is an error, and stays.
+pub fn write_env_d(port: u16) -> Result<PathBuf> {
+    let path = env_d_path()?;
+    let old = std::fs::read_to_string(&path).ok();
+    if !env_d_is_ours(old.as_deref()) {
+        bail!(
+            "{} exists and cfrs did not write it; remove it, or do not give --env-d",
+            path.display()
+        );
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+    }
+    std::fs::write(&path, env_d_text(port))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
 /// `cfrs warp down`: stop the instance, remove the env file, the socket and
 /// the blocks.
 pub fn down() -> Result<()> {
@@ -533,6 +593,24 @@ pub fn down() -> Result<()> {
     if let Some(file) = fish_file() {
         if std::fs::remove_file(&file).is_ok() {
             println!("cfrs: warp down: removed {}", file.display());
+        }
+    }
+    // Issue 138: the environment.d file, when cfrs wrote it.
+    if let Ok(file) = env_d_path() {
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            if env_d_is_ours(Some(&text)) {
+                if std::fs::remove_file(&file).is_ok() {
+                    println!(
+                        "cfrs: warp down: removed {} (the programs of this login keep the variables until the next login)",
+                        file.display()
+                    );
+                }
+            } else {
+                println!(
+                    "cfrs: warp down: {} is not a file of cfrs; it stays",
+                    file.display()
+                );
+            }
         }
     }
     Ok(())
@@ -654,6 +732,21 @@ pub fn shell() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_environment_d_file() {
+        let text = env_d_text(40001);
+        assert!(text.starts_with(ENV_D_MARK));
+        assert!(text.contains("\nALL_PROXY=socks5h://127.0.0.1:40001\n"));
+        assert!(text.contains("\nHTTPS_PROXY=http://127.0.0.1:40001\n"));
+        assert!(!text.contains("export"));
+        assert!(text
+            .lines()
+            .all(|l| l.starts_with('#') || l.split_once('=').is_some_and(|(k, _)| !k.is_empty())));
+        assert!(env_d_is_ours(None));
+        assert!(env_d_is_ours(Some(&text)));
+        assert!(!env_d_is_ours(Some("HTTPS_PROXY=http://corp:3128\n")));
+    }
 
     #[test]
     fn the_env_file_has_the_proxy_variables() {

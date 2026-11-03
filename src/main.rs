@@ -1225,12 +1225,20 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
     }
 }
 
+/// The files of `cfrs warp up` other than the env file.
+struct UpFiles {
+    /// The blocks of the shell files.
+    persist: bool,
+    /// The file of environment.d (issue 138).
+    env_d: bool,
+}
+
 /// `cfrs warp up`: start `warp proxy` detached (instance `warp`) with the
 /// WARP options of this command line, then write the env file.
 fn warp_up(
     args: &WarpArgs,
     port: u16,
-    persist: bool,
+    files: UpFiles,
     ready_timeout: u64,
     replace: bool,
     dns: Option<std::net::SocketAddr>,
@@ -1266,7 +1274,25 @@ fn warp_up(
         eprintln!("{line}");
     }
     let env = cfrs::warp::up::write_env(tcp, &socket)?;
+    let persist = files.persist;
     let mut persist_files = Vec::new();
+    // Issue 138: the variables for the programs of the next login.
+    let mut env_d = serde_json::Value::Null;
+    if files.env_d {
+        match tcp {
+            Some(port) => {
+                let file = cfrs::warp::up::write_env_d(port)?;
+                eprintln!(
+                    "cfrs: warp up: wrote {} (for the next login; cfrs warp down removes it)",
+                    file.display()
+                );
+                env_d = file.display().to_string().into();
+            }
+            None => eprintln!(
+                "cfrs: warp up: --env-d needs the TCP listener; no environment.d file is written"
+            ),
+        }
+    }
     if persist {
         for file in cfrs::warp::up::persist(&env)? {
             eprintln!("cfrs: warp up: a block in {}", file.display());
@@ -1279,6 +1305,7 @@ fn warp_up(
     doc["env"] = env.display().to_string().into();
     doc["socket"] = socket.display().to_string().into();
     doc["persist"] = persist.into();
+    doc["env_d"] = env_d;
     doc["tcp"] = tcp.is_some().into();
     println!("{doc}");
     Ok(())
@@ -2937,6 +2964,13 @@ enum WarpCommand {
         /// removes it.
         #[arg(long)]
         persist: bool,
+        /// Also write the proxy variables to
+        /// ~/.config/environment.d/90-cfrs-warp.conf: the systemd user
+        /// manager gives them to the programs of the next login (a
+        /// desktop, a user unit). cfrs warp down removes the file. A file
+        /// of that name that cfrs did not write is not changed.
+        #[arg(long)]
+        env_d: bool,
         /// Seconds to wait for WARP to be ready.
         #[arg(long, default_value_t = 90)]
         ready_timeout: u64,
@@ -3144,6 +3178,7 @@ async fn warp(args: WarpArgs) -> Result<()> {
         WarpCommand::Up {
             port,
             persist,
+            env_d,
             ready_timeout,
             replace,
             dns,
@@ -3152,7 +3187,11 @@ async fn warp(args: WarpArgs) -> Result<()> {
             ..
         } => {
             let auth = proxy_user.as_ref().zip(proxy_password_file.as_ref());
-            return warp_up(&args, *port, *persist, *ready_timeout, *replace, *dns, auth);
+            let files = UpFiles {
+                persist: *persist,
+                env_d: *env_d,
+            };
+            return warp_up(&args, *port, files, *ready_timeout, *replace, *dns, auth);
         }
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {

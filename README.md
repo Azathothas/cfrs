@@ -440,8 +440,13 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
     binaries, with no proxy variable.
   * `--persist`: a marked block in `~/.bashrc` and `~/.profile` loads the env
     file in each new shell, and an interactive shell runs under the pod.
+  * `--env-d`: `~/.config/environment.d/90-cfrs-warp.conf` has the proxy
+    variables. The systemd user manager gives them to the programs of the
+    next login (a desktop, a browser, a user unit). A file of that name that
+    cfrs did not write stays, and `warp up --env-d` stops with an error.
   * `cfrs warp down` stops the instance and removes the env file and the
-    blocks; the rest of each file stays.
+    blocks (and the environment.d file of cfrs); the rest of each file
+    stays.
   * The CA bundle: when `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
     `CURL_CA_BUNDLE` or `GIT_SSL_CAINFO` names a bundle of fewer than 10
     certificates (the roots of a proxy that terminates TLS), the tools that
