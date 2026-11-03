@@ -726,19 +726,25 @@ cfrs autostart remove web
 * the proxy of each target (the password is never printed), and the
   targets that `NO_PROXY` sends direct;
 * TCP to `api.trycloudflare.com:443`, `api.cloudflareclient.com:443`, the
-  edge on 7844 by name and by address, and the MASQUE front door
-  (`162.159.198.2:443`). Each path gets up to 9 samples, 125 ms apart, in
+  edge on 7844 by name and by address, the MASQUE front door
+  (`162.159.198.2:443`) and the WebSocket relay (`CFRS_RELAY`). A name is
+  resolved first, with the chain of cfrs: the addresses and the time, or
+  the error. Each path gets up to 9 samples, 125 ms apart, in
   at most 10 s: best, median, p95, jitter and loss. A refusal (a proxy 403,
   a TCP reset) is an answer, not a loss;
 * TLS on each open path: the issuer, and if the chain ends at the roots that
   cfrs expects. A proxy that answers 200 and then sends no byte, and a proxy
   that terminates TLS, are named;
 * names and addresses: if the proxy allows one and refuses the other;
-* UDP 7844: one QUIC packet (answered, refused or unknown).
+* UDP 7844: one QUIC packet (answered, refused or unknown);
+* the clock: this host against the `Date` of the first API that answers
+  TLS. More than 300 s off is `refused` (certificates and tokens fail).
 
-The end is a table of the legs `quic`, `http2` and `quic+warp`, with the
-reason for each leg that cannot work. Exit 0: at least one leg can work.
-Exit 1: none can. `--json` gives one document; `--samples` and `--timeout`
+Then a table of the legs `quic`, `http2`, `quic+warp` and `http2+relay`
+(TCP and TLS to the relay; the relay protocol is not tried), with the
+reason for each leg that cannot work, and the roads: `direct` (quic or
+http2), `warp` (quic+warp) and `relay` (http2+relay). Exit 0: at least one
+leg can work. Exit 1: none can. `--json` gives one document; `--samples` and `--timeout`
 make it shorter.
 
 ```sh

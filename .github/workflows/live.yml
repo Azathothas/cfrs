@@ -84,6 +84,13 @@ jobs:
           for leg in quic http2 quic+warp; do
             jq -e --arg leg "$leg" '.legs[] | select(.leg == $leg) | .verdict == "ok"' doctor.json
           done
+          # Issue 128: the roads, the clock and the DNS answers.
+          jq -c '.roads[] | {road, verdict}' doctor.json
+          for road in direct warp relay; do
+            jq -e --arg road "$road" '.roads[] | select(.road == $road) | .verdict == "ok"' doctor.json
+          done
+          jq -e '.clock.verdict == "ok"' doctor.json
+          jq -e '.paths[] | select(.id == "api") | .dns.addresses | length > 0' doctor.json
       - name: Quick tunnel, QUIC (UDP 7844)
         timeout-minutes: 4
         run: sh scripts/live-run.sh quic target/release/cfrs demo --exit-on-verify --protocol quic --transport direct

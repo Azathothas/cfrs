@@ -143,6 +143,20 @@ pub fn targets() -> Vec<Target> {
             tls: Tls::Masque,
         },
     ]
+    .into_iter()
+    // Issue 128: the WebSocket relay is a road of its own (CFRS_RELAY).
+    .chain(
+        crate::ws_relay::Relay::from_env(None)
+            .ok()
+            .filter(|r| r.url().starts_with("https://"))
+            .map(|relay| Target {
+                id: "relay",
+                host: relay.host().to_string(),
+                port: relay.port(),
+                tls: Tls::Web,
+            }),
+    )
+    .collect()
 }
 
 /// One sample of a TCP path.
@@ -167,6 +181,10 @@ pub struct Path {
     pub p95: Option<Duration>,
     pub jitter: Option<Duration>,
     pub tls: Option<TlsResult>,
+    /// The answer of the resolver chain for the host (issue 128): the
+    /// addresses and the time, or the error. None for an address, and for
+    /// a path through a proxy (the proxy resolves the name).
+    pub dns: Option<Result<(Vec<std::net::IpAddr>, Duration), String>>,
 }
 
 impl Path {
@@ -212,7 +230,29 @@ pub struct Report {
     pub udp: (std::net::SocketAddr, Egress),
     pub names: Option<String>,
     pub legs: Vec<Leg>,
+    /// The clock of this host against the Date of an API (issue 128).
+    pub clock: Clock,
 }
+
+/// The clock of this host against the `Date` header of an answer.
+#[derive(Clone, Debug)]
+pub struct Clock {
+    pub verdict: Verdict,
+    /// This host minus the remote, in seconds.
+    pub skew: Option<i64>,
+    pub detail: String,
+}
+
+/// A skew of the clock above this breaks TLS (certificates) and tokens.
+pub const CLOCK_LIMIT: i64 = 300;
+
+/// The roads of cfrs and their legs: a road works when one of its legs
+/// works.
+pub const ROADS: &[(&str, &[&str])] = &[
+    ("direct", &["quic", "http2"]),
+    ("warp", &["quic+warp"]),
+    ("relay", &["http2+relay"]),
+];
 
 impl Report {
     /// True when at least one leg can work.
@@ -220,10 +260,44 @@ impl Report {
         self.legs.iter().any(|l| l.verdict == Verdict::Ok)
     }
 
+    /// The verdict of each road of [`ROADS`], with the reason of its first
+    /// leg.
+    pub fn roads(&self) -> Vec<(&'static str, Verdict, String)> {
+        ROADS
+            .iter()
+            .filter_map(|(road, legs)| {
+                let legs: Vec<&Leg> = self
+                    .legs
+                    .iter()
+                    .filter(|l| legs.contains(&l.name))
+                    .collect();
+                let first = legs.first()?;
+                Some(match legs.iter().find(|l| l.verdict == Verdict::Ok) {
+                    Some(ok) => (*road, Verdict::Ok, format!("{}: {}", ok.name, ok.reason)),
+                    None => (
+                        *road,
+                        first.verdict,
+                        format!("{}: {}", first.name, first.reason),
+                    ),
+                })
+            })
+            .collect()
+    }
+
     pub fn to_json(&self) -> Value {
         let ms = |d: Option<Duration>| d.map(|d| (d.as_secs_f64() * 10000.0).round() / 10.0);
         json!({
             "ok": self.ok(),
+            "roads": self.roads().iter().map(|(road, verdict, reason)| json!({
+                "road": road,
+                "verdict": verdict.name(),
+                "reason": reason,
+            })).collect::<Vec<_>>(),
+            "clock": {
+                "verdict": self.clock.verdict.name(),
+                "skew_s": self.clock.skew,
+                "detail": self.clock.detail,
+            },
             "proxy": self.proxy,
             "paths": self.paths.iter().map(|p| json!({
                 "id": p.target.id,
@@ -245,6 +319,13 @@ impl Report {
                     "issuer": t.issuer,
                     "detail": t.detail,
                 })),
+                "dns": p.dns.as_ref().map(|d| match d {
+                    Ok((addrs, took)) => json!({
+                        "addresses": addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                        "ms": ms(Some(*took)),
+                    }),
+                    Err(e) => json!({ "error": e }),
+                }),
             })).collect::<Vec<_>>(),
             "udp": {
                 "target": self.udp.0.to_string(),
@@ -284,6 +365,19 @@ impl Report {
                 ms(p.jitter),
                 p.loss() * 100.0
             ));
+            match &p.dns {
+                Some(Ok((addrs, took))) => out.push_str(&format!(
+                    "    dns {} ({} ms)\n",
+                    addrs
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ms(Some(*took))
+                )),
+                Some(Err(e)) => out.push_str(&format!("    dns failed: {e}\n")),
+                None => {}
+            }
             if p.verdict != Verdict::Ok {
                 out.push_str(&format!("    {}\n", p.detail));
             }
@@ -308,6 +402,15 @@ impl Report {
                 leg.verdict.name(),
                 leg.reason
             ));
+        }
+        out.push_str(&format!(
+            "\nclock  {}: {}\n",
+            self.clock.verdict.name(),
+            self.clock.detail
+        ));
+        out.push_str("\nroads\n");
+        for (road, verdict, reason) in self.roads() {
+            out.push_str(&format!("  {road:<10} {:<8} {reason}\n", verdict.name()));
         }
         let can = self
             .legs
@@ -339,13 +442,103 @@ pub async fn run(options: Options) -> Report {
         .unwrap_or_else(|e| Egress::Unknown(format!("the probe did not run: {e}")));
     let names = names(&paths);
     let legs = legs(&paths, &udp);
+    let clock = clock(&paths, options.timeout).await;
     Report {
         proxy,
         paths,
         udp: (udp_target, udp),
         names,
         legs,
+        clock,
     }
+}
+
+/// The clock of this host against the `Date` of the first API that answers
+/// TLS (issue 128).
+async fn clock(paths: &[Path], timeout: Duration) -> Clock {
+    let Some(path) = paths
+        .iter()
+        .filter(|p| matches!(p.target.tls, Tls::Web))
+        .find(|p| p.tls.as_ref().is_some_and(|t| t.verdict == Verdict::Ok))
+    else {
+        return Clock {
+            verdict: Verdict::Unknown,
+            skew: None,
+            detail: "no API answered TLS".into(),
+        };
+    };
+    let url = format!("https://{}/", path.target.authority());
+    let answer = crate::fetch::Request::new("HEAD", url.clone())
+        .timeout(timeout)
+        .send()
+        .await;
+    let date = match &answer {
+        Ok(r) => r.header("date").map(str::to_string),
+        Err(_) => None,
+    };
+    match date.as_deref().and_then(parse_imf_fixdate) {
+        Some(remote) => clock_of(now_unix(), remote, &path.target.host),
+        None => Clock {
+            verdict: Verdict::Unknown,
+            skew: None,
+            detail: format!("no Date header from {url}"),
+        },
+    }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The verdict of a skew of `host_time - remote` seconds.
+fn clock_of(host_time: i64, remote: i64, from: &str) -> Clock {
+    let skew = host_time - remote;
+    let (verdict, detail) = if skew.abs() > CLOCK_LIMIT {
+        (
+            Verdict::Refused,
+            format!("this host is {skew} s off the Date of {from}: TLS certificates and tokens can fail; set the clock (timedatectl, ntpdate)"),
+        )
+    } else {
+        (Verdict::Ok, format!("{skew} s off the Date of {from}"))
+    };
+    Clock {
+        verdict,
+        skew: Some(skew),
+        detail,
+    }
+}
+
+/// Unix seconds of an IMF-fixdate (RFC 9110): `Sun, 06 Nov 1994 08:49:37
+/// GMT`.
+pub fn parse_imf_fixdate(text: &str) -> Option<i64> {
+    let mut parts = text.split_whitespace();
+    let _weekday = parts.next()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month_name = parts.next()?;
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == month_name)? as i64
+        + 1;
+    let year: i64 = parts.next()?.parse().ok()?;
+    let mut hms = parts.next()?.split(':').map(|x| x.parse::<i64>().ok());
+    let (h, m, s) = (hms.next()??, hms.next()??, hms.next()??);
+    if parts.next()? != "GMT" {
+        return None;
+    }
+    // Days from the civil date (H. Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + m * 60 + s)
 }
 
 fn proxy_report(targets: &[Target]) -> Value {
@@ -388,6 +581,24 @@ fn proxy_report(targets: &[Target]) -> Value {
 
 async fn path(target: Target, options: Options, start: Instant) -> Path {
     let via = crate::egress::proxy_for(&target.host, target.port).map(|p| p.to_string());
+    // Issue 128: the answer of the resolver chain, before the samples.
+    let dns = if via.is_none() && target.host.parse::<std::net::IpAddr>().is_err() {
+        let took = Instant::now();
+        Some(
+            match tokio::time::timeout(options.timeout * 3, crate::resolve::resolve(&target.host))
+                .await
+            {
+                Ok(Ok(addrs)) => Ok((addrs, took.elapsed())),
+                Ok(Err(e)) => Err(format!("{e:#}")),
+                Err(_) => Err(format!(
+                    "no answer in {} s",
+                    (options.timeout * 3).as_secs()
+                )),
+            },
+        )
+    } else {
+        None
+    };
     let mut samples = Vec::new();
     for i in 0..options.samples.max(1) {
         let left = options.budget.saturating_sub(start.elapsed());
@@ -441,6 +652,7 @@ async fn path(target: Target, options: Options, start: Instant) -> Path {
         p95,
         jitter,
         tls,
+        dns,
     }
 }
 
@@ -819,16 +1031,80 @@ fn legs(paths: &[Path], udp: &Egress) -> Vec<Leg> {
                 + ": TCP and TLS work",
         }
     };
-    vec![
+    let mut legs = vec![
         quic,
         leg("http2", &["edge-address"]),
         leg("quic+warp", &["masque", "warp-api"]),
-    ]
+    ];
+    if find("relay").is_some() {
+        let mut relay = leg("http2+relay", &["relay"]);
+        if relay.verdict == Verdict::Ok {
+            relay.reason.push_str("; the relay protocol is not tried");
+        }
+        legs.push(relay);
+    }
+    legs
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 128: the Date of an answer gives the skew of the clock.
+    #[test]
+    fn the_date_header_gives_the_skew() {
+        assert_eq!(
+            parse_imf_fixdate("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784111777)
+        );
+        let now = std::time::SystemTime::now();
+        let unix = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert_eq!(
+            parse_imf_fixdate(&crate::trust::imf_fixdate(now)),
+            Some(unix)
+        );
+        assert_eq!(parse_imf_fixdate("yesterday"), None);
+        assert_eq!(clock_of(1000, 990, "api").verdict, Verdict::Ok);
+        let off = clock_of(4600, 1000, "api");
+        assert_eq!((off.verdict, off.skew), (Verdict::Refused, Some(3600)));
+        assert!(off.detail.contains("set the clock"));
+    }
+
+    // Issue 128: a road works when one of its legs works.
+    #[test]
+    fn the_roads_follow_the_legs() {
+        let leg = |name, verdict| Leg {
+            name,
+            verdict,
+            reason: "r".into(),
+        };
+        let report = Report {
+            proxy: Value::Null,
+            paths: Vec::new(),
+            udp: ("1.2.3.4:7844".parse().unwrap(), Egress::Unknown("x".into())),
+            names: None,
+            legs: vec![
+                leg("quic", Verdict::Refused),
+                leg("http2", Verdict::Ok),
+                leg("quic+warp", Verdict::Refused),
+                leg("http2+relay", Verdict::Unknown),
+            ],
+            clock: Clock {
+                verdict: Verdict::Unknown,
+                skew: None,
+                detail: String::new(),
+            },
+        };
+        let roads = report.roads();
+        assert_eq!(roads[0].0, "direct");
+        assert_eq!(roads[0].1, Verdict::Ok);
+        assert!(roads[0].2.starts_with("http2:"));
+        assert_eq!((roads[1].0, roads[1].1), ("warp", Verdict::Refused));
+        assert_eq!((roads[2].0, roads[2].1), ("relay", Verdict::Unknown));
+        let json = report.to_json();
+        assert_eq!(json["roads"][2]["road"], "relay");
+        assert!(report.text().contains("roads\n  direct"));
+    }
 
     #[test]
     fn the_statistics() {
