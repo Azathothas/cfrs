@@ -110,11 +110,22 @@ pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20)
 /// the egress layer of cfrs (issue 191): `--proxy`, NO_PROXY,
 /// `--resolve`, the system resolver and DoH. TLS trusts the roots of
 /// cfrs (`--ca-file`, SSL_CERT_FILE).
-pub async fn dial(url: &str, timeout: std::time::Duration) -> Result<WebSocketStream<BoxedIo>> {
+pub async fn dial(
+    url: &str,
+    timeout: std::time::Duration,
+    authorization: Option<&str>,
+) -> Result<WebSocketStream<BoxedIo>> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-    let request = url
+    let mut request = url
         .into_client_request()
         .with_context(|| format!("{url} is not a WebSocket URL"))?;
+    // Issue 205: the credential of a tunnel with --auth-user.
+    if let Some(value) = authorization {
+        request.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(value).context("the Authorization header")?,
+        );
+    }
     let uri = request.uri();
     let tls = match uri.scheme_str() {
         Some("wss") => true,
@@ -175,17 +186,20 @@ pub async fn dial(url: &str, timeout: std::time::Duration) -> Result<WebSocketSt
             timeout.as_secs()
         ),
         Ok(Ok((ws, _response))) => Ok(ws),
-        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => bail!(
-            "{url} refused the WebSocket upgrade: HTTP {}",
-            response.status().as_u16()
-        ),
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+            let status = response.status().as_u16();
+            if status == 401 {
+                bail!("{url} refused the WebSocket upgrade: HTTP 401 (the tunnel needs --auth-user and --auth-password-file)");
+            }
+            bail!("{url} refused the WebSocket upgrade: HTTP {status}")
+        }
         Ok(Err(err)) => Err(err).with_context(|| format!("the WebSocket upgrade at {url}")),
     }
 }
 
 /// Connect a local socket to a remote WebSocket endpoint.
-pub async fn connect_bridge(url: &str, io: BoxedIo) -> Result<()> {
-    let ws = dial(url, DIAL_TIMEOUT).await?;
+pub async fn connect_bridge(url: &str, io: BoxedIo, authorization: Option<&str>) -> Result<()> {
+    let ws = dial(url, DIAL_TIMEOUT, authorization).await?;
     bridge(ws, io, &Metrics::new()).await
 }
 

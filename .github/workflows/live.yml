@@ -147,6 +147,25 @@ jobs:
           target/release/cfrs stop live
           ! kill -0 "$pid" 2> /dev/null
           target/release/cfrs ps --json | jq -e '.instances | length == 0'
+      # Issue 205: --auth-user in front of a quick tunnel. No credential and
+      # a wrong one get 401 from cfrs; the right one gets the origin.
+      - name: Quick tunnel with --auth-user
+        timeout-minutes: 4
+        run: |
+          set -eu
+          export CFRS_RUN_DIR="$RUNNER_TEMP/run"
+          umask 077
+          pass="$RUNNER_TEMP/auth-pass"
+          head -c 18 /dev/urandom | base64 > "$pass"
+          echo "::add-mask::$(cat "$pass")"
+          sh scripts/live-run.sh auth timeout 120 target/release/cfrs tunnel --hello-world --auth-user live --auth-password-file "$pass" --detach --name auth
+          url=$(tail -1 auth.out | jq -r .url)
+          code() { curl -sS --retry 5 --retry-all-errors --retry-delay 2 -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code "$url")" = 401
+          test "$(code -u live:wrong "$url")" = 401
+          test "$(code -u "live:$(cat "$pass")" "$url")" = 200
+          curl -fsS -u "live:$(cat "$pass")" "$url" | grep -q 'Hello, world'
+          target/release/cfrs stop auth
       # UDP 7844 dropped: --protocol auto registers over HTTP/2 after the
       # stagger, and the log names the leg that won.
       - name: Quick tunnel with UDP 7844 dropped (HTTP/2 fallback)

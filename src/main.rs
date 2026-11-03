@@ -402,6 +402,28 @@ struct TunnelOpts {
     /// the verify of the public URL).
     #[arg(long, global = true)]
     run_for: Option<u64>,
+    /// Each visitor must give this user (HTTP Basic), with the password of
+    /// --auth-password-file. A visitor with no right credential gets 401
+    /// and reaches no origin; the origin does not get the header. For HTTP
+    /// origins and --forward (cfrs connect --auth-user); not for --tcp.
+    #[arg(
+        long,
+        value_name = "USER",
+        global = true,
+        env = "CFRS_AUTH_USER",
+        requires = "auth_password_file"
+    )]
+    auth_user: Option<String>,
+    /// The file with the password of --auth-user on its first line (mode
+    /// 0600).
+    #[arg(
+        long,
+        value_name = "FILE",
+        global = true,
+        env = "CFRS_AUTH_PASSWORD_FILE",
+        requires = "auth_user"
+    )]
+    auth_password_file: Option<PathBuf>,
     /// Check the plan and stop: the flags, the config file, each origin (a
     /// connection, and the TLS handshake for https, with no request), the
     /// files and the directories, and the edge legs. No Cloudflare API call,
@@ -419,6 +441,8 @@ struct Show {
     /// The origin answers 404 for `/` as its normal answer: `serve` of a
     /// directory with no `index.html` (issue 119).
     root_404: bool,
+    /// The tunnel has --auth-user: the verify gets 401 (issue 205).
+    auth: bool,
 }
 
 impl TunnelOpts {
@@ -427,6 +451,7 @@ impl TunnelOpts {
             qr: self.qr,
             json: self.json,
             root_404: false,
+            auth: self.auth_user.is_some(),
         }
     }
 
@@ -447,6 +472,27 @@ impl TunnelOpts {
         // Issue 173: a protocol that the transport cannot carry is a usage
         // error before any network call.
         cfrs::tunnel::leg_plan(config.protocol, config.transport).fault(Fault::Usage)?;
+        // Issue 205: the credential in front of the tunnel.
+        if let (Some(user), Some(file)) = (&self.auth_user, &self.auth_password_file) {
+            if config
+                .ingress
+                .rules
+                .iter()
+                .any(|rule| matches!(rule.service, Service::Tcp(_)))
+            {
+                return Err(cfrs::exit::fault(
+                    Fault::Usage,
+                    anyhow::anyhow!(
+                        "--auth-user is for HTTP origins and --forward, not for a raw --tcp origin"
+                    ),
+                ));
+            }
+            config.ingress.auth = Some(
+                cfrs::proxy_auth::Credentials::load(user, file)
+                    .context("--auth-password-file")
+                    .fault(Fault::Config)?,
+            );
+        }
         if config.transport == Transport::Relay {
             cfrs::ws_relay::set(
                 cfrs::ws_relay::Relay::from_env(Some(&self.relay)).fault(Fault::Usage)?,
@@ -682,6 +728,24 @@ struct ConnectArgs {
     /// origin then dials its forward target once).
     #[arg(long)]
     no_check: bool,
+    /// The user for a tunnel with --auth-user (HTTP Basic in the
+    /// WebSocket upgrade), with the password of --auth-password-file.
+    #[arg(
+        long,
+        value_name = "USER",
+        env = "CFRS_AUTH_USER",
+        requires = "auth_password_file"
+    )]
+    auth_user: Option<String>,
+    /// The file with the password of --auth-user on its first line (mode
+    /// 0600).
+    #[arg(
+        long,
+        value_name = "FILE",
+        env = "CFRS_AUTH_PASSWORD_FILE",
+        requires = "auth_user"
+    )]
+    auth_password_file: Option<PathBuf>,
     #[command(flatten)]
     detach: DetachArgs,
 }
@@ -2359,6 +2423,16 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     for raw in &args.locals {
         locals.push(LocalSpec::parse(raw)?);
     }
+    // Issue 205: the credential of a tunnel with --auth-user.
+    let auth: Option<Arc<str>> = match (&args.auth_user, &args.auth_password_file) {
+        (Some(user), Some(file)) => Some(Arc::from(
+            cfrs::proxy_auth::Credentials::load(user, file)
+                .context("--auth-password-file")
+                .fault(Fault::Config)?
+                .basic_header(),
+        )),
+        _ => None,
+    };
     let mut tcp = Vec::new();
     #[cfg(unix)]
     let mut unix = Vec::new();
@@ -2391,7 +2465,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     // Issue 207: one WebSocket at start shows that the remote answers.
     // Before, the listeners came up, and each client got a reset.
     if !args.no_check {
-        let ws = ws::dial(&args.remote, ws::DIAL_TIMEOUT)
+        let ws = ws::dial(&args.remote, ws::DIAL_TIMEOUT, auth.as_deref())
             .await
             .map_err(|err| {
                 cfrs::exit::fault(
@@ -2411,12 +2485,20 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     listens.extend(unix.iter().map(|(name, _)| name.clone()));
     for (name, listener) in tcp {
         println!("cfrs: {name} -> {}", args.remote);
-        tasks.push(tokio::spawn(accept_loop(listener, args.remote.clone())));
+        tasks.push(tokio::spawn(accept_loop(
+            listener,
+            args.remote.clone(),
+            auth.clone(),
+        )));
     }
     #[cfg(unix)]
     for (name, listener) in unix {
         println!("cfrs: {name} -> {}", args.remote);
-        tasks.push(tokio::spawn(accept_unix(listener, args.remote.clone())));
+        tasks.push(tokio::spawn(accept_unix(
+            listener,
+            args.remote.clone(),
+            auth.clone(),
+        )));
     }
     // Issue 207: the ready document of --detach and --name.
     cfrs::detach::ready(serde_json::json!({
@@ -2433,16 +2515,17 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     Ok(())
 }
 
-async fn accept_loop(listener: tokio::net::TcpListener, remote: String) {
+async fn accept_loop(listener: tokio::net::TcpListener, remote: String, auth: Option<Arc<str>>) {
     loop {
         match listener.accept().await {
             Ok((stream, _peer)) => {
                 let remote = remote.clone();
+                let auth = auth.clone();
                 // Issue 206: no Nagle delay on the local side.
                 let _ = stream.set_nodelay(true);
                 tokio::spawn(async move {
                     let io: BoxedIo = Box::new(stream);
-                    if let Err(err) = ws::connect_bridge(&remote, io).await {
+                    if let Err(err) = ws::connect_bridge(&remote, io, auth.as_deref()).await {
                         tracing::warn!(error = %format!("{err:#}"), "forward connection failed");
                     }
                 });
@@ -2522,14 +2605,15 @@ fn unix_listener(
 }
 
 #[cfg(unix)]
-async fn accept_unix(listener: tokio::net::UnixListener, remote: String) {
+async fn accept_unix(listener: tokio::net::UnixListener, remote: String, auth: Option<Arc<str>>) {
     loop {
         match listener.accept().await {
             Ok((stream, _peer)) => {
                 let remote = remote.clone();
+                let auth = auth.clone();
                 tokio::spawn(async move {
                     let io: BoxedIo = Box::new(stream);
-                    if let Err(err) = ws::connect_bridge(&remote, io).await {
+                    if let Err(err) = ws::connect_bridge(&remote, io, auth.as_deref()).await {
                         tracing::warn!(error = %format!("{err:#}"), "forward connection failed");
                     }
                 });
@@ -2723,7 +2807,13 @@ async fn run_tunnel(
     let deadline = deadline_of(run_for);
     if verify {
         if let Some(url) = handle.url() {
-            let accepted: &[u16] = if show.root_404 { &[404] } else { &[] };
+            // Issue 205: the 401 of --auth-user is the normal answer.
+            let accepted: &[u16] = match (show.root_404, show.auth) {
+                (true, true) => &[404, 401],
+                (true, false) => &[404],
+                (false, true) => &[401],
+                (false, false) => &[],
+            };
             let Some(checked) =
                 until_stop_or(deadline, handle.verify_accepting(url, None, accepted)).await
             else {

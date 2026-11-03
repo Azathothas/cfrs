@@ -1378,3 +1378,51 @@ fn the_fault_flags_need_a_switch_and_a_probability() {
         stderr(&out)
     );
 }
+
+/// Issue 205: --auth-user is refused with a raw --tcp origin; a password
+/// file that others can read is a configuration error.
+#[test]
+fn auth_user_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let pass = dir.path().join("pass");
+    std::fs::write(&pass, "secret\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&pass, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let pass = pass.to_str().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let out = cfrs(&[
+        "tunnel",
+        "--tcp",
+        &addr,
+        "--auth-user",
+        "u",
+        "--auth-password-file",
+        pass,
+        "--check",
+    ]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    let out = cfrs(&[
+        "tunnel",
+        "--hello-world",
+        "--auth-user",
+        "u",
+        "--auth-password-file",
+        pass,
+        "--check",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    std::fs::set_permissions(pass, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let out = cfrs(&[
+        "tunnel",
+        "--hello-world",
+        "--auth-user",
+        "u",
+        "--auth-password-file",
+        pass,
+        "--check",
+    ]);
+    assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
+    let out = cfrs(&["tunnel", "--hello-world", "--auth-user", "u", "--check"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+}

@@ -118,10 +118,33 @@ async fn serve_request(
 async fn serve_request_inner(
     runtime: &ServiceRuntime,
     ingress: &Ingress,
-    request: cqstream::ConnectRequest,
+    mut request: cqstream::ConnectRequest,
     reader: EdgeReader,
     writer: EdgeWriter,
 ) -> Result<()> {
+    // Issue 205: the credential in front of the tunnel. A request with no
+    // right Authorization gets 401 and reaches no origin; the origin does
+    // not get the credential of cfrs.
+    if let Some(auth) = &ingress.auth {
+        if !auth.check_basic(header_value(&request, "authorization")) {
+            let mut writer = writer;
+            return write_simple_response_with(
+                &mut writer,
+                401,
+                "text/plain; charset=utf-8",
+                AUTH_BODY,
+                &[(
+                    "WWW-Authenticate".to_string(),
+                    "Basic realm=\"cfrs\", charset=\"UTF-8\"".to_string(),
+                )],
+            )
+            .await;
+        }
+        let name = format!("{HTTP_HEADER_KEY}:authorization");
+        request
+            .metadata
+            .retain(|(key, _)| !key.eq_ignore_ascii_case(&name));
+    }
     let host = request
         .meta(HTTP_HOST_KEY)
         .map(str::to_string)
@@ -335,6 +358,9 @@ async fn proxy_bidi(
     let (_, response) = tokio::join!(request_pump, response_pump);
     response
 }
+
+/// The body of the 401 of `--auth-user` (issue 205).
+pub const AUTH_BODY: &[u8] = b"cfrs: this tunnel needs a user and a password (HTTP Basic)\n";
 
 /// The answer of a raw TCP origin to an HTTP request (issue 199).
 pub const TCP_HTTP_BODY: &[u8] = b"cfrs: a raw TCP origin carries TCP or WebSocket streams, not HTTP. Use --forward with \"cfrs connect\", or --port for an HTTP origin.\n";
@@ -1418,6 +1444,85 @@ mod tests {
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+        }
+    }
+
+    // Issue 205: with --auth-user, a request with no right credential gets
+    // 401 and reaches no origin; the right one passes, and the origin does
+    // not get the header.
+    #[tokio::test]
+    async fn the_credential_in_front_of_the_tunnel() {
+        use tokio::io::AsyncReadExt as _;
+        use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
+        // An origin that answers with the request head it got.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let answer = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{head}",
+                        head.len()
+                    );
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut s, answer.as_bytes()).await;
+                });
+            }
+        });
+        let mut ingress = Ingress::new().catch_all(Service::Http(origin));
+        let creds = crate::proxy_auth::Credentials::new("u", "secret").unwrap();
+        ingress.auth = Some(creds.clone());
+        let runtime = ServiceRuntime::build(&ingress, Metrics::new()).unwrap();
+        let run = |auth: Option<String>| {
+            let mut meta = vec![
+                (HTTP_METHOD_KEY, "GET".to_string()),
+                (HTTP_HOST_KEY, "x".to_string()),
+            ];
+            let header = format!("{HTTP_HEADER_KEY}:Authorization");
+            let mut request = req("https://x/", vec![]);
+            for (k, v) in meta.drain(..) {
+                request.metadata.push((k.to_string(), v));
+            }
+            if let Some(a) = auth {
+                request.metadata.push((header, a));
+            }
+            request
+        };
+        for (auth, want) in [
+            (None, "401"),
+            (Some("Basic d3Jvbmc6d3Jvbmc=".to_string()), "401"),
+            (Some(creds.basic_header()), "200"),
+        ] {
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let (_input, input) = tokio::io::duplex(64);
+            serve_request_inner(
+                &runtime,
+                &ingress,
+                run(auth.clone()),
+                Box::pin(input.compat()),
+                Box::pin(ours.compat_write()),
+            )
+            .await
+            .unwrap();
+            let mut reader = theirs.compat();
+            let (_, meta) = cqstream::read_connect_response(&mut reader).await.unwrap();
+            let status = meta
+                .iter()
+                .find(|(k, _)| k == crate::cloudflare::stream::HTTP_STATUS_KEY)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            assert_eq!(status, want, "{auth:?}");
+            if want == "200" {
+                let mut body = Vec::new();
+                let _ = futures::io::AsyncReadExt::read_to_end(&mut reader, &mut body).await;
+                let body = String::from_utf8_lossy(&body);
+                assert!(
+                    !body.to_ascii_lowercase().contains("authorization"),
+                    "{body}"
+                );
+            }
         }
     }
 

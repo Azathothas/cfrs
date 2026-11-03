@@ -364,6 +364,14 @@ impl Credentials {
         &self.user
     }
 
+    /// The value `Basic BASE64(user:pass)` of an Authorization header.
+    pub fn basic_header(&self) -> String {
+        use base64::Engine as _;
+        let token = base64::engine::general_purpose::STANDARD
+            .encode(format!("{}:{}", self.user, self.pass));
+        format!("Basic {token}")
+    }
+
     /// True for the right user and password.
     pub fn check(&self, user: &str, pass: &str) -> bool {
         same(user.as_bytes(), self.user.as_bytes()) & same(pass.as_bytes(), self.pass.as_bytes())

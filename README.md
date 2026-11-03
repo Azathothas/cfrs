@@ -490,6 +490,30 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 * `--stop-after` stops the session after the first transfer. `--idle-secs`
   stops it after a time with no activity.
 
+### A credential in front of a tunnel
+
+```sh
+umask 077; printf '%s\n' 'a long password' > ~/.cfrs-pass
+cfrs tunnel --port 3000 --auth-user me --auth-password-file ~/.cfrs-pass
+curl -u me:'a long password' https://<random>.trycloudflare.com/
+```
+
+* `--auth-user USER` and `--auth-password-file FILE` (`CFRS_AUTH_USER`,
+  `CFRS_AUTH_PASSWORD_FILE`) work with `tunnel`, `serve`, `share` and
+  `demo`. Each request must give the user and the password (HTTP Basic).
+  Else cfrs answers 401 with `WWW-Authenticate: Basic realm="cfrs"`, and
+  the request reaches no origin. The origin does not get the
+  `Authorization` header.
+* The file has the password on its first line and mode 0600; else exit 78.
+  The password is not on the command line.
+* The check covers the HTTP origins and the `--forward` endpoint:
+  `cfrs connect --auth-user USER --auth-password-file FILE` sends the
+  credential in the WebSocket upgrade. A raw `--tcp` origin carries no HTTP
+  header: `--auth-user` with `--tcp` is a usage error (exit 64).
+* The verify of the public URL takes the 401 as the normal answer.
+* Basic goes in the TLS to the edge of Cloudflare: Cloudflare can see it.
+  The credential does not hide the URL.
+
 ### Raw streams through a quick tunnel
 
 A quick tunnel carries HTTP and WebSocket. `--forward` puts a WebSocket

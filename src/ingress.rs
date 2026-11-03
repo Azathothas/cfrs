@@ -224,6 +224,9 @@ fn hostname_matches(pattern: &str, hostname: &str) -> bool {
 #[derive(Clone, Debug, Default)]
 pub struct Ingress {
     pub rules: Vec<IngressRule>,
+    /// Issue 205: each request must give this user and password (HTTP
+    /// Basic) before it reaches a rule (`--auth-user`).
+    pub auth: Option<crate::proxy_auth::Credentials>,
 }
 
 impl Ingress {
