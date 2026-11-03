@@ -109,7 +109,10 @@ cargo +nightly-2026-10-15 fuzz run capnp_message corpus/capnp_message -- -max_to
 Each [release](https://github.com/Azathothas/cfrs/releases) has static
 Linux binaries of `cfrs` and `pod-netns` for `x86_64`, `aarch64`, `armv7`,
 `riscv64gc`, `i686`, `arm` (ARMv6, hard float), `loongarch64` and
-`powerpc64le`. cfrs is for Linux only. Each release also has these files:
+`powerpc64le` (from v0.3.0-beta.2 on; v0.3.0-beta.1 has `x86_64`,
+`aarch64`, `armv7` and `riscv64gc`, and no `cfrs.1`). cfrs is for Linux
+only. This README describes `main`; the notes in `docs/releases/` say what
+a tag has. Each release also has these files:
 
 | File | Contents |
 | --- | --- |
@@ -137,12 +140,21 @@ the two bundles to one directory. Then do these steps:
      --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
    ```
 
-3. Check the provenance of the binary. With no network access to the GitHub
-   API, add `--bundle provenance.sigstore.json`:
+3. Check the provenance of the binary (gh 2.49 or later):
 
    ```sh
    gh attestation verify cfrs-x86_64-unknown-linux-musl --repo Azathothas/cfrs \
      --signer-workflow Azathothas/cfrs/.github/workflows/release.yml
+   ```
+
+   With no network access to the GitHub API, give the bundle and a trusted
+   root. Make `trusted_root.jsonl` on a host with network access
+   (`gh attestation trusted-root > trusted_root.jsonl`), and copy it:
+
+   ```sh
+   gh attestation verify cfrs-x86_64-unknown-linux-musl --repo Azathothas/cfrs \
+     --signer-workflow Azathothas/cfrs/.github/workflows/release.yml \
+     --bundle provenance.sigstore.json --custom-trusted-root trusted_root.jsonl
    ```
 
 A binary that has one changed byte fails each check. The workflow
@@ -207,8 +219,11 @@ exits 0 when `curl` fails or is missing.
 ### Container image
 
 Each release has an image for each Linux architecture of the binaries:
-`ghcr.io/azathothas/cfrs:<tag>`, and `:beta` for the newest prerelease
-(`:latest` for the newest release). The image is `FROM scratch` with `cfrs`
+`ghcr.io/azathothas/cfrs:<tag>` (a manifest list), `:<tag>-<arch>` for one
+architecture (`amd64`, `arm64`, `armv7`, `armv6`, `386`, `riscv64`,
+`ppc64le`, `loong64`), and `:beta` for the newest prerelease. `:latest` is
+for the newest release that is not a prerelease; none exists yet, so
+`:latest` has no image. The image is `FROM scratch` with `cfrs`
 and `pod-netns` in `/usr/local/bin`. It runs as user 65534. The state
 directory is the volume `/var/lib/cfrs` (`CFRS_STATE_DIR`). The entry point
 is `cfrs`. In the container, cfrs is PID 1 (no init): SIGTERM and SIGINT
@@ -540,12 +555,12 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A listener on an address that is not loopback, with no credentials, gets
   a warning. `--max-connections N` limits the clients; `--dns ADDR`
   answers DNS through WARP.
-* `--fragment-client-hello [record|sni]` (global, `CFRS_WARP_FRAGMENT`):
+* `--fragment-client-hello [record|sni]` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_FRAGMENT`):
   the TLS ClientHello of the MASQUE connection goes in more than one record
   of `--fragment-size` bytes (64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
-* `--carry wg` (global, `CFRS_WARP_CARRY`): a second WireGuard device
+* `--carry wg` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_CARRY`): a second WireGuard device
   (`warp-carry.json` in the state directory) inside the tunnel, on a UDP
   socket of the first stack. The tools use the stack of the second device
   (IPv4, MTU 1200), so a destination sees its exit. With `--transport
@@ -555,18 +570,18 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   `consumer-masque-proxy.cloudflareclient.com`), with no IP stack in
   between. UDP (SOCKS5 UDP ASSOCIATE) is not served, and the rules do not
   apply.
-* `--transport wireguard` (global, `CFRS_WARP_TRANSPORT`): the tunnel on
+* `--transport wireguard` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_TRANSPORT`): the tunnel on
   WireGuard (UDP, port 2408 of the record, or `--wireguard-endpoint`) in
   place of MASQUE. The device is the one of `cfrs warp export`
   (`warp-wg.json` in the state directory); cfrs registers it when the file
   has none. The stack, the proxy and the commands are the same. There is no
   relay and no proxy: WireGuard is UDP.
-* `--masque-transport h3` (global, `CFRS_WARP_MASQUE_TRANSPORT`): the MASQUE
+* `--masque-transport h3` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_MASQUE_TRANSPORT`): the MASQUE
   session over HTTP/3 on UDP 443 in place of HTTP/2 on TCP 443. Each IP
   packet is an HTTP datagram (RFC 9297), so a lost packet does not stop the
   other flows. A packet larger than a datagram goes as a capsule on the
   request stream. There is no relay and no proxy: they carry TCP only.
-* `--cc none|reno|cubic` (global, `CFRS_WARP_CC`): the congestion
+* `--cc none|reno|cubic` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_CC`): the congestion
   controller of the TCP connections of the userspace stack, for the data
   that it sends (an upload). The default is `none`: only the window of the
   peer limits it.

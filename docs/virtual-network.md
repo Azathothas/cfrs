@@ -154,10 +154,17 @@ Shim programs can also use the switch:
 
 ### 5.4 Faults
 
-`--drop`, `--duplicate` and `--reorder` (probabilities from 0.0 to 1.0) and
-`--seed` put faults on the packets that a stack sends to the switch. The same
-seed gives the same faults. In code, use `vnet::switch::Faults` and
-`FaultInjector`.
+`cfrs net proxy --switch ... --address ...` takes `--drop`, `--duplicate` and
+`--reorder` (probabilities from 0.0 to 1.0) and `--seed`. They put faults on
+the packets that this stack sends to the switch; the switch itself
+(`cfrs net switch`) has no faults. The same seed gives the same faults. With
+no `--switch`, the flags are a usage error (exit 64), as a value out of 0.0
+to 1.0 is. In code, use `vnet::switch::Faults` and `FaultInjector`.
+
+```sh
+cfrs net switch --listen unix:/tmp/sw.sock &
+cfrs net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 --drop 0.1 --seed 7
+```
 
 ## 6. Resolver, policy and capture
 

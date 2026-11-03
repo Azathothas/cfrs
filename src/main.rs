@@ -5145,17 +5145,20 @@ struct ProxyArgs {
     /// The IPv4 address of this stack on the switch, for example 10.66.0.3.
     #[arg(long)]
     address: Option<std::net::Ipv4Addr>,
-    /// Drop this part of the sent packets (0.0 to 1.0), for tests.
-    #[arg(long, default_value_t = 0.0)]
+    /// With --switch: drop this part of the packets that this stack sends
+    /// to the switch (0.0 to 1.0), for tests.
+    #[arg(long, default_value_t = 0.0, value_parser = probability, requires = "switch")]
     drop: f64,
-    /// Send this part of the packets two times (0.0 to 1.0), for tests.
-    #[arg(long, default_value_t = 0.0)]
+    /// With --switch: send this part of the packets two times (0.0 to
+    /// 1.0), for tests.
+    #[arg(long, default_value_t = 0.0, value_parser = probability, requires = "switch")]
     duplicate: f64,
-    /// Send this part of the packets out of order (0.0 to 1.0), for tests.
-    #[arg(long, default_value_t = 0.0)]
+    /// With --switch: send this part of the packets out of order (0.0 to
+    /// 1.0), for tests.
+    #[arg(long, default_value_t = 0.0, value_parser = probability, requires = "switch")]
     reorder: f64,
-    /// The seed of the fault sequence.
-    #[arg(long, default_value_t = 1)]
+    /// With --switch: the seed of the fault sequence.
+    #[arg(long, default_value_t = 1, requires = "switch")]
     seed: u64,
     /// With --switch: serve the shim control socket with this abstract name.
     /// A shim program with CFRSNET_CONTROL=NAME that binds a virtual address
@@ -5321,6 +5324,17 @@ fn net_shim(args: ShimArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A probability from 0.0 to 1.0 (issue 196).
+fn probability(value: &str) -> std::result::Result<f64, String> {
+    let p: f64 = value
+        .parse()
+        .map_err(|_| format!("{value} is not a number"))?;
+    if !(0.0..=1.0).contains(&p) {
+        return Err(format!("{value} is not from 0.0 to 1.0"));
+    }
+    Ok(p)
 }
 
 async fn net_proxy(args: ProxyArgs) -> Result<()> {

@@ -1354,3 +1354,27 @@ fn log_format_json_gives_json_lines_only() {
         }
     }
 }
+
+/// Issue 196: the fault flags of net proxy need --switch and a value from
+/// 0.0 to 1.0.
+#[test]
+fn the_fault_flags_need_a_switch_and_a_probability() {
+    let out = cfrs(&["net", "proxy", "--drop", "0.1", "--run-for", "1"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    let out = cfrs(&[
+        "net",
+        "proxy",
+        "--switch",
+        "unix:/nonexistent.sock",
+        "--address",
+        "10.66.0.3",
+        "--reorder",
+        "1.5",
+    ]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("not from 0.0 to 1.0"),
+        "{}",
+        stderr(&out)
+    );
+}

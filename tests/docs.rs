@@ -40,3 +40,22 @@ fn each_new_release_note_has_a_breaking_section() {
     }
     let _ = checked;
 }
+
+/// Issue 176: a flag of `cfrs warp` is not a global flag of cfrs. The
+/// README called the flags of WarpArgs "global".
+#[test]
+fn the_readme_does_not_call_warp_flags_global() {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    for line in readme.lines() {
+        if line.contains("(global") && line.contains("CFRS_WARP_") {
+            panic!("a flag of cfrs warp is called global: {line}");
+        }
+    }
+    // A global flag before the command of cfrs is refused for a warp flag.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["--cc", "cubic", "warp", "status"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+}
