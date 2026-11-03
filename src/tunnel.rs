@@ -1068,61 +1068,23 @@ impl TunnelHandle {
     /// request crossed the tunnel. Only 530 (the edge has no connection of
     /// the tunnel) and transport errors are fatal after the last attempt.
     pub async fn verify_url(&self, url: &str, expected: Option<&str>) -> Result<Verified> {
-        let mut last = String::from("no attempt");
-        let mut last_status = None;
-        for attempt in 1..=VERIFY_ATTEMPTS {
-            let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
-            match request.send().await {
-                Ok(response) => {
-                    let body = response.text();
-                    let ok = response.is_success()
-                        && expected.map(|token| body.contains(token)).unwrap_or(true);
-                    if ok {
-                        let dns = public_dns(url).await;
-                        info!(%url, status = response.status, attempt, dns, "verified public URL");
-                        if dns == "doh" {
-                            info!(
-                                "the system resolver of this host does not resolve the new name yet; \
-                                 public DNS does. A visitor whose resolver cached NXDOMAIN gets an \
-                                 error for some seconds more"
-                            );
-                        }
-                        return Ok(Verified { dns });
-                    }
-                    last = format!("HTTP {}", response.status);
-                    last_status = Some(response.status);
-                    // A status of the origin crossed the tunnel: the tunnel is up.
-                    let edge_error = matches!(response.status, 502..=504 | 520..=530);
-                    if expected.is_none() && !edge_error {
-                        tracing::warn!(%url, status = response.status, "the origin answered HTTP {}; the tunnel is up", response.status);
-                        return Ok(Verified {
-                            dns: public_dns(url).await,
-                        });
-                    }
-                }
-                Err(err) => {
-                    last = format!("{err:#}");
-                    last_status = None;
-                }
-            }
-            // Issue 94: the retries were at DEBUG only, so a slow new name
-            // looked like a hang for up to a minute.
-            if attempt > 10 {
-                tracing::warn!(attempt, of = VERIFY_ATTEMPTS, %last, "the public URL does not answer yet; cfrs tries again");
-            } else if attempt == 1 || attempt % 5 == 0 {
-                info!(attempt, of = VERIFY_ATTEMPTS, %last, "the public URL does not answer yet (a new name takes some seconds); cfrs tries again");
-            } else {
-                tracing::debug!(attempt, %last, "verification retry");
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-        if expected.is_none() && matches!(last_status, Some(s) if s != 530) {
-            tracing::warn!(%url, "the public URL answers {last}; the tunnel is up, check the origin");
-            return Ok(Verified {
-                dns: public_dns(url).await,
-            });
-        }
-        bail!("could not verify {url}: {last}")
+        self.verify_accepting(url, expected, &[]).await
+    }
+
+    /// Like [`verify_url`](Self::verify_url). A status of `accepted` is the
+    /// normal answer of the origin (issue 119: `serve` of a directory with
+    /// no `index.html` answers 404 for `/`): it is logged at info, not as a
+    /// warning.
+    ///
+    /// The retries go on for [`VERIFY_BUDGET`] (issue 119: a new name can
+    /// need more than a minute in public DNS). A failure exits 69.
+    pub async fn verify_accepting(
+        &self,
+        url: &str,
+        expected: Option<&str>,
+        accepted: &[u16],
+    ) -> Result<Verified> {
+        verify_fetch(url, expected, accepted, VERIFY_BUDGET, VERIFY_INTERVAL).await
     }
 
     pub fn wants_verify(&self) -> bool {
@@ -1145,8 +1107,96 @@ impl Drop for TunnelHandle {
     }
 }
 
-/// The tries of the verify fetch.
-const VERIFY_ATTEMPTS: u32 = 20;
+/// The loop of [`TunnelHandle::verify_accepting`], with the budget and the
+/// interval as arguments (for the tests).
+async fn verify_fetch(
+    url: &str,
+    expected: Option<&str>,
+    accepted: &[u16],
+    budget: Duration,
+    interval: Duration,
+) -> Result<Verified> {
+    let mut last;
+    let mut last_status;
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
+        match request.send().await {
+            Ok(response) => {
+                let body = response.text();
+                let ok = response.is_success()
+                    && expected.map(|token| body.contains(token)).unwrap_or(true);
+                if ok {
+                    let dns = public_dns(url).await;
+                    info!(%url, status = response.status, attempt, dns, "verified public URL");
+                    if dns == "doh" {
+                        info!(
+                            "the system resolver of this host does not resolve the new name yet; \
+                             public DNS does. A visitor whose resolver cached NXDOMAIN gets an \
+                             error for some seconds more"
+                        );
+                    }
+                    return Ok(Verified { dns });
+                }
+                last = format!("HTTP {}", response.status);
+                last_status = Some(response.status);
+                // A status of the origin crossed the tunnel: the tunnel is up.
+                let edge_error = matches!(response.status, 502..=504 | 520..=530);
+                if expected.is_none() && !edge_error {
+                    if accepted.contains(&response.status) {
+                        info!(%url, status = response.status, "the origin answered HTTP {}, its normal answer; the tunnel is up", response.status);
+                    } else {
+                        tracing::warn!(%url, status = response.status, "the origin answered HTTP {}; the tunnel is up", response.status);
+                    }
+                    return Ok(Verified {
+                        dns: public_dns(url).await,
+                    });
+                }
+            }
+            Err(err) if crate::hop::of(&err) == Some(crate::hop::Hop::Dns) => {
+                last = format!("waiting for DNS: {err:#}");
+                last_status = None;
+            }
+            Err(err) => {
+                last = format!("{err:#}");
+                last_status = None;
+            }
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        // Issue 94: the retries were at DEBUG only, so a slow new name
+        // looked like a hang for up to a minute.
+        let left_s = left.as_secs();
+        if attempt > 10 && attempt.is_multiple_of(5) {
+            tracing::warn!(attempt, left_s, %last, "the public URL does not answer yet; cfrs tries again");
+        } else if attempt == 1 || attempt.is_multiple_of(5) {
+            info!(attempt, left_s, %last, "the public URL does not answer yet (a new name takes some seconds); cfrs tries again");
+        } else {
+            tracing::debug!(attempt, %last, "verification retry");
+        }
+        tokio::time::sleep(interval.min(left)).await;
+    }
+    if expected.is_none() && matches!(last_status, Some(s) if s != 530) {
+        tracing::warn!(%url, "the public URL answers {last}; the tunnel is up, check the origin");
+        return Ok(Verified {
+            dns: public_dns(url).await,
+        });
+    }
+    Err(crate::exit::fault(
+        crate::exit::Fault::Unavailable,
+        anyhow::anyhow!("could not verify {url} in {} s: {last}", budget.as_secs()),
+    ))
+}
+
+/// The time of the retries of the verify fetch (issue 119: 20 tries in
+/// about 40 s were too few for a new name in public DNS).
+const VERIFY_BUDGET: Duration = Duration::from_secs(180);
+/// The pause between two verify fetches.
+const VERIFY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The result of a verify of the public URL.
 #[derive(Clone, Copy, Debug)]
@@ -1179,6 +1229,80 @@ async fn public_dns(url: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A local HTTP origin: answer N of `statuses` gives the Nth status,
+    /// then the last one again.
+    async fn origin(statuses: Vec<u16>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut n = 0;
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    return;
+                };
+                let status = statuses[n.min(statuses.len() - 1)];
+                n += 1;
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"
+                );
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    // Issue 119: the retries go on for a time budget, not for a count.
+    #[tokio::test]
+    async fn verify_waits_through_edge_errors() {
+        let url = origin(vec![530, 530, 502, 200]).await;
+        let ok = verify_fetch(
+            &url,
+            Some("ok"),
+            &[],
+            Duration::from_secs(10),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    // Issue 119: a verify that fails exits 69 (unavailable), not 1.
+    #[tokio::test]
+    async fn a_failed_verify_exits_69_after_the_budget() {
+        let url = origin(vec![530]).await;
+        let start = std::time::Instant::now();
+        let err = verify_fetch(
+            &url,
+            None,
+            &[],
+            Duration::from_millis(300),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(crate::exit::code_of(&err), 69, "{err:#}");
+        assert!(format!("{err:#}").contains("HTTP 530"), "{err:#}");
+    }
+
+    // Issue 119: a 404 of `serve` with no index.html is its normal answer.
+    #[tokio::test]
+    async fn an_accepted_status_of_the_origin_verifies() {
+        let url = origin(vec![404]).await;
+        let ok = verify_fetch(
+            &url,
+            None,
+            &[404],
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(ok.is_ok(), "{ok:?}");
+    }
 
     /// Issue 94: the host of the URL goes to the resolver chain; an
     /// address needs no lookup, and a URL with no host is "none".

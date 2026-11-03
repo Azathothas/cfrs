@@ -9,8 +9,10 @@
 //!    [`STEP_TIMEOUT`].
 //! 4. DNS over HTTPS by IP address, at two operators: Cloudflare (1.1.1.1,
 //!    1.0.0.1), then Google (8.8.8.8, 8.8.4.4). TLS checks the IP address in
-//!    the certificate. An answer that the name does not exist (NXDOMAIN) stops
-//!    the chain.
+//!    the certificate. An answer that the name does not exist (NXDOMAIN) skips
+//!    the other server of that operator; the next operator is asked (issue
+//!    119: a new name is NXDOMAIN at one operator for minutes, and has an
+//!    address at the other).
 //!
 //! A dial through a proxy gives the name to the proxy and resolves nothing
 //! here.
@@ -216,10 +218,31 @@ fn dedup(mut ips: Vec<IpAddr>) -> Vec<IpAddr> {
 /// The A and AAAA addresses of `name` by DoH. Gives the addresses and the
 /// server that answered.
 async fn doh_addresses(name: &str) -> Result<(Vec<IpAddr>, &'static str)> {
+    doh_addresses_with(&doh_servers(), name, |server, rtype| async move {
+        doh_query_at(&server, name, rtype).await
+    })
+    .await
+}
+
+/// The loop of [`doh_addresses`], with the query as an argument (for the
+/// tests). An NXDOMAIN answer skips the other servers of its operator.
+async fn doh_addresses_with<F, Fut>(
+    servers: &[DohServer],
+    name: &str,
+    query: F,
+) -> Result<(Vec<IpAddr>, &'static str)>
+where
+    F: Fn(DohServer, &'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<DohAnswer>>,
+{
     let mut last = None;
-    for server in &doh_servers() {
-        let a = doh_query_at(server, name, "A").await;
-        let aaaa = doh_query_at(server, name, "AAAA").await;
+    let mut nx_operators: Vec<&'static str> = Vec::new();
+    for server in servers {
+        if nx_operators.contains(&server.operator) {
+            continue;
+        }
+        let a = query(*server, "A").await;
+        let aaaa = query(*server, "AAAA").await;
         match (a, aaaa) {
             (Err(err), Err(_)) => {
                 last = Some(err);
@@ -242,15 +265,23 @@ async fn doh_addresses(name: &str) -> Result<(Vec<IpAddr>, &'static str)> {
                     return Ok((dedup(ips), server.url));
                 }
                 if nxdomain {
-                    bail!(
-                        "{} ({}) says that {name} does not exist",
-                        server.url,
-                        server.operator
-                    );
+                    nx_operators.push(server.operator);
+                    continue;
                 }
                 last = Some(anyhow::anyhow!("{} has no address for {name}", server.url));
             }
         }
+    }
+    if !nx_operators.is_empty() {
+        let verb = if nx_operators.len() > 1 {
+            "say"
+        } else {
+            "says"
+        };
+        bail!(
+            "{} {verb} that {name} does not exist",
+            nx_operators.join(" and ")
+        );
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no DoH server")))
 }
@@ -344,6 +375,74 @@ mod tests {
                 .unwrap();
             assert!(host.parse::<IpAddr>().is_ok(), "{}", server.url);
         }
+    }
+
+    fn answer(status: u16, data: &[&str]) -> DohAnswer {
+        DohAnswer {
+            status,
+            answer: data
+                .iter()
+                .map(|d| DohRecord {
+                    rtype: if d.contains(':') { 28 } else { 1 },
+                    data: d.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The servers of the test: Cloudflare (two), then Google (two).
+    fn servers() -> Vec<DohServer> {
+        DOH_SERVERS.to_vec()
+    }
+
+    // Issue 119: a new name is NXDOMAIN at Cloudflare and has an address at
+    // Google. Before, the first NXDOMAIN stopped the chain.
+    #[tokio::test]
+    async fn nxdomain_at_one_operator_asks_the_next_operator() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let (ips, server) = doh_addresses_with(&servers(), "new.example", |s, rtype| {
+            asked.lock().unwrap().push(s.url);
+            async move {
+                Ok(match (s.operator, rtype) {
+                    ("Cloudflare", _) => answer(3, &[]),
+                    (_, "A") => answer(0, &["192.0.2.9"]),
+                    _ => answer(0, &[]),
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(ips, vec!["192.0.2.9".parse::<IpAddr>().unwrap()]);
+        assert_eq!(server, "https://8.8.8.8/resolve");
+        // The second server of Cloudflare is not asked.
+        let asked = asked.into_inner().unwrap();
+        assert!(!asked.contains(&"https://1.0.0.1/dns-query"), "{asked:?}");
+    }
+
+    #[tokio::test]
+    async fn nxdomain_at_each_operator_is_an_error_that_names_them() {
+        let err = doh_addresses_with(&servers(), "no.example", |_, _| async {
+            Ok(answer(3, &[]))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            format!("{err}"),
+            "Cloudflare and Google say that no.example does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_fails_is_skipped() {
+        let (ips, _) = doh_addresses_with(&servers(), "x.example", |s, _| async move {
+            if s.url.contains("1.1.1.1") {
+                bail!("timed out")
+            }
+            Ok(answer(0, &["2001:db8::1"]))
+        })
+        .await
+        .unwrap();
+        assert_eq!(ips, vec!["2001:db8::1".parse::<IpAddr>().unwrap()]);
     }
 
     #[tokio::test]

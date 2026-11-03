@@ -392,6 +392,9 @@ struct TunnelOpts {
 struct Show {
     qr: bool,
     json: bool,
+    /// The origin answers 404 for `/` as its normal answer: `serve` of a
+    /// directory with no `index.html` (issue 119).
+    root_404: bool,
 }
 
 impl TunnelOpts {
@@ -399,6 +402,7 @@ impl TunnelOpts {
         Show {
             qr: self.qr,
             json: self.json,
+            root_404: false,
         }
     }
 
@@ -1906,12 +1910,14 @@ async fn run_tunnel(
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
     if verify {
-        let Some(checked) = until_stop(handle.verify(None)).await else {
-            handle.shutdown().await;
-            return Ok(());
-        };
-        if let (Some(check), Some(url)) = (checked?, handle.url()) {
-            verified(show, url, check.dns);
+        if let Some(url) = handle.url() {
+            let accepted: &[u16] = if show.root_404 { &[404] } else { &[] };
+            let Some(checked) = until_stop(handle.verify_accepting(url, None, accepted)).await
+            else {
+                handle.shutdown().await;
+                return Ok(());
+            };
+            verified(show, url, checked?.dns);
         }
     }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));

@@ -44,6 +44,8 @@ host=${url#https://}
 host=${host%%/*}
 echo "::add-mask::$host"
 echo "::add-mask::$url"
+# A new name takes some seconds to resolve (issue 119).
+sh "$(dirname "$0")/live-wait-name.sh" "$host" 240
 i=0
 until curl -fsS -o /dev/null --max-time 10 "$url/"; do
     i=$((i + 1))

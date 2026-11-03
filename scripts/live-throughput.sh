@@ -45,7 +45,8 @@ done
 url=$(jq -r 'select(.event == "ready") | .url' "$dir/tunnel.out")
 host=${url#https://}
 echo "::add-mask::$host"
-# A new name takes some seconds to resolve.
+# A new name takes some seconds to resolve (issue 119).
+sh "$(dirname "$0")/live-wait-name.sh" "$host" 240
 i=0
 until curl -fsS -o /dev/null --max-time 10 "$url/"; do
     i=$((i + 1))
