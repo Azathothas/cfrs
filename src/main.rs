@@ -1278,6 +1278,24 @@ fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -
     out
 }
 
+/// `cfrs warp nc -u` on stdin and stdout (issue 115). The process ends
+/// here: a read of stdin blocks a thread.
+async fn udp_nc(
+    out: tokio::sync::mpsc::Sender<Vec<u8>>,
+    back: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    idle: u64,
+) -> Result<()> {
+    cfrs::warp::nc::udp_pipe_with(
+        out,
+        back,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        Duration::from_secs(idle),
+    )
+    .await?;
+    std::process::exit(0);
+}
+
 /// `cfrs warp ssh-config --write`, `--remove` and `--check` (issue 130).
 fn ssh_config_file(
     exe: &std::path::Path,
@@ -2728,8 +2746,16 @@ enum WarpCommand {
         port: u16,
         /// Go through the WebSocket relay (--relay) to HOST:PORT, with no
         /// WARP (TCP, IPv4).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "udp")]
         via_relay: bool,
+        /// UDP: each read of stdin is one datagram to HOST:PORT; each
+        /// datagram that comes back goes to stdout.
+        #[arg(short = 'u', long)]
+        udp: bool,
+        /// With -u: after the end of stdin, end when no datagram came for
+        /// this many seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 3)]
+        idle: u64,
     },
     /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
     /// With --write, --remove or --check: own the block in the SSH config
@@ -2909,12 +2935,24 @@ async fn warp(args: WarpArgs) -> Result<()> {
             host,
             port,
             via_relay: true,
+            ..
         } => {
             let relay = cfrs::ws_relay::Relay::from_env(None).fault(Fault::Config)?;
             let io = cfrs::warp::nc::via_relay(&relay, host, *port)
                 .await
                 .fault(Fault::Unavailable)?;
             return cfrs::warp::nc::pipe(io).await;
+        }
+        WarpCommand::Nc {
+            host,
+            port,
+            udp: true,
+            idle,
+            ..
+        } => {
+            if let Some((out, back)) = cfrs::warp::nc::udp_via_running(host, *port).await? {
+                return udp_nc(out, back, *idle).await;
+            }
         }
         WarpCommand::Nc { host, port, .. } => {
             if let Some(io) = cfrs::warp::nc::via_running(host, *port).await? {
@@ -3032,9 +3070,17 @@ async fn warp(args: WarpArgs) -> Result<()> {
                     .map_or_else(|| "-".to_string(), |a| a.to_string())
             );
             let stack = client.connect().await.fault(Fault::Unavailable)?;
-            println!("tunnel      up (TCP 443 only)");
-            let total = targets.len();
+            println!("tunnel      up (MASQUE over TCP 443)");
+            let total = targets.len() + 1;
             let mut failed = 0;
+            // Issue 115: the UDP data path: a DNS query through the tunnel.
+            match cfrs::warp::proxy::check_data_path(&stack, true).await {
+                Ok(took) => println!("OK          udp 1.1.1.1:53 (DNS) in {took:?}"),
+                Err(err) => {
+                    failed += 1;
+                    println!("FAIL        udp 1.1.1.1:53 (DNS): {err:#}");
+                }
+            }
             for (spec, host, port) in targets {
                 let started = std::time::Instant::now();
                 let attempt = async {
@@ -3302,11 +3348,23 @@ async fn warp(args: WarpArgs) -> Result<()> {
         | WarpCommand::Exec { .. }
         | WarpCommand::Shell
         | WarpCommand::SshConfig { .. } => unreachable!("handled before the client is made"),
-        WarpCommand::Nc { host, port, .. } => {
+        WarpCommand::Nc {
+            host,
+            port,
+            udp,
+            idle,
+            ..
+        } => {
             // No cfrs warp up runs: a session of this process. Issue 115:
             // say so, because the two ways fail in other ways.
             tracing::info!("cfrs warp up is not running; warp nc opens a WARP session of its own");
             let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
+            if udp {
+                let (out, back) = cfrs::warp::nc::udp_via_stack(stack, &host, port)
+                    .await
+                    .fault(Fault::Unavailable)?;
+                return udp_nc(out, back, idle).await;
+            }
             let target = match host.parse::<std::net::IpAddr>() {
                 Ok(ip) => pod_netns::socks::ProxyHost::Ip(ip),
                 Err(_) => pod_netns::socks::ProxyHost::Domain(host.clone()),

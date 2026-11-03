@@ -426,6 +426,12 @@ jobs:
           sh scripts/live-run.sh register target/release/cfrs warp register
           sh scripts/live-run.sh status target/release/cfrs warp status
           sh scripts/live-run.sh probe timeout 120 target/release/cfrs warp probe
+          grep 'OK          udp 1.1.1.1:53' probe.out
+          # Issue 115: warp nc -u with no warp up: a DNS query and its answer
+          # (the id 0x1234 comes back).
+          python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('123401000001000000000000') + b'\x07example\x03com\x00\x00\x01\x00\x01')" |
+            timeout 60 target/release/cfrs warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp.txt
+          grep -q '12 34' nc-udp.txt
       # Issue 102: an unavailable path exits 69 in each command: warp tun
       # with no CAP_NET_ADMIN (no root here), and warp proxy whose only
       # listener is refused (a program holds the port).
@@ -522,6 +528,10 @@ jobs:
             echo "$nc: $out" | tail -1
             echo "$out" | grep -q 'Permission denied (publickey)'
           done
+          # Issue 115: warp nc -u through the running warp up.
+          python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('567801000001000000000000') + b'\x07example\x03com\x00\x00\x01\x00\x01')" |
+            timeout 30 target/release/cfrs warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp-up.txt
+          grep -q '56 78' nc-udp-up.txt
           # Issue 82: the agent doctor sees SSH fail direct and work
           # through the running warp up.
           target/release/cfrs doctor --agent --json > agent.json
