@@ -1947,13 +1947,22 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
     }
     config = args.common.apply(config)?;
     // A forward-only tunnel has no HTTP origin to verify; the root is expected
-    // to answer 503.
+    // to answer 503. A raw TCP origin answers HTTP with 501 (issue 199).
     if !config
         .ingress
         .rules
         .iter()
-        .any(|rule| !matches!(rule.service, Service::Forward(_)))
+        .any(|rule| !matches!(rule.service, Service::Forward(_) | Service::Tcp(_)))
     {
+        if config
+            .ingress
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.service, Service::Tcp(_)))
+            && config.verify
+        {
+            tracing::info!("a raw TCP origin does not answer HTTP: no verify of the public URL");
+        }
         config.verify = false;
     }
 
@@ -2140,6 +2149,11 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
     }
     if let Some(addr) = &args.tcp {
         choices += 1;
+        // Issue 199: tcp://host:port is accepted; another scheme is not.
+        let addr = &addr.strip_prefix("tcp://").unwrap_or(addr).to_string();
+        if addr.contains("://") {
+            bail!("--tcp {addr}: give host:port or tcp://host:port");
+        }
         let (host, port) = addr
             .rsplit_once(':')
             .ok_or_else(|| anyhow::anyhow!("--tcp {addr}: give host:port"))?;

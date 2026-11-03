@@ -1185,3 +1185,26 @@ fn the_config_file_gives_the_protocol_and_the_connections() {
     assert_eq!(p["ha_connections"], 3, "{p}");
     assert_eq!(p["legs"][0], "quic", "{p}");
 }
+
+/// Issue 199: --tcp takes tcp://host:port; the check warns that a quick
+/// tunnel receives HTTP; the public URL is not verified.
+#[test]
+fn tunnel_tcp_takes_the_scheme_and_warns() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("tcp://{addr}");
+    let out = cfrs(&["tunnel", "--tcp", &url, "--check", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["plan"]["ingress"][0]["service"], url, "{doc}");
+    assert_eq!(doc["plan"]["verify"], false, "{doc}");
+    let origin = doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "origin 1")
+        .unwrap();
+    assert_eq!(origin["status"], "warn", "{doc}");
+    let out = cfrs(&["tunnel", "--tcp", "http://127.0.0.1:1", "--check"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+}

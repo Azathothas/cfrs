@@ -336,14 +336,30 @@ async fn proxy_bidi(
     response
 }
 
+/// The answer of a raw TCP origin to an HTTP request (issue 199).
+pub const TCP_HTTP_BODY: &[u8] = b"cfrs: a raw TCP origin carries TCP or WebSocket streams, not HTTP. Use --forward with \"cfrs connect\", or --port for an HTTP origin.\n";
+
 async fn forward_tcp(
     service: &Service,
     options: &OriginOptions,
-    _request: &cqstream::ConnectRequest,
+    request: &cqstream::ConnectRequest,
     mut reader: EdgeReader,
     mut writer: EdgeWriter,
     metrics: &Metrics,
 ) -> Result<()> {
+    // Issue 199: a quick tunnel gets HTTP requests. A raw byte pipe gave
+    // the edge no HTTP status, and the edge answered 502.
+    if request.conn_type == cqstream::ConnectionType::Http && !is_websocket(request) {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                origin = %crate::net::origin_label(service),
+                "an HTTP request came to a raw TCP origin; cfrs answers 501 (use --forward and cfrs connect)"
+            );
+        }
+        return write_simple_response(&mut writer, 501, "text/plain; charset=utf-8", TCP_HTTP_BODY)
+            .await;
+    }
     let io = net::dial(service, options).await?;
     cqstream::write_connect_response(&mut writer, "", &[]).await?;
     let (mut io_r, mut io_w) = tokio::io::split(io);
@@ -1395,6 +1411,40 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         }
+    }
+
+    // Issue 199: an HTTP request to a raw TCP origin gets 501, with no dial.
+    #[tokio::test]
+    async fn an_http_request_to_a_tcp_origin_gets_501() {
+        use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let service = Service::Tcp(listener.local_addr().unwrap().to_string());
+        let request = req("https://x/", vec![(HTTP_HOST_KEY, "x")]);
+        let (ours, theirs) = tokio::io::duplex(4096);
+        let (_input, input) = tokio::io::duplex(64);
+        forward_tcp(
+            &service,
+            &OriginOptions::default(),
+            &request,
+            Box::pin(input.compat()),
+            Box::pin(ours.compat_write()),
+            &Metrics::new(),
+        )
+        .await
+        .unwrap();
+        let mut reader = theirs.compat();
+        let (error, meta) = cqstream::read_connect_response(&mut reader).await.unwrap();
+        assert!(error.is_empty(), "{error}");
+        assert!(
+            meta.contains(&(
+                crate::cloudflare::stream::HTTP_STATUS_KEY.to_string(),
+                "501".to_string()
+            )),
+            "{meta:?}"
+        );
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "the origin was dialed");
     }
 
     #[test]

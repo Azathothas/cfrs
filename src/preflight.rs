@@ -214,7 +214,16 @@ pub async fn check(config: &Config) -> Report {
         }));
         files.extend(service_files(&rule.service));
         let result = service(&rule.service, &rule.origin).await;
-        report.result(name, result);
+        // Issue 199: a quick tunnel receives HTTP; a raw TCP origin answers
+        // each request with 501.
+        match (&result, &rule.service, &config.credentials) {
+            (Ok(detail), Service::Tcp(_), Credentials::Quick) => report.push(
+                name,
+                Status::Warn,
+                format!("{detail}; a quick tunnel receives HTTP, and a raw TCP origin answers 501 to a browser or curl (use --forward and cfrs connect)"),
+            ),
+            _ => report.result(name, result),
+        }
     }
 
     report.plan = json!({

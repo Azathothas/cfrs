@@ -218,10 +218,17 @@ cfrs demo --exit-on-verify
 cfrs tunnel --url http://127.0.0.1:8080   # HTTP or HTTPS origin
 cfrs tunnel --port 8080                   # the same as http://127.0.0.1:8080
 cfrs tunnel --unix /run/app.sock          # HTTP origin on a unix socket
-cfrs tunnel --tcp 10.0.0.5:5432           # raw TCP origin
 cfrs tunnel --hello-world                 # built-in test origin
 cfrs tunnel --config ./config.yml         # cloudflared ingress rules
+cfrs tunnel --token "$T" --tcp 10.0.0.5:5432  # raw TCP origin (named tunnel)
 ```
+
+A raw TCP origin (`--tcp host:port` or `tcp://host:port`) carries TCP and
+WebSocket streams of a named tunnel (WARP routing, `cloudflared access
+tcp`). A quick tunnel receives HTTP: cfrs answers each HTTP request to a
+raw TCP origin with 501, and does not verify the public URL. For TCP
+through a quick tunnel, use `--forward` and `cfrs connect` (see "Raw
+streams through a quick tunnel").
 
 The service strings are the same as in cloudflared:
 
