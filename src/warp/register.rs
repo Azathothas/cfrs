@@ -191,6 +191,79 @@ struct EnrolRequest {
     key: String,
     key_type: String,
     tunnel_type: String,
+    /// The name of the device in the dashboard (issue 141). Absent by
+    /// default: the body is as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+/// The name, the model and the locale that a new device declares (issue
+/// 141). The default gives the bytes of before: model `PC`, locale
+/// `en_US`, no name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceHints {
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub locale: Option<String>,
+}
+
+/// The variables of [`DeviceHints`].
+pub const DEVICE_NAME_VARIABLE: &str = "CFRS_WARP_DEVICE_NAME";
+pub const DEVICE_MODEL_VARIABLE: &str = "CFRS_WARP_DEVICE_MODEL";
+pub const DEVICE_LOCALE_VARIABLE: &str = "CFRS_WARP_DEVICE_LOCALE";
+
+static HINTS: std::sync::OnceLock<DeviceHints> = std::sync::OnceLock::new();
+
+impl DeviceHints {
+    /// The hints of the variables.
+    pub fn from_env() -> Self {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        Self {
+            name: var(DEVICE_NAME_VARIABLE),
+            model: var(DEVICE_MODEL_VARIABLE),
+            locale: var(DEVICE_LOCALE_VARIABLE),
+        }
+    }
+
+    /// A name of 1 to 64 printable characters, a model of 1 to 32, a
+    /// locale as `ll_CC`.
+    pub fn check(&self) -> Result<()> {
+        let printable = |s: &str| s.chars().all(|c| !c.is_control());
+        if let Some(name) = &self.name {
+            if name.is_empty() || name.chars().count() > 64 || !printable(name) {
+                bail!("the device name has 1 to 64 printable characters: {name:?}");
+            }
+        }
+        if let Some(model) = &self.model {
+            if model.is_empty() || model.chars().count() > 32 || !printable(model) {
+                bail!("the device model has 1 to 32 printable characters: {model:?}");
+            }
+        }
+        if let Some(locale) = &self.locale {
+            let b = locale.as_bytes();
+            let ok = b.len() == 5
+                && b[..2].iter().all(u8::is_ascii_lowercase)
+                && b[2] == b'_'
+                && b[3..].iter().all(u8::is_ascii_uppercase);
+            if !ok {
+                bail!("the device locale is as en_US: {locale:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Set the hints of this process (the flags). A later call does
+    /// nothing.
+    pub fn set(self) -> Result<()> {
+        self.check()?;
+        let _ = HINTS.set(self);
+        Ok(())
+    }
+
+    /// The hints of this process: the flags, else the variables.
+    pub fn current() -> Self {
+        HINTS.get().cloned().unwrap_or_else(Self::from_env)
+    }
 }
 
 fn now_rfc3339_millis() -> String {
@@ -280,6 +353,8 @@ fn check(resp: crate::fetch::Response) -> Result<Device> {
 /// Create an anonymous device. Returns the device plus its bearer token, which
 /// is needed for the enrolment call and for later account queries.
 pub async fn create_device(proxy: Option<&Proxy>) -> Result<Device> {
+    let hints = DeviceHints::current();
+    hints.check()?;
     let body = RegistrationRequest {
         // A throwaway X25519 public key. The API validates its shape, not that
         // anybody holds the private half, and MASQUE never uses it.
@@ -287,12 +362,12 @@ pub async fn create_device(proxy: Option<&Proxy>) -> Result<Device> {
         install_id: String::new(),
         fcm_token: String::new(),
         tos: now_rfc3339_millis(),
-        model: "PC".into(),
+        model: hints.model.unwrap_or_else(|| "PC".into()),
         serial_number: random_hex(8),
         os_version: String::new(),
         key_type: "curve25519".into(),
         tunnel_type: "wireguard".into(),
-        locale: "en_US".into(),
+        locale: hints.locale.unwrap_or_else(|| "en_US".into()),
     };
     let resp = with_json(request("POST", "/reg", None, proxy), &body)?
         .send()
@@ -313,6 +388,7 @@ pub async fn enrol_masque(
         key: spki_b64.to_string(),
         key_type: "secp256r1".into(),
         tunnel_type: "masque".into(),
+        name: DeviceHints::current().name,
     };
     let resp = with_json(
         request("PATCH", &format!("/reg/{device_id}"), Some(token), proxy),
@@ -517,6 +593,54 @@ mod tests {
     }
 
     use super::*;
+
+    // Issue 141: the hints are checked; the default body is as before.
+    #[test]
+    fn the_device_hints() {
+        assert!(DeviceHints::default().check().is_ok());
+        let ok = DeviceHints {
+            name: Some("ci-runner-7".into()),
+            model: Some("Linux".into()),
+            locale: Some("de_DE".into()),
+        };
+        assert!(ok.check().is_ok());
+        for bad in [
+            DeviceHints {
+                name: Some(String::new()),
+                ..Default::default()
+            },
+            DeviceHints {
+                name: Some("x".repeat(65)),
+                ..Default::default()
+            },
+            DeviceHints {
+                name: Some("a\nb".into()),
+                ..Default::default()
+            },
+            DeviceHints {
+                model: Some("m".repeat(33)),
+                ..Default::default()
+            },
+            DeviceHints {
+                locale: Some("english".into()),
+                ..Default::default()
+            },
+            DeviceHints {
+                locale: Some("EN_us".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
+        let body = serde_json::to_value(EnrolRequest {
+            key: "k".into(),
+            key_type: "secp256r1".into(),
+            tunnel_type: "masque".into(),
+            name: None,
+        })
+        .unwrap();
+        assert!(body.get("name").is_none(), "{body}");
+    }
 
     #[test]
     fn civil_dates_are_right() {

@@ -1415,6 +1415,16 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--masque-sni".into());
         argv.push(sni.clone());
     }
+    for (flag, value) in [
+        ("--device-name", &args.device_name),
+        ("--device-model", &args.device_model),
+        ("--device-locale", &args.device_locale),
+    ] {
+        if let Some(value) = value {
+            argv.push(flag.into());
+            argv.push(value.clone());
+        }
+    }
     argv
 }
 
@@ -2713,6 +2723,30 @@ struct WarpArgs {
     /// Register a new device for this run only, and do not save it.
     #[arg(long, global = true, conflicts_with = "identity")]
     ephemeral: bool,
+    /// The name of a new device in the dashboard (1 to 64 characters).
+    #[arg(
+        long,
+        value_name = "NAME",
+        global = true,
+        env = "CFRS_WARP_DEVICE_NAME"
+    )]
+    device_name: Option<String>,
+    /// The model that a new device declares (default PC).
+    #[arg(
+        long,
+        value_name = "MODEL",
+        global = true,
+        env = "CFRS_WARP_DEVICE_MODEL"
+    )]
+    device_model: Option<String>,
+    /// The locale that a new device declares, as en_US (default en_US).
+    #[arg(
+        long,
+        value_name = "LOCALE",
+        global = true,
+        env = "CFRS_WARP_DEVICE_LOCALE"
+    )]
+    device_locale: Option<String>,
     /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
     /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
@@ -2996,6 +3030,14 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 async fn warp(args: WarpArgs) -> Result<()> {
     // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
     cfrs::warp::check_tcp_burst()?;
+    // Issue 141: the name, the model and the locale of a new device.
+    cfrs::warp::register::DeviceHints {
+        name: args.device_name.clone(),
+        model: args.device_model.clone(),
+        locale: args.device_locale.clone(),
+    }
+    .set()
+    .fault(Fault::Usage)?;
     // These commands use the running instance of cfrs warp up.
     match &args.command {
         WarpCommand::Up {

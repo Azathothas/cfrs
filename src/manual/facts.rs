@@ -143,6 +143,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --proxy-user and --proxy-password-file: each client of the proxy must give this user and the password on the first line of the file (mode 0600), with SOCKS5 (RFC 1929) or HTTP Basic. A client with no or wrong credentials gets 0xff, 0x01 or 407.",
     },
     EnvVar {
+        names: &["CFRS_WARP_DEVICE_NAME", "CFRS_WARP_DEVICE_MODEL", "CFRS_WARP_DEVICE_LOCALE"],
+        used_by: "warp (each command that registers a device), tunnel --transport warp",
+        meaning: "The value of --device-name, --device-model and --device-locale: what a new device declares at its registration (a name of 1 to 64 characters, a model of 1 to 32, a locale as en_US). With none, the request is as before (model PC, locale en_US, no name). A bad value is a usage error (exit 64). A saved device does not change.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",
