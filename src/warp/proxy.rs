@@ -208,10 +208,187 @@ pub fn serve_dns(live: Arc<super::Live<WarpStack>>, socket: tokio::net::UdpSocke
     });
 }
 
-/// Send one DNS message to [`TUNNEL_RESOLVER`] through the tunnel, with the
-/// resends of [`DNS_RESEND`]; the answer with the id of the query.
+/// Send one DNS message to the resolvers of the tunnel ([`resolvers`]), one
+/// after the other; the first answer with the id of the query.
 async fn forward_dns(stack: &WarpStack, query: &[u8]) -> Result<Vec<u8>> {
-    forward_dns_to(stack, TUNNEL_RESOLVER, query).await
+    exchange_any(stack, &resolvers(), query).await
+}
+
+/// A resolver inside the tunnel (issues 145 and 144): DNS on UDP, or DNS
+/// over TLS (RFC 7858).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolver {
+    Udp(SocketAddr),
+    /// The address, and the name that the certificate must have (the
+    /// address itself when no name is given).
+    Tls {
+        addr: SocketAddr,
+        name: String,
+    },
+}
+
+impl Resolver {
+    /// `IP[:PORT]` (UDP, port 53), or `tls://IP[:PORT][#NAME]` (port 853).
+    /// An IPv6 address with a port is in brackets.
+    pub fn parse(spec: &str) -> Result<Self> {
+        let spec = spec.trim();
+        let (tls, rest) = match spec.strip_prefix("tls://") {
+            Some(rest) => (true, rest),
+            None => (false, spec.strip_prefix("udp://").unwrap_or(spec)),
+        };
+        let (addr, name) = match rest.split_once('#') {
+            Some((a, n)) if tls && !n.is_empty() => (a, Some(n.to_string())),
+            Some(_) => bail!("{spec:?}: a name (#NAME) is for tls:// only"),
+            None => (rest, None),
+        };
+        let port = if tls { 853 } else { 53 };
+        let addr: SocketAddr = match addr.parse::<SocketAddr>() {
+            Ok(a) => a,
+            Err(_) => SocketAddr::new(
+                addr.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .with_context(|| {
+                        format!("{spec:?} is not IP[:PORT] or tls://IP[:PORT][#NAME]")
+                    })?,
+                port,
+            ),
+        };
+        Ok(if tls {
+            Resolver::Tls {
+                name: name.unwrap_or_else(|| addr.ip().to_string()),
+                addr,
+            }
+        } else {
+            Resolver::Udp(addr)
+        })
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        match self {
+            Resolver::Udp(a) | Resolver::Tls { addr: a, .. } => *a,
+        }
+    }
+}
+
+impl std::fmt::Display for Resolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Resolver::Udp(a) => write!(f, "{a}"),
+            Resolver::Tls { addr, name } if *name == addr.ip().to_string() => {
+                write!(f, "tls://{addr}")
+            }
+            Resolver::Tls { addr, name } => write!(f, "tls://{addr}#{name}"),
+        }
+    }
+}
+
+/// The variable of the resolvers of the tunnel (a comma-separated list of
+/// [`Resolver::parse`]).
+pub const RESOLVERS_VARIABLE: &str = "CFRS_WARP_RESOLVERS";
+
+static RESOLVERS: std::sync::OnceLock<Vec<Resolver>> = std::sync::OnceLock::new();
+
+/// Parse a list of resolvers (`--resolver`, the variable).
+pub fn parse_resolvers(specs: &[String]) -> Result<Vec<Resolver>> {
+    specs
+        .iter()
+        .flat_map(|s| s.split(','))
+        .filter(|s| !s.trim().is_empty())
+        .map(Resolver::parse)
+        .collect()
+}
+
+/// Set the resolvers of the tunnel of this process (issue 145). Call it
+/// before the first session; a later call does nothing.
+pub fn set_resolvers(list: Vec<Resolver>) {
+    if !list.is_empty() {
+        let _ = RESOLVERS.set(list);
+    }
+}
+
+/// The resolvers of [`RESOLVERS_VARIABLE`], when it is set and valid.
+fn env_resolvers() -> Option<Vec<Resolver>> {
+    let value = std::env::var(RESOLVERS_VARIABLE).ok()?;
+    parse_resolvers(&[value]).ok().filter(|l| !l.is_empty())
+}
+
+/// The resolvers of the tunnel: the ones that were set (`--resolver`),
+/// else the ones of [`RESOLVERS_VARIABLE`], else [`TUNNEL_RESOLVER`].
+pub fn resolvers() -> Vec<Resolver> {
+    RESOLVERS
+        .get()
+        .cloned()
+        .or_else(env_resolvers)
+        .unwrap_or_else(|| vec![Resolver::Udp(TUNNEL_RESOLVER)])
+}
+
+/// True when resolvers were set (not the default).
+pub fn resolvers_set() -> bool {
+    RESOLVERS.get().is_some() || env_resolvers().is_some()
+}
+
+/// One DNS message to each resolver of `list` in turn; the first answer.
+async fn exchange_any(stack: &WarpStack, list: &[Resolver], query: &[u8]) -> Result<Vec<u8>> {
+    let mut failures = Vec::new();
+    for resolver in list {
+        match exchange(stack, resolver, query).await {
+            Ok(answer) => return Ok(answer),
+            Err(err) => failures.push(format!("{resolver}: {err:#}")),
+        }
+    }
+    bail!("no DNS answer through WARP ({})", failures.join("; "))
+}
+
+/// One DNS message to one resolver through the tunnel.
+async fn exchange(stack: &WarpStack, resolver: &Resolver, query: &[u8]) -> Result<Vec<u8>> {
+    match resolver {
+        Resolver::Udp(addr) => forward_dns_to(stack, *addr, query).await,
+        Resolver::Tls { addr, name } => {
+            // An address, so no name to resolve (as dial does for an IP).
+            let conn = tokio::time::timeout(CONNECT_TIMEOUT, stack.tcp_connect(*addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("connect to {addr} through WARP timed out"))??;
+            let (stream, remote) = tokio::io::duplex(4 * CHUNK);
+            tokio::spawn(bridge(conn, remote));
+            let config = crate::trust::client_config(&[], &[])?;
+            let server = rustls::pki_types::ServerName::try_from(name.clone())
+                .with_context(|| format!("{name:?} is not a TLS name"))?;
+            let tls = tokio::time::timeout(
+                DNS_TIMEOUT,
+                tokio_rustls::TlsConnector::from(Arc::new(config)).connect(server, stream),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("no TLS with {addr} in {} s", DNS_TIMEOUT.as_secs()))??;
+            tokio::time::timeout(DNS_TIMEOUT, dot_exchange(tls, query))
+                .await
+                .map_err(|_| anyhow::anyhow!("no DNS over TLS answer from {addr}"))?
+        }
+    }
+}
+
+/// One DNS message on a stream of RFC 7858 (a length of 2 bytes before
+/// each message); the answer with the id of the query.
+async fn dot_exchange<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    query: &[u8],
+) -> Result<Vec<u8>> {
+    if query.len() < 12 || query.len() > u16::MAX as usize {
+        bail!("not a DNS message");
+    }
+    let mut framed = (query.len() as u16).to_be_bytes().to_vec();
+    framed.extend_from_slice(query);
+    stream.write_all(&framed).await?;
+    stream.flush().await?;
+    loop {
+        let mut len = [0u8; 2];
+        stream.read_exact(&mut len).await?;
+        let mut answer = vec![0u8; u16::from_be_bytes(len) as usize];
+        stream.read_exact(&mut answer).await?;
+        if answer.get(..2) == query.get(..2) {
+            return Ok(answer);
+        }
+    }
 }
 
 async fn forward_dns_to(stack: &WarpStack, server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
@@ -693,6 +870,15 @@ const CHECK_NAME: &str = "cloudflare.com";
 /// after the HTTP/2 answer 200, and a front door that carried no data gave
 /// a proxy that answered nothing. Gives the time of the answer.
 pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> {
+    if resolvers_set() {
+        // Issue 145: the resolvers that were set.
+        let start = std::time::Instant::now();
+        let query = pod_netns::dns::build_query(0x5a5a, CHECK_NAME, pod_netns::dns::TYPE_A)?;
+        exchange_any(stack, &resolvers(), &query)
+            .await
+            .context("the MASQUE session is open, and no resolver answered through it")?;
+        return Ok(start.elapsed());
+    }
     let server = if ipv4 {
         TUNNEL_RESOLVER
     } else {
@@ -714,7 +900,16 @@ async fn check_data_path_at(stack: &WarpStack, server: SocketAddr) -> Result<Dur
 }
 
 async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> {
-    query_at(stack, TUNNEL_RESOLVER, name, kind).await
+    if !resolvers_set() {
+        return query_at(stack, TUNNEL_RESOLVER, name, kind).await;
+    }
+    // Issue 145: the resolvers that were set, one after the other.
+    let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;
+    let message = pod_netns::dns::build_query(id, name, kind)?;
+    let answer = exchange_any(stack, &resolvers(), &message)
+        .await
+        .with_context(|| format!("no DNS answer for {name}"))?;
+    pod_netns::dns::parse_answers(&answer)
 }
 
 /// Ask `server` for the `kind` records of `name`. The query is sent again
@@ -996,6 +1191,80 @@ mod tests {
     }
 
     const PEER_DNS: &str = "198.51.100.7:53";
+
+    // Issues 145 and 144: the forms of --resolver.
+    #[test]
+    fn the_resolver_specs() {
+        let p = |s: &str| Resolver::parse(s).unwrap();
+        assert_eq!(p("9.9.9.9"), Resolver::Udp("9.9.9.9:53".parse().unwrap()));
+        assert_eq!(
+            p("9.9.9.9:5353"),
+            Resolver::Udp("9.9.9.9:5353".parse().unwrap())
+        );
+        assert_eq!(
+            p("2620:fe::fe"),
+            Resolver::Udp("[2620:fe::fe]:53".parse().unwrap())
+        );
+        assert_eq!(
+            p("tls://1.1.1.1#cloudflare-dns.com"),
+            Resolver::Tls {
+                addr: "1.1.1.1:853".parse().unwrap(),
+                name: "cloudflare-dns.com".into()
+            }
+        );
+        assert_eq!(
+            p("tls://[2606:4700:4700::1111]:853"),
+            Resolver::Tls {
+                addr: "[2606:4700:4700::1111]:853".parse().unwrap(),
+                name: "2606:4700:4700::1111".into()
+            }
+        );
+        assert_eq!(p("tls://9.9.9.9").to_string(), "tls://9.9.9.9:853");
+        for bad in ["dns.example", "9.9.9.9#name", "tls://", "1.2.3"] {
+            assert!(Resolver::parse(bad).is_err(), "{bad}");
+        }
+        let list = parse_resolvers(&["9.9.9.9,tls://1.1.1.1".into()]).unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    // Issue 144: the framing of RFC 7858 (a length of 2 bytes); an answer
+    // with another id is skipped.
+    #[tokio::test]
+    async fn dns_over_tls_frames_each_message() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let query = pod_netns::dns::build_query(0x1357, "example.com", 1).unwrap();
+        let q = query.clone();
+        let peer = tokio::spawn(async move {
+            let mut len = [0u8; 2];
+            server.read_exact(&mut len).await.unwrap();
+            let mut msg = vec![0u8; u16::from_be_bytes(len) as usize];
+            server.read_exact(&mut msg).await.unwrap();
+            assert_eq!(msg, q);
+            for id in [[0x99, 0x99], [0x13, 0x57]] {
+                let mut answer = msg.clone();
+                answer[..2].copy_from_slice(&id);
+                let mut framed = (answer.len() as u16).to_be_bytes().to_vec();
+                framed.extend_from_slice(&answer);
+                server.write_all(&framed).await.unwrap();
+            }
+        });
+        let answer = dot_exchange(client, &query).await.unwrap();
+        assert_eq!(&answer[..2], &[0x13, 0x57]);
+        peer.await.unwrap();
+    }
+
+    // Issue 145: a list of resolvers: the first that answers wins.
+    #[tokio::test]
+    async fn the_first_resolver_that_answers_wins() {
+        let (stack, _) = stack_with_dns(0);
+        let query = pod_netns::dns::build_query(0x2468, "example.com", 1).unwrap();
+        let list = [
+            Resolver::Udp("198.51.100.99:53".parse().unwrap()),
+            Resolver::Udp(PEER_DNS.parse().unwrap()),
+        ];
+        let answer = exchange_any(&stack, &list, &query).await.unwrap();
+        assert_eq!(&answer[..2], &[0x24, 0x68]);
+    }
 
     // Issue 120: the check of the data path needs an answer through the
     // stack.

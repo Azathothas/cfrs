@@ -534,14 +534,41 @@ impl Drop for Routes {
     }
 }
 
-/// The text of the resolv.conf of `--default-route`.
-pub const RESOLV_TEXT: &str =
-    "# cfrs warp tun --default-route: DNS through WARP\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n";
+/// The nameservers of `--default-route`: the UDP resolvers of `--resolver`
+/// on port 53 (at most 3; issue 145), else 1.1.1.1 and 1.0.0.1. A program
+/// of the host speaks plain DNS, so a tls:// resolver is not one of them.
+pub fn nameservers() -> Vec<std::net::IpAddr> {
+    let set: Vec<std::net::IpAddr> = super::proxy::resolvers()
+        .iter()
+        .filter_map(|r| match r {
+            super::proxy::Resolver::Udp(a) if a.port() == 53 => Some(a.ip()),
+            _ => None,
+        })
+        .take(3)
+        .collect();
+    if super::proxy::resolvers_set() && !set.is_empty() {
+        set
+    } else {
+        vec![[1, 1, 1, 1].into(), [1, 0, 0, 1].into()]
+    }
+}
+
+/// The text of a resolv.conf with `servers`.
+pub fn resolv_text(servers: &[std::net::IpAddr]) -> String {
+    let mut text = String::from("# cfrs warp tun --default-route: DNS through WARP\n");
+    for s in servers {
+        text.push_str(&format!("nameserver {s}\n"));
+    }
+    text
+}
 
 fn set_dns(tun: &str) -> Result<Dns> {
+    let servers: Vec<String> = nameservers().iter().map(|s| s.to_string()).collect();
     let resolved = std::path::Path::new("/run/systemd/resolve").is_dir()
         && std::process::Command::new("resolvectl")
-            .args(["dns", tun, "1.1.1.1", "1.0.0.1"])
+            .arg("dns")
+            .arg(tun)
+            .args(&servers)
             .status()
             .is_ok_and(|s| s.success());
     if resolved {
@@ -556,13 +583,26 @@ fn set_dns(tun: &str) -> Result<Dns> {
     let link = std::fs::read_link(RESOLV).ok();
     let backup = std::fs::read_to_string(RESOLV).unwrap_or_default();
     let _ = std::fs::remove_file(RESOLV);
-    std::fs::write(RESOLV, RESOLV_TEXT).with_context(|| format!("writing {RESOLV}"))?;
+    std::fs::write(RESOLV, resolv_text(&nameservers()))
+        .with_context(|| format!("writing {RESOLV}"))?;
     Ok(Dns::File { backup, link })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_resolv_conf_text() {
+        let text = resolv_text(&[
+            "192.0.2.53".parse().unwrap(),
+            "2001:db8::53".parse().unwrap(),
+        ]);
+        assert!(
+            text.ends_with("nameserver 192.0.2.53\nnameserver 2001:db8::53\n"),
+            "{text}"
+        );
+    }
 
     /// A /proc/net/route table: 192.0.2.0/24 on eth0, and optionally the
     /// default route via 192.0.2.1 and a /1 of the TUN.

@@ -1415,6 +1415,10 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--masque-sni".into());
         argv.push(sni.clone());
     }
+    for resolver in &args.resolver {
+        argv.push("--resolver".into());
+        argv.push(resolver.clone());
+    }
     for (flag, value) in [
         ("--device-name", &args.device_name),
         ("--device-model", &args.device_model),
@@ -2723,6 +2727,18 @@ struct WarpArgs {
     /// Register a new device for this run only, and do not save it.
     #[arg(long, global = true, conflicts_with = "identity")]
     ephemeral: bool,
+    /// A resolver of the DNS inside the tunnel, in place of 1.1.1.1:53:
+    /// IP[:PORT] (UDP), or tls://IP[:PORT][#NAME] (DNS over TLS, port 853;
+    /// the certificate must have NAME, or the IP address). Repeatable; the
+    /// first that answers wins.
+    #[arg(
+        long,
+        value_name = "SPEC",
+        global = true,
+        env = "CFRS_WARP_RESOLVERS",
+        value_delimiter = ','
+    )]
+    resolver: Vec<String>,
     /// The name of a new device in the dashboard (1 to 64 characters).
     #[arg(
         long,
@@ -3030,6 +3046,9 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 async fn warp(args: WarpArgs) -> Result<()> {
     // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
     cfrs::warp::check_tcp_burst()?;
+    // Issue 145: the resolvers of the tunnel.
+    let resolvers = cfrs::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
+    cfrs::warp::proxy::set_resolvers(resolvers);
     // Issue 141: the name, the model and the locale of a new device.
     cfrs::warp::register::DeviceHints {
         name: args.device_name.clone(),

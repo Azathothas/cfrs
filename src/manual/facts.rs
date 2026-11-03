@@ -148,6 +148,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The value of --device-name, --device-model and --device-locale: what a new device declares at its registration (a name of 1 to 64 characters, a model of 1 to 32, a locale as en_US). With none, the request is as before (model PC, locale en_US, no name). A bad value is a usage error (exit 64). A saved device does not change.",
     },
     EnvVar {
+        names: &["CFRS_WARP_RESOLVERS"],
+        used_by: "warp proxy, warp up, warp run, warp tun, warp probe, warp nc, tunnel --transport warp",
+        meaning: "The value of --resolver: the DNS resolvers inside the tunnel, comma-separated, in place of 1.1.1.1:53. IP[:PORT] is DNS on UDP; tls://IP[:PORT][#NAME] is DNS over TLS (RFC 7858, port 853), with the certificate checked for NAME or the IP address. The first that answers wins. warp tun --default-route writes the UDP ones on port 53 to resolv.conf.",
+    },
+    EnvVar {
         names: &["CFRS_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
         meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",

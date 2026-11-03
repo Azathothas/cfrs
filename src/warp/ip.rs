@@ -95,7 +95,9 @@ const TCP_KEEPALIVE: Duration = Duration::from_secs(20);
 const TCP_LINGER: Duration = Duration::from_secs(30);
 const UDP_PAYLOAD: usize = 64 * 1024;
 
-/// A live handle on the userspace stack.
+/// A live handle on the userspace stack. A clone is a handle on the same
+/// stack.
+#[derive(Clone)]
 pub struct WarpStack {
     cmd: mpsc::Sender<Command>,
     notify: std::sync::Arc<Notify>,
