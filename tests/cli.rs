@@ -769,6 +769,26 @@ exit 2"#,
     assert_eq!(mode & 0o777, 0o600);
     let args = std::fs::read_to_string(entry.join("web.args")).unwrap();
     assert_eq!(args, r#"["status"]"#);
+
+    // Issue 117: a leading cfrs is dropped; a command that does not parse
+    // is exit 64, and no entry is written.
+    let out = run(&["autostart", "add", "web2", "--", "cfrs", "status"], &path);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let args = std::fs::read_to_string(entry.join("web2.args")).unwrap();
+    assert_eq!(args, r#"["status"]"#);
+    let out = run(&["autostart", "remove", "web2"], &path);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let out = run(
+        &["autostart", "add", "web3", "--", "no-such-command"],
+        &path,
+    );
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("is not a cfrs command"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!entry.join("web3.args").exists());
     let out = run(&["autostart", "list"], &path);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "web\n");
 
@@ -965,6 +985,23 @@ fn the_environment_is_checked_alike() {
         .collect();
     assert_eq!(legs.len(), 1, "{doc}");
     assert_eq!(legs[0]["status"], "fail");
+    // Issue 111: a bad CFRS_WARP_TCP_BURST is exit 78 before any network
+    // wait. Before, it gave the default with no message.
+    for args in [&["warp", "probe"][..], &["agent", "up"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("CFRS_WARP_TCP_BURST", "abc")
+            .env("CFRS_STATE_DIR", "none")
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("CFRS_WARP_TCP_BURST"),
+            "{}",
+            stderr(&out)
+        );
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
         .args(["status"])
         .env("RUST_LOG", "cfrs=deubg")

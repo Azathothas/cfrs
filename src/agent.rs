@@ -145,6 +145,9 @@ impl Row {
 pub struct Report {
     pub proxy: Option<String>,
     pub warp_up: bool,
+    /// The running `cfrs warp up` has its TCP listener, so `cfrs warp env`
+    /// has proxy variables (issue 110).
+    pub warp_tcp: bool,
     pub rows: Vec<Row>,
     pub udp_dns: Outcome,
     pub ipv6: Outcome,
@@ -325,6 +328,11 @@ pub async fn run(timeout: Duration) -> Report {
     let warp_up = crate::warp::up::socket_path()
         .map(|s| std::os::unix::net::UnixStream::connect(s).is_ok())
         .unwrap_or(false);
+    // Issue 110: with no TCP listener, the env file has no ALL_PROXY.
+    let warp_tcp = warp_up
+        && crate::warp::up::env_text()
+            .map(|text| text.contains("ALL_PROXY"))
+            .unwrap_or(true);
     let rows = futures::future::join_all(TASKS.iter().map(|task| {
         let proxy = proxy.is_some();
         async move {
@@ -354,6 +362,7 @@ pub async fn run(timeout: Duration) -> Report {
     let mut report = Report {
         proxy,
         warp_up,
+        warp_tcp,
         rows,
         udp_dns,
         ipv6,
@@ -374,8 +383,11 @@ pub fn advice(report: &Report) -> Vec<String> {
         out.push("direct networking works for each task: nothing to do".into());
         return out;
     }
-    if report.warp_up {
+    if report.warp_up && report.warp_tcp {
         out.push("cfrs warp up runs: in a new shell, eval \"$(cfrs warp env)\"; for a static binary or UDP, cfrs warp exec -- CMD (or cfrs warp shell, or cfrs warp run -- CMD)".into());
+    } else if report.warp_up {
+        // Issue 110: no TCP listener, so no proxy variables to eval.
+        out.push("cfrs warp up runs on its unix socket only (this host refused its TCP listener), so there are no proxy variables: use cfrs warp exec -- CMD (or cfrs warp shell, or cfrs warp run -- CMD)".into());
     } else if any_failing_everywhere || !report.udp_dns.works() {
         out.push(
             "start WARP for this sandbox: cfrs warp up (add --persist so that new shells use it)"
@@ -486,12 +498,35 @@ mod tests {
         Report {
             proxy: Some("http://127.0.0.1:3128".into()),
             warp_up,
+            warp_tcp: warp_up,
             rows,
             udp_dns: udp,
             ipv6: Outcome::Failed("no".into()),
             localhost: Outcome::Ok,
             advice: Vec::new(),
         }
+    }
+
+    // Issue 110: with no TCP listener of warp up, the advice has no eval.
+    #[test]
+    fn a_unix_only_warp_up_gets_no_eval_advice() {
+        let rows = vec![row(
+            "git (HTTPS)",
+            Outcome::Failed("refused".into()),
+            Outcome::NotTried,
+            Outcome::Ok,
+        )];
+        let mut r = report(rows.clone(), true, Outcome::Failed("no".into()));
+        r.warp_tcp = false;
+        let advice = advice(&r);
+        assert!(!advice[0].contains("eval"), "{advice:?}");
+        assert!(advice[0].contains("cfrs warp exec -- CMD"), "{advice:?}");
+        let r = report(rows, true, Outcome::Failed("no".into()));
+        assert!(advice_has(&r, "eval \"$(cfrs warp env)\""));
+    }
+
+    fn advice_has(r: &Report, text: &str) -> bool {
+        advice(r).iter().any(|line| line.contains(text))
     }
 
     #[test]

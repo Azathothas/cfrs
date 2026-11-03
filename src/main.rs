@@ -217,7 +217,8 @@ enum AutostartCommand {
     Add {
         /// The name of the entry (letters, digits, - and _).
         name: String,
-        /// The cfrs command and its arguments, after `--`.
+        /// The cfrs command and its arguments, after `--`, with no leading
+        /// `cfrs` (one is dropped). The command must parse.
         #[arg(last = true, required_unless_present = "from")]
         args: Vec<String>,
         /// Take the command and its arguments from the detached instance
@@ -524,7 +525,7 @@ struct ServeArgs {
     token: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum ModeArg {
     Upload,
     Download,
@@ -535,9 +536,10 @@ enum ModeArg {
 struct ShareArgs {
     #[command(flatten)]
     common: TunnelOpts,
-    /// Session mode.
-    #[arg(long, value_enum, default_value_t = ModeArg::Upload)]
-    mode: ModeArg,
+    /// Session mode. With no --mode: download with --file, proxy with
+    /// --port, else upload.
+    #[arg(long, value_enum)]
+    mode: Option<ModeArg>,
     /// Directory that receives uploads.
     #[arg(long)]
     dir: Option<PathBuf>,
@@ -913,6 +915,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
             port,
             warp,
         } => {
+            cfrs::warp::check_tcp_burst()?;
             let before = cfrs::agent::run(timeout).await;
             let direct_enough = before
                 .rows
@@ -979,21 +982,8 @@ async fn agent(command: AgentCommand) -> Result<()> {
             } else {
                 "direct"
             };
-            let mut commands: Vec<String> = Vec::new();
             let warp_tcp = warp_doc["tcp"].as_bool().unwrap_or(true);
-            if mode == "warp" && warp_tcp {
-                commands
-                    .push("eval \"$(cfrs warp env)\"   # proxy variables for this shell".into());
-                commands.push(
-                    "cfrs warp exec -- CMD   # any program, also static binaries and UDP".into(),
-                );
-                commands.push(
-                    "cfrs warp ssh-config --host github.com >> ~/.ssh/config   # git over SSH"
-                        .into(),
-                );
-            }
-            commands.push("cfrs agent status".into());
-            commands.push("cfrs agent down".into());
+            let commands = agent_commands(mode == "warp", warp_tcp);
             doc["event"] = "agent".into();
             doc["mode"] = mode.into();
             doc["warp"] = warp_doc;
@@ -1192,15 +1182,8 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
     // Issue 97: the TCP listener or the socket can be refused by the host;
     // the env file and the advice follow what came up.
     let (tcp, socket_up) = cfrs::warp::up::listeners_of(&doc);
-    if tcp.is_none() {
-        eprintln!(
-            "cfrs: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables. Use: cfrs warp exec -- CMD (or cfrs warp shell)"
-        );
-    }
-    if !socket_up {
-        eprintln!(
-            "cfrs: warp up: the unix socket did not start; cfrs warp exec and cfrs warp shell do not work. Use the proxy variables: eval \"$(cfrs warp env)\""
-        );
+    for line in up_summary(tcp.is_some(), port, socket_up, &socket) {
+        eprintln!("{line}");
     }
     let env = cfrs::warp::up::write_env(tcp, &socket)?;
     if persist {
@@ -1215,6 +1198,46 @@ fn warp_up(args: &WarpArgs, port: u16, persist: bool, ready_timeout: u64) -> Res
     doc["tcp"] = tcp.is_some().into();
     println!("{doc}");
     Ok(())
+}
+
+/// The lines of `warp up` on stderr when a listener did not start (issue
+/// 115: the working listener comes first, then the one that failed).
+fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if !tcp && socket_up {
+        out.push(format!(
+            "cfrs: warp up: the WARP proxy runs on unix:{}; use: cfrs warp exec -- CMD (or cfrs warp shell). The host refused the TCP listener 127.0.0.1:{port}, so there are no proxy variables",
+            socket.display()
+        ));
+    } else if !tcp {
+        out.push(format!(
+            "cfrs: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables"
+        ));
+    }
+    if !socket_up {
+        out.push("cfrs: warp up: the unix socket did not start; cfrs warp exec and cfrs warp shell do not work. Use the proxy variables: eval \"$(cfrs warp env)\"".into());
+    }
+    out
+}
+
+/// The `commands` of the document of `agent up` (issues 110 and 116): the
+/// eval line only when the TCP listener of warp up runs; `warp exec` and
+/// `warp ssh-config` use the unix socket, so they are always there in the
+/// WARP mode.
+fn agent_commands(warp: bool, warp_tcp: bool) -> Vec<String> {
+    let mut commands: Vec<String> = Vec::new();
+    if warp && warp_tcp {
+        commands.push("eval \"$(cfrs warp env)\"   # proxy variables for this shell".into());
+    }
+    if warp {
+        commands.push("cfrs warp exec -- CMD   # any program, also static binaries and UDP".into());
+        commands.push(
+            "cfrs warp ssh-config --host github.com >> ~/.ssh/config   # git over SSH".into(),
+        );
+    }
+    commands.push("cfrs agent status".into());
+    commands.push("cfrs agent down".into());
+    commands
 }
 
 /// The command line of the `warp proxy --detach` of `cfrs warp up`.
@@ -1573,6 +1596,33 @@ async fn preflight(config: &Config, show: Show) -> Result<()> {
     Ok(())
 }
 
+/// The arguments of `autostart add` (issue 117): a first argument `cfrs`
+/// (or a path to it) is dropped, and the rest must parse as a cfrs command.
+/// Before, `-- cfrs warp up` was kept as `cfrs cfrs warp up`, which failed
+/// at each boot with no message.
+fn autostart_args(mut args: Vec<String>) -> Result<Vec<String>> {
+    let is_cfrs = |arg: &str| std::path::Path::new(arg).file_name() == Some("cfrs".as_ref());
+    if args.first().is_some_and(|a| is_cfrs(a)) {
+        args.remove(0);
+    }
+    if let Err(err) = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(args.clone())) {
+        let first = err.to_string();
+        let first = first
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches("error: ");
+        return Err(cfrs::exit::fault(
+            Fault::Usage,
+            anyhow::anyhow!(
+                "autostart add: `cfrs {}` is not a cfrs command: {first}",
+                args.join(" ")
+            ),
+        ));
+    }
+    Ok(args)
+}
+
 fn autostart(command: AutostartCommand) -> Result<()> {
     use cfrs::autostart;
     match command {
@@ -1590,6 +1640,7 @@ fn autostart(command: AutostartCommand) -> Result<()> {
                 }
                 None => args,
             };
+            let args = autostart_args(args)?;
             let added = autostart::add(&name, &args, autostart::PROGRAM_LIMIT)?;
             println!(
                 "cfrs: autostart {name} added ({}): {}",
@@ -1815,8 +1866,43 @@ async fn serve(args: ServeArgs) -> Result<()> {
     run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
 }
 
+/// The mode of `share` (issue 118): `--mode`, else the mode of the flags
+/// (`--file`: download, `--port`: proxy, else upload). Flags of two modes,
+/// or a flag of another mode than `--mode`, are a usage error (exit 64).
+/// Before, `--file` with no `--mode` started an upload session.
+fn share_mode(args: &ShareArgs) -> Result<ModeArg> {
+    let mut wanted = Vec::new();
+    if args.file.is_some() {
+        wanted.push(("--file", ModeArg::Download));
+    }
+    if args.port.is_some() {
+        wanted.push(("--port", ModeArg::Proxy));
+    }
+    if args.dir.is_some() {
+        wanted.push(("--dir", ModeArg::Upload));
+    }
+    let usage = |msg: String| cfrs::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
+    if let [(a, _), (b, _), ..] = wanted[..] {
+        return Err(usage(format!(
+            "share: {a} and {b} are flags of two modes; give one"
+        )));
+    }
+    let name = |m: ModeArg| format!("{m:?}").to_lowercase();
+    match (args.mode, wanted.first()) {
+        (Some(mode), Some((flag, other))) if mode != *other => Err(usage(format!(
+            "share: {flag} is a flag of --mode {}, not of --mode {}",
+            name(*other),
+            name(mode)
+        ))),
+        (Some(mode), _) => Ok(mode),
+        (None, Some((_, mode))) => Ok(*mode),
+        (None, None) => Ok(ModeArg::Upload),
+    }
+}
+
 async fn share(args: ShareArgs) -> Result<()> {
-    let mut share_config = match args.mode {
+    let mode = share_mode(&args)?;
+    let mut share_config = match mode {
         ModeArg::Upload => {
             let dir = args.dir.clone().unwrap_or_else(default_upload_dir);
             ShareConfig::upload(dir)
@@ -1834,11 +1920,11 @@ async fn share(args: ShareArgs) -> Result<()> {
             ShareConfig::proxy(format!("127.0.0.1:{port}"))
         }
     };
-    if args.password || matches!(args.mode, ModeArg::Proxy) {
+    if args.password || matches!(mode, ModeArg::Proxy) {
         share_config.gate = Gate::pin();
     }
     share_config.stop_after = args.stop_after;
-    if matches!(args.mode, ModeArg::Upload) {
+    if matches!(mode, ModeArg::Upload) {
         share_config.max_request = args.max_request;
     }
 
@@ -2585,6 +2671,8 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 }
 
 async fn warp(args: WarpArgs) -> Result<()> {
+    // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
+    cfrs::warp::check_tcp_burst()?;
     // These commands use the running instance of cfrs warp up.
     match &args.command {
         WarpCommand::Up {
@@ -3761,6 +3849,70 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn share_args(argv: &[&str]) -> ShareArgs {
+        let cli = Cli::try_parse_from(["cfrs", "share"].iter().chain(argv)).unwrap();
+        match cli.command {
+            Command::Share(args) => args,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // Issue 118: the mode follows the flags; flags of two modes are an
+    // error. Before, --file with no --mode gave an upload session.
+    #[test]
+    fn the_share_mode_follows_the_flags() {
+        let mode = |argv: &[&str]| share_mode(&share_args(argv));
+        assert_eq!(mode(&["--file", "f"]).unwrap(), ModeArg::Download);
+        assert_eq!(mode(&["--port", "3000"]).unwrap(), ModeArg::Proxy);
+        assert_eq!(mode(&[]).unwrap(), ModeArg::Upload);
+        assert_eq!(mode(&["--dir", "d"]).unwrap(), ModeArg::Upload);
+        assert_eq!(
+            mode(&["--mode", "download", "--file", "f"]).unwrap(),
+            ModeArg::Download
+        );
+        for bad in [
+            &["--file", "f", "--port", "1"][..],
+            &["--mode", "upload", "--file", "f"][..],
+            &["--mode", "proxy", "--dir", "d"][..],
+        ] {
+            let err = mode(bad).unwrap_err();
+            assert_eq!(cfrs::exit::code_of(&err), 64, "{bad:?}: {err}");
+        }
+    }
+
+    // Issues 110 and 116: a unix-only warp up gets warp exec and
+    // ssh-config, and no eval line.
+    #[test]
+    fn the_agent_commands_follow_the_listeners() {
+        let unix_only = agent_commands(true, false);
+        assert!(
+            !unix_only.iter().any(|c| c.contains("eval")),
+            "{unix_only:?}"
+        );
+        assert!(unix_only.iter().any(|c| c.contains("cfrs warp exec")));
+        assert!(unix_only.iter().any(|c| c.contains("ssh-config")));
+        let tcp = agent_commands(true, true);
+        assert!(tcp[0].starts_with("eval"), "{tcp:?}");
+        let direct = agent_commands(false, true);
+        assert_eq!(direct, ["cfrs agent status", "cfrs agent down"]);
+    }
+
+    // Issue 115: with the TCP listener refused, the first line names the
+    // unix socket that works.
+    #[test]
+    fn the_warp_up_summary_starts_with_what_works() {
+        let socket = std::path::Path::new("/run/cfrs/warp.sock");
+        let lines = up_summary(false, 40000, true, socket);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("runs on unix:/run/cfrs/warp.sock"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("cfrs warp exec"), "{lines:?}");
+        assert!(up_summary(true, 40000, true, socket).is_empty());
+        assert_eq!(up_summary(true, 40000, false, socket).len(), 1);
+    }
 
     /// Issue 101: once the stop is armed (at the ready line), a SIGTERM
     /// ends the work of `until_stop` (the verify) with `None`: a clean

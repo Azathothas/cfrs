@@ -40,11 +40,40 @@ pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
 /// is the default until it is known.
 const TCP_BURST_DEFAULT: usize = 1;
 
-fn tcp_burst() -> Option<usize> {
-    match std::env::var(TCP_BURST_VARIABLE) {
-        Ok(v) if v.trim() == "none" => None,
-        Ok(v) => v.trim().parse().ok().or(Some(TCP_BURST_DEFAULT)),
-        Err(_) => Some(TCP_BURST_DEFAULT),
+/// The largest value of [`TCP_BURST_VARIABLE`]: more segments do not fit
+/// in the receive buffer.
+const TCP_BURST_MAX: usize = TCP_BUFFER.div_ceil(TUNNEL_MTU - 60);
+
+/// The TCP window of [`TCP_BURST_VARIABLE`]: `None` for no limit.
+fn tcp_burst() -> Result<Option<usize>> {
+    parse_tcp_burst(std::env::var(TCP_BURST_VARIABLE).ok().as_deref())
+}
+
+/// Check [`TCP_BURST_VARIABLE`] before a command opens a session (issue
+/// 111): a bad value is a configuration error (exit 78).
+pub fn check_tcp_burst() -> Result<()> {
+    tcp_burst().map(|_| ())
+}
+
+/// Issue 111: a value that is not a number from 1 to [`TCP_BURST_MAX`] or
+/// `none` is an error. Before, it gave the default with no message, so a
+/// measurement could not be trusted.
+fn parse_tcp_burst(value: Option<&str>) -> Result<Option<usize>> {
+    let Some(value) = value else {
+        return Ok(Some(TCP_BURST_DEFAULT));
+    };
+    let value = value.trim();
+    if value == "none" {
+        return Ok(None);
+    }
+    match value.parse::<usize>() {
+        Ok(n) if (1..=TCP_BURST_MAX).contains(&n) => Ok(Some(n)),
+        _ => Err(crate::exit::fault(
+            crate::exit::Fault::Config,
+            anyhow::anyhow!(
+                "{TCP_BURST_VARIABLE}={value:?}: give a number of segments from 1 to {TCP_BURST_MAX}, or none"
+            ),
+        )),
     }
 }
 
@@ -304,8 +333,10 @@ impl WarpStack {
     ) -> Result<Self> {
         // The packets that wait for the MASQUE sender (issue 93): about
         // 600 KB at the MTU; a full queue drops, so TCP and QUIC see a loss.
+        let burst = tcp_burst()?;
+        tracing::debug!(segments = ?burst, "the TCP window of the userspace stack");
         let mut device =
-            LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS).with_max_burst(tcp_burst());
+            LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS).with_max_burst(burst);
         let inbound = device.inbound();
         let outbound = device.outbound();
 
@@ -1349,6 +1380,20 @@ mod tests {
         let err = wait.try_recv().unwrap().unwrap_err();
         assert!(format!("{err}").contains("closed"), "{err}");
         assert!(d.pending.is_empty());
+    }
+
+    // Issue 111: a bad value is an error, not the default.
+    #[test]
+    fn the_tcp_burst_variable_is_checked() {
+        assert_eq!(parse_tcp_burst(None).unwrap(), Some(TCP_BURST_DEFAULT));
+        assert_eq!(parse_tcp_burst(Some("none")).unwrap(), None);
+        assert_eq!(parse_tcp_burst(Some(" 8 ")).unwrap(), Some(8));
+        assert_eq!(parse_tcp_burst(Some("430")).unwrap(), Some(430));
+        for bad in ["", "0", "abc", "-1", "431", "999999999", "8 segments"] {
+            let err = parse_tcp_burst(Some(bad)).unwrap_err();
+            assert_eq!(crate::exit::code_of(&err), 78, "{bad:?}");
+            assert!(format!("{err}").contains(TCP_BURST_VARIABLE), "{err}");
+        }
     }
 
     #[test]

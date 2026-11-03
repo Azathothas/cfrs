@@ -403,6 +403,11 @@ impl MasqueSession {
             if let Some(packet) = self.decoder.next_packet() {
                 return Ok(Some(packet));
             }
+            if let Some(err) = self.decoder.error() {
+                // Issue 123: the stream is not usable after it.
+                self.closed = true;
+                bail!("the CONNECT-IP body: {err}");
+            }
             if self.closed {
                 return Ok(None);
             }
@@ -501,6 +506,11 @@ impl MasqueRx {
         loop {
             if let Some(packet) = self.decoder.next_packet() {
                 return Ok(Some(packet));
+            }
+            if let Some(err) = self.decoder.error() {
+                // Issue 123: the stream is not usable after it.
+                self.closed = true;
+                bail!("the CONNECT-IP body: {err}");
             }
             if self.closed {
                 return Ok(None);

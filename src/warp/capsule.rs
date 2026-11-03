@@ -66,24 +66,51 @@ pub fn put_capsule(out: &mut impl BufMut, capsule_type: u64, value: &[u8]) {
 /// Chunks are pushed as they arrive; whole capsules are consumed as they
 /// complete, so a capsule split across DATA frames reassembles without copying
 /// the payload twice.
+///
+/// A capsule longer than [`MAX_CAPSULE_LEN`] stops the decoder (issue 123):
+/// [`error`](Self::error) then names it, and no more bytes are kept.
 #[derive(Default)]
 pub struct CapsuleDecoder {
     buf: Vec<u8>,
+    error: Option<String>,
 }
+
+/// The longest capsule value that the decoder takes. An IP packet of the
+/// tunnel is at most the MTU (1280); an HTTP/2 DATA frame of the front door
+/// is at most 16 KiB. 64 KiB leaves room for control capsules.
+pub const MAX_CAPSULE_LEN: u64 = 64 * 1024;
 
 impl CapsuleDecoder {
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self::default()
     }
 
     pub fn push(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
+        if self.error.is_none() {
+            self.buf.extend_from_slice(data);
+        }
+    }
+
+    /// Why the decoder stopped: a capsule over the limit. The stream is
+    /// then unusable.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// Yield the next complete capsule, or `None` if more bytes are needed.
     pub fn next_capsule(&mut self) -> Option<(u64, Bytes)> {
+        if self.error.is_some() {
+            return None;
+        }
         let (capsule_type, type_len) = get_varint(&self.buf)?;
         let (length, len_len) = get_varint(&self.buf[type_len..])?;
+        if length > MAX_CAPSULE_LEN {
+            self.error = Some(format!(
+                "a capsule of type {capsule_type} claims {length} bytes (the limit is {MAX_CAPSULE_LEN})"
+            ));
+            self.buf = Vec::new();
+            return None;
+        }
         let header = type_len + len_len;
         let total = header + length as usize;
         if self.buf.len() < total {
@@ -113,6 +140,33 @@ impl CapsuleDecoder {
 mod tests {
     use super::*;
     use bytes::BytesMut;
+
+    // Issue 123: a length over the limit stops the decoder, and the bytes
+    // after it are not kept. Before, the buffer grew without a limit.
+    #[test]
+    fn a_capsule_over_the_limit_stops_the_decoder() {
+        let mut d = CapsuleDecoder::new();
+        let mut head = BytesMut::new();
+        put_varint(&mut head, CAPSULE_DATA);
+        put_varint(&mut head, 1 << 30);
+        d.push(&head);
+        assert!(d.next_packet().is_none());
+        assert!(d.error().unwrap().contains("1073741824"), "{:?}", d.error());
+        for _ in 0..16 {
+            d.push(&[0u8; 65536]);
+        }
+        assert_eq!(d.buffered(), 0);
+        assert!(d.next_packet().is_none());
+    }
+
+    #[test]
+    fn a_capsule_at_the_limit_decodes() {
+        let value = vec![0x45u8; MAX_CAPSULE_LEN as usize];
+        let mut d = CapsuleDecoder::new();
+        d.push(&frame(CAPSULE_DATA, &value));
+        assert_eq!(d.next_packet().unwrap().len(), value.len());
+        assert!(d.error().is_none());
+    }
 
     fn frame(capsule_type: u64, value: &[u8]) -> Vec<u8> {
         let mut out = BytesMut::new();
