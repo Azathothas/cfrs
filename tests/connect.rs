@@ -304,3 +304,60 @@ fn connect_keeps_a_live_socket_and_other_files() {
     assert_eq!(std::fs::read_to_string(&sock).unwrap(), "data");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// Issue 207: connect --detach prints the ready document with the
+// listeners; cfrs ps lists it; cfrs stop ends it and removes the socket.
+#[test]
+fn connect_detach_is_in_ps_and_stops() {
+    let dir = temp_dir("detach");
+    let run = dir.join("run");
+    let sock = dir.join("s.sock");
+    let local = format!("unix://{}", sock.display());
+    let with_run = |args: &[&str]| {
+        let mut cmd = cfrs(args);
+        cmd.env("CFRS_RUN_DIR", &run).stdout(Stdio::piped());
+        cmd.output().unwrap()
+    };
+    let start = with_run(&[
+        "connect",
+        "ws://127.0.0.1:9/__cfrs/ws",
+        "-L",
+        &local,
+        "--no-check",
+        "--detach",
+        "--name",
+        "c1",
+    ]);
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let text = String::from_utf8_lossy(&start.stdout);
+    let doc: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(doc["name"], "c1", "{doc}");
+    assert!(doc["listen"].as_str().unwrap().contains("s.sock"), "{doc}");
+    let ps = with_run(&["ps", "--json"]);
+    let ps: serde_json::Value = serde_json::from_slice(&ps.stdout).unwrap();
+    assert!(
+        ps["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "c1"),
+        "{ps}"
+    );
+    assert!(sock.exists());
+    let stop = with_run(&["stop", "c1", "--timeout", "5"]);
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let start = Instant::now();
+    while sock.exists() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sock.exists(), "the socket file is left");
+    let _ = std::fs::remove_dir_all(&dir);
+}

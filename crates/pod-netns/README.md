@@ -59,6 +59,10 @@ socket) when there is one, else to TCP on the host.
 Needs: unprivileged user namespaces and `/dev/net/tun`. This backend carries
 TCP and DNS. It does not carry other UDP.
 
+A listener of the program (for example `cfrs connect -L tcp://127.0.0.1:8080`)
+is in the network namespace of the pod: a process outside the pod does not
+see it. Use a unix socket for it (`-L unix:///path`).
+
 ### seccomp
 
 * A helper thread sets `no_new_privs`, installs a `SECCOMP_RET_USER_NOTIF`

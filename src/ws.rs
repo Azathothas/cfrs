@@ -128,9 +128,12 @@ pub async fn dial(url: &str, timeout: std::time::Duration) -> Result<WebSocketSt
         .trim_end_matches(']')
         .to_string();
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+    // Issue 206: the time of each step, at -v.
+    let started = std::time::Instant::now();
     let io = crate::egress::dial(&host, port, None, timeout)
         .await
         .with_context(|| format!("TCP to {host}:{port}"))?;
+    let tcp_ms = started.elapsed().as_millis();
     let io: BoxedIo = if tls {
         // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
         let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
@@ -158,7 +161,15 @@ pub async fn dial(url: &str, timeout: std::time::Duration) -> Result<WebSocketSt
     } else {
         io
     };
-    match tokio::time::timeout(timeout, tokio_tungstenite::client_async(request, io)).await {
+    let tls_ms = started.elapsed().as_millis() - tcp_ms;
+    let upgrade = tokio::time::timeout(timeout, tokio_tungstenite::client_async(request, io)).await;
+    tracing::debug!(
+        tcp_ms,
+        tls_ms,
+        upgrade_ms = started.elapsed().as_millis() - tcp_ms - tls_ms,
+        "the WebSocket to {host}:{port}"
+    );
+    match upgrade {
         Err(_) => bail!(
             "the WebSocket upgrade at {url}: no answer in {} s",
             timeout.as_secs()

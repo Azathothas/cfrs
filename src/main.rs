@@ -480,8 +480,10 @@ struct DetachArgs {
     #[arg(long, value_name = "SECS", default_value_t = 60)]
     ready_timeout: u64,
     /// Stop a running instance of the same name that has other arguments,
-    /// and start this one.
-    #[arg(long, requires = "detach")]
+    /// and start this one (needs --detach). connect: also take a unix
+    /// socket of -L that another process serves (by default, a socket that
+    /// answers is refused, exit 69; a stale socket file is replaced).
+    #[arg(long)]
     replace: bool,
     /// Do not start the instance again when it ends. Without it, a
     /// supervisor starts it again with a backoff (1 s to 30 s), but not
@@ -667,7 +669,9 @@ enum RelayCommand {
 struct ConnectArgs {
     /// Public WebSocket URL, e.g. wss://<host>/__cfrs/ws.
     remote: String,
-    /// Local listeners, repeatable: tcp://[bind:]port or unix:///path.
+    /// Local listeners, repeatable: tcp://[bind:]port or unix:///path. In
+    /// cfrs pod with the netns backend, a TCP listener is in the network of
+    /// the pod: use unix:///path to reach it from outside.
     #[arg(short = 'L', long = "local", required = true)]
     locals: Vec<String>,
     /// Stay up for this many seconds instead of until Ctrl-C.
@@ -678,11 +682,8 @@ struct ConnectArgs {
     /// origin then dials its forward target once).
     #[arg(long)]
     no_check: bool,
-    /// Take a unix socket path that another process serves. By default, a
-    /// socket that answers is refused (exit 69); a stale socket file is
-    /// replaced.
-    #[arg(long)]
-    replace: bool,
+    #[command(flatten)]
+    detach: DetachArgs,
 }
 
 #[derive(Args, Debug)]
@@ -786,6 +787,10 @@ fn main() {
         eprintln!("cfrs: --detach-child is for cfrs itself");
         std::process::exit(cfrs::exit::USAGE);
     } else if let Some(detach) = detach_of(&cli.command) {
+        if detach.replace && !matches!(cli.command, Command::Connect(_)) {
+            eprintln!("cfrs: --replace needs --detach");
+            std::process::exit(cfrs::exit::USAGE);
+        }
         // Issue 209: --name with no --detach registers this process.
         match &detach.name {
             Some(name) => {
@@ -1725,6 +1730,8 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
         Command::Serve(args) => Some(&args.common.detach),
         Command::Share(args) => Some(&args.common.detach),
         Command::Demo(args) => Some(&args.common.detach),
+        // Issue 207: connect has --detach, --name and ps.
+        Command::Connect(args) => Some(&args.detach),
         Command::Warp(args) => match &args.command {
             WarpCommand::Proxy { detach, .. } => Some(detach),
             WarpCommand::Forward { detach, .. } => Some(detach),
@@ -2365,7 +2372,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
             LocalSpec::Unix(path) => {
                 #[cfg(unix)]
                 {
-                    let (listener, file) = unix_listener(path, args.replace)?;
+                    let (listener, file) = unix_listener(path, args.detach.replace)?;
                     files.push(file);
                     unix.push((local.describe(), listener));
                 }
@@ -2395,6 +2402,9 @@ async fn connect(args: ConnectArgs) -> Result<()> {
         let _ = tokio::time::timeout(Duration::from_secs(2), ws.close(None)).await;
     }
     let mut tasks = Vec::new();
+    let mut listens: Vec<String> = tcp.iter().map(|(name, _)| name.clone()).collect();
+    #[cfg(unix)]
+    listens.extend(unix.iter().map(|(name, _)| name.clone()));
     for (name, listener) in tcp {
         println!("cfrs: {name} -> {}", args.remote);
         tasks.push(tokio::spawn(accept_loop(listener, args.remote.clone())));
@@ -2404,6 +2414,12 @@ async fn connect(args: ConnectArgs) -> Result<()> {
         println!("cfrs: {name} -> {}", args.remote);
         tasks.push(tokio::spawn(accept_unix(listener, args.remote.clone())));
     }
+    // Issue 207: the ready document of --detach and --name.
+    cfrs::detach::ready(serde_json::json!({
+        "remote": args.remote,
+        "listen": listens.join(", "),
+        "listeners": listens,
+    }));
     sleep_or_signal(args.run_for).await;
     for task in tasks {
         task.abort();
@@ -2418,6 +2434,8 @@ async fn accept_loop(listener: tokio::net::TcpListener, remote: String) {
         match listener.accept().await {
             Ok((stream, _peer)) => {
                 let remote = remote.clone();
+                // Issue 206: no Nagle delay on the local side.
+                let _ = stream.set_nodelay(true);
                 tokio::spawn(async move {
                     let io: BoxedIo = Box::new(stream);
                     if let Err(err) = ws::connect_bridge(&remote, io).await {

@@ -81,7 +81,10 @@ Options:
       --keep-proxy-env     Keep HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
                            (and the lower-case forms) for the program; by
                            default the program does not get them
-      --backend <NAME>     auto (default), netns or seccomp
+      --backend <NAME>     auto (default), netns or seccomp. With netns, a
+                           listener of the program is in the network of the
+                           pod: a loopback TCP listener is not seen from
+                           outside; use a unix socket (connect -L unix:///PATH)
       --prefer-udp         With auto: seccomp first when it works (all UDP
                            goes through; netns carries DNS only)
       --inbound-dir <DIR>  Where a bound port is exposed as a unix socket

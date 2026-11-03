@@ -465,7 +465,10 @@ NO_PROXY), `--resolve`, the system resolver and DoH, and the roots of
 `--ca-file`. At start, it opens one WebSocket to the remote and exits 69 when
 the remote does not answer; `--no-check` starts without this check. A unix
 socket that another process serves is refused (exit 69); `--replace` takes
-it. At the end, cfrs removes the socket files that it made.
+it. At the end, cfrs removes the socket files that it made. `--detach` and
+`--name` work as for `tunnel` (see "Run in the background"); the ready
+document has `remote`, `listen` and `listeners`. At `-v`, each WebSocket
+logs the time of its TCP, TLS and upgrade steps.
 
 ### Other commands
 
@@ -867,8 +870,8 @@ cfrs wait web                                  # the ready document again
 cfrs stop web                                  # or: cfrs stop --all
 ```
 
-`--detach` works with `tunnel`, `serve`, `share`, `demo`, `warp proxy`,
-`net proxy` and `net switch`. The command runs in the foreground until it
+`--detach` works with `tunnel`, `serve`, `share`, `demo`, `connect`,
+`warp proxy`, `net proxy` and `net switch`. The command runs in the foreground until it
 is ready: until the public URL answers, or until the listener is bound.
 Then it leaves the terminal (`setsid`, SIGHUP ignored, stdin to
 `/dev/null`, stdout and stderr to its log), and the start prints one JSON
