@@ -106,6 +106,36 @@ pub fn is_child() -> bool {
     CHILD.load(Ordering::SeqCst)
 }
 
+/// Change the record of this child (a no-op for another process). The
+/// record on disk goes first: the supervisor writes it too.
+fn update_record(change: impl FnOnce(&mut Record)) {
+    if !is_child() {
+        return;
+    }
+    let guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = guard.as_ref() else {
+        return;
+    };
+    let mut record =
+        instances::read(&state.dir, &state.record.name).unwrap_or_else(|| state.record.clone());
+    change(&mut record);
+    let _ = instances::write(&state.dir, &record);
+}
+
+/// The end of a detached child is planned (issue 195: `--stop-after`,
+/// `--idle-secs`, `--run-for`): the record says `done`, and the supervisor
+/// does not start it again. A no-op for another process.
+pub fn planned_end() {
+    update_record(|r| r.state = "done".into());
+}
+
+/// The child asks to wait `secs` before its next start (issues 182 and
+/// 210: the Retry-After of a refused provision). A no-op for another
+/// process.
+pub fn retry_after(secs: u64) {
+    update_record(|r| r.retry_after_s = Some(secs));
+}
+
 /// In a detached child, after the command line parses: take the lock of the
 /// instance and write its record (state `starting`). When another process
 /// holds the lock, the error says so.
@@ -158,6 +188,7 @@ pub fn child_begin() -> Result<()> {
         ready: None,
         log: paths.log.display().to_string(),
         restarts: 0,
+        retry_after_s: None,
     };
     instances::write(&dir, &record)?;
     begin_log(&paths.log, &name);
@@ -438,7 +469,8 @@ fn wait_ready_child(
                 );
                 terminate(child.id(), &mut child);
                 instances::remove(dir, name);
-                return TEMPFAIL;
+                // Issue 210: 124, as timeout(1); 75 is a refusal for now.
+                return crate::exit::TIMEOUT;
             }
         }
     }
@@ -586,6 +618,15 @@ mod supervise {
     /// After this many quick failures in sequence, run the kept binary.
     const QUICK_LIMIT: u32 = 5;
 
+    /// The wait before the next start: the backoff, or the Retry-After that
+    /// the child asked for when it is longer (at most 1 h).
+    pub(super) fn next_wait(backoff: Duration, asked: Option<u64>) -> Duration {
+        match asked {
+            Some(secs) => backoff.max(Duration::from_secs(secs.min(3600))),
+            None => backoff,
+        }
+    }
+
     /// The next delay: twice the delay, at most 30 s.
     pub(super) fn next_backoff(delay: Duration) -> Duration {
         (delay * 2).min(Duration::from_secs(30))
@@ -649,6 +690,7 @@ mod supervise {
             ready: None,
             log: paths.log.display().to_string(),
             restarts: 0,
+            retry_after_s: None,
         };
         instances::write(&dir, &record)?;
         let current = binaries()
@@ -728,6 +770,14 @@ mod supervise {
                 }
             }
             let code = code_of(status);
+            // Issues 195, 182 and 210: what the child said of its end.
+            let said = instances::read(&dir, &name);
+            if ready_seen && code == 0 && said.as_ref().is_some_and(|r| r.state == "done") {
+                note("the instance ended on request (--stop-after, --idle-secs or --run-for); it is not started again");
+                instances::remove(&dir, &name);
+                return Ok(0);
+            }
+            let asked = said.as_ref().and_then(|r| r.retry_after_s);
             if !ready_seen {
                 // The first run ended before it was ready: the parent gets
                 // its code.
@@ -749,7 +799,9 @@ mod supervise {
             if ran >= STABLE {
                 delay = Duration::from_secs(1);
                 quick = 0;
-            } else if ran < QUICK {
+            } else if ran < QUICK && asked.is_none() {
+                // A refusal with a Retry-After is not a quick failure: it
+                // must not swap to the kept binary (issue 182).
                 quick += 1;
             }
             if quick >= QUICK_LIMIT {
@@ -766,8 +818,9 @@ mod supervise {
             record.restarts += 1;
             record.pid = 0;
             record.state = "restarting".into();
+            record.retry_after_s = None;
             instances::write(&dir, &record)?;
-            let wait = delay.mul_f64(jitter());
+            let wait = next_wait(delay.mul_f64(jitter()), asked);
             note(&format!(
                 "the instance exited {code} after {} s; start {} in {} ms",
                 ran.as_secs(),
@@ -912,6 +965,23 @@ mod tests {
         }
         assert_eq!(seen, vec![1, 2, 4, 8, 16, 30, 30]);
         assert_eq!(supervise::FINAL, [64, 78]);
+    }
+
+    /// Issues 182 and 210: a Retry-After of the child is the wait when it is
+    /// longer than the backoff, at most 1 h.
+    #[test]
+    fn the_wait_honours_a_retry_after() {
+        let backoff = Duration::from_secs(4);
+        assert_eq!(supervise::next_wait(backoff, None), backoff);
+        assert_eq!(supervise::next_wait(backoff, Some(1)), backoff);
+        assert_eq!(
+            supervise::next_wait(backoff, Some(1379)),
+            Duration::from_secs(1379)
+        );
+        assert_eq!(
+            supervise::next_wait(backoff, Some(99_999)),
+            Duration::from_secs(3600)
+        );
     }
 
     #[test]

@@ -130,6 +130,10 @@ pub struct Record {
     pub log: String,
     #[serde(default)]
     pub restarts: u32,
+    /// The wait that the child asks for before its next start (issues 182
+    /// and 210: the Retry-After of a refused provision).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_s: Option<u64>,
 }
 
 /// Read the record of `name`, if there is one that parses.

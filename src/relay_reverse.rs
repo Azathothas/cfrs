@@ -669,6 +669,7 @@ mod tests {
             ready: pair.map(|p| serde_json::json!({ "pair": p })),
             log: String::new(),
             restarts: 0,
+            retry_after_s: None,
         }
     }
 

@@ -392,7 +392,8 @@ struct TunnelOpts {
     /// (url).
     #[arg(long, global = true)]
     json: bool,
-    /// Stay up for this many seconds instead of until Ctrl-C.
+    /// Stay up for this many seconds instead of until Ctrl-C (it also ends
+    /// the verify of the public URL).
     #[arg(long, global = true)]
     run_for: Option<u64>,
     /// Check the plan and stop: the flags, the config file, each origin (a
@@ -466,7 +467,9 @@ struct DetachArgs {
     replace: bool,
     /// Do not start the instance again when it ends. Without it, a
     /// supervisor starts it again with a backoff (1 s to 30 s), but not
-    /// after exit 64 or 78. A quick tunnel gets a new URL; cfrs ps shows it.
+    /// after exit 64 or 78, and not after a planned end (--stop-after,
+    /// --idle-secs, --run-for). A quick tunnel gets a new URL; cfrs ps
+    /// shows it.
     #[arg(long, requires = "detach")]
     no_restart: bool,
 }
@@ -810,6 +813,11 @@ fn main() {
     if let Err(err) = result {
         let code = cfrs::exit::code_of(&err);
         let line = cfrs::report::error_line(&err);
+        // Issues 182 and 210: a supervised child tells its supervisor how
+        // long the service asks to wait.
+        if let Some(secs) = cfrs::quicktunnel::retry_of(&err).and_then(|r| r.retry_after_s) {
+            cfrs::detach::retry_after(secs);
+        }
         // The report has the error in "error"; "messages" holds the log
         // lines before it (issue 55: the line was in both).
         eprintln!("{line}");
@@ -894,28 +902,50 @@ async fn shutdown_signal() -> std::io::Result<()> {
     Ok(())
 }
 
-/// `Some(out)` when `work` ends; `None` when a stop signal comes first
-/// (issue 101: the verify after the ready line can be stopped cleanly).
-async fn until_stop<T>(work: impl std::future::Future<Output = T>) -> Option<T> {
-    tokio::select! {
-        biased;
-        _ = shutdown_signal() => None,
-        out = work => Some(out),
-    }
-}
-
-/// Ready after `run_for` seconds (when given), or on a stop signal.
+/// Ready after `run_for` seconds (when given), or on a stop signal. The end
+/// of `run_for` is a planned end (issue 195).
 async fn sleep_or_signal(run_for: Option<u64>) {
     match run_for {
         Some(secs) => {
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
+                _ = tokio::time::sleep(Duration::from_secs(secs)) => cfrs::detach::planned_end(),
                 _ = shutdown_signal() => {}
             }
         }
         None => {
             let _ = shutdown_signal().await;
         }
+    }
+}
+
+/// The deadline of `--run-for` from now (issue 179).
+fn deadline_of(run_for: Option<u64>) -> Option<tokio::time::Instant> {
+    run_for.map(|s| tokio::time::Instant::now() + Duration::from_secs(s))
+}
+
+/// Ready at `deadline`, never with none.
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// `Some(out)` when `work` ends; `None` when a stop signal comes first
+/// (issue 101: the verify after the ready line can be stopped cleanly), or
+/// at `deadline` (issue 179: `--run-for` during the verify; a planned end).
+async fn until_stop_or<T>(
+    deadline: Option<tokio::time::Instant>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = shutdown_signal() => None,
+        _ = sleep_until_opt(deadline) => {
+            cfrs::detach::planned_end();
+            None
+        }
+        out = work => Some(out),
     }
 }
 
@@ -2288,10 +2318,13 @@ async fn run_tunnel(
     let verify = config.verify;
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
+    // Issue 179: --run-for also ends the verify.
+    let deadline = deadline_of(run_for);
     if verify {
         if let Some(url) = handle.url() {
             let accepted: &[u16] = if show.root_404 { &[404] } else { &[] };
-            let Some(checked) = until_stop(handle.verify_accepting(url, None, accepted)).await
+            let Some(checked) =
+                until_stop_or(deadline, handle.verify_accepting(url, None, accepted)).await
             else {
                 handle.shutdown().await;
                 return Ok(());
@@ -2309,7 +2342,7 @@ async fn run_tunnel(
         }
     }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));
-    serve_until(&handle, wait(run_for, controls)).await?;
+    serve_until(&handle, wait(deadline, controls)).await?;
     handle.shutdown().await;
     Ok(())
 }
@@ -2324,6 +2357,7 @@ async fn run_share(
 ) -> Result<()> {
     let verify = config.verify;
     let handle = Tunnel::builder().config(config).build()?.start().await?;
+    let deadline = deadline_of(run_for);
     let base = handle
         .url()
         .unwrap_or("https://<your-named-tunnel-hostname>")
@@ -2360,7 +2394,7 @@ async fn run_share(
         print!("{}", cfrs::qr::render_terminal(&public)?);
     }
     if verify && handle.url().is_some() {
-        let Some(check) = until_stop(handle.verify_url(&public, None)).await else {
+        let Some(check) = until_stop_or(deadline, handle.verify_url(&public, None)).await else {
             handle.shutdown().await;
             return Ok(());
         };
@@ -2377,7 +2411,7 @@ async fn run_share(
     doc["pin"] = pin.clone().into();
     cfrs::detach::ready(doc);
     let controls = handle.share_controls();
-    serve_until(&handle, wait_with_idle(run_for, controls, idle_secs)).await?;
+    serve_until(&handle, wait_with_idle(deadline, controls, idle_secs)).await?;
     handle.shutdown().await;
     Ok(())
 }
@@ -2390,8 +2424,11 @@ async fn run_demo(
 ) -> Result<()> {
     let handle = Tunnel::builder().config(config).build()?.start().await?;
     announce(&handle, show)?;
+    let deadline = deadline_of(run_for);
     if exit_on_verify {
-        let Some(check) = until_stop(handle.verify(Some("Hello, world! (cfrs)"))).await else {
+        let Some(check) =
+            until_stop_or(deadline, handle.verify(Some("Hello, world! (cfrs)"))).await
+        else {
             handle.shutdown().await;
             return Ok(());
         };
@@ -2414,7 +2451,8 @@ async fn run_demo(
         handle.shutdown().await;
         return Ok(());
     }
-    let Some(check) = until_stop(handle.verify(Some("Hello, world! (cfrs)"))).await else {
+    let Some(check) = until_stop_or(deadline, handle.verify(Some("Hello, world! (cfrs)"))).await
+    else {
         handle.shutdown().await;
         return Ok(());
     };
@@ -2423,7 +2461,7 @@ async fn run_demo(
         return Err(err);
     }
     cfrs::detach::ready(tunnel_doc(&handle, handle.url(), true));
-    serve_until(&handle, wait(run_for, vec![])).await?;
+    serve_until(&handle, wait(deadline, vec![])).await?;
     handle.shutdown().await;
     Ok(())
 }
@@ -2702,35 +2740,24 @@ fn announce_text(handle: &cfrs::TunnelHandle) {
     println!();
 }
 
-async fn wait(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>) -> () {
-    let stop_controls = async move {
-        if controls.is_empty() {
-            std::future::pending::<()>().await;
-        }
-        let mut set = tokio::task::JoinSet::new();
-        for control in controls {
-            set.spawn(async move { control.wait_stop().await });
-        }
-        let _ = set.join_next().await;
-    };
-    match run_for {
-        Some(secs) => {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
-                _ = shutdown_signal() => {}
-                _ = stop_controls => {}
-            }
-        }
-        None => {
-            tokio::select! {
-                _ = shutdown_signal() => {}
-                _ = stop_controls => {}
-            }
-        }
+/// Wait for a stop signal, the deadline of `--run-for`, or a stop of a
+/// share (`--stop-after`). Each end but a signal is a planned end (issue
+/// 195): a supervisor does not start the instance again.
+async fn wait(deadline: Option<tokio::time::Instant>, controls: Vec<Arc<ShareControl>>) {
+    tokio::select! {
+        _ = shutdown_signal() => {}
+        _ = sleep_until_opt(deadline) => cfrs::detach::planned_end(),
+        _ = wait_controls(controls) => cfrs::detach::planned_end(),
     }
 }
 
-async fn wait_with_idle(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>, idle_secs: u64) {
+/// [`wait`] that also ends after `idle_secs` with no request (a planned
+/// end too).
+async fn wait_with_idle(
+    deadline: Option<tokio::time::Instant>,
+    controls: Vec<Arc<ShareControl>>,
+    idle_secs: u64,
+) {
     let idle = (idle_secs > 0).then(|| Duration::from_secs(idle_secs));
     let watch = {
         let controls = controls.clone();
@@ -2745,22 +2772,11 @@ async fn wait_with_idle(run_for: Option<u64>, controls: Vec<Arc<ShareControl>>, 
             }
         }
     };
-    match run_for {
-        Some(secs) => {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
-                _ = shutdown_signal() => {}
-                _ = wait_controls(controls) => {}
-                _ = watch => {}
-            }
-        }
-        None => {
-            tokio::select! {
-                _ = shutdown_signal() => {}
-                _ = wait_controls(controls) => {}
-                _ = watch => {}
-            }
-        }
+    tokio::select! {
+        _ = shutdown_signal() => {}
+        _ = sleep_until_opt(deadline) => cfrs::detach::planned_end(),
+        _ = wait_controls(controls) => cfrs::detach::planned_end(),
+        _ = watch => cfrs::detach::planned_end(),
     }
 }
 
@@ -5174,7 +5190,7 @@ mod tests {
     }
 
     /// Issue 101: once the stop is armed (at the ready line), a SIGTERM
-    /// ends the work of `until_stop` (the verify) with `None`: a clean
+    /// ends the work of `until_stop_or` (the verify) with `None`: a clean
     /// stop, not the default action. The only test here that takes
     /// signals: the stop request is global to the process.
     #[test]
@@ -5193,14 +5209,27 @@ mod tests {
             });
             let out = tokio::time::timeout(
                 Duration::from_secs(10),
-                until_stop(std::future::pending::<()>()),
+                until_stop_or(None, std::future::pending::<()>()),
             )
             .await
             .expect("the signal ends the wait");
             assert!(out.is_none());
             // The stop request stays: a later wait ends at once.
-            assert!(until_stop(async { 1 }).await.is_none());
+            assert!(until_stop_or(None, async { 1 }).await.is_none());
         });
+    }
+
+    /// Issue 179: --run-for ends the verify.
+    #[tokio::test]
+    async fn until_stop_or_ends_at_the_deadline() {
+        let deadline = deadline_of(Some(0));
+        let out = tokio::time::timeout(
+            Duration::from_secs(5),
+            until_stop_or(deadline, std::future::pending::<()>()),
+        )
+        .await
+        .expect("the deadline ends the wait");
+        assert!(out.is_none());
     }
 
     /// warp probe targets (issue 67): a name, an IPv4 and an IPv6 address

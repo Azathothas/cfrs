@@ -24,6 +24,9 @@ pub enum Fault {
     Unavailable,
     /// A configuration that cannot be used.
     Config,
+    /// A service refused for now and says when to try again (issue 210:
+    /// a quick-tunnel provision with HTTP 429).
+    TempFail,
 }
 
 impl Fault {
@@ -33,6 +36,7 @@ impl Fault {
             Fault::Usage => USAGE,
             Fault::Unavailable => UNAVAILABLE,
             Fault::Config => CONFIG,
+            Fault::TempFail => TEMPFAIL,
         }
     }
 }
@@ -43,8 +47,11 @@ pub const NO_BACKEND: i32 = 3;
 pub const USAGE: i32 = 64;
 pub const UNAVAILABLE: i32 = 69;
 pub const CONFIG: i32 = 78;
-/// `--detach`: the instance was not ready in time (EX_TEMPFAIL).
+/// A refusal for now (EX_TEMPFAIL): a quick-tunnel provision with HTTP
+/// 429 (issue 210), or `--detach` lost the pipe to its parent.
 pub const TEMPFAIL: i32 = 75;
+/// `--detach`: the instance was not ready in time (as timeout(1)).
+pub const TIMEOUT: i32 = 124;
 
 /// One row of the table of exit codes.
 #[derive(Clone, Copy, Debug)]
@@ -84,7 +91,12 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: TEMPFAIL,
         name: "tempfail",
-        meaning: "--detach: the instance was not ready in --ready-timeout seconds (it is stopped), or it lost the pipe to the command that started it. Try again.",
+        meaning: "The quick-tunnel service refused a provision for now (HTTP 429): the error report (CFRS_ERROR_PROGRAM) has retry_after_s. Also: --detach lost the pipe to the command that started it. Try again later.",
+    },
+    ExitCode {
+        code: TIMEOUT,
+        name: "timeout",
+        meaning: "--detach: the instance was not ready in --ready-timeout seconds (it is stopped), as timeout(1) exits.",
     },
     ExitCode {
         code: CONFIG,

@@ -458,7 +458,15 @@ async fn resolve_credentials(
             )
             .await
             .context("provisioning quick tunnel")
-            .map_err(|e| crate::exit::fault(crate::exit::Fault::Unavailable, e))?;
+            .map_err(|e| {
+                // Issue 210: a 429 is a refusal for now (75), with the wait
+                // in the error report.
+                let class = match crate::quicktunnel::retry_of(&e) {
+                    Some(r) if r.status == 429 => crate::exit::Fault::TempFail,
+                    _ => crate::exit::Fault::Unavailable,
+                };
+                crate::exit::fault(class, e)
+            })?;
             let secret = tunnel
                 .secret_bytes()
                 .map_err(|e| anyhow::anyhow!(e))

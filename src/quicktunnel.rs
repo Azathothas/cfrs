@@ -177,6 +177,43 @@ impl std::fmt::Display for ProvisionError {
 
 /// The cause of a failed request comes through `source`, so that its hop
 /// and its text stay in the chain.
+/// The refusal of a provision in an error chain (issue 210): what a
+/// supervisor needs, as fields, not as text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    /// The HTTP status.
+    pub status: u16,
+    /// The Cloudflare error code of the body (`error code: 1015`).
+    pub code: Option<u32>,
+    /// The `Retry-After` of the answer, in seconds.
+    pub retry_after_s: Option<u64>,
+    /// True for 429 and 5xx: a later try can work.
+    pub retryable: bool,
+}
+
+/// The [`Refusal`] in the chain of `err`, when there is one.
+pub fn retry_of(err: &anyhow::Error) -> Option<Refusal> {
+    err.chain()
+        .find_map(|e| match e.downcast_ref::<ProvisionError>()? {
+            ProvisionError::Status {
+                code,
+                body,
+                retry_after,
+            } => Some(Refusal {
+                status: *code,
+                code: body
+                    .to_ascii_lowercase()
+                    .split("error code:")
+                    .nth(1)
+                    .and_then(|r| r.trim().split(|c: char| !c.is_ascii_digit()).next())
+                    .and_then(|n| n.parse().ok()),
+                retry_after_s: retry_after.map(|d| d.as_secs()),
+                retryable: *code == 429 || (500..600).contains(code),
+            }),
+            _ => None,
+        })
+}
+
 impl std::error::Error for ProvisionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -593,6 +630,40 @@ mod tests {
 
     const BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
     const TO: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Issue 210: the refusal of a provision as fields.
+    #[test]
+    fn the_refusal_in_an_error_chain() {
+        let err = anyhow::Error::new(ProvisionError::Status {
+            code: 429,
+            body: "error code: 1015".into(),
+            retry_after: Some(std::time::Duration::from_secs(1379)),
+        })
+        .context("provisioning quick tunnel");
+        let r = retry_of(&err).unwrap();
+        assert_eq!(
+            r,
+            Refusal {
+                status: 429,
+                code: Some(1015),
+                retry_after_s: Some(1379),
+                retryable: true
+            }
+        );
+        let other = anyhow::Error::new(ProvisionError::Status {
+            code: 404,
+            body: String::new(),
+            retry_after: None,
+        });
+        assert!(!retry_of(&other).unwrap().retryable);
+        assert!(retry_of(&anyhow::anyhow!("other")).is_none());
+        // The error report has the fields.
+        let doc = crate::report::document(Some("tunnel"), 75, Some(&err));
+        assert_eq!(doc["retry_after_s"], 1379);
+        assert_eq!(doc["code"], 1015);
+        assert_eq!(doc["status"], 429);
+        assert_eq!(doc["retryable"], true);
+    }
 
     #[tokio::test]
     async fn a_429_waits_for_retry_after() {

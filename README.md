@@ -803,7 +803,7 @@ The instance keeps running when the shell or the terminal closes.
   the instance and starts the new one.
 * Without `--name`, the name is the command and a hash of its arguments.
 * `--ready-timeout SECS` (default 60): after it, the start stops the
-  instance and exits 75. An instance that ends before it is ready gives its
+  instance and exits 124 (as `timeout`). An instance that ends before it is ready gives its
   own exit code.
 * A token or a proxy password on the command line goes to the environment
   of the instance, not to its arguments or its record.
@@ -816,9 +816,14 @@ The instance keeps running when the shell or the terminal closes.
   The log has no colour codes.
 * A supervisor starts the instance again when it ends, with a backoff of
   1 s doubled to 30 s, but not after exit 64 or 78, and not before the first
-  ready. After 5 quick failures in sequence it runs `cfrs.prev` (the binary
-  before the last `cfrs update`). A quick tunnel gets a new URL at a
-  restart: `cfrs ps` shows it, and the log has a line for it.
+  ready. A planned end is not restarted: `--stop-after`, `--idle-secs` and
+  `--run-for` end the instance for good (a crash or a kill still restarts
+  it). When the quick-tunnel service refused a provision with a
+  `Retry-After` (HTTP 429), the next start waits that long (at most 1 h),
+  and the run is not a quick failure. After 5 quick failures in sequence it
+  runs `cfrs.prev` (the binary before the last `cfrs update`). A quick
+  tunnel gets a new URL at a restart: `cfrs ps` shows it, and the log has a
+  line for it.
   `--no-restart` turns the supervisor off. `cfrs stop` stops the supervisor
   and its instance.
 * `cfrs autostart add NAME --from INSTANCE` makes a detached instance start

@@ -263,6 +263,7 @@ fn a_failure_before_ready_gives_the_code_and_leaves_no_record() {
     ]);
     assert!(!out.status.success());
     assert_ne!(out.status.code(), Some(75));
+    assert_ne!(out.status.code(), Some(124));
     assert!(
         !String::from_utf8_lossy(&out.stderr).is_empty(),
         "the error of the child"
@@ -409,9 +410,10 @@ fn no_ready_in_time_exits_75_and_leaves_no_record() {
         "--ready-timeout",
         "2",
     ]);
+    // Issue 210: the ready timeout exits 124, as timeout(1).
     assert_eq!(
         out.status.code(),
-        Some(75),
+        Some(124),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -459,6 +461,37 @@ fn the_supervisor_starts_a_killed_child_again() {
     assert!(env.run(&["stop", "sup"]).status.success());
     wait_until("both end", || !alive(child) && !alive(supervisor));
     assert!(instance(&env, "sup").is_null());
+}
+
+/// Issue 195: the end of --run-for is planned: the supervisor does not
+/// start the instance again, and removes its record.
+#[test]
+fn a_planned_end_is_not_restarted() {
+    let env = Env::new();
+    let switch = env.switch();
+    let start = env.run(&[
+        "net",
+        "switch",
+        "--listen",
+        &switch,
+        "--run-for",
+        "2",
+        "--detach",
+        "--name",
+        "plan",
+    ]);
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let child = ready_doc(&start)["pid"].as_i64().unwrap() as i32;
+    let supervisor = instance(&env, "plan")["supervisor"].as_i64().unwrap() as i32;
+    wait_until("both end", || !alive(child) && !alive(supervisor));
+    assert!(instance(&env, "plan").is_null(), "no record is left");
+    let log = std::fs::read_to_string(env.run.join("plan.log")).unwrap();
+    assert!(!log.contains("start 1"), "no second start: {log}");
+    assert!(log.contains("ended on request"), "{log}");
 }
 
 #[test]

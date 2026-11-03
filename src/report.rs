@@ -259,6 +259,8 @@ pub fn document(
     error: Option<&anyhow::Error>,
 ) -> serde_json::Value {
     let error_hop = error.and_then(crate::hop::of).map(|h| h.name());
+    // Issue 210: the refusal of a provision as fields.
+    let refusal = error.and_then(crate::quicktunnel::retry_of);
     let error: Vec<String> = error
         .map(|e| e.chain().map(|c| clean(&mask(&c.to_string()))).collect())
         .unwrap_or_default();
@@ -271,6 +273,10 @@ pub fn document(
         "exit": exit,
         "error": error,
         "hop": error_hop,
+        "status": refusal.as_ref().map(|r| r.status),
+        "code": refusal.as_ref().and_then(|r| r.code),
+        "retry_after_s": refusal.as_ref().and_then(|r| r.retry_after_s),
+        "retryable": refusal.as_ref().map(|r| r.retryable),
         "messages": lines().lock().unwrap().iter().cloned().collect::<Vec<_>>(),
     })
 }
