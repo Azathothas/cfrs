@@ -50,6 +50,8 @@ state of the open work.
     BINARY`, `v6only/down.sh`: an IPv6-only host on a runner (issue 163).
   * `live-batch2.sh BINARY`: the live checks of warp exit, scan, the rules,
     forward, a nested session and export (issues 132 to 159).
+  * `rebuild.sh TAG [TARGET]`: rebuild the binaries of a release and
+    compare them with its SHA256SUMS (issue 162).
   * `quic-vn.py HOST PORT`: the QUIC versions of a UDP endpoint (Version
     Negotiation; issue 157).
     It needs root, `ip`, `iptables` and `ip6tables`; it cannot run in this

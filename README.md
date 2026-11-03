@@ -139,6 +139,21 @@ A binary that has one changed byte fails each check. The workflow
 after each release. It also does each check on a changed copy, which must
 fail.
 
+### Rebuild a release
+
+`scripts/rebuild.sh TAG [TARGET]` rebuilds `cfrs` and `pod-netns` of a
+release from its tag, at another path, in the pinned image of
+`images/build/Dockerfile` of the tag, with the command of `release.yml`.
+The two binaries must have the SHA-256 of `SHA256SUMS`. TARGET is
+`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` (the default is
+the one of the machine). It needs git, curl and docker
+(`CONTAINER=podman` for podman). `release-proofs.yml` runs it for both
+targets after each release.
+
+```sh
+sh scripts/rebuild.sh v0.3.0-beta.8
+```
+
 ### Install script
 
 `scripts/install.sh` installs the binary of the newest release
