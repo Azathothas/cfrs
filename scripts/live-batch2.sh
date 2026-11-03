@@ -117,6 +117,8 @@ curl -fsS --max-time 30 -x socks5h://127.0.0.1:40011 https://one.one.one.one/cdn
 
 echo "== warp export (issue 148)"
 "$cfrs" warp export --export-identity "$dir/wg.json" --format json > "$dir/wg-out.json" 2> /dev/null
+# Issue 177: the redirected file holds the private key: mode 0600.
+[ "$(stat -c %a "$dir/wg-out.json")" = 600 ] || { echo "export: the file of stdout is not 0600"; exit 1; }
 python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))

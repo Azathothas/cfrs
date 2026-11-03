@@ -2965,7 +2965,9 @@ enum WarpCommand {
     /// Print a WireGuard config of a new WARP device (wg-quick or JSON),
     /// for other clients. The device and its private key are in
     /// warp-wg.json of the state directory, not in warp.json. Its data
-    /// path is WireGuard on UDP (port 2408), not MASQUE on TCP 443.
+    /// path is WireGuard on UDP (port 2408), not MASQUE on TCP 443. The
+    /// output holds the private key: a terminal is refused with no --out
+    /// (--out - prints it), and a redirected file becomes mode 0600.
     Export {
         /// wg-quick or json.
         #[arg(long, default_value = "wg-quick", value_parser = ["wg-quick", "json"])]
@@ -3542,6 +3544,16 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 );
                 return Ok(());
             }
+            // Issue 177: no private key on a terminal, before a device is
+            // registered.
+            let to_stdout = out
+                .as_deref()
+                .is_none_or(|p| p == std::path::Path::new("-"));
+            {
+                use std::io::IsTerminal as _;
+                cfrs::warp::export::check_sink(out.as_deref(), std::io::stdout().is_terminal())
+                    .fault(Fault::Usage)?;
+            }
             let exported = cfrs::warp::export::load_or_register(&path, *new, None)
                 .await
                 .fault(Fault::Unavailable)?;
@@ -3552,12 +3564,17 @@ async fn warp(args: WarpArgs) -> Result<()> {
                 _ => config.wg_quick(),
             };
             match out {
-                Some(file) => {
+                Some(file) if !to_stdout => {
                     cfrs::warp::write_private_file(file, text.as_bytes())
                         .with_context(|| format!("writing {}", file.display()))?;
                     eprintln!("cfrs: warp export: wrote {}", file.display());
                 }
-                None => print!("{text}"),
+                _ => {
+                    if cfrs::warp::export::tighten_stdout() {
+                        eprintln!("cfrs: warp export: the file of stdout is mode 0600 now (it holds the private key)");
+                    }
+                    print!("{text}");
+                }
             }
             eprintln!(
                 "cfrs: warp export: the device {} is in {} (cfrs warp export --delete removes it)",

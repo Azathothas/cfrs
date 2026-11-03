@@ -92,6 +92,40 @@ pub async fn delete(path: &Path, proxy: Option<&Proxy>) -> Result<String> {
     Ok(exported.device.id)
 }
 
+/// Issue 177: the output of `warp export` holds the private key. With no
+/// `--out`, a terminal is refused (a usage error), so that the key is not
+/// on the screen. `--out -` writes to stdout on purpose.
+pub fn check_sink(out: Option<&Path>, stdout_is_terminal: bool) -> Result<()> {
+    if out.is_none() && stdout_is_terminal {
+        bail!(
+            "stdout is a terminal, and the output holds the private key; give --out FILE, redirect stdout, or give --out - to print it"
+        );
+    }
+    Ok(())
+}
+
+/// Issue 177: when stdout is a regular file of this user that others can
+/// read (`cfrs warp export > warp.conf` with a umask of 022), set its mode
+/// to 0600 before the key is written. True when the mode changed.
+pub fn tighten_stdout() -> bool {
+    use std::os::fd::AsRawFd as _;
+    let fd = std::io::stdout().as_raw_fd();
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        return false;
+    }
+    tighten_fd(fd, &st)
+}
+
+fn tighten_fd(fd: i32, st: &libc::stat) -> bool {
+    let regular = st.st_mode & libc::S_IFMT == libc::S_IFREG;
+    let mine = st.st_uid == unsafe { libc::geteuid() };
+    if regular && mine && st.st_mode & 0o077 != 0 {
+        return unsafe { libc::fchmod(fd, 0o600) } == 0;
+    }
+    false
+}
+
 /// The values of a config.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
@@ -204,6 +238,34 @@ fn record_endpoint(endpoint: &register::Endpoint) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_refuses_a_terminal_without_out() {
+        assert!(check_sink(None, true).is_err());
+        assert!(check_sink(None, false).is_ok());
+        assert!(check_sink(Some(Path::new("-")), true).is_ok());
+        assert!(check_sink(Some(Path::new("w.conf")), true).is_ok());
+    }
+
+    #[test]
+    fn a_redirected_file_is_tightened_to_0600() {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("cfrs-tighten-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("warp.conf");
+        let file = std::fs::File::create(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(file.as_raw_fd(), &mut st) }, 0);
+        assert!(tighten_fd(file.as_raw_fd(), &st));
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Mode 0600 already: no change.
+        assert_eq!(unsafe { libc::fstat(file.as_raw_fd(), &mut st) }, 0);
+        assert!(!tighten_fd(file.as_raw_fd(), &st));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_x25519_key_pair() {
