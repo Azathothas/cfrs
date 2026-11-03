@@ -356,8 +356,119 @@ pub const CLOUDFLARED_KEYS: &[&str] = &[
     "token",
 ];
 
-/// The nearest key of [`CLOUDFLARED_KEYS`] (by edit distance), for an error.
-fn nearest_key(key: &str) -> Option<&'static str> {
+/// The keys of an ingress rule.
+pub const RULE_KEYS: &[&str] = &["hostname", "path", "service", "originRequest"];
+
+/// The keys of `originRequest` that cloudflared knows. cfrs reads
+/// `noTLSVerify`, `httpHostHeader`, `connectTimeout`, `tlsTimeout`,
+/// `keepAliveTimeout`, `disableChunkedEncoding` and its own
+/// `stripAcceptEncoding`, and ignores the others.
+pub const ORIGIN_REQUEST_KEYS: &[&str] = &[
+    "connectTimeout",
+    "tlsTimeout",
+    "tcpKeepAlive",
+    "noHappyEyeballs",
+    "keepAliveConnections",
+    "keepAliveTimeout",
+    "httpHostHeader",
+    "originServerName",
+    "matchSNItoHost",
+    "caPool",
+    "noTLSVerify",
+    "disableChunkedEncoding",
+    "bastionMode",
+    "proxyAddress",
+    "proxyPort",
+    "proxyType",
+    "ipRules",
+    "http2Origin",
+    "access",
+    "stripAcceptEncoding",
+];
+
+/// An error for each key of `map` that is not in `known`. `place` names
+/// the map: "a cloudflared config", "ingress rule 2".
+fn check_keys(
+    file: &std::path::Path,
+    map: &serde_json::Map<String, serde_json::Value>,
+    known: &[&'static str],
+    place: &str,
+) -> Result<()> {
+    for key in map.keys() {
+        if !known.contains(&key.as_str()) {
+            let hint = nearest_key(key, known)
+                .map(|k| format!("; did you mean {k}?"))
+                .unwrap_or_default();
+            bail!(
+                "{}: the key {key:?} is not a key of {place}{hint}",
+                file.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Check the keys of each ingress rule and of each `originRequest`
+/// (issue 170: `hostnam:` made a catch-all rule). The top-level
+/// `originRequest` is the default of each rule; the key of a rule wins.
+fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) -> Result<()> {
+    let Some(map) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let defaults = match map.get("originRequest") {
+        None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+        Some(serde_json::Value::Object(o)) => {
+            check_keys(file, o, ORIGIN_REQUEST_KEYS, "originRequest")?;
+            o.clone()
+        }
+        Some(_) => bail!("{}: originRequest: give a map of keys", file.display()),
+    };
+    let Some(ingress) = map.get_mut("ingress") else {
+        return Ok(());
+    };
+    let Some(rules) = ingress.as_array_mut() else {
+        if ingress.is_null() {
+            return Ok(());
+        }
+        bail!(
+            "{}: ingress: give a list of rules, for example `- service: http://127.0.0.1:8080`",
+            file.display()
+        );
+    };
+    for (i, rule) in rules.iter_mut().enumerate() {
+        let place = format!("ingress rule {}", i + 1);
+        let Some(rule) = rule.as_object_mut() else {
+            bail!("{}: {place}: give a map of keys", file.display());
+        };
+        check_keys(file, rule, RULE_KEYS, &place)?;
+        let mut origin = match rule.remove("originRequest") {
+            None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+            Some(serde_json::Value::Object(o)) => {
+                check_keys(
+                    file,
+                    &o,
+                    ORIGIN_REQUEST_KEYS,
+                    &format!("{place}, originRequest"),
+                )?;
+                o
+            }
+            Some(_) => bail!(
+                "{}: {place}: originRequest: give a map of keys",
+                file.display()
+            ),
+        };
+        for (key, default) in &defaults {
+            origin.entry(key.clone()).or_insert_with(|| default.clone());
+        }
+        if !origin.is_empty() {
+            rule.insert("originRequest".into(), serde_json::Value::Object(origin));
+        }
+    }
+    Ok(())
+}
+
+/// The nearest key of `known` (by edit distance), for an error.
+fn nearest_key(key: &str, known: &[&'static str]) -> Option<&'static str> {
     fn distance(a: &str, b: &str) -> usize {
         let b: Vec<char> = b.chars().collect();
         let mut row: Vec<usize> = (0..=b.len()).collect();
@@ -372,7 +483,7 @@ fn nearest_key(key: &str) -> Option<&'static str> {
         }
         row[b.len()]
     }
-    CLOUDFLARED_KEYS
+    known
         .iter()
         .map(|k| (distance(key, k), *k))
         .min()
@@ -387,25 +498,19 @@ fn nearest_key(key: &str) -> Option<&'static str> {
 ///   UUID must be the TunnelID of the file.
 /// * With `tunnel:` only, it is a named-tunnel token.
 /// * With neither, cfrs starts a quick tunnel, and says so.
-/// * A top-level key that cloudflared does not know is an error.
+/// * A key that cloudflared does not know is an error: at the top level,
+///   in an ingress rule and in `originRequest`.
+/// * The top-level `originRequest` is the default of each rule.
 /// * The last ingress rule must match each request (no hostname, no path).
 pub fn load_file(path: &std::path::Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let value = crate::yaml::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut value =
+        crate::yaml::parse(&text).with_context(|| format!("parsing {}", path.display()))?;
     if let Some(map) = value.as_object() {
-        for key in map.keys() {
-            if !CLOUDFLARED_KEYS.contains(&key.as_str()) {
-                let hint = nearest_key(key)
-                    .map(|k| format!("; did you mean {k}?"))
-                    .unwrap_or_default();
-                bail!(
-                    "{}: the key {key:?} is not a key of a cloudflared config{hint}",
-                    path.display()
-                );
-            }
-        }
+        check_keys(path, map, CLOUDFLARED_KEYS, "a cloudflared config")?;
     }
+    check_and_merge_rules(path, &mut value)?;
     let raw: RawConfig =
         serde_json::from_value(value).with_context(|| format!("parsing {}", path.display()))?;
 
@@ -458,7 +563,13 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
         config.protocol = Protocol::parse(&protocol)?;
     }
     if let Some(ha) = raw.ha_connections {
-        config.ha_connections = ha.clamp(1, 8);
+        if !(1..=8).contains(&ha) {
+            bail!(
+                "{}: ha-connections: {ha} is not from 1 to 8",
+                path.display()
+            );
+        }
+        config.ha_connections = ha;
     }
     Ok(config)
 }
@@ -591,6 +702,65 @@ mod tests {
             err.contains("line 3: the key \"service\" is given two times"),
             "{err}"
         );
+    }
+
+    // Issue 170: a misspelt key of a rule or of originRequest is an error.
+    #[test]
+    fn a_misspelt_rule_key_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map_err(|e| format!("{e:#}"))
+        };
+        let err = load(
+            "ingress:\n  - hostnam: a.example.com\n    service: http://127.0.0.1:1\n  - service: http_status:404\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("ingress rule 1"), "{err}");
+        assert!(err.contains("did you mean hostname?"), "{err}");
+
+        let err = load(
+            "ingress:\n  - service: http://127.0.0.1:1\n    originRequest:\n      noTLSVerfy: true\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("ingress rule 1, originRequest"), "{err}");
+        assert!(err.contains("did you mean noTLSVerify?"), "{err}");
+
+        let err = load("originRequest:\n  bogusKey: 1\ningress:\n  - service: http_status:404\n")
+            .unwrap_err();
+        assert!(err.contains("not a key of originRequest"), "{err}");
+
+        // Keys of cloudflared that cfrs does not read still load.
+        load("ingress:\n  - service: http://127.0.0.1:1\n    originRequest:\n      tcpKeepAlive: 30s\n      caPool: /x.pem\n").unwrap();
+    }
+
+    // Issue 170: the top-level originRequest is the default of each rule.
+    #[test]
+    fn a_top_level_origin_request_is_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        std::fs::write(
+            &path,
+            "originRequest:\n  noTLSVerify: true\n  httpHostHeader: top\ningress:\n  - hostname: a.example.com\n    service: https://127.0.0.1:1\n    originRequest:\n      httpHostHeader: rule\n  - service: https://127.0.0.1:2\n",
+        )
+        .unwrap();
+        let config = load_file(&path).unwrap();
+        let rules = &config.ingress.rules;
+        assert!(rules[0].origin.no_tls_verify);
+        assert!(rules[1].origin.no_tls_verify);
+        assert_eq!(rules[0].origin.http_host_header.as_deref(), Some("rule"));
+        assert_eq!(rules[1].origin.http_host_header.as_deref(), Some("top"));
+    }
+
+    // Issue 171: a file value out of range is an error, not a silent clamp.
+    #[test]
+    fn ha_connections_of_a_file_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        std::fs::write(&path, "ha-connections: 9\n").unwrap();
+        let err = format!("{:#}", load_file(&path).unwrap_err());
+        assert!(err.contains("not from 1 to 8"), "{err}");
     }
 
     #[test]

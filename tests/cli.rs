@@ -1157,3 +1157,31 @@ fn a_global_flag_before_pod_does_not_panic() {
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     assert!(stderr(&out).contains("-x"), "{}", stderr(&out));
 }
+
+/// Issue 171: protocol and ha-connections of a config file are used; a
+/// flag wins over the file.
+#[test]
+fn the_config_file_gives_the_protocol_and_the_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yml");
+    std::fs::write(
+        &path,
+        "protocol: http2\nha-connections: 1\ningress:\n  - service: http_status:404\n",
+    )
+    .unwrap();
+    let path = path.to_str().unwrap();
+    let plan = |extra: &[&str]| {
+        let mut args = vec!["tunnel", "--check", "--json", "--config", path];
+        args.extend_from_slice(extra);
+        let out = cfrs(&args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        doc["plan"].clone()
+    };
+    let p = plan(&[]);
+    assert_eq!(p["ha_connections"], 1, "{p}");
+    assert_eq!(p["legs"], serde_json::json!(["http2"]), "{p}");
+    let p = plan(&["--ha-connections", "3", "--protocol", "quic"]);
+    assert_eq!(p["ha_connections"], 3, "{p}");
+    assert_eq!(p["legs"][0], "quic", "{p}");
+}

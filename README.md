@@ -272,8 +272,13 @@ ingress:
   `tunnel:` only, it is a tunnel token. With neither, cfrs starts a quick
   tunnel.
 * cfrs ignores the cloudflared keys that it does not use (`metrics`,
-  `loglevel`, `warp-routing`, ...). Another key is an error, with the
-  nearest key.
+  `loglevel`, `warp-routing`, `tcpKeepAlive`, ...). Another key is an error
+  (exit 78), with the nearest key. cfrs checks the keys at the top level, in
+  each ingress rule and in each `originRequest`.
+* The top-level `originRequest` is the default of each rule. A key of the
+  rule wins.
+* `protocol:` and `ha-connections:` of the file are used. A flag
+  (`--protocol`, `--ha-connections`) wins over the file.
 
 cfrs reads the YAML with its own reader (`src/yaml.rs`). The reader accepts
 block mappings, block sequences, plain and quoted scalars on one line, and

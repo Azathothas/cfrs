@@ -356,12 +356,13 @@ struct TunnelOpts {
     /// Edge connections (1-8), for redundancy: when one is lost, the others
     /// carry the visitors. The edge chooses the connection of each request,
     /// and one request uses one connection, so more connections do not make
-    /// one transfer faster.
-    #[arg(long, default_value_t = 2, global = true, value_parser = clap::value_parser!(u8).range(1..=8))]
-    ha_connections: u8,
-    /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then http2).
-    #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "quic", "http2", "h2"])]
-    protocol: String,
+    /// one transfer faster. Default: ha-connections of --config, else 2.
+    #[arg(long, global = true, value_parser = clap::value_parser!(u8).range(1..=8))]
+    ha_connections: Option<u8>,
+    /// Edge protocol: quic (UDP 7844), http2 (TCP 7844), or auto (quic, then
+    /// http2). Default: protocol of --config, else auto.
+    #[arg(long, global = true, value_parser = ["auto", "quic", "http2", "h2"])]
+    protocol: Option<String>,
     /// How to reach the edge: auto (try 7844, fall back to WARP on 443),
     /// direct (port 7844), warp (carried on TCP 443) or relay (HTTP/2 in a
     /// WebSocket to the relay of --relay, on TCP 443).
@@ -429,8 +430,14 @@ impl TunnelOpts {
         if let Some(user_agent) = &self.user_agent {
             config.user_agent = user_agent.clone();
         }
-        config.ha_connections = self.ha_connections.clamp(1, 8);
-        config.protocol = Protocol::parse(&self.protocol)?;
+        // Issue 171: a flag wins over the file; with no flag, the value of
+        // the file stays.
+        if let Some(n) = self.ha_connections {
+            config.ha_connections = n;
+        }
+        if let Some(protocol) = &self.protocol {
+            config.protocol = Protocol::parse(protocol)?;
+        }
         config.transport = Transport::parse(&self.transport)?;
         if config.transport == Transport::Relay {
             cfrs::ws_relay::set(
