@@ -79,6 +79,8 @@ fn parse_tcp_burst(value: Option<&str>) -> Result<Option<usize>> {
 
 /// The interval of the liveness check of the MASQUE session.
 const KEEPALIVE: Duration = Duration::from_secs(15);
+/// The most bytes of packets in one write to the MASQUE stream (issue 122).
+const BATCH_BYTES: usize = 16 * 1024;
 /// The most packets in the outbound queue of the tunnel device.
 const OUTBOUND_PACKETS: usize = 512;
 const UDP_PACKETS: usize = 64;
@@ -384,8 +386,16 @@ impl WarpStack {
             let closed = closed.clone();
             tokio::spawn(async move {
                 loop {
-                    let packet = outbound.recv().await;
-                    if let Err(err) = tx.send_packet(&packet).await {
+                    // Issue 122: the packets that wait go out together, up
+                    // to BATCH_BYTES, in one DATA frame.
+                    let mut batch = vec![outbound.recv().await];
+                    let mut bytes = batch[0].len();
+                    while bytes < BATCH_BYTES {
+                        let Some(next) = outbound.pop() else { break };
+                        bytes += next.len();
+                        batch.push(next);
+                    }
+                    if let Err(err) = tx.send_packets(&batch).await {
                         // The session cannot send again: mark the stack closed,
                         // so that a new session replaces it.
                         tracing::warn!(error = %format!("{err:#}"), "the MASQUE send loop ended");

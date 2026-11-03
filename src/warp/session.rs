@@ -439,12 +439,21 @@ impl MasqueTx {
     /// the far sender stalled. A full queue in front of this call drops
     /// packets in its place (the device queue, the TUN queue of the kernel).
     pub async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
+        self.send_packets(std::slice::from_ref(&packet)).await
+    }
+
+    /// Send several packets in one HTTP/2 DATA frame (issue 122): one
+    /// reserve, one wait for capacity and one write for all of them.
+    pub async fn send_packets<P: AsRef<[u8]>>(&mut self, packets: &[P]) -> Result<()> {
         if self.closed {
             bail!("the MASQUE session is closed");
         }
-        let mut buf = BytesMut::with_capacity(packet.len() + 3);
-        capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet);
-        self.send.reserve_capacity(SEND_RESERVE);
+        let total: usize = packets.iter().map(|p| p.as_ref().len() + 4).sum();
+        let mut buf = BytesMut::with_capacity(total);
+        for packet in packets {
+            capsule::put_capsule(&mut buf, capsule::CAPSULE_DATA, packet.as_ref());
+        }
+        self.send.reserve_capacity(SEND_RESERVE.max(buf.len()));
         while self.send.capacity() < buf.len() {
             self.waits += 1;
             let capacity = std::future::poll_fn(|cx| self.send.poll_capacity(cx));
@@ -466,7 +475,7 @@ impl MasqueTx {
                     bail!("the MASQUE stream has no send capacity any more");
                 }
             }
-            self.send.reserve_capacity(SEND_RESERVE);
+            self.send.reserve_capacity(SEND_RESERVE.max(buf.len()));
         }
         self.send
             .send_data(buf.freeze(), false)
@@ -710,6 +719,61 @@ mod tests {
         assert!(run.is_err(), "the keepalive ended: {run:?}");
         feeder.abort();
         server.abort();
+    }
+
+    // Issue 122: ten packets of send_packets go in one DATA frame, and
+    // decode in order.
+    #[tokio::test]
+    async fn packets_of_one_batch_go_in_one_data_frame() {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let (chunks_tx, chunks_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut conn = h2::server::Builder::new()
+                .handshake::<_, Bytes>(server_io)
+                .await
+                .unwrap();
+            let (request, mut respond) = conn.accept().await.unwrap().unwrap();
+            let response = http::Response::builder().status(200).body(()).unwrap();
+            let _send = respond.send_response(response, false).unwrap();
+            tokio::spawn(async move { while conn.accept().await.is_some() {} });
+            let mut body = request.into_body();
+            let mut chunks = 0;
+            let mut decoder = CapsuleDecoder::new();
+            let mut packets = Vec::new();
+            while packets.len() < 10 {
+                let data = body.data().await.unwrap().unwrap();
+                let _ = body.flow_control().release_capacity(data.len());
+                chunks += 1;
+                decoder.push(&data);
+                while let Some(p) = decoder.next_packet() {
+                    packets.push(p[0]);
+                }
+            }
+            let _ = chunks_tx.send((chunks, packets));
+        });
+        let (client, connection) = h2::client::handshake(client_io).await.unwrap();
+        tokio::spawn(connection);
+        let mut client = client.ready().await.unwrap();
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(CONNECT_URI)
+            .body(())
+            .unwrap();
+        let (response, send) = client.send_request(request, false).unwrap();
+        let response = response.await.unwrap();
+        let session = MasqueSession {
+            ping: None,
+            send,
+            recv: response.into_body(),
+            decoder: CapsuleDecoder::new(),
+            closed: false,
+        };
+        let (mut tx, _rx) = session.split();
+        let batch: Vec<Vec<u8>> = (0..10u8).map(|i| vec![i; 1200]).collect();
+        tx.send_packets(&batch).await.unwrap();
+        let (chunks, packets) = chunks_rx.await.unwrap();
+        assert_eq!(packets, (0..10u8).collect::<Vec<_>>());
+        assert!(chunks <= 2, "{chunks} DATA chunks");
     }
 
     #[tokio::test]
