@@ -94,7 +94,7 @@ impl Metrics {
             "reconnects",
             Self::get(&self.reconnects),
         );
-        out
+        out + &crate::decisions::prometheus()
     }
 
     /// A short one-line summary for the console.

@@ -283,6 +283,7 @@ impl Tunnel {
         }
         let kind = plan[won.index];
         info!(leg = %kind, after = ?won.after, "the leg won the race");
+        crate::decisions::count("leg", &kind.to_string());
         let (first, warp_keepalive) = won.value;
         metrics.connection_opened();
 

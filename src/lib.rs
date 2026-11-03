@@ -53,6 +53,7 @@ pub mod bug_report;
 pub mod cloudflare;
 pub mod config;
 pub mod connect;
+pub mod decisions;
 pub mod detach;
 pub mod doctor;
 pub mod edge_discovery;

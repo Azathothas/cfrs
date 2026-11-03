@@ -905,12 +905,39 @@ pub fn choice() -> ProxyChoice {
 /// The proxy for `host:port`, after `NO_PROXY`, or `None` for a direct
 /// connection.
 pub fn proxy_for(host: &str, port: u16) -> Option<Proxy> {
+    proxy_decision(host, port).0
+}
+
+/// [`proxy_for`], and the name of the decision (issue 137): `direct`
+/// (`--no-proxy`), `none` (no proxy is set), `no_proxy` (a `NO_PROXY`
+/// match), or the kind of the proxy.
+fn proxy_decision(host: &str, port: u16) -> (Option<Proxy>, &'static str) {
     let proxy = match choice() {
-        ProxyChoice::Direct => return None,
+        ProxyChoice::Direct => return (None, "direct"),
         ProxyChoice::Via(proxy) => proxy,
-        ProxyChoice::FromEnvironment => Proxy::from_env().or_else(detected_proxy)?,
+        ProxyChoice::FromEnvironment => match Proxy::from_env().or_else(detected_proxy) {
+            Some(proxy) => proxy,
+            None => return (None, "none"),
+        },
     };
-    (!NoProxy::from_env().matches(host, port)).then_some(proxy)
+    if NoProxy::from_env().matches(host, port) {
+        return (None, "no_proxy");
+    }
+    let kind = proxy.decision_name();
+    (Some(proxy), kind)
+}
+
+impl Proxy {
+    /// The name of the proxy for the decision counters: `unix`, `exec`,
+    /// `http` or `socks5`.
+    fn decision_name(&self) -> &'static str {
+        match (&self.via, &self.kind) {
+            (Carrier::Unix(_), _) => "unix",
+            (Carrier::Exec(_), _) => "exec",
+            (Carrier::Tcp, ProxyKind::Http) => "http",
+            (Carrier::Tcp, ProxyKind::Socks5 { .. }) => "socks5",
+        }
+    }
 }
 
 /// Connect to `host:port`: through `via` when it is given, else through the
@@ -921,10 +948,11 @@ pub async fn dial(
     via: Option<&Proxy>,
     timeout: Duration,
 ) -> Result<BoxedIo> {
-    let proxy = match via {
-        Some(proxy) => Some(proxy.clone()),
-        None => proxy_for(host, port),
+    let (proxy, outcome) = match via {
+        Some(proxy) => (Some(proxy.clone()), "via"),
+        None => proxy_decision(host, port),
     };
+    crate::decisions::count("egress", outcome);
     match proxy {
         Some(proxy) => proxy.connect(host, port, timeout).await,
         None => Ok(Box::new(dial_direct(host, port, timeout).await?)),

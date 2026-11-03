@@ -205,11 +205,13 @@ pub fn resolve(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>
 async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = host.parse::<IpAddr>() {
+        crate::decisions::count("dns", "ip");
         return Ok(vec![ip]);
     }
     let name = host.trim_end_matches('.').to_ascii_lowercase();
     if let Some(ips) = pins().get(&name) {
         tracing::debug!(%host, step = "pin", ?ips, "resolved");
+        crate::decisions::count("dns", "pin");
         return Ok(ips.clone());
     }
     let mut failures = Vec::new();
@@ -218,6 +220,7 @@ async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
             let ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
             if !ips.is_empty() {
                 tracing::debug!(%host, step = "system", ?ips, "resolved");
+                crate::decisions::count("dns", "system");
                 return Ok(dedup(ips));
             }
             failures.push("system resolver: no address".to_string());
@@ -231,9 +234,11 @@ async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
     match doh_addresses(&name).await {
         Ok((ips, server)) => {
             tracing::debug!(%host, step = "doh", server, ?ips, "resolved");
+            crate::decisions::count("dns", "doh");
             Ok(ips)
         }
         Err(err) => {
+            crate::decisions::count("dns", "fail");
             failures.push(format!("DNS over HTTPS: {err:#}"));
             bail!("resolving {host}: {}", failures.join("; "))
         }

@@ -108,7 +108,7 @@ impl Metrics {
             m.reconnects,
             m.connections,
             m.errors
-        )
+        ) + &crate::decisions::prometheus()
     }
 }
 

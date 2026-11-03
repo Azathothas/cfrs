@@ -584,7 +584,9 @@ impl WarpClient {
         use std::sync::atomic::Ordering;
         let relay = self.relay();
         let Some(relay) = relay else {
-            return self.open_on(None).await;
+            let session = self.open_on(None).await?;
+            crate::decisions::count("masque", "no_relay");
+            return Ok(session);
         };
         self.read_leg(&relay);
         // The direct path goes first, each time; the relay starts after a
@@ -612,6 +614,7 @@ impl WarpClient {
             tokio::select! {
                 result = &mut direct, if direct_err.is_none() => match result {
                     Ok(session) => {
+                        crate::decisions::count("masque", "direct");
                         if relay_first {
                             self.relay_first.store(false, Ordering::SeqCst);
                             self.write_leg("direct", &relay);
@@ -630,6 +633,7 @@ impl WarpClient {
                 result = &mut through, if relay_err.is_none() => match result {
                     Ok(session) => {
                         tracing::info!(relay = %relay.url(), "MASQUE goes through the WebSocket relay");
+                        crate::decisions::count("masque", if relay_first { "relay_first" } else { "relay" });
                         if !relay_first {
                             self.relay_first.store(true, Ordering::SeqCst);
                             self.write_leg("relay", &relay);

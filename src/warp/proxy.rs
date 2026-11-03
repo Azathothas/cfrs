@@ -175,6 +175,7 @@ pub fn health_log(live: Arc<super::Live<WarpStack>>) {
                     tunnel = super::rules::COUNTERS.tunnel.load(Relaxed),
                     direct = super::rules::COUNTERS.direct.load(Relaxed),
                     rejected = super::rules::COUNTERS.reject.load(Relaxed),
+                    decisions = %crate::decisions::summary(),
                     "WARP proxy health"
                 );
             }
@@ -542,6 +543,7 @@ where
     let is_socks = socks::looks_like_socks5(first[0]);
     let mut stream = Prefixed::new(first[0], stream);
     if !is_socks && first[0] == 0x16 {
+        crate::decisions::count("dispatch", "tls_client");
         // A TLS ClientHello: the client takes the proxy for https://.
         bail!("a TLS client on the proxy (use http:// or socks5h:// for the proxy URL)");
     }
@@ -554,6 +556,13 @@ where
         )
         .await
         .map_err(|_| anyhow::anyhow!("no SOCKS5 request in {} s", REQUEST_LIMIT.as_secs()))??;
+        let outcome = match command {
+            0x01 => "socks_connect",
+            0x03 => "udp_associate",
+            pod_netns::upstream::CMD_UDP_IN_STREAM => "udp_in_stream",
+            _ => "socks_unsupported",
+        };
+        crate::decisions::count("dispatch", outcome);
         match command {
             0x01 => request,
             0x03 => match udp {
@@ -593,8 +602,12 @@ where
             }
         }
         match request {
-            socks::HttpRequest::Connect(request) => request,
+            socks::HttpRequest::Connect(request) => {
+                crate::decisions::count("dispatch", "http_connect");
+                request
+            }
             socks::HttpRequest::Forward { request, head } => {
+                crate::decisions::count("dispatch", "http_forward");
                 // An http:// URL (HTTP_PROXY): send the request in origin
                 // form to the origin, then copy the two directions.
                 debug!(host = %request.host, port = request.port, "WARP proxy forward request");
@@ -805,6 +818,7 @@ pub async fn route(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<
     let table = super::rules::current();
     let (action, addresses) = super::rules::decide(&stack, &table, &host).await?;
     super::rules::COUNTERS.count(action);
+    crate::decisions::count("rule", action.name());
     match action {
         super::rules::Action::Reject => {
             debug!(%host, port, "WARP proxy: refused by the rules");

@@ -177,6 +177,12 @@ spa:/srv/www
 * `static:` serves a directory.
 * `spa:` serves a directory and sends `index.html` for unknown paths.
 * `metrics` serves the Prometheus metrics of the tunnel.
+  `cfrs_decisions_total{decision,outcome}` counts the path decisions of
+  the process: `dns` (`ip`, `pin`, `system`, `doh`, `fail`), `egress`
+  (`direct`, `none`, `no_proxy`, `via`, `http`, `socks5`, `unix`, `exec`),
+  `leg` (the leg that won), `masque` (`direct`, `relay`, `relay_first`,
+  `no_relay`), `dispatch` (the requests of `warp proxy`) and `rule`. The
+  health line of `warp proxy` has the same counters.
 * `--http-host-header NAME` sets the `Host` header for the origin.
 * `--no-tls-verify` does not verify the TLS certificate of an HTTPS origin.
 
