@@ -63,7 +63,11 @@ assert any(door["ok"] for door in d["doors"]), "no door answered"
 
 echo "== warp proxy rules (issues 132, 136, 142)"
 printf 'domain:.example.org=reject\n' > "$dir/rules"
-python3 -m http.server 18080 --bind 127.0.0.1 > /dev/null 2>&1 &
+# A local web server with a mark of its own (an earlier step of live.yml
+# keeps a proxy on 18080).
+mkdir -p "$dir/www"
+echo "cfrs-batch2-$$" > "$dir/www/mark.txt"
+python3 -m http.server 18731 --bind 127.0.0.1 --directory "$dir/www" > /dev/null 2>&1 &
 pids="$pids $!"
 "$cfrs" warp --identity "$dir/a.json" proxy --listen tcp://127.0.0.1:40010 \
     -r cidr:127.0.0.0/8=direct -r domain:example.com=reject \
@@ -79,7 +83,14 @@ if curl -sS --max-time 20 -o /dev/null -x socks5h://127.0.0.1:40010 https://exam
     exit 1
 fi
 grep -i 'not allowed\|ruleset\|denied' "$dir/socks.err" || cat "$dir/socks.err"
-curl -fsS --max-time 10 -o /dev/null -w 'direct to the host: %{http_code}\n' -x socks5h://127.0.0.1:40010 http://127.0.0.1:18080/
+i=0
+until nc -z 127.0.0.1 18731 2> /dev/null; do
+    i=$((i + 1)); [ "$i" -lt 40 ] || { echo "the local web server does not listen"; exit 1; }
+    sleep 0.25
+done
+mark=$(curl -fsS --max-time 10 -x socks5h://127.0.0.1:40010 http://127.0.0.1:18731/mark.txt)
+[ "$mark" = "cfrs-batch2-$$" ] || { echo "direct to the host: another answer: $mark"; exit 1; }
+echo "direct to the host: the mark of the local server"
 # The rules file is read again when it changes.
 printf 'domain:.example.org=reject\ndomain:.cloudflare.com=reject\n' > "$dir/rules"
 sleep 5
