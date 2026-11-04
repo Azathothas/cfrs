@@ -565,24 +565,21 @@ async fn write_axum_response(
 
     let body = response.into_body();
     if !has_len && !has_chunked {
-        // Small built-in bodies: buffer so the edge gets a Content-Length.
-        let bytes = http_body_util::BodyExt::collect(body)
-            .await
-            .map_err(|e| anyhow!("reading response body: {e}"))?
-            .to_bytes();
-        headers.push(("Content-Length".to_string(), bytes.len().to_string()));
-        write_response_meta(writer, status, &headers).await?;
-        futures_write_all(writer, &bytes).await?;
-        metrics.add_out(bytes.len() as u64);
-    } else {
-        write_response_meta(writer, status, &headers).await?;
-        use futures::StreamExt;
-        let mut stream = body.into_data_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| anyhow!("response body: {e}"))?;
-            futures_write_all(writer, &chunk).await?;
-            metrics.add_out(chunk.len() as u64);
+        // A body of a known size (the small built-in pages) gets a
+        // Content-Length. A body of no known size is not buffered (issue
+        // 243): it is streamed, and the edge frames it.
+        if let Some(len) = axum::body::HttpBody::size_hint(&body).exact() {
+            headers.push(("Content-Length".to_string(), len.to_string()));
         }
+    }
+    write_response_meta(writer, status, &headers).await?;
+    use futures::StreamExt;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow!("response body: {e}"))?;
+        futures_write_all(writer, &chunk).await?;
+        futures::io::AsyncWriteExt::flush(writer).await?;
+        metrics.add_out(chunk.len() as u64);
     }
     futures_close(writer).await
 }
@@ -1511,6 +1508,76 @@ mod tests {
     /// The payload of each chunk, with no framing; an extension and a
     /// trailer are dropped; the last chunk ends the body while the origin
     /// keeps the connection open.
+    /// Issue 243: a built-in body of no known size is streamed, not
+    /// buffered to its end. A body of a known size gets a Content-Length.
+    #[tokio::test]
+    async fn a_built_in_body_of_no_known_size_is_streamed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+        let body = Body::from_stream(tokio_stream_from(rx));
+        let response = Response::builder().status(200).body(body).unwrap();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let mut writer: EdgeWriter = Box::pin(
+            tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(near),
+        );
+        let task = tokio::spawn(async move {
+            write_axum_response(&mut writer, response, &Metrics::new()).await
+        });
+        tx.send(Ok(bytes::Bytes::from_static(b"first")))
+            .await
+            .unwrap();
+        let mut far = tokio_util::compat::TokioAsyncReadCompatExt::compat(far);
+        let (_, meta) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cqstream::read_connect_response(&mut far),
+        )
+        .await
+        .expect("the head comes before the end of the body")
+        .unwrap();
+        assert!(
+            !meta
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("HttpHeader:Content-Length")),
+            "{meta:?}"
+        );
+        let mut got = [0u8; 5];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures::io::AsyncReadExt::read_exact(&mut far, &mut got),
+        )
+        .await
+        .expect("the first chunk comes before the end of the body")
+        .unwrap();
+        assert_eq!(&got, b"first");
+        drop(tx);
+        task.await.unwrap().unwrap();
+
+        // A body of a known size.
+        let response = Response::builder()
+            .status(200)
+            .body(Body::from("hello"))
+            .unwrap();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let mut writer: EdgeWriter = Box::pin(
+            tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(near),
+        );
+        write_axum_response(&mut writer, response, &Metrics::new())
+            .await
+            .unwrap();
+        let mut far = tokio_util::compat::TokioAsyncReadCompatExt::compat(far);
+        let (_, meta) = cqstream::read_connect_response(&mut far).await.unwrap();
+        assert!(
+            meta.contains(&("HttpHeader:Content-Length".to_string(), "5".to_string())),
+            "{meta:?}"
+        );
+    }
+
+    /// A stream of the items of `rx`.
+    fn tokio_stream_from<T: Send + 'static>(
+        rx: tokio::sync::mpsc::Receiver<T>,
+    ) -> impl futures::Stream<Item = T> + Send + 'static {
+        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) })
+    }
+
     /// Issue 238: an answer with more than 64 headers passes.
     #[tokio::test]
     async fn an_origin_answer_with_many_headers_passes() {
