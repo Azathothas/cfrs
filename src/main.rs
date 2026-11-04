@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 use cfrs::config::{load_file, Config};
@@ -786,7 +786,10 @@ fn main() {
         pod_netns::set_program_name("cfrs pod");
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
     }
-    let cli = match Cli::try_parse_from(&args) {
+    let cli = match top_command()
+        .try_get_matches_from(&args)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(err) => {
             use clap::error::ErrorKind;
@@ -802,6 +805,9 @@ fn main() {
                 eprintln!("{}", error_json(&err.render().to_string(), code));
             } else {
                 let _ = err.print();
+                for line in usage_hints(&err) {
+                    eprintln!("{line}");
+                }
             }
             if code != cfrs::exit::SUCCESS {
                 cfrs::report::send(command_name(&argv).as_deref(), code, None);
@@ -980,6 +986,157 @@ fn main() {
 
 /// `--log-format json` (issue 181): the last error line is JSON too.
 static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The commands of the top help, by purpose (E1). Each subcommand is in
+/// one group; a test checks it.
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "Publish a local service",
+        &["tunnel", "serve", "share", "demo", "qr"],
+    ),
+    (
+        "Reach the internet from a limited host",
+        &["agent", "warp", "pod", "net", "connect", "relay"],
+    ),
+    (
+        "Run in the background",
+        &["ps", "logs", "wait", "stop", "autostart"],
+    ),
+    (
+        "Check this host and cfrs",
+        &[
+            "doctor",
+            "status",
+            "ports",
+            "bug-report",
+            "update",
+            "man",
+            "completions",
+            "help",
+        ],
+    ),
+];
+
+/// The "Start here" block of the top help.
+const START_HERE: &str = "\
+Start here:
+  cfrs doctor                              test the path from this host to the edge
+  cfrs tunnel --url http://localhost:8080  a public URL for a local service
+  cfrs agent up                            a sandbox: test, start WARP if needed, expose ports
+  cfrs man                                 the full manual";
+
+/// The first part of `text`: up to the end of the first sentence or the
+/// first colon, with no issue reference.
+fn first_sentence(text: &str) -> String {
+    let end = [". ", ": "]
+        .iter()
+        .filter_map(|mark| text.find(mark))
+        .min()
+        .unwrap_or(text.len());
+    let mut part = text[..end].to_string();
+    while let Some(start) = part.find(" (issue ") {
+        match part[start..].find(')') {
+            Some(len) => part.replace_range(start..start + len + 1, ""),
+            None => break,
+        }
+    }
+    part
+}
+
+/// The commands of `cmd` by purpose, with the first sentence of each.
+fn grouped_commands(cmd: &clap::Command) -> String {
+    let width = cmd
+        .get_subcommands()
+        .map(|c| c.get_name().len())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for (title, names) in HELP_GROUPS {
+        out.push_str(&format!("{title}:\n"));
+        for name in *names {
+            let about = cmd
+                .find_subcommand(name)
+                .and_then(|c| c.get_about())
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| {
+                    "Print this message or the help of the given subcommand(s)".into()
+                });
+            out.push_str(&format!("  {name:width$}  {}\n", first_sentence(&about)));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The top command, with the commands by purpose and a "Start here" block
+/// in its help.
+fn top_command() -> clap::Command {
+    let cmd = Cli::command();
+    let template = format!(
+        "{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{START_HERE}\n\n{}Options:\n{{options}}{{after-help}}",
+        grouped_commands(&cmd)
+    );
+    cmd.help_template(template)
+}
+
+/// The lines after a usage error (E8, E10): a word that is no command but
+/// looks like a port, a URL or a path names the command for it; an unknown
+/// command or flag names the version and `cfrs update --check`.
+fn usage_hints(err: &clap::Error) -> Vec<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let invalid = || match err
+        .get(ContextKind::InvalidSubcommand)
+        .or(err.get(ContextKind::InvalidArg))
+    {
+        Some(ContextValue::String(word)) => Some(word.clone()),
+        _ => None,
+    };
+    let mut lines = Vec::new();
+    match err.kind() {
+        ErrorKind::InvalidSubcommand => {
+            if let Some(hint) = invalid().as_deref().and_then(word_hint) {
+                lines.push(hint);
+            }
+        }
+        ErrorKind::UnknownArgument => {}
+        _ => return lines,
+    }
+    lines.push(format!(
+        "cfrs {} does not know {}; a newer release can: cfrs update --check",
+        env!("CARGO_PKG_VERSION"),
+        invalid().map_or_else(|| "it".to_string(), |w| format!("'{w}'"))
+    ));
+    lines
+}
+
+/// The command for a word that is no command of cfrs.
+fn word_hint(word: &str) -> Option<String> {
+    if !word.is_empty() && word.len() <= 5 && word.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(format!(
+            "hint: for a public URL of the local port {word}: cfrs tunnel --url http://localhost:{word}"
+        ));
+    }
+    let lower = word.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some(format!(
+            "hint: for a public URL of the local service {word}: cfrs tunnel --url {word}"
+        ));
+    }
+    if lower.starts_with("wss://") || lower.starts_with("ws://") {
+        return Some(format!(
+            "hint: for a local socket to the WebSocket forward {word}: cfrs connect --local 127.0.0.1:2222 {word}"
+        ));
+    }
+    let path = std::path::Path::new(word);
+    if word.starts_with('/') || word.starts_with("./") || word.starts_with("~/") || path.exists() {
+        return Some(if path.is_file() {
+            format!("hint: to send the file {word}: cfrs share --mode download --file {word}")
+        } else {
+            format!("hint: to serve the directory {word}: cfrs serve --dir {word}")
+        });
+    }
+    None
+}
 
 /// Whether `argv` asks for `--log-format json` (before a parse).
 fn json_wanted(argv: &[String]) -> bool {
@@ -5671,6 +5828,69 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E1: each command of cfrs is in one group of the top help.
+    #[test]
+    fn each_command_is_in_one_help_group() {
+        let cmd = Cli::command();
+        let mut names: Vec<String> = cmd
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        names.push("help".into());
+        let listed: Vec<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, n)| n.iter().copied())
+            .collect();
+        for name in &names {
+            let count = listed.iter().filter(|l| **l == name.as_str()).count();
+            assert_eq!(count, 1, "{name} is in {count} groups");
+        }
+        for name in &listed {
+            assert!(names.iter().any(|n| n == name), "{name} is no command");
+        }
+        let help = top_command().render_help().to_string();
+        assert!(help.contains("Start here:"), "{help}");
+        assert!(!help.contains("(issue "), "{help}");
+        assert_eq!(first_sentence("Test it: the proxy. More"), "Test it");
+        assert_eq!(first_sentence("One command (issue 87): x"), "One command");
+    }
+
+    /// E8: a word that is no command names the command for it.
+    #[test]
+    fn a_word_that_is_no_command_gets_a_hint() {
+        let hint = |w: &str| word_hint(w).unwrap_or_default();
+        assert!(hint("8080").contains("cfrs tunnel --url http://localhost:8080"));
+        assert!(hint("https://example.org").contains("cfrs tunnel --url https://example.org"));
+        assert!(hint("wss://x.example").contains("cfrs connect --local"));
+        assert!(hint("/").contains("cfrs serve --dir /"));
+        assert!(hint("Cargo.toml").contains("cfrs share --mode download --file Cargo.toml"));
+        assert_eq!(word_hint("tunel"), None);
+        assert_eq!(word_hint("123456"), None, "not a port");
+    }
+
+    /// E10: an unknown command or flag names the version and the update.
+    #[test]
+    fn an_unknown_command_names_the_version() {
+        let err = top_command()
+            .try_get_matches_from(["cfrs", "8080"])
+            .unwrap_err();
+        let lines = usage_hints(&err);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains(env!("CARGO_PKG_VERSION")), "{lines:?}");
+        assert!(lines[1].contains("cfrs update --check"), "{lines:?}");
+        let err = top_command()
+            .try_get_matches_from(["cfrs", "tunnel", "--bogus"])
+            .unwrap_err();
+        assert!(usage_hints(&err)[0].contains("'--bogus'"));
+        let err = top_command()
+            .try_get_matches_from(["cfrs", "tunnel", "--port", "x"])
+            .unwrap_err();
+        assert!(
+            usage_hints(&err).is_empty(),
+            "a bad value is no unknown flag"
+        );
+    }
 
     fn share_args(argv: &[&str]) -> ShareArgs {
         let cli = Cli::try_parse_from(["cfrs", "share"].iter().chain(argv)).unwrap();
