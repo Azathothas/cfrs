@@ -71,6 +71,21 @@ pub fn safe_next(next: &str) -> &str {
     }
 }
 
+/// The largest multiple of 1 000 000 that is not above 2^32. A random
+/// `u32` at or above it is refused: each code then has the same chance.
+const PIN_LIMIT: u32 = 4_294_000_000;
+
+/// A 6-digit code from the random `u32` values of `next` (issue 240: with
+/// no modulo bias, and with no UUID).
+fn pin_from(mut next: impl FnMut() -> u32) -> String {
+    loop {
+        let value = next();
+        if value < PIN_LIMIT {
+            return format!("{:06}", value % 1_000_000);
+        }
+    }
+}
+
 impl Gate {
     pub fn off() -> Self {
         Self {
@@ -84,7 +99,7 @@ impl Gate {
     }
 
     pub fn pin() -> Self {
-        let pin = format!("{:06}", Uuid::new_v4().as_u128() % 1_000_000);
+        let pin = pin_from(|| getrandom::u32().expect("OS entropy unavailable"));
         Self {
             mode: Mode::Pin,
             pin,
@@ -320,6 +335,19 @@ mod tests {
         assert!(constant_time_eq(b"123456", b"123456"));
         assert!(!constant_time_eq(b"123456", b"123457"));
         assert!(!constant_time_eq(b"12345", b"123456"));
+    }
+
+    // Issue 240: a value at or above PIN_LIMIT is refused.
+    #[test]
+    fn a_pin_has_no_modulo_bias() {
+        let mut values = [u32::MAX, PIN_LIMIT, PIN_LIMIT - 1].into_iter();
+        assert_eq!(pin_from(|| values.next().unwrap()), "999999");
+        let mut values = [PIN_LIMIT, 3_999_999_999].into_iter();
+        assert_eq!(pin_from(|| values.next().unwrap()), "999999");
+        let mut values = [7].into_iter();
+        assert_eq!(pin_from(|| values.next().unwrap()), "000007");
+        assert_eq!(PIN_LIMIT % 1_000_000, 0);
+        assert!(u64::from(PIN_LIMIT) + 1_000_000 > u64::from(u32::MAX));
     }
 
     #[test]
