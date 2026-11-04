@@ -615,15 +615,14 @@ impl WarpClient {
     async fn connect_outer(&self) -> Result<WarpStack> {
         let session = self.open_session().await?;
         let local = self.local_address()?;
+        let renew = session.relay_budget();
         let (tx, rx) = session.split();
-        let stack = WarpStack::start(
-            tx,
-            rx,
-            StackConfig::new(local).with_ipv6(match &self.wireguard {
-                Some(peer) => peer.v6,
-                None => self.device.ipv6(),
-            }),
-        )?;
+        let mut config = StackConfig::new(local).with_ipv6(match &self.wireguard {
+            Some(peer) => peer.v6,
+            None => self.device.ipv6(),
+        });
+        config.renew = renew;
+        let stack = WarpStack::start(tx, rx, config)?;
         // Issue 120: the session is up when a packet crossed it.
         if std::env::var_os(proxy::NO_CHECK_VARIABLE).is_some_and(|v| !v.is_empty()) {
             tracing::debug!(

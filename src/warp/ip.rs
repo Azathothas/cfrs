@@ -170,6 +170,7 @@ pub struct WarpStack {
     /// Why the session closed (issue 178): the first cause wins.
     reason: Reason,
     local: IpAddr,
+    renew: Option<crate::ws_relay::RelayBudget>,
 }
 
 /// The cause of the close of a session.
@@ -296,6 +297,8 @@ pub struct StackConfig {
     /// so any address in the assigned subnet works; WARP uses `.1`.
     pub gateway: IpAddr,
     pub mtu: usize,
+    /// The budget of the relay that carries the session, if any.
+    pub renew: Option<crate::ws_relay::RelayBudget>,
 }
 
 impl StackConfig {
@@ -313,6 +316,7 @@ impl StackConfig {
             local_v6: None,
             gateway,
             mtu: TUNNEL_MTU,
+            renew: None,
         }
     }
 
@@ -549,6 +553,7 @@ impl WarpStack {
             closed,
             reason,
             local: config.local,
+            renew: config.renew,
         })
     }
 
@@ -574,6 +579,7 @@ impl WarpStack {
             closed,
             reason,
             local: config.local,
+            renew: config.renew,
         }
     }
 
@@ -590,6 +596,12 @@ impl WarpStack {
     }
 
     /// Why the session closed (issue 178), when it did.
+    /// Whether the budget of the relay of this session is spent: a new
+    /// session must take the new flows.
+    pub fn renew_due(&self) -> bool {
+        self.renew.as_ref().is_some_and(|b| b.spent())
+    }
+
     pub fn close_reason(&self) -> Option<String> {
         self.reason
             .lock()
@@ -1360,6 +1372,7 @@ mod tests {
             closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reason: Default::default(),
             local: "172.16.0.2".parse().unwrap(),
+            renew: None,
         };
         assert!(!stack.is_closed());
         drop(cmd_rx);

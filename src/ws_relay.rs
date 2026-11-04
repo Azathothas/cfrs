@@ -51,6 +51,40 @@ pub const SESSION_BYTES: u64 = 60 << 20;
 /// The age after which cfrs replaces an edge connection through the relay.
 /// The relay ends a session after 12 h.
 pub const SESSION_AGE: Duration = Duration::from_secs(11 * 3600 + 30 * 60);
+/// The budget of one session through the relay: spent at [`SESSION_BYTES`]
+/// or at [`SESSION_AGE`]. A MASQUE session through the relay is replaced
+/// when it is spent (the owner ruling of 2026-11-04).
+#[derive(Clone, Debug)]
+pub struct RelayBudget {
+    spent: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    opened: std::time::Instant,
+    age: Duration,
+}
+
+impl RelayBudget {
+    /// Count the bytes of `io` against a new budget.
+    pub fn meter(io: BoxedIo) -> (BoxedIo, Self) {
+        Self::meter_with(io, SESSION_BYTES, SESSION_AGE)
+    }
+
+    /// [`RelayBudget::meter`] with other limits (for the tests).
+    pub fn meter_with(io: BoxedIo, bytes: u64, age: Duration) -> (BoxedIo, Self) {
+        let spent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let io = crate::edge_h2::Metered::with_flag(io, bytes, spent.clone());
+        let budget = Self {
+            spent,
+            opened: std::time::Instant::now(),
+            age,
+        };
+        (Box::new(io), budget)
+    }
+
+    /// Whether the bytes or the time of the session are spent.
+    pub fn spent(&self) -> bool {
+        self.spent.load(std::sync::atomic::Ordering::Relaxed) || self.opened.elapsed() >= self.age
+    }
+}
+
 /// The buffer between the WebSocket pump and the HTTP/2 leg.
 const PIPE_BUFFER: usize = 256 * 1024;
 
@@ -692,6 +726,26 @@ fn refusal(status: u16, body: &str, target: SocketAddr) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The budget of a MASQUE session through the relay: spent at its
+    /// bytes (both directions) or at its age.
+    #[tokio::test]
+    async fn a_relay_budget_is_spent_at_its_bytes_or_its_age() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (near, mut far) = tokio::io::duplex(1 << 16);
+        let (mut io, budget) =
+            RelayBudget::meter_with(Box::new(near), 10, Duration::from_secs(3600));
+        io.write_all(b"12345").await.unwrap();
+        far.write_all(b"1234").await.unwrap();
+        let mut got = [0u8; 4];
+        io.read_exact(&mut got).await.unwrap();
+        assert!(!budget.spent(), "9 of 10 bytes");
+        io.write_all(b"x").await.unwrap();
+        assert!(budget.spent());
+        let (_io, aged) =
+            RelayBudget::meter_with(Box::new(tokio::io::duplex(8).0), 1 << 20, Duration::ZERO);
+        assert!(aged.spent(), "the age is spent");
+    }
 
     #[test]
     fn relay_urls() {

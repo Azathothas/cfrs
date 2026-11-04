@@ -412,6 +412,7 @@ pub struct Metered<T> {
     used: u64,
     limit: u64,
     spent: Option<Arc<tokio::sync::Notify>>,
+    flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl<T> Metered<T> {
@@ -421,6 +422,18 @@ impl<T> Metered<T> {
             used: 0,
             limit,
             spent: Some(spent),
+            flag: None,
+        }
+    }
+
+    /// [`Metered::new`] that sets `flag` at the limit, in place of a notice.
+    pub fn with_flag(inner: T, limit: u64, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            inner,
+            used: 0,
+            limit,
+            spent: None,
+            flag: Some(flag),
         }
     }
 
@@ -429,6 +442,9 @@ impl<T> Metered<T> {
         if self.used >= self.limit {
             if let Some(spent) = self.spent.take() {
                 spent.notify_one();
+            }
+            if let Some(flag) = self.flag.take() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

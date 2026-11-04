@@ -207,6 +207,7 @@ them, and they can change):
 | No payload | 180 s | The HTTP/2 PING each 30 s is payload. |
 | Bytes of a session | 64 MiB, both directions, TLS included | At 60 MiB, cfrs takes no new stream on the connection and connects a replacement. The open streams go on. |
 | Time of a session | 12 h | The same at 11 h 30 min. |
+| MASQUE through the relay | the same budget | At 60 MiB or 11 h 30 min, a new MASQUE session takes the new flows. The open flows go on in the old session; it closes after 90 s (`warp::live::RENEW_DRAIN`). |
 | Egress | IPv4 TCP; Cloudflare addresses through the Workers VPC route | No QUIC; IPv6 edge addresses are skipped. |
 
 podssh measured TLS to `region1.v2.argotunnel.com:7844` through this relay

@@ -161,6 +161,8 @@ pub(crate) fn tls_config_alpn(
 pub struct MasqueSession {
     tx: MasqueTx,
     rx: MasqueRx,
+    /// The budget of the relay, for a session through the relay.
+    budget: Option<crate::ws_relay::RelayBudget>,
 }
 
 /// The write half of a session, moved to whatever task pumps outbound packets.
@@ -394,16 +396,24 @@ impl MasqueSession {
         // TLS handshake runs inside its CONNECT pipe exactly as it would over a
         // direct socket. Through a relay, the TLS runs inside the WebSocket:
         // the relay sees TLS bytes only.
+        // Through the relay, the session has a byte and a time budget: it
+        // is replaced before the relay ends it.
+        let mut budget = None;
         let tcp: BoxedIo = match dial.relay {
-            Some(relay) => relay
-                .connect(endpoint, CONNECT_TIMEOUT)
-                .await
-                .with_context(|| {
-                    format!(
-                        "the MASQUE front door {endpoint} through the relay {}",
-                        relay.url()
-                    )
-                })?,
+            Some(relay) => {
+                let io = relay
+                    .connect(endpoint, CONNECT_TIMEOUT)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "the MASQUE front door {endpoint} through the relay {}",
+                            relay.url()
+                        )
+                    })?;
+                let (io, spent) = crate::ws_relay::RelayBudget::meter(io);
+                budget = Some(spent);
+                io
+            }
             None => crate::egress::dial(
                 &endpoint.ip().to_string(),
                 endpoint.port(),
@@ -475,7 +485,9 @@ impl MasqueSession {
             );
         }
 
-        Ok(Self::from_h2(ping, send, response.into_body()))
+        let mut session = Self::from_h2(ping, send, response.into_body());
+        session.budget = budget;
+        Ok(session)
     }
 
     /// A session over HTTP/2.
@@ -497,6 +509,7 @@ impl MasqueSession {
                 closed: false,
                 progress: Default::default(),
             },
+            budget: None,
         }
     }
 
@@ -518,6 +531,7 @@ impl MasqueSession {
                 closed: false,
                 progress: Default::default(),
             },
+            budget: None,
         }
     }
 
@@ -558,6 +572,7 @@ impl MasqueSession {
                 closed: false,
                 progress: Default::default(),
             },
+            budget: None,
         }
     }
 
@@ -586,6 +601,11 @@ impl MasqueSession {
 
     /// Split into a write half and a read half so the two directions can be
     /// pumped from different tasks.
+    /// The budget of the relay, for a session through the relay.
+    pub fn relay_budget(&self) -> Option<crate::ws_relay::RelayBudget> {
+        self.budget.clone()
+    }
+
     pub fn split(self) -> (MasqueTx, MasqueRx) {
         (self.tx, self.rx)
     }

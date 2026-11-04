@@ -32,6 +32,11 @@ pub trait Closable: Send + Sync + 'static {
     }
     /// Close it on purpose (issue 185).
     fn close(&self, _why: &str) {}
+    /// Whether a new session must take the new flows while this one goes
+    /// on: the budget of the relay is spent.
+    fn renew_due(&self) -> bool {
+        false
+    }
 }
 
 impl Closable for super::WarpStack {
@@ -44,7 +49,14 @@ impl Closable for super::WarpStack {
     fn close(&self, why: &str) {
         self.close_session(why)
     }
+    fn renew_due(&self) -> bool {
+        super::WarpStack::renew_due(self)
+    }
 }
+
+/// After a planned replacement, the old session carries its open flows for
+/// this long, then it is closed.
+pub const RENEW_DRAIN: Duration = Duration::from_secs(90);
 
 /// `--session-max-age` (issue 185): each session of [`Live`] is closed on
 /// purpose at this age, and a new one opens. Seconds; 0 is off.
@@ -116,6 +128,43 @@ impl<T: Closable> Live<T> {
             loop {
                 tokio::time::sleep(check).await;
                 let Some(live) = weak.upgrade() else { return };
+                // The owner ruling of 2026-11-04: before the relay ends a
+                // session (64 MiB, 12 h), a new session takes the new flows;
+                // the open flows go on in the old one, which closes after
+                // RENEW_DRAIN. No gap: the old one stays current until the
+                // new one is open.
+                let due = {
+                    let current = live.current.lock().await;
+                    (!current.is_closed() && current.renew_due()).then(|| current.clone())
+                };
+                if let Some(old) = due {
+                    match connect().await {
+                        Ok(next) => {
+                            *live.current.lock().await = Arc::new(next);
+                            opened = tokio::time::Instant::now();
+                            let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
+                            live.generation.send_modify(|g| *g += 1);
+                            info!(
+                                reconnects = n,
+                                drain_s = RENEW_DRAIN.as_secs(),
+                                "a new WARP session takes the new flows before the relay limit; the old one carries its open flows"
+                            );
+                            tokio::spawn(async move {
+                                tokio::time::sleep(RENEW_DRAIN).await;
+                                old.close("the relay budget: the drain ended");
+                            });
+                            delay = Duration::ZERO;
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %format!("{err:#}"),
+                                "the WARP session nears the relay limit; a new one failed, cfrs tries again"
+                            );
+                            tokio::time::sleep(base.max(Duration::from_secs(1))).await;
+                        }
+                    }
+                    continue;
+                }
                 {
                     let current = live.current.lock().await;
                     if !current.is_closed() {
@@ -289,6 +338,69 @@ mod tests {
         assert_eq!(next.id, 2, "two failed opens, then a new session");
         assert_eq!(live.reconnects(), 1);
         assert_eq!(opens.load(Ordering::SeqCst), 1);
+    }
+
+    struct Budgeted {
+        id: u32,
+        closed: AtomicBool,
+        due: Arc<AtomicBool>,
+    }
+
+    impl Closable for Budgeted {
+        fn is_closed(&self) -> bool {
+            self.closed.load(Ordering::SeqCst)
+        }
+        fn close(&self, _why: &str) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        fn renew_due(&self) -> bool {
+            self.due.load(Ordering::SeqCst)
+        }
+    }
+
+    /// The owner ruling of 2026-11-04: at the relay budget, a new session
+    /// takes the new flows with no gap; the old one closes after the drain.
+    #[tokio::test(start_paused = true)]
+    async fn a_spent_relay_budget_renews_with_no_gap() {
+        let opens = Arc::new(AtomicU32::new(1));
+        let connect: Connect<Budgeted> = {
+            let opens = opens.clone();
+            Box::new(move || {
+                let opens = opens.clone();
+                Box::pin(async move {
+                    let id = opens.fetch_add(1, Ordering::SeqCst) + 1;
+                    Ok(Budgeted {
+                        id,
+                        closed: AtomicBool::new(false),
+                        due: Arc::new(AtomicBool::new(false)),
+                    })
+                })
+            })
+        };
+        let due = Arc::new(AtomicBool::new(false));
+        let live = Live::start_with(
+            Budgeted {
+                id: 1,
+                closed: AtomicBool::new(false),
+                due: due.clone(),
+            },
+            connect,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+        let old = live.get().await.unwrap();
+        assert_eq!(old.id, 1);
+        due.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // A new flow gets the new session; the old one is still open.
+        let next = live.get_within(Duration::ZERO).await.unwrap();
+        assert_eq!(next.id, 2);
+        assert!(!old.is_closed(), "the open flows go on in the old session");
+        assert_eq!(live.reconnects(), 1);
+        tokio::time::sleep(RENEW_DRAIN + Duration::from_secs(1)).await;
+        assert!(old.is_closed(), "the old session closes after the drain");
+        assert_eq!(live.get_within(Duration::ZERO).await.unwrap().id, 2);
+        assert_eq!(opens.load(Ordering::SeqCst), 2, "one new session only");
     }
 
     struct Aged {

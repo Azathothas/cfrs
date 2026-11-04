@@ -395,7 +395,10 @@ host does not answer, `cfrs` tries other hosts of the same deployment (a
 comma list in `--relay`, else the pool of the relay). The relay carries IPv4 TCP only, and it ends a
 session after 64 MiB or 12 hours. Before that (at 60 MiB or 11.5 hours),
 the tunnel connects a replacement edge connection, and the old one
-finishes its open streams (`docs/protocol.md` section 3.4).
+finishes its open streams (`docs/protocol.md` section 3.4). A WARP
+(MASQUE) session through the relay is replaced at the same limits: a new
+session takes the new connections, and the open connections go on in the
+old session for 90 s.
 
 `--warp-identity PATH` keeps the WARP device in a file. Without it, each run
 registers a new anonymous device. `CFRS_EDGE=ip:port,...` replaces edge
