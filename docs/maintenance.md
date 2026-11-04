@@ -191,6 +191,18 @@ Rules that the tests check:
     of another user writes no file there (`CFRS_FOREIGN_HOME=allow`).
   * `status`: `proxy.kind` is the real kind (it was `http` for each
     proxy).
+  * Batch 5 (#228 to #276): a bare `cfrs share` exits 64 (give
+    `--mode upload` or `--dir`); uploads have mode 0600; the PIN cookie
+    has `Secure` (unlock over https only); a `path:` with a character of
+    a regular expression is a config error; `--check` fails a config with
+    no rule; the library `StaticDir` refuses dotfiles, and a
+    `ResponseWriter` can get more than one `body()` call
+    (`body_reader`).
+* **#276 item 1 (library)**: `StaticServer` keeps a body of at most 64 MiB
+  in its `BufferedResponse`; a larger file gets 413. A streaming
+  `StaticServer` needs a response type with a reader.
+* **#269 item 3**: `path:` is a literal prefix. A real regular expression
+  (as cloudflared) needs a decision on a `regex` dependency.
 * **Issues #212 to #278** came in during batch 4. They wait for the go of
   the owner: then triage and plan them as one batch. GitHub deleted #259
   to #278 (and the closed #165 to #207) with the account `aerrand-agent`:
