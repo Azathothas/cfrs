@@ -81,7 +81,7 @@ pub async fn bind(listen: &ProxyListen) -> Result<Bound> {
                     path.display()
                 );
             }
-            let _ = std::fs::remove_file(path);
+            crate::net::claim_socket_path(path, false)?;
             let listener = pod_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             Ok(Bound::Unix(listener, listen.clone()))

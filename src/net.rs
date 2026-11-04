@@ -24,6 +24,38 @@ pub type BoxedIo = Box<dyn AsyncReadWrite>;
 
 /// Install the ring crypto provider once per process, before the first TLS
 /// configuration is made.
+/// Make `path` free for a new unix listener (issues 202 and 115, and the
+/// rule of podssh): a socket that answers belongs to another process and
+/// is refused (exit 69), unless `replace`; a stale socket file is removed;
+/// another kind of file is never removed (exit 64).
+#[cfg(unix)]
+pub fn claim_socket_path(path: &std::path::Path, replace: bool) -> Result<()> {
+    use crate::exit::{fault, Fault};
+    use std::os::unix::fs::FileTypeExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => {
+            if !replace && std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!(
+                        "unix:{} is served by another process (cfrs ps; cfrs stop NAME, or --replace where the command has it)",
+                        path.display()
+                    ),
+                ));
+            }
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing the old socket unix:{}", path.display()))?;
+            Ok(())
+        }
+        Ok(_) => Err(fault(
+            Fault::Usage,
+            anyhow::anyhow!("unix:{} exists and is not a socket", path.display()),
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("unix:{}", path.display())),
+    }
+}
+
 pub fn init_crypto() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {

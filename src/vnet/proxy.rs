@@ -310,7 +310,7 @@ pub async fn serve(
 
 #[cfg(unix)]
 fn bind_unix(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
-    let _ = std::fs::remove_file(path);
+    crate::net::claim_socket_path(path, false)?;
     pod_netns::listen::bind_private(path)
         .with_context(|| format!("binding unix:{}", path.display()))
 }

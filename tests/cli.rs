@@ -1510,3 +1510,39 @@ fn root_writes_no_file_in_the_home_of_another_user() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!home.join(".local/state/cfrs").exists());
 }
+
+/// One rule for a unix socket path (podssh, issue 202): net switch, net
+/// proxy and relay connect --listen refuse a socket that answers (69) and
+/// never remove a file that is not a socket (64).
+#[test]
+fn the_socket_rule_of_net_and_relay() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("data");
+    std::fs::write(&file, "keep").unwrap();
+    let live = dir.path().join("live.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(args).env_remove("CFRS_ERROR_PROGRAM");
+        let out = cmd.output().unwrap();
+        (out.status.code(), stderr(&out))
+    };
+    let f = format!("unix:{}", file.display());
+    let l = format!("unix:{}", live.display());
+    for args in [
+        vec!["net", "switch", "--listen", f.as_str(), "--run-for", "1"],
+        vec!["net", "proxy", "--listen", f.as_str(), "--run-for", "1"],
+    ] {
+        let (code, err) = run(&args);
+        assert_eq!(code, Some(64), "{args:?}: {err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+    }
+    for args in [
+        vec!["net", "switch", "--listen", l.as_str(), "--run-for", "1"],
+        vec!["net", "proxy", "--listen", l.as_str(), "--run-for", "1"],
+    ] {
+        let (code, err) = run(&args);
+        assert_eq!(code, Some(69), "{args:?}: {err}");
+        assert!(err.contains("served by another process"), "{err}");
+    }
+}

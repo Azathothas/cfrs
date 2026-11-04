@@ -2574,30 +2574,7 @@ fn unix_listener(
     path: &std::path::Path,
     replace: bool,
 ) -> Result<(tokio::net::UnixListener, SocketFile)> {
-    use std::os::unix::fs::FileTypeExt as _;
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_socket() => {
-            if !replace && std::os::unix::net::UnixStream::connect(path).is_ok() {
-                return Err(cfrs::exit::fault(
-                    Fault::Unavailable,
-                    anyhow::anyhow!(
-                        "unix:{} is served by another process (cfrs ps; --replace takes it)",
-                        path.display()
-                    ),
-                ));
-            }
-            std::fs::remove_file(path)
-                .with_context(|| format!("removing the old socket unix:{}", path.display()))?;
-        }
-        Ok(_) => {
-            return Err(cfrs::exit::fault(
-                Fault::Usage,
-                anyhow::anyhow!("unix:{} exists and is not a socket", path.display()),
-            ))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err).with_context(|| format!("unix:{}", path.display())),
-    }
+    cfrs::net::claim_socket_path(path, replace)?;
     let listener = pod_netns::listen::bind_private(path)
         .with_context(|| format!("binding unix:{}", path.display()))?;
     let file = SocketFile {
@@ -3120,7 +3097,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
                             }
                         }
                         cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-                            let _ = std::fs::remove_file(&path);
+                            cfrs::net::claim_socket_path(&path, false)?;
                             let listener = pod_netns::listen::bind_private(&path)?;
                             println!("cfrs: relay    {} -> unix:{}", name, path.display());
                             cfrs::detach::arm_stop();
