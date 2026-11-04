@@ -118,13 +118,17 @@ impl TunnelBuilder {
 
     pub fn build(self) -> Result<Tunnel> {
         if self.config.ingress.is_empty() {
-            bail!("no ingress rules configured");
+            bail!(NO_INGRESS);
         }
         Ok(Tunnel {
             config: self.config,
         })
     }
 }
+
+/// The error of a tunnel with no ingress rules.
+pub const NO_INGRESS: &str =
+    "no ingress rules configured (give ingress:, url: or hello-world: in the file, or an origin flag)";
 
 pub struct Tunnel {
     config: Config,

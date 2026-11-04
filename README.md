@@ -319,6 +319,15 @@ ingress:
 
 * The last rule must match all requests (no `hostname`, no `path`). cfrs
   refuses a file where it does not.
+* `path:` is a literal prefix of the request path in cfrs. cloudflared
+  reads it as a regular expression. A `path:` with a character of a
+  regular expression (`^ $ * + ? ( ) [ ] { } | \`) is an error (exit 78):
+  write the prefix, for example `path: /api/`.
+* With no `ingress:`, `url:` gives one rule for each request (the same
+  services as `service:`), and `hello-world: true` gives the hello-world
+  page. `url:` or `hello-world:` with `ingress:` is an error.
+* A file with no rule (no `ingress:`, `url:` or `hello-world:`) fails
+  `--check` (exit 78) and the run.
 * With `credentials-file:`, `tunnel:` is the name or the UUID of the tunnel,
   as in cloudflared. A UUID must be the `TunnelID` of the file. With
   `tunnel:` only, it is a tunnel token.

@@ -334,11 +334,15 @@ struct RawConfig {
     ha_connections: Option<u8>,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default, rename = "hello-world")]
+    hello_world: Option<bool>,
 }
 
 /// The top-level keys of a cloudflared config.yml. cfrs reads `tunnel`,
-/// `credentials-file`, `token`, `ingress`, `protocol` and `ha-connections`,
-/// and ignores the others. A key outside this list is a typo: an error.
+/// `credentials-file`, `token`, `ingress`, `url`, `hello-world`, `protocol`
+/// and `ha-connections`, and ignores the others. A key outside this list is a typo: an error.
 pub const CLOUDFLARED_KEYS: &[&str] = &[
     "tunnel",
     "credentials-file",
@@ -472,6 +476,17 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
                 }
             }
         }
+        // Issue 269: cloudflared reads path: as a regular expression; cfrs
+        // reads it as a literal prefix. A path that looks like a regular
+        // expression is an error, not a rule that never matches.
+        if let Some(path) = rule.get("path").and_then(|v| v.as_str()) {
+            if let Some(c) = path.chars().find(|c| REGEX_CHARS.contains(*c)) {
+                bail!(
+                    "{}: {place}: path: {path:?} has {c:?}; path is a literal prefix in cfrs, a regular expression is not supported (for example `path: /api/`)",
+                    file.display()
+                );
+            }
+        }
         let mut origin = match rule.remove("originRequest") {
             None | Some(serde_json::Value::Null) => serde_json::Map::new(),
             Some(serde_json::Value::Object(o)) => {
@@ -498,6 +513,10 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
     }
     Ok(())
 }
+
+/// The characters of a regular expression that a literal path prefix does
+/// not have.
+const REGEX_CHARS: &str = "^$*+?()[]{}|\\";
 
 /// The types of the values of `originRequest` that cfrs reads (issue 172):
 /// a time needs a unit, a flag is true or false.
@@ -549,11 +568,16 @@ fn check_top_values(file: &std::path::Path, value: &serde_json::Value) -> Result
             file.display()
         ),
     };
-    for key in ["tunnel", "credentials-file", "protocol", "token"] {
+    for key in ["tunnel", "credentials-file", "protocol", "token", "url"] {
         if let Some(v) = map.get(key) {
             if !v.is_string() && !v.is_null() {
                 bail!("{}: {key}: give a string", file.display());
             }
+        }
+    }
+    if let Some(v) = map.get("hello-world") {
+        if !v.is_boolean() && !v.is_null() {
+            bail!("{}: hello-world: give true or false", file.display());
         }
     }
     if let Some(v) = map.get("ha-connections") {
@@ -629,6 +653,30 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
             }
         }
         config.ingress = crate::ingress::ingress_from_raw(raw.ingress)?;
+    }
+    // Issue 269: url: and hello-world: of cloudflared give one catch-all
+    // rule when the file has no ingress rules.
+    let hello = raw.hello_world == Some(true);
+    match (&raw.url, hello) {
+        (Some(_), true) => bail!(
+            "{}: url: and hello-world: both give the origin; give one",
+            path.display()
+        ),
+        (Some(_), false) | (None, true) if !config.ingress.is_empty() => bail!(
+            "{}: {} and ingress: both give the origin; give one",
+            path.display(),
+            if hello { "hello-world:" } else { "url:" }
+        ),
+        (Some(url), false) => {
+            let service = crate::ingress::Service::parse(url)
+                .with_context(|| format!("{}: url: {url}", path.display()))?;
+            config.ingress = crate::ingress::Ingress::default().catch_all(service);
+        }
+        (None, true) => {
+            config.ingress =
+                crate::ingress::Ingress::default().catch_all(crate::ingress::Service::HelloWorld);
+        }
+        (None, false) => {}
     }
     if let Some(token) = &raw.token {
         // Issue 269: a token of the file is the named tunnel, not a quick
@@ -882,6 +930,53 @@ mod tests {
         assert!(err.contains("give one"), "{err}");
         let err = load(format!("token: 5\n{catch_all}")).unwrap_err();
         assert!(err.contains("token: give a string"), "{err}");
+    }
+
+    // Issue 269: url: and hello-world: give a catch-all rule; with ingress:
+    // they are an error. A path that looks like a regular expression is an
+    // error.
+    #[test]
+    fn url_and_hello_world_make_a_catch_all_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map_err(|e| format!("{e:#}"))
+        };
+        let config = load("url: http://127.0.0.1:8080\n").unwrap();
+        assert_eq!(config.ingress.rules.len(), 1);
+        assert!(matches!(
+            config.ingress.rules[0].service,
+            crate::ingress::Service::Http(_)
+        ));
+        let config = load("hello-world: true\n").unwrap();
+        assert!(matches!(
+            config.ingress.rules[0].service,
+            crate::ingress::Service::HelloWorld
+        ));
+        let config = load("hello-world: false\nloglevel: info\n").unwrap();
+        assert!(config.ingress.is_empty());
+        let err =
+            load("url: http://127.0.0.1:1\ningress:\n  - service: http_status:404\n").unwrap_err();
+        assert!(
+            err.contains("url: and ingress: both give the origin"),
+            "{err}"
+        );
+        let err = load("hello-world: true\ningress:\n  - service: http_status:404\n").unwrap_err();
+        assert!(err.contains("hello-world: and ingress:"), "{err}");
+        let err = load("url: http://127.0.0.1:1\nhello-world: true\n").unwrap_err();
+        assert!(err.contains("give one"), "{err}");
+        let err = load("hello-world: yes please\n").unwrap_err();
+        assert!(err.contains("hello-world: give true or false"), "{err}");
+
+        let err = load(
+            "ingress:\n  - path: ^/api/.*$\n    service: http://127.0.0.1:1\n  - service: http_status:404\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("ingress rule 1: path:"), "{err}");
+        assert!(err.contains("literal prefix"), "{err}");
+        load("ingress:\n  - path: /api/v1.2/\n    service: http://127.0.0.1:1\n  - service: http_status:404\n")
+            .unwrap();
     }
 
     // Issue 170: a misspelt key of a rule or of originRequest is an error.

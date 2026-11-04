@@ -184,6 +184,11 @@ pub async fn check(config: &Config) -> Report {
         },
     );
 
+    // Issue 269: a run with no ingress rules fails, so the check fails too.
+    if config.ingress.is_empty() {
+        report.config_fail("ingress", crate::tunnel::NO_INGRESS);
+    }
+
     match crate::tunnel::edge_override() {
         Ok(Some(list)) => report.push(
             "edge",
@@ -534,6 +539,22 @@ mod tests {
             .filter(|c| c.status == Status::Fail)
             .map(|c| c.detail.clone())
             .collect()
+    }
+
+    // Issue 269: a config with no ingress rules fails the check (exit 78),
+    // as a run does.
+    #[tokio::test]
+    async fn an_empty_ingress_fails_the_check() {
+        let report = check(&Config::default()).await;
+        assert!(!report.ok());
+        assert!(
+            failed(&report)
+                .iter()
+                .any(|d| d.contains("no ingress rules")),
+            "{:?}",
+            report.checks
+        );
+        assert_eq!(report.fault(), Some(crate::exit::Fault::Config));
     }
 
     #[tokio::test]

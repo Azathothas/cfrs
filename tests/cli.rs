@@ -1304,6 +1304,23 @@ fn bad_credentials_exit_78() {
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
 
+/// Issue 269: a config file with no rule fails --check with exit 78.
+#[test]
+fn a_config_with_no_rule_fails_the_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("empty.yml");
+    std::fs::write(&config, "ingress: []\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--config", config.to_str().unwrap(), "--check"])
+        .env("CFRS_EDGE", "127.0.0.1:9")
+        .env_remove("TUNNEL_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(text.contains("no ingress rules"), "{text}");
+}
+
 /// Issue 250: a bare `cfrs share` names the modes, and starts nothing.
 #[test]
 fn a_bare_share_names_the_modes() {
