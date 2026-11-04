@@ -101,7 +101,8 @@ latency() {
         curl -fsS --max-time 30 -o /dev/null -w '%{time_total}\n' "$2" || echo fail
     done > "$dir/lat.txt"
     if grep -q fail "$dir/lat.txt"; then
-        echo "latency $label $1: a request FAILED"
+        echo "latency $label $1: $(grep -c fail "$dir/lat.txt") of 20 requests FAILED"
+        log
         exit 1
     fi
     sort -n "$dir/lat.txt" | awk -v n="$1" -v l="$label" '{ a[NR] = $1 } END { printf "latency %s %s: p50 %.0f ms, max %.0f ms (20 requests)\n", l, n, a[int((NR + 1) / 2)] * 1000, a[NR] * 1000 }'
