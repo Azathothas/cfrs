@@ -212,3 +212,77 @@ fn the_readme_has_no_relative_link() {
         assert!(bad.is_empty(), "{name}: relative links: {bad:?}");
     }
 }
+
+/// #256: the section "UDP in the stream" of the pod-netns README comes
+/// after the list of the seccomp backend, not inside it.
+#[test]
+fn the_seccomp_list_of_pod_netns_is_one_list() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("crates/pod-netns/README.md")).unwrap();
+    let needs = text
+        .find("Needs: seccomp")
+        .expect("the Needs line of seccomp");
+    let udp = text.find("### UDP in the stream").expect("the UDP heading");
+    assert!(needs < udp, "the UDP heading splits the seccomp list");
+}
+
+/// #257: each command whose help has --detach is named in the sentence
+/// of the README about --detach.
+#[test]
+fn the_readme_names_each_command_with_detach() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let at = flat
+        .find("`--detach` works with")
+        .expect("the --detach sentence");
+    let sentence = &flat[at..at + flat[at..].find(". ").unwrap()];
+    for command in [
+        "tunnel",
+        "serve",
+        "share",
+        "demo",
+        "connect",
+        "warp proxy",
+        "warp forward",
+        "warp tun",
+        "relay node",
+        "net proxy",
+        "net switch",
+    ] {
+        let args: Vec<&str> = command.split(' ').chain(["--help"]).collect();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(&args)
+            .output()
+            .unwrap();
+        let help = String::from_utf8_lossy(&out.stdout);
+        if help.contains("--detach") {
+            assert!(
+                sentence.contains(&format!("`{command}`")),
+                "{command} is not in: {sentence}"
+            );
+        }
+    }
+}
+
+/// #258: each release tag that the README, the notebook or a help text
+/// names has a release note: a tag in an example is not invented.
+#[test]
+fn each_tag_in_the_documents_has_a_release_note() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut missing = Vec::new();
+    for name in ["README.md", "notebooks/install.ipynb", "src/main.rs"] {
+        let text = std::fs::read_to_string(root.join(name)).unwrap();
+        for part in text.split("v0.3.0-beta.").skip(1) {
+            let n: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if n.is_empty() {
+                continue;
+            }
+            let note = root.join(format!("docs/releases/v0.3.0-beta.{n}.md"));
+            if !note.exists() {
+                missing.push(format!("{name}: v0.3.0-beta.{n}"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "tags with no release note: {missing:?}");
+}

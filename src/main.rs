@@ -323,7 +323,7 @@ struct UpdateArgs {
     /// Only say which release is available; change nothing.
     #[arg(long)]
     check: bool,
-    /// The tag to install, for example v0.3.0-beta.2. Default: the newest
+    /// The tag to install, for example v0.3.0-beta.11. Default: the newest
     /// release (a prerelease only when this binary is a prerelease).
     #[arg(long, value_name = "TAG")]
     version: Option<String>,

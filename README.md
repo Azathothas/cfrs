@@ -123,7 +123,7 @@ exits 0 when `curl` fails or is missing.
 * The directory: `CFRS_INSTALL_DIR`, else `/usr/local/bin` for root, else
   `$XDG_BIN_HOME`, else `~/.local/bin`. A line says how to add it to `PATH`.
   The script checks the directory before the downloads.
-* `CFRS_VERSION=v0.3.0-beta.7` installs that release, with no request to
+* `CFRS_VERSION=<TAG>` (for example `v0.3.0-beta.11`) installs that release, with no request to
   the GitHub API. For the newest release, the script reads the API; when
   the API refuses (403 on a shared address), it reads `releases.atom`.
   `GITHUB_TOKEN` or `GH_TOKEN` goes to `api.github.com` only.
@@ -155,7 +155,7 @@ import subprocess
 import urllib.request
 
 KEEP = os.environ.get("CFRS_KEEP", os.path.expanduser("~/cfrs-keep"))
-VERSION = "latest"  # A tag (for example v0.3.0-beta.10) uses no GitHub API.
+VERSION = "latest"  # A tag (for example v0.3.0-beta.11) uses no GitHub API.
 URL = "https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh"
 
 os.makedirs(os.path.join(KEEP, "bin"), exist_ok=True)
@@ -212,7 +212,7 @@ cfrs demo --exit-on-verify
 ```sh
 cfrs update --check              # say whether a newer release exists
 cfrs update                      # install it
-cfrs update --version v0.3.0-beta.1
+cfrs update --version <TAG>      # install the release <TAG>
 cfrs update --rollback           # put the binary before the update back
 ```
 
@@ -588,9 +588,9 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   A listener on an address that is not loopback, with no credentials, gets
   a warning. `--max-connections N` limits the clients; `--dns ADDR`
   answers DNS through WARP.
-* `--fragment-client-hello [record|sni]` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_FRAGMENT`):
+* `--fragment-client-hello [off|record|sni]` (default `off`; a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_FRAGMENT`):
   the TLS ClientHello of the MASQUE connection goes in more than one record
-  of `--fragment-size` bytes (64-160). `sni` ends the first record in the
+  of `--fragment-size` bytes (16 to 4096; default 64-160). `sni` ends the first record in the
   server name. The server joins the records (RFC 8446, section 5.1); a
   middlebox that reads the name from the first record does not find it.
 * `--carry wg` (a flag of `cfrs warp`, before or after the subcommand; `CFRS_WARP_CARRY`): a second WireGuard device
@@ -947,7 +947,8 @@ cfrs stop web                                  # or: cfrs stop --all
 ```
 
 `--detach` works with `tunnel`, `serve`, `share`, `demo`, `connect`,
-`warp proxy`, `net proxy` and `net switch`. The command runs in the foreground until it
+`warp proxy`, `warp forward`, `warp tun`, `relay node`, `net proxy` and
+`net switch`. The command runs in the foreground until it
 is ready: until the public URL answers, or until the listener is bound.
 Then it leaves the terminal (`setsid`, SIGHUP ignored, stdin to
 `/dev/null`, stdout and stderr to its log), and the start prints one JSON
@@ -1226,7 +1227,7 @@ the one of the machine). It needs git, curl and docker
 targets after each release.
 
 ```sh
-sh scripts/rebuild.sh v0.3.0-beta.8
+sh scripts/rebuild.sh <TAG>
 ```
 
 ## Documents

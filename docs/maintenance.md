@@ -131,6 +131,15 @@ When a batch of fixes is green (`CLAUDE.md`):
 6. Check that the release has its files, and that `release-proofs.yml`
    passes (each file `OK`, `Verified OK`).
 
+At the first stable release (no `-beta.N`), also:
+
+* Set the version of the workspace and of the `pod-netns` dependency to
+  the stable version (#222): a prerelease version requirement does not
+  match a stable crate.
+* Rewrite the line of the README that says `:latest` has no image (#258).
+* Choose the package name for crates.io (the name `cfrs` is taken, #224;
+  `docs/decisions.md`), and set `documentation` in both manifests.
+
 ## The code
 
 | Path | What |
