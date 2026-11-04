@@ -354,9 +354,6 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for GoawayScan<T> {
     }
 }
 
-/// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
-/// One task accepts the streams, gives the control stream to the caller,
-/// and sends a PING each `keepalive.interval`.
 /// The window of each stream that cfrs gives the edge.
 pub const STREAM_WINDOW: u32 = 1 << 20;
 /// The window of the connection.
@@ -387,11 +384,127 @@ pub fn server_builder() -> h2::server::Builder {
     builder
 }
 
+/// A limit of a connection: when it is spent, the connection takes no new
+/// stream (the draining signal comes), and the open streams go on.
+pub struct Budget {
+    /// Notified when the bytes of the connection are spent (see `Metered`).
+    pub spent: Arc<tokio::sync::Notify>,
+    /// The age of the connection at which the budget is spent.
+    pub age: Duration,
+}
+
+impl Budget {
+    /// The budget of an edge connection through the relay of `ws_relay`.
+    fn relay() -> (Self, Arc<tokio::sync::Notify>) {
+        let spent = Arc::new(tokio::sync::Notify::new());
+        let budget = Self {
+            spent: spent.clone(),
+            age: crate::ws_relay::SESSION_AGE,
+        };
+        (budget, spent)
+    }
+}
+
+/// Counts the bytes that go through `inner` in the two directions, and
+/// notifies `spent` one time when the count gets to `limit`.
+pub struct Metered<T> {
+    inner: T,
+    used: u64,
+    limit: u64,
+    spent: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl<T> Metered<T> {
+    pub fn new(inner: T, limit: u64, spent: Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            inner,
+            used: 0,
+            limit,
+            spent: Some(spent),
+        }
+    }
+
+    fn count(&mut self, n: usize) {
+        self.used = self.used.saturating_add(n as u64);
+        if self.used >= self.limit {
+            if let Some(spent) = self.spent.take() {
+                spent.notify_one();
+            }
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Metered<T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let this = &mut *self;
+        let poll = std::pin::Pin::new(&mut this.inner).poll_read(cx, buf);
+        let n = buf.filled().len() - before;
+        this.count(n);
+        poll
+    }
+}
+
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Metered<T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        let poll = std::pin::Pin::new(&mut this.inner).poll_write(cx, data);
+        if let std::task::Poll::Ready(Ok(n)) = poll {
+            this.count(n);
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        let poll = std::pin::Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        if let std::task::Poll::Ready(Ok(n)) = poll {
+            this.count(n);
+        }
+        poll
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+/// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
+/// One task accepts the streams, gives the control stream to the caller,
+/// and sends a PING each `keepalive.interval`. When `budget` is spent, the
+/// connection drains as for a GOAWAY of the edge.
 pub async fn serve_connection<T>(
     io: T,
     runtime: Arc<ServiceRuntime>,
     ingress: Arc<Ingress>,
     keepalive: Keepalive,
+    budget: Option<Budget>,
 ) -> Result<Served>
 where
     T: AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -434,9 +547,30 @@ where
     let serve = tokio::spawn(async move {
         let mut control_tx = Some(control_tx);
         let mut drain_tx = Some(drain_tx);
+        let spent = async move {
+            let Some(budget) = budget else {
+                return std::future::pending().await;
+            };
+            tokio::select! {
+                _ = budget.spent.notified() => "the connection has carried its byte budget".to_string(),
+                _ = tokio::time::sleep(budget.age) => format!(
+                    "the connection is {} min old",
+                    budget.age.as_secs() / 60
+                ),
+            }
+        };
+        tokio::pin!(spent);
         let reason = loop {
             let next = tokio::select! {
                 next = conn.accept() => next,
+                reason = &mut spent, if drain_tx.is_some() => {
+                    // A planned replacement: the open streams go on.
+                    info!(%reason, "the HTTP/2 edge connection is replaced before a limit of the relay");
+                    if let Some(tx) = drain_tx.take() {
+                        let _ = tx.send(reason);
+                    }
+                    continue;
+                }
                 _ = goaway.notified(), if drain_tx.is_some() => {
                     // No new stream comes; the open streams go on.
                     debug!("the edge sent GOAWAY");
@@ -552,6 +686,16 @@ async fn connect_one(
     runtime: Arc<ServiceRuntime>,
     ingress: Arc<Ingress>,
 ) -> Result<H2Leg> {
+    // Through the relay, the session has a byte and a time limit: count
+    // the bytes under TLS, as the relay does.
+    let (io, budget): (crate::net::BoxedIo, _) = match crate::ws_relay::active() {
+        Some(_) => {
+            let (budget, spent) = Budget::relay();
+            let io = Metered::new(io, crate::ws_relay::SESSION_BYTES, spent);
+            (Box::new(io), Some(budget))
+        }
+        None => (io, None),
+    };
     let config = edge_tls().map_err(|e| anyhow::anyhow!(e))?;
     let name = rustls_pki_types::ServerName::try_from(H2_SNI.to_string())
         .context("the HTTP/2 SNI is not a valid name")?;
@@ -572,7 +716,7 @@ async fn connect_one(
         control: control_rx,
         serve,
         draining,
-    } = serve_connection(tls, runtime, ingress, Keepalive::default())
+    } = serve_connection(tls, runtime, ingress, Keepalive::default(), budget)
         .await
         .with_context(|| format!("the edge at {addr}"))?;
 
@@ -1011,7 +1155,7 @@ mod tests {
                 .max_concurrent_streams(1000)
                 .handshake::<_, Bytes>(edge_side),
         );
-        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let (mut send, conn) = client.await.unwrap().unwrap();
@@ -1082,6 +1226,112 @@ mod tests {
         (runtime, ingress)
     }
 
+    /// The meter counts the two directions and notifies one time, when the
+    /// count gets to the limit.
+    #[tokio::test]
+    async fn the_meter_notifies_at_its_limit() {
+        let spent = Arc::new(tokio::sync::Notify::new());
+        let (near, mut far) = tokio::io::duplex(1 << 16);
+        let mut io = Metered::new(near, 10, spent.clone());
+        io.write_all(b"12345").await.unwrap();
+        far.write_all(b"1234").await.unwrap();
+        let mut got = [0u8; 4];
+        io.read_exact(&mut got).await.unwrap();
+        assert_eq!(io.used, 9);
+        let early = tokio::time::timeout(Duration::from_millis(50), spent.notified()).await;
+        assert!(early.is_err(), "no notice under the limit");
+        io.write_all(b"x").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), spent.notified())
+            .await
+            .expect("a notice at the limit");
+        assert!(io.spent.is_none(), "one notice only");
+    }
+
+    /// A spent byte budget drains the connection, as a GOAWAY does: the
+    /// tunnel connects a replacement before the relay ends the session.
+    #[tokio::test]
+    async fn a_spent_budget_drains_the_connection() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let spent = Arc::new(tokio::sync::Notify::new());
+        let cfrs_side = Metered::new(cfrs_side, 4 << 10, spent.clone());
+        let budget = Budget {
+            spent,
+            age: Duration::from_secs(3600),
+        };
+        let client = tokio::spawn(h2::client::handshake(edge_side));
+        let served = serve_connection(
+            cfrs_side,
+            runtime,
+            ingress,
+            Keepalive::default(),
+            Some(budget),
+        )
+        .await
+        .unwrap();
+        let (mut send, connection) = client.await.unwrap().unwrap();
+        let _driver = tokio::spawn(connection);
+        let mut draining = served.draining;
+        assert!(
+            draining.try_recv().is_err(),
+            "no drain before the budget is spent"
+        );
+        // The answers of more requests than the budget go through the meter.
+        let mut reason = None;
+        for _ in 0..200 {
+            if let Ok(r) = draining.try_recv() {
+                reason = Some(r);
+                break;
+            }
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("https://x.trycloudflare.com/")
+                .body(())
+                .unwrap();
+            let (response, _) = send.send_request(request, true).unwrap();
+            let response = response.await.unwrap();
+            let mut body = response.into_body();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                let _ = body.flow_control().release_capacity(chunk.len());
+            }
+        }
+        let reason = match reason {
+            Some(reason) => reason,
+            None => tokio::time::timeout(Duration::from_secs(5), draining)
+                .await
+                .expect("the spent budget drains the connection")
+                .unwrap(),
+        };
+        assert!(reason.contains("byte budget"), "{reason}");
+    }
+
+    /// An old connection drains at the age of its budget.
+    #[tokio::test(start_paused = true)]
+    async fn an_old_connection_drains() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let budget = Budget {
+            spent: Arc::new(tokio::sync::Notify::new()),
+            age: Duration::from_secs(600),
+        };
+        let keepalive = Keepalive {
+            interval: Duration::from_secs(3600 * 24),
+            timeout: Duration::from_secs(30),
+        };
+        let client = tokio::spawn(h2::client::handshake(edge_side));
+        let served = serve_connection(cfrs_side, runtime, ingress, keepalive, Some(budget))
+            .await
+            .unwrap();
+        let (_send, connection) = client.await.unwrap().unwrap();
+        let _driver = tokio::spawn(connection);
+        let reason = tokio::time::timeout(Duration::from_secs(601), served.draining)
+            .await
+            .expect("the old connection drains")
+            .unwrap();
+        assert!(reason.contains("10 min old"), "{reason}");
+    }
+
     /// An edge that stops answering (its HTTP/2 connection is not polled
     /// any more) is found by the PING, not by the OS.
     #[tokio::test]
@@ -1093,7 +1343,7 @@ mod tests {
             timeout: Duration::from_millis(200),
         };
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let served = serve_connection(cfrs_side, runtime, ingress, keepalive)
+        let served = serve_connection(cfrs_side, runtime, ingress, keepalive, None)
             .await
             .unwrap();
         // The edge side keeps its connection but never polls it again.
@@ -1112,7 +1362,7 @@ mod tests {
         let (runtime, ingress) = service();
         let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let (mut send, connection) = client.await.unwrap().unwrap();
@@ -1170,7 +1420,7 @@ mod tests {
                                              // HEADERS on stream 1, END_HEADERS, no END_STREAM: GET https://x/.
         start.extend(frame(0x1, 0x4, 1, &[0x82, 0x87, 0x84, 0x41, 0x01, b'x']));
         edge.write_all(&start).await.unwrap();
-        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let mut draining = served.draining;

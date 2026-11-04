@@ -431,8 +431,9 @@ default is `https://tcp.ssh.relay.ajam.dev`). The relay opens TCP to the
 edge on port 7844. The TLS to the edge is in the WebSocket, so the relay
 does not see the tunnel. `CFRS_RELAY_TOKEN` gives a relay token; without
 it, `cfrs` mints one. The relay carries IPv4 TCP only, and it ends a
-session after 64 MiB or 12 hours; then the tunnel connects again
-(`docs/protocol.md` section 3.4).
+session after 64 MiB or 12 hours. Before that (at 60 MiB or 11.5 hours),
+the tunnel connects a replacement edge connection, and the old one
+finishes its open streams (`docs/protocol.md` section 3.4).
 
 `--warp-identity PATH` keeps the WARP device in a file. Without it, each run
 registers a new anonymous device. `CFRS_EDGE=ip:port,...` replaces edge

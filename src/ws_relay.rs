@@ -20,8 +20,10 @@
 //! * The relay can end a session after 180 s with no payload (a limit of
 //!   the relay, not of cfrs). The PING of the HTTP/2
 //!   leg (each 30 s) is payload.
-//! * A session ends at 64 MiB (both directions) or after 12 h. The tunnel
-//!   then connects a replacement, as for each lost connection.
+//! * A session ends at 64 MiB (both directions) or after 12 h. cfrs
+//!   connects a replacement before that: at `SESSION_BYTES` or
+//!   `SESSION_AGE` the old connection takes no new stream, and its open
+//!   streams go on until they end.
 
 use std::net::SocketAddr;
 use std::sync::OnceLock;
@@ -43,6 +45,12 @@ pub const TOKEN_VARIABLE: &str = "CFRS_RELAY_TOKEN";
 const MINT_MARGIN: Duration = Duration::from_secs(10 * 60);
 /// The largest WebSocket message and frame that cfrs takes from the relay.
 const MAX_MESSAGE: usize = 16 << 20;
+/// The bytes (both directions, TLS included) after which cfrs replaces an
+/// edge connection through the relay. The relay ends a session at 64 MiB.
+pub const SESSION_BYTES: u64 = 60 << 20;
+/// The age after which cfrs replaces an edge connection through the relay.
+/// The relay ends a session after 12 h.
+pub const SESSION_AGE: Duration = Duration::from_secs(11 * 3600 + 30 * 60);
 /// The buffer between the WebSocket pump and the HTTP/2 leg.
 const PIPE_BUFFER: usize = 256 * 1024;
 
