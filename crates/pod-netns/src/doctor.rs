@@ -121,14 +121,20 @@ pub(crate) fn probe_ptrace() -> Probe {
 /// Can a seccomp filter that returns `SECCOMP_RET_USER_NOTIF` be installed and
 /// handed a listener fd? That is the only `LD_PRELOAD`-free interception left
 /// when namespaces and ptrace are both denied.
+///
+/// The probe does what the backend does (`install_notif_filter`): it sets
+/// `no_new_privs` first, because an unprivileged task cannot install a filter
+/// without it (`EACCES`). It runs in a forked child, so the flag and the
+/// filter do not stay on the doctor process.
 pub(crate) fn probe_seccomp_notif() -> Probe {
-    pub(crate) const BPF_LD_ABS_W: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
-    pub(crate) const BPF_JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
-    pub(crate) const BPF_RET_K: u16 = 0x06; // BPF_RET | BPF_K
-    pub(crate) const RET_USER_NOTIF: u32 = 0x7fc0_0000;
-    pub(crate) const RET_ALLOW: u32 = 0x7fff_0000;
-    pub(crate) const SET_MODE_FILTER: libc::c_uint = 1;
-    pub(crate) const FLAG_NEW_LISTENER: libc::c_uint = 8;
+    const BPF_LD_ABS_W: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
+    const BPF_JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
+    const BPF_RET_K: u16 = 0x06; // BPF_RET | BPF_K
+    const RET_USER_NOTIF: u32 = 0x7fc0_0000;
+    const RET_ALLOW: u32 = 0x7fff_0000;
+    const SET_MODE_FILTER: libc::c_uint = 1;
+    const FLAG_NEW_LISTENER: libc::c_uint = 8;
+    const NAME: &str = "seccomp(SECCOMP_RET_USER_NOTIF)";
 
     let filter = [
         libc::sock_filter {
@@ -160,29 +166,68 @@ pub(crate) fn probe_seccomp_notif() -> Probe {
         len: filter.len() as u16,
         filter: filter.as_ptr() as *mut _,
     };
-    let r = unsafe {
-        libc::syscall(
-            libc::SYS_seccomp,
-            SET_MODE_FILTER,
-            FLAG_NEW_LISTENER,
-            &prog as *const libc::sock_fprog,
-        )
-    };
-    if r < 0 {
+    // The child does no allocation: the doctor process can have threads.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
         return Probe {
-            name: "seccomp(SECCOMP_RET_USER_NOTIF)",
+            name: NAME,
             ok: false,
-            detail: format!("{}", std::io::Error::last_os_error()),
+            detail: format!("fork: {}", std::io::Error::last_os_error()),
         };
     }
-    let fd = r as RawFd;
-    unsafe { libc::close(fd) };
-    Probe {
-        name: "seccomp(SECCOMP_RET_USER_NOTIF)",
-        ok: true,
-        detail: "listener installed".into(),
+    if pid == 0 {
+        let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(1);
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            unsafe { libc::_exit(PROBE_NO_NNP_BASE + errno().clamp(1, 50)) };
+        }
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                SET_MODE_FILTER,
+                FLAG_NEW_LISTENER,
+                &prog as *const libc::sock_fprog,
+            )
+        };
+        let code = if r < 0 { errno().clamp(1, 199) } else { 0 };
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    let code = if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else {
+        -1
+    };
+    match code {
+        0 => Probe {
+            name: NAME,
+            ok: true,
+            detail: "listener installed".into(),
+        },
+        code if code > PROBE_NO_NNP_BASE => Probe {
+            name: NAME,
+            ok: false,
+            detail: format!(
+                "prctl(PR_SET_NO_NEW_PRIVS): {}",
+                std::io::Error::from_raw_os_error(code - PROBE_NO_NNP_BASE)
+            ),
+        },
+        -1 => Probe {
+            name: NAME,
+            ok: false,
+            detail: "the probe process was killed".into(),
+        },
+        code => Probe {
+            name: NAME,
+            ok: false,
+            detail: format!("{}", std::io::Error::from_raw_os_error(code)),
+        },
     }
 }
+
+/// Child exit codes of [`probe_seccomp_notif`] above this value: `prctl`
+/// failed with the errno `code - PROBE_NO_NNP_BASE`.
+const PROBE_NO_NNP_BASE: i32 = 200;
 
 /// Can the supervisor write a child's memory? That is what faking
 /// `getsockname`/`getpeername`/`accept` addresses needs.
@@ -292,5 +337,41 @@ pub(crate) fn doctor(json: bool) -> i32 {
         0
     } else {
         EXIT_NO_BACKEND
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Issue 299: the probe must agree with the filter of the backend. A
+    /// task with no `CAP_SYS_ADMIN` and `no_new_privs` clear (an unprivileged
+    /// user) can install the filter of the backend, because the backend sets
+    /// `no_new_privs`. Before, the probe did not set it and said `no`
+    /// (`EACCES`). The test drops root in a child to make that task.
+    #[test]
+    fn the_seccomp_probe_agrees_with_the_backend_filter() {
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork");
+        if pid == 0 {
+            if unsafe { libc::geteuid() } == 0 {
+                // nobody: no capabilities after the change of the uid.
+                unsafe {
+                    libc::setresgid(65534, 65534, 65534);
+                    libc::setresuid(65534, 65534, 65534);
+                }
+            }
+            let probe = super::probe_seccomp_notif().ok;
+            let backend = crate::seccomp::install_notif_filter().is_ok();
+            unsafe { libc::_exit(i32::from(probe) | (i32::from(backend) << 1)) };
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(libc::WIFEXITED(status), "the child did not exit");
+        let code = libc::WEXITSTATUS(status);
+        let probe = code & 1 != 0;
+        let backend = code & 2 != 0;
+        assert_eq!(
+            probe, backend,
+            "probe_seccomp_notif says {probe}, install_notif_filter says {backend}"
+        );
     }
 }

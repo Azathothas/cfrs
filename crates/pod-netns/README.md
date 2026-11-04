@@ -31,7 +31,9 @@ pod-netns doctor --json
 | `-v, --verbose` | Log each flow. |
 
 `pod-netns doctor` prints what the host permits. The exit status is 3 when no
-backend can run.
+backend can run. The seccomp probe runs in a child process. It sets
+`no_new_privs` before it installs its filter, as the backend does: an
+unprivileged process cannot install the filter without it.
 
 ## Backends
 
