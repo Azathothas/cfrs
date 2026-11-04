@@ -184,6 +184,20 @@ The token: `CFRS_RELAY_TOKEN`, or `POST /v1/mint` with the body `{}`, which
 gives `{token, expires}`. A minted token is minted again when it has less
 than 10 minutes. A 403 for a minted token mints a new one one time. A 403
 that names the ALLOW list is a policy refusal: a new token does not help.
+A minted token is kept in `relay-token-HOST.json` (mode 0600) in the state
+directory, so the next process does not mint again.
+
+The hosts: `--relay` (or `CFRS_RELAY`) takes one URL or a comma list. Each
+host of a list must be under the parent domain of the first host (one
+deployment), because the token goes to each host. For one host, the
+alternates are the first 3 hosts of its pool: the `pool[].host` names of
+`/relays.json`, read after a mint and kept for 7 days in
+`relay-pool-HOST.json`. Until a pool is cached, the default relay uses 6
+hosts in different regions (`src/relay_pool.rs`). A connect tries the
+first host, then the next host after 2 s, or at once after a failure. A
+refused fixed token or a policy refusal stops the hosts that did not start:
+they are of the same deployment. On 2026-11-04 each of the 37 hosts of the
+pool reached `198.41.192.167:7844` (`/trace?target=`, road `vpc`).
 
 Limits of `tcp.ssh.relay.ajam.dev` (podssh measured them; the relay sets
 them, and they can change):

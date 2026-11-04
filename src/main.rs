@@ -373,8 +373,9 @@ struct TunnelOpts {
     /// WebSocket to the relay of --relay, on TCP 443).
     #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp", "relay"])]
     transport: String,
-    /// The WebSocket-to-TCP relay of --transport relay. CFRS_RELAY_TOKEN
-    /// gives a token; without it, cfrs mints one.
+    /// The WebSocket-to-TCP relay of --transport relay: a URL, or a comma
+    /// list of hosts of one deployment. CFRS_RELAY_TOKEN gives a token;
+    /// without it, cfrs mints one.
     #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", default_value = cfrs::ws_relay::DEFAULT_RELAY)]
     relay: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.

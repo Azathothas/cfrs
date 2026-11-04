@@ -80,6 +80,7 @@ pub mod qr;
 pub mod quicktunnel;
 pub mod race;
 pub mod relay;
+pub mod relay_pool;
 pub mod relay_reverse;
 pub mod report;
 pub mod resolve;

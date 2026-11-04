@@ -430,7 +430,9 @@ WebSocket-to-TCP relay on TCP 443 (`--relay URL`, or `CFRS_RELAY`; the
 default is `https://tcp.ssh.relay.ajam.dev`). The relay opens TCP to the
 edge on port 7844. The TLS to the edge is in the WebSocket, so the relay
 does not see the tunnel. `CFRS_RELAY_TOKEN` gives a relay token; without
-it, `cfrs` mints one. The relay carries IPv4 TCP only, and it ends a
+it, `cfrs` mints one and keeps it in the state directory. When the relay
+host does not answer, `cfrs` tries other hosts of the same deployment (a
+comma list in `--relay`, else the pool of the relay). The relay carries IPv4 TCP only, and it ends a
 session after 64 MiB or 12 hours. Before that (at 60 MiB or 11.5 hours),
 the tunnel connects a replacement edge connection, and the old one
 finishes its open streams (`docs/protocol.md` section 3.4).

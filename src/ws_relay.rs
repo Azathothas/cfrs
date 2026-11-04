@@ -66,43 +66,18 @@ pub fn active() -> Option<&'static Relay> {
     RELAY.get()
 }
 
-/// A WebSocket-to-TCP relay.
-pub struct Relay {
+/// One host of a relay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Host {
     tls: bool,
     host: String,
     port: u16,
-    fixed: Option<String>,
-    minted: tokio::sync::Mutex<Option<Minted>>,
 }
 
-struct Minted {
-    token: String,
-    expires: SystemTime,
-}
-
-impl std::fmt::Debug for Relay {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Relay")
-            .field("url", &self.url())
-            .field("token", &"<redacted>")
-            .finish()
-    }
-}
-
-/// Why the relay refused a WebSocket.
-#[derive(Debug, PartialEq, Eq)]
-enum Refusal {
-    /// The token is absent, wrong or expired: a new token can help.
-    Token,
-    /// Anything else, with the text for the error.
-    Other(String),
-}
-
-impl Relay {
-    /// A relay at `url` (`https://host[:port]`; `wss://` is the same). Plain
-    /// `http://` or `ws://` is taken only for a loopback host (tests).
-    /// `token` is used as it is; with no token, cfrs mints one.
-    pub fn new(url: &str, token: Option<String>) -> Result<Self> {
+impl Host {
+    /// Parse `https://host[:port]` (`wss://` is the same). Plain `http://`
+    /// or `ws://` is taken only for a loopback host (tests).
+    fn parse(url: &str) -> Result<Self> {
         let url = url.trim().trim_end_matches('/');
         let (tls, rest) = if let Some(rest) = url
             .strip_prefix("https://")
@@ -131,13 +106,132 @@ impl Relay {
         if !tls && !matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]") {
             bail!("the relay URL {url:?} must use https:// (plain http:// is for a loopback relay only)");
         }
+        Ok(Self { tls, host, port })
+    }
+
+    fn url(&self) -> String {
+        let scheme = if self.tls { "https" } else { "http" };
+        let default = if self.tls { 443 } else { 80 };
+        if self.port == default {
+            format!("{scheme}://{}", self.host)
+        } else {
+            format!("{scheme}://{}:{}", self.host, self.port)
+        }
+    }
+}
+
+/// A WebSocket-to-TCP relay: the primary host, then the alternates of its
+/// deployment (`crate::relay_pool`). A connect tries the primary first, and
+/// an alternate each [`HOST_STAGGER`] or at once after a failure.
+pub struct Relay {
+    hosts: Vec<Host>,
+    /// The alternates were given in the URL list: no pool is read for them.
+    listed: bool,
+    fixed: Option<String>,
+    minted: tokio::sync::Mutex<Option<Minted>>,
+}
+
+/// The time before a connect tries the next relay host in parallel.
+pub const HOST_STAGGER: Duration = Duration::from_secs(2);
+
+struct Minted {
+    token: String,
+    expires: SystemTime,
+}
+
+impl std::fmt::Debug for Relay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Relay")
+            .field("url", &self.url())
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Why the relay refused a WebSocket.
+#[derive(Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The token is absent, wrong or expired: a new token can help.
+    Token,
+    /// The policy of the deployment refuses the target: no host helps.
+    Policy(String),
+    /// Anything else, with the text for the error.
+    Other(String),
+}
+
+impl Relay {
+    /// A relay at `url` (`https://host[:port]`; `wss://` is the same). Plain
+    /// `http://` or `ws://` is taken only for a loopback host (tests).
+    /// `token` is used as it is; with no token, cfrs mints one.
+    pub fn new(url: &str, token: Option<String>) -> Result<Self> {
+        let mut hosts = Vec::new();
+        for item in url.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let host = Host::parse(item)?;
+            if let Some(primary) = hosts.first() {
+                let primary: &Host = primary;
+                let same = host.host.eq_ignore_ascii_case(&primary.host)
+                    || crate::relay_pool::same_deployment(&primary.host, &host.host);
+                if !same {
+                    bail!(
+                        "the relay host {} is not of the deployment of {} (a host under its parent domain); the token goes to each host of the list",
+                        host.host,
+                        primary.host
+                    );
+                }
+            }
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+        if hosts.is_empty() {
+            bail!("the relay URL is empty; for example {DEFAULT_RELAY}");
+        }
+        let listed = hosts.len() > 1;
+        if !listed && hosts[0].tls && hosts[0].port == 443 {
+            let cached = crate::relay_pool::load_pool(&hosts[0].host).map(|(hosts, _)| hosts);
+            for alternate in crate::relay_pool::alternates_of(&hosts[0].host, cached) {
+                hosts.push(Host {
+                    tls: true,
+                    host: alternate,
+                    port: 443,
+                });
+            }
+        }
         Ok(Self {
-            tls,
-            host,
-            port,
+            hosts,
+            listed,
             fixed: token.filter(|t| !t.trim().is_empty()),
             minted: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// The relay of `url` with only its own host (no alternates): for the
+    /// reverse mode and for tests.
+    pub fn single(url: &str, token: Option<String>) -> Result<Self> {
+        let host = Host::parse(url)?;
+        Ok(Self {
+            hosts: vec![host],
+            listed: false,
+            fixed: token.filter(|t| !t.trim().is_empty()),
+            minted: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    /// The name of the token cache of this relay: the primary host, and its
+    /// port when it is not the default.
+    fn cache_key(&self) -> String {
+        let primary = &self.hosts[0];
+        let default = if primary.tls { 443 } else { 80 };
+        if primary.port == default {
+            primary.host.clone()
+        } else {
+            format!("{}-{}", primary.host, primary.port)
+        }
+    }
+
+    /// The URLs of the hosts, the primary first.
+    pub fn urls(&self) -> Vec<String> {
+        self.hosts.iter().map(Host::url).collect()
     }
 
     /// The relay of `url`, else of [`RELAY_VARIABLE`], else [`DEFAULT_RELAY`],
@@ -155,109 +249,233 @@ impl Relay {
 
     /// The TCP port of the relay.
     pub fn port(&self) -> u16 {
-        self.port
+        self.hosts[0].port
     }
 
     /// The host of the relay.
     pub fn host(&self) -> &str {
-        &self.host
+        &self.hosts[0].host
     }
 
-    /// The base URL, with no token.
+    /// The base URL of the primary host, with no token.
     pub fn url(&self) -> String {
-        let scheme = if self.tls { "https" } else { "http" };
-        let default = if self.tls { 443 } else { 80 };
-        if self.port == default {
-            format!("{scheme}://{}", self.host)
-        } else {
-            format!("{scheme}://{}:{}", self.host, self.port)
-        }
+        self.hosts[0].url()
     }
 
-    /// A token: the fixed token, a minted token that has time left, or a new
-    /// minted token (`fresh` mints one in each case).
-    async fn token(&self, fresh: bool) -> Result<String> {
+    /// A token: the fixed token, a minted token that has time left (in
+    /// memory, else in the cache file), or a new minted token. With
+    /// `refused`, a token that is the refused one is minted again; when
+    /// another attempt minted already, its token is used.
+    async fn token(&self, refused: Option<&str>) -> Result<String> {
         if let Some(token) = &self.fixed {
             return Ok(token.clone());
         }
-        let mut minted = self.minted.lock().await;
-        let usable = minted.as_ref().filter(|m| {
-            !fresh
+        let usable = |m: &Minted| {
+            refused != Some(m.token.as_str())
                 && m.expires
                     .duration_since(SystemTime::now())
                     .is_ok_and(|left| left > MINT_MARGIN)
-        });
-        if let Some(m) = usable {
+        };
+        let mut minted = self.minted.lock().await;
+        if let Some(m) = minted.as_ref().filter(|m| usable(m)) {
             return Ok(m.token.clone());
         }
-        let new = self.mint().await?;
+        if minted.is_none() {
+            if let Some((token, expires)) = crate::relay_pool::load_token(&self.cache_key()) {
+                let cached = Minted { token, expires };
+                if usable(&cached) {
+                    let token = cached.token.clone();
+                    *minted = Some(cached);
+                    return Ok(token);
+                }
+            }
+        }
+        let (new, at) = self.mint().await?;
+        crate::relay_pool::store_token(&self.cache_key(), &new.token, new.expires);
         let token = new.token.clone();
         *minted = Some(new);
+        drop(minted);
+        if !self.listed {
+            self.refresh_pool(at);
+        }
         Ok(token)
     }
 
-    async fn mint(&self) -> Result<Minted> {
-        let url = format!("{}/v1/mint", self.url());
-        let response = crate::fetch::Request::new("POST", url)
-            .json(&serde_json::json!({}))
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await
-            .context("minting a relay token")?;
-        match response.status {
-            200 => {}
-            429 => bail!(
-                "the relay refused a new token (429); try again after {} s",
-                response.header("retry-after").unwrap_or("60")
-            ),
-            503 => bail!("the relay gives no tokens (503); set {TOKEN_VARIABLE}"),
-            status => bail!("minting a relay token: HTTP {status}"),
+    /// Mint at the primary host, else at the next host when one does not
+    /// answer. A refusal (429, 503) stops: the brake and the policy are of
+    /// the deployment. Gives the host that minted.
+    async fn mint(&self) -> Result<(Minted, Host)> {
+        let mut failures = Vec::new();
+        for host in &self.hosts {
+            match mint_at(host).await {
+                Ok(minted) => return Ok((minted, host.clone())),
+                Err(MintError::Stop(err)) => return Err(err),
+                Err(MintError::Next(err)) => {
+                    tracing::debug!(relay = %host.url(), error = %format!("{err:#}"), "no mint at this relay host");
+                    failures.push(format!("{}: {err:#}", host.url()));
+                }
+            }
         }
-        let body: serde_json::Value = response.json().context("the mint answer")?;
-        let token = body
-            .get("token")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-            .context("the mint answer has no token")?
-            .to_string();
-        let expires = body
-            .get("expires")
-            .and_then(|e| e.as_u64())
-            .map(|ms| UNIX_EPOCH + Duration::from_millis(ms))
-            .unwrap_or_else(|| SystemTime::now() + Duration::from_secs(3600));
-        Ok(Minted { token, expires })
+        bail!("minting a relay token: {}", failures.join("; "))
     }
 
-    /// A byte stream to `target` through the relay. A refused token is
-    /// minted again one time.
+    /// Read `/relays.json` at `at` in the background when the cached pool is
+    /// missing or stale.
+    fn refresh_pool(&self, at: Host) {
+        let primary = self.host().to_string();
+        if !self.hosts[0].tls || self.hosts[0].port != 443 {
+            return;
+        }
+        if crate::relay_pool::load_pool(&primary).is_some_and(|(_, stale)| !stale) {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            let request = crate::fetch::Request::new("GET", format!("{}/relays.json", at.url()))
+                .timeout(Duration::from_secs(20))
+                .max_body(crate::relay_pool::MAX_BODY);
+            let hosts = match request.send().await {
+                Ok(response) if response.status == 200 => {
+                    crate::relay_pool::parse_pool(response.text().as_bytes(), &primary)
+                }
+                Ok(response) => Err(anyhow::anyhow!("HTTP {}", response.status)),
+                Err(err) => Err(err),
+            };
+            match hosts {
+                Ok(hosts) => {
+                    tracing::debug!(count = hosts.len(), "the relay pool is cached");
+                    crate::relay_pool::store_pool(&primary, &hosts);
+                }
+                Err(err) => {
+                    tracing::debug!(error = %format!("{err:#}"), "no relay pool")
+                }
+            }
+        });
+    }
+
+    /// A byte stream to `target` through the relay: the primary host
+    /// first, then the alternates (staggered). A refused token is minted
+    /// again one time. A refusal that another host does not change (a
+    /// refused fixed token, the policy of the deployment) stops the hosts
+    /// that did not start yet.
     pub async fn connect(&self, target: SocketAddr, timeout: Duration) -> Result<BoxedIo> {
         if target.is_ipv6() {
             bail!("the relay has no IPv6 egress; {target} is IPv6");
         }
-        let token = self.token(false).await?;
-        match self.open(target, &token, timeout).await? {
-            Ok(io) => Ok(io),
-            Err(Refusal::Token) if self.fixed.is_none() => {
-                let token = self.token(true).await?;
-                match self.open(target, &token, timeout).await? {
-                    Ok(io) => Ok(io),
-                    Err(Refusal::Token) => bail!("the relay refused a new token (403)"),
-                    Err(Refusal::Other(text)) => bail!("{text}"),
+        if self.hosts.len() == 1 {
+            return self
+                .connect_at(&self.hosts[0], target, timeout)
+                .await
+                .map_err(|e| e.0);
+        }
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let stop = &stop;
+        let attempts: Vec<futures::future::BoxFuture<'_, Result<BoxedIo>>> = self
+            .hosts
+            .iter()
+            .map(|host| {
+                let attempt = async move {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        bail!("not tried: a relay host before it refused for the deployment");
+                    }
+                    match self.connect_at(host, target, timeout).await {
+                        Ok(io) => Ok(io),
+                        Err(HostError(err, again)) => {
+                            if !again {
+                                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            Err(err.context(format!("the relay host {}", host.url())))
+                        }
+                    }
+                };
+                Box::pin(attempt) as futures::future::BoxFuture<'_, Result<BoxedIo>>
+            })
+            .collect();
+        let close = |_, io: BoxedIo| -> futures::future::BoxFuture<'static, ()> {
+            Box::pin(async move { drop(io) })
+        };
+        match crate::race::race(
+            attempts,
+            crate::race::Failover::Staggered(HOST_STAGGER),
+            close,
+        )
+        .await
+        {
+            Ok(won) => {
+                if won.index > 0 {
+                    let failed: Vec<String> =
+                        won.failures.iter().map(|(_, e)| format!("{e:#}")).collect();
+                    tracing::info!(
+                        relay = %self.hosts[won.index].url(),
+                        failed = %failed.join("; "),
+                        "an alternate relay host carries the connection"
+                    );
+                }
+                Ok(won.value)
+            }
+            Err(failures) => {
+                let mut failures = failures.into_iter();
+                let (_, first) = failures.next().expect("one host at least");
+                let rest: Vec<String> = failures.map(|(_, e)| format!("{e:#}")).collect();
+                if rest.is_empty() {
+                    Err(first)
+                } else {
+                    Err(first.context(format!(
+                        "each relay host failed; the others: {}",
+                        rest.join("; ")
+                    )))
                 }
             }
-            Err(Refusal::Token) => bail!("the relay refused the token of {TOKEN_VARIABLE} (403)"),
-            Err(Refusal::Other(text)) => bail!("{text}"),
+        }
+    }
+
+    /// [`Self::connect`] at one host. The error says whether another host
+    /// can help.
+    async fn connect_at(
+        &self,
+        host: &Host,
+        target: SocketAddr,
+        timeout: Duration,
+    ) -> std::result::Result<BoxedIo, HostError> {
+        let token = self.token(None).await.map_err(HostError::again)?;
+        match self
+            .open(host, target, &token, timeout)
+            .await
+            .map_err(HostError::again)?
+        {
+            Ok(io) => Ok(io),
+            Err(Refusal::Token) if self.fixed.is_none() => {
+                let token = self.token(Some(&token)).await.map_err(HostError::again)?;
+                match self
+                    .open(host, target, &token, timeout)
+                    .await
+                    .map_err(HostError::again)?
+                {
+                    Ok(io) => Ok(io),
+                    Err(Refusal::Token) => Err(HostError::stop(anyhow::anyhow!(
+                        "the relay refused a new token (403)"
+                    ))),
+                    Err(refusal) => Err(refusal.into()),
+                }
+            }
+            Err(Refusal::Token) => Err(HostError::stop(anyhow::anyhow!(
+                "the relay refused the token of {TOKEN_VARIABLE} (403)"
+            ))),
+            Err(refusal) => Err(refusal.into()),
         }
     }
 
     async fn open(
         &self,
+        host: &Host,
         target: SocketAddr,
         token: &str,
         timeout: Duration,
     ) -> Result<std::result::Result<BoxedIo, Refusal>> {
         let path = format!("/connect/{}/{}", target.ip(), target.port());
-        let ws = match self.websocket(&path, token, timeout).await? {
+        let ws = match websocket_at(host, &path, token, timeout).await? {
             Ok(ws) => ws,
             Err((status, body)) => return Ok(Err(refusal(status, &body, target))),
         };
@@ -281,58 +499,7 @@ impl Relay {
         token: &str,
         timeout: Duration,
     ) -> Result<std::result::Result<RelaySocket, (u16, String)>> {
-        let io = crate::egress::dial(&self.host, self.port, None, timeout)
-            .await
-            .with_context(|| format!("TCP to the relay {}", self.url()))?;
-        let io: BoxedIo = if self.tls {
-            // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
-            let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
-            let name = rustls::pki_types::ServerName::try_from(self.host.clone())
-                .context("the relay host is not a valid TLS name")?;
-            let tls = tokio::time::timeout(
-                timeout,
-                tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)).connect(name, io),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("TLS to the relay: no answer in {} s", timeout.as_secs()))?
-            .with_context(|| format!("TLS to the relay {}", self.url()))?;
-            Box::new(tls)
-        } else {
-            io
-        };
-        let scheme = if self.tls { "wss" } else { "ws" };
-        let url = format!("{scheme}://{}:{}{path}", self.host, self.port);
-        let mut request = url
-            .into_client_request()
-            .context("the WebSocket request to the relay")?;
-        request.headers_mut().insert(
-            "x-relay-token",
-            http::HeaderValue::from_str(token).context("the relay token is not a header value")?,
-        );
-        let config = tungstenite::protocol::WebSocketConfig::default()
-            .max_message_size(Some(MAX_MESSAGE))
-            .max_frame_size(Some(MAX_MESSAGE));
-        let handshake = tokio_tungstenite::client_async_with_config(request, io, Some(config));
-        match tokio::time::timeout(timeout, handshake).await {
-            Err(_) => bail!(
-                "the WebSocket to the relay: no answer in {} s",
-                timeout.as_secs()
-            ),
-            Ok(Ok((ws, _response))) => Ok(Ok(ws)),
-            Ok(Err(tungstenite::Error::Http(response))) => {
-                let status = response.status().as_u16();
-                let body = response
-                    .body()
-                    .as_deref()
-                    .map(String::from_utf8_lossy)
-                    .unwrap_or_default()
-                    .to_string();
-                Ok(Err((status, body)))
-            }
-            Ok(Err(err)) => {
-                Err(err).with_context(|| format!("the WebSocket to the relay {}", self.url()))
-            }
-        }
+        websocket_at(&self.hosts[0], path, token, timeout).await
     }
 
     /// A POST of an empty JSON object to `path` on the relay; the JSON
@@ -361,6 +528,145 @@ impl Relay {
     }
 }
 
+/// A WebSocket to `path` on `host`, with `token` in `X-Relay-Token`. A
+/// refused upgrade gives its HTTP status and body (the body never has the
+/// token).
+async fn websocket_at(
+    host: &Host,
+    path: &str,
+    token: &str,
+    timeout: Duration,
+) -> Result<std::result::Result<RelaySocket, (u16, String)>> {
+    let io = crate::egress::dial(&host.host, host.port, None, timeout)
+        .await
+        .with_context(|| format!("TCP to the relay {}", host.url()))?;
+    let io: BoxedIo = if host.tls {
+        // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
+        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let name = rustls::pki_types::ServerName::try_from(host.host.clone())
+            .context("the relay host is not a valid TLS name")?;
+        let tls = tokio::time::timeout(
+            timeout,
+            tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)).connect(name, io),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("TLS to the relay: no answer in {} s", timeout.as_secs()))?
+        .with_context(|| format!("TLS to the relay {}", host.url()))?;
+        Box::new(tls)
+    } else {
+        io
+    };
+    let scheme = if host.tls { "wss" } else { "ws" };
+    let url = format!("{scheme}://{}:{}{path}", host.host, host.port);
+    let mut request = url
+        .into_client_request()
+        .context("the WebSocket request to the relay")?;
+    request.headers_mut().insert(
+        "x-relay-token",
+        http::HeaderValue::from_str(token).context("the relay token is not a header value")?,
+    );
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE))
+        .max_frame_size(Some(MAX_MESSAGE));
+    let handshake = tokio_tungstenite::client_async_with_config(request, io, Some(config));
+    match tokio::time::timeout(timeout, handshake).await {
+        Err(_) => bail!(
+            "the WebSocket to the relay: no answer in {} s",
+            timeout.as_secs()
+        ),
+        Ok(Ok((ws, _response))) => Ok(Ok(ws)),
+        Ok(Err(tungstenite::Error::Http(response))) => {
+            let status = response.status().as_u16();
+            let body = response
+                .body()
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default()
+                .to_string();
+            Ok(Err((status, body)))
+        }
+        Ok(Err(err)) => {
+            Err(err).with_context(|| format!("the WebSocket to the relay {}", host.url()))
+        }
+    }
+}
+
+/// A failure at one relay host, and whether another host can help.
+struct HostError(anyhow::Error, bool);
+
+impl HostError {
+    fn again(err: anyhow::Error) -> Self {
+        Self(err, true)
+    }
+
+    fn stop(err: anyhow::Error) -> Self {
+        Self(err, false)
+    }
+}
+
+impl From<Refusal> for HostError {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Token => Self::stop(anyhow::anyhow!("the relay refused the token (403)")),
+            Refusal::Policy(text) => Self::stop(anyhow::anyhow!("{text}")),
+            Refusal::Other(text) => Self::again(anyhow::anyhow!("{text}")),
+        }
+    }
+}
+
+/// Why a mint failed: `Next` when another host can answer.
+enum MintError {
+    Next(anyhow::Error),
+    Stop(anyhow::Error),
+}
+
+async fn mint_at(host: &Host) -> std::result::Result<Minted, MintError> {
+    let url = format!("{}/v1/mint", host.url());
+    let response = crate::fetch::Request::new("POST", url)
+        .json(&serde_json::json!({}))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .context("minting a relay token")
+        .map_err(MintError::Next)?;
+    match response.status {
+        200 => {}
+        429 => {
+            return Err(MintError::Stop(anyhow::anyhow!(
+                "the relay refused a new token (429); try again after {} s",
+                response.header("retry-after").unwrap_or("60")
+            )))
+        }
+        503 => {
+            return Err(MintError::Stop(anyhow::anyhow!(
+                "the relay gives no tokens (503); set {TOKEN_VARIABLE}"
+            )))
+        }
+        status => {
+            return Err(MintError::Next(anyhow::anyhow!(
+                "minting a relay token: HTTP {status}"
+            )))
+        }
+    }
+    let body: serde_json::Value = response
+        .json()
+        .context("the mint answer")
+        .map_err(MintError::Next)?;
+    let token = body
+        .get("token")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .context("the mint answer has no token")
+        .map_err(MintError::Next)?
+        .to_string();
+    let expires = body
+        .get("expires")
+        .and_then(|e| e.as_u64())
+        .map(|ms| UNIX_EPOCH + Duration::from_millis(ms))
+        .unwrap_or_else(|| SystemTime::now() + Duration::from_secs(3600));
+    Ok(Minted { token, expires })
+}
+
 /// A WebSocket to the relay.
 pub(crate) type RelaySocket = tokio_tungstenite::WebSocketStream<BoxedIo>;
 
@@ -369,7 +675,7 @@ fn refusal(status: u16, body: &str, target: SocketAddr) -> Refusal {
     let body = body.trim();
     let excerpt: String = body.chars().take(200).collect();
     match status {
-        403 if body.contains("ALLOW list") => Refusal::Other(format!(
+        403 if body.contains("ALLOW list") => Refusal::Policy(format!(
             "the relay does not allow {target} (403, policy): {excerpt}"
         )),
         401 | 403 => Refusal::Token,
@@ -391,7 +697,7 @@ mod tests {
     fn relay_urls() {
         let relay = Relay::new("https://tcp.ssh.relay.ajam.dev/", None).unwrap();
         assert_eq!(relay.url(), "https://tcp.ssh.relay.ajam.dev");
-        assert_eq!((relay.port, relay.tls), (443, true));
+        assert_eq!((relay.port(), relay.hosts[0].tls), (443, true));
         let relay = Relay::new("wss://relay.example:8443", Some("t".into())).unwrap();
         assert_eq!(relay.url(), "https://relay.example:8443");
         assert_eq!(
@@ -426,7 +732,7 @@ mod tests {
         );
         assert!(matches!(
             refusal(403, "198.41.192.7 is not in the ALLOW list", target),
-            Refusal::Other(text) if text.contains("policy")
+            Refusal::Policy(text) if text.contains("policy")
         ));
         assert!(matches!(refusal(502, "", target), Refusal::Other(text) if text.contains("502")));
     }
@@ -533,5 +839,54 @@ mod tests {
             .unwrap();
         assert!(got == data, "the bytes changed on the way");
         drop(writer.await.unwrap());
+
+        // A list: the first host does not answer, the next one carries the
+        // connection.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+        let list = format!("http://127.0.0.1:{dead_port},{url}");
+        let relay = Relay::new(&list, Some("good".into())).unwrap();
+        assert_eq!(relay.urls().len(), 2);
+        let mut io = relay
+            .connect(echo_addr, Duration::from_secs(5))
+            .await
+            .expect("the second host carries the connection");
+        io.write_all(b"ping").await.unwrap();
+        let mut back = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(10), io.read_exact(&mut back))
+            .await
+            .expect("the echo in time")
+            .unwrap();
+        assert_eq!(&back, b"ping");
+
+        // A refused fixed token stops the list: no other host helps.
+        let wrong = Relay::new(&format!("{url},{url}/"), Some("bad".into())).unwrap();
+        assert_eq!(wrong.urls().len(), 1, "the same host once");
+    }
+
+    /// The hosts of a list are of one deployment: the token goes to each.
+    #[test]
+    fn a_list_of_relays_is_one_deployment() {
+        let relay = Relay::new(
+            "https://tcp.ssh.relay.ajam.dev,https://tcp-eu-west-3.ssh.relay.ajam.dev",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            relay.urls(),
+            [
+                "https://tcp.ssh.relay.ajam.dev",
+                "https://tcp-eu-west-3.ssh.relay.ajam.dev"
+            ]
+        );
+        assert_eq!(relay.url(), "https://tcp.ssh.relay.ajam.dev");
+        let err = Relay::new("https://tcp.ssh.relay.ajam.dev,https://evil.example", None)
+            .expect_err("another deployment is refused");
+        assert!(format!("{err:#}").contains("deployment"), "{err:#}");
+        assert!(Relay::new(" , ", None).is_err());
+        // One host of another relay has no alternates of the seed.
+        let one = Relay::single("https://relay.example.org", None).unwrap();
+        assert_eq!(one.urls(), ["https://relay.example.org"]);
     }
 }
