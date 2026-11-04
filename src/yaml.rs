@@ -15,9 +15,16 @@
 //! the indentation, anchors and aliases (`&`, `*`), tags (`!`), block scalars
 //! (`|`, `>`), flow collections that are not empty, and duplicate keys. It does
 //! not guess.
+//!
+//! A document that nests deeper than [`MAX_DEPTH`] levels is an error: the
+//! reader is recursive, and a deep file must not overflow the stack.
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Number, Value};
+
+/// The most levels of nested mappings and sequences (issue 231). A
+/// cloudflared config uses about 5.
+pub const MAX_DEPTH: usize = 64;
 
 #[derive(Debug)]
 struct Line<'a> {
@@ -59,7 +66,7 @@ pub fn parse(text: &str) -> Result<Value> {
     }
     let mut pos = 0;
     let indent = lines[0].indent;
-    let value = node(&lines, &mut pos, indent)?;
+    let value = node(&lines, &mut pos, indent, 0)?;
     if let Some(line) = lines.get(pos) {
         bail!("line {}: unexpected indentation", line.number);
     }
@@ -102,13 +109,22 @@ fn starts_scalar(before: &str) -> bool {
     before.is_empty() || before.ends_with(':') || before.ends_with('-')
 }
 
-/// Read the node whose lines start at `indent`.
-fn node(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
+/// An error when a collection at `depth` is deeper than [`MAX_DEPTH`].
+fn check_depth(depth: usize, number: usize) -> Result<()> {
+    if depth > MAX_DEPTH {
+        bail!("line {number}: the document nests deeper than {MAX_DEPTH} levels");
+    }
+    Ok(())
+}
+
+/// Read the node whose lines start at `indent`. `depth` is the number of
+/// collections that hold it.
+fn node(lines: &[Line], pos: &mut usize, indent: usize, depth: usize) -> Result<Value> {
     let line = &lines[*pos];
     if is_item(line.text) {
-        sequence(lines, pos, indent)
+        sequence(lines, pos, indent, depth)
     } else if split_key(line.text, line.number)?.is_some() {
-        mapping(lines, pos, indent, None)
+        mapping(lines, pos, indent, None, depth)
     } else {
         *pos += 1;
         let value = scalar(line.text, line.number)?;
@@ -125,7 +141,8 @@ fn is_item(text: &str) -> bool {
     text == "-" || text.starts_with("- ")
 }
 
-fn sequence(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
+fn sequence(lines: &[Line], pos: &mut usize, indent: usize, depth: usize) -> Result<Value> {
+    check_depth(depth, lines[*pos].number)?;
     let mut items = Vec::new();
     while let Some(line) = lines.get(*pos) {
         if line.indent < indent {
@@ -140,7 +157,7 @@ fn sequence(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
         let rest = line.text[1..].trim_start();
         if rest.is_empty() {
             *pos += 1;
-            items.push(child(lines, pos, indent)?);
+            items.push(child(lines, pos, indent, depth + 1)?);
             continue;
         }
         // The column of `rest`: a mapping in the item continues there.
@@ -154,6 +171,7 @@ fn sequence(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
                 pos,
                 column,
                 Some((key, value, line.number)),
+                depth + 1,
             )?);
         } else {
             *pos += 1;
@@ -165,9 +183,9 @@ fn sequence(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
 
 /// The value of a key or an item with nothing after it: the lines that are
 /// more indented, else null.
-fn child(lines: &[Line], pos: &mut usize, indent: usize) -> Result<Value> {
+fn child(lines: &[Line], pos: &mut usize, indent: usize, depth: usize) -> Result<Value> {
     match lines.get(*pos) {
-        Some(next) if next.indent > indent => node(lines, pos, next.indent),
+        Some(next) if next.indent > indent => node(lines, pos, next.indent, depth),
         _ => Ok(Value::Null),
     }
 }
@@ -179,7 +197,15 @@ fn mapping(
     pos: &mut usize,
     indent: usize,
     first: Option<(String, &str, usize)>,
+    depth: usize,
 ) -> Result<Value> {
+    check_depth(
+        depth,
+        first
+            .as_ref()
+            .map(|f| f.2)
+            .unwrap_or_else(|| lines[*pos].number),
+    )?;
     let mut map = Map::new();
     let mut pending = first;
     loop {
@@ -203,10 +229,10 @@ fn mapping(
         *pos += 1;
         let value = if value.is_empty() {
             match lines.get(*pos) {
-                Some(next) if next.indent > indent => node(lines, pos, next.indent)?,
+                Some(next) if next.indent > indent => node(lines, pos, next.indent, depth + 1)?,
                 // A sequence may have the indentation of its key.
                 Some(next) if next.indent == indent && is_item(next.text) => {
-                    sequence(lines, pos, indent)?
+                    sequence(lines, pos, indent, depth + 1)?
                 }
                 _ => Value::Null,
             }
@@ -379,6 +405,37 @@ fn unescape(inner: &str, number: usize) -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `levels` nested mappings, one key on each line.
+    fn nested(levels: usize) -> String {
+        (0..levels)
+            .map(|i| format!("{}a:\n", " ".repeat(i)))
+            .collect()
+    }
+
+    // Issue 231: a deep document is an error with a line number, not a
+    // stack overflow.
+    #[test]
+    fn a_deep_document_is_an_error() {
+        assert!(parse(&nested(MAX_DEPTH)).is_ok());
+        let err = format!("{:#}", parse(&nested(200)).unwrap_err());
+        assert!(err.contains("nests deeper than 64 levels"), "{err}");
+        assert!(err.contains("line 66"), "{err}");
+        let items: String = (0..200)
+            .map(|i| format!("{}- a:\n", "  ".repeat(i)))
+            .collect();
+        let err = format!("{:#}", parse(&items).unwrap_err());
+        assert!(err.contains("nests deeper"), "{err}");
+        // A small stack: the cap stops the recursion before an overflow.
+        let text = nested(3000);
+        let result = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || parse(&text).map(|_| ()).map_err(|e| e.to_string()))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(result.unwrap_err().contains("nests deeper"));
+    }
 
     #[test]
     fn a_cloudflared_config() {

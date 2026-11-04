@@ -346,8 +346,8 @@ ingress:
 cfrs reads the YAML with its own reader (`src/yaml.rs`). The reader accepts
 block mappings, block sequences, plain and quoted scalars on one line, and
 comments. It refuses anchors, aliases, tags, block scalars (`|`, `>`), flow
-collections that are not empty, tabs in the indentation and duplicate keys,
-and gives the line number.
+collections that are not empty, tabs in the indentation, duplicate keys and
+a document that nests deeper than 64 levels, and gives the line number.
 
 ### Named tunnels
 
