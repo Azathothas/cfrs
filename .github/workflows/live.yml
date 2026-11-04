@@ -315,7 +315,7 @@ jobs:
       # cfrs autostart with a systemd user manager (issue 23): systemd starts
       # a quick tunnel, the URL answers, and no token is in the unit or in ps.
       - name: Autostart with a systemd user unit
-        timeout-minutes: 5
+        timeout-minutes: 9
         run: |
           set -eu
           sudo loginctl enable-linger "$USER"
@@ -336,6 +336,9 @@ jobs:
           done
           url=$(journalctl --user -u cfrs-live -o cat | grep '"event":"ready"' | tail -1 | jq -r .url)
           echo "::add-mask::${url#https://}"
+          # Issue 119: the resolver of the runner keeps a negative answer
+          # for a new quick-tunnel name (run 41849329729).
+          sh scripts/live-wait-name.sh "${url#https://}" 240
           i=0
           until curl -fsS --max-time 10 "$url/" | grep -q 'Hello, world'; do
             i=$((i + 1)); [ "$i" -lt 30 ] || { echo "the URL of the unit does not answer"; exit 1; }; sleep 2
