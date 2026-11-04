@@ -33,78 +33,9 @@ The repository is a Cargo workspace:
 | `cfrs` (root) | The CLI and the library: the edge client (provisioning, discovery, QUIC, HTTP/2, Cap'n Proto and its RPC), the service layer, WARP, the virtual network. |
 | `crates/pod-netns` | A library and a CLI: run a program with all its traffic sent through a proxy. |
 
-## Update
+## Install
 
-```sh
-cfrs update --check              # say whether a newer release exists
-cfrs update                      # install it
-cfrs update --version v0.3.0-beta.1
-cfrs update --rollback           # put the binary before the update back
-```
-
-`cfrs update` installs a release only after these checks: the certificate
-of `SHA256SUMS.sigstore.json` chains to the Fulcio roots of Sigstore and
-names `release.yml` of this repository at the tag, the signature over
-`SHA256SUMS` is valid, the SHA-256 of the binary is its line in
-`SHA256SUMS`, and the new binary runs `--version` in 10 seconds, with no
-stdin, exits 0 and prints the version of the tag. Then the binary before
-is kept as `cfrs.prev` beside it, and a rename puts the new binary in
-place. `cfrs update --rollback` puts `cfrs.prev` back (it must pass the
-same run first) and keeps the binary that was in place as `cfrs.prev`;
-it uses no network. cfrs does not check the inclusion proof of the Rekor
-log. A prerelease is
-installed only with `--version`, or when the current binary is a
-prerelease.
-
-* `--version TAG` uses no request to the GitHub API: the URLs of the files
-  follow from the tag. A tag with no release exits 69 ("no release has the
-  tag").
-* With no `--version`, cfrs reads the GitHub API, else `releases.atom` (the
-  API answers 403 on a shared address; the feed has no quota).
-* `--version` of the installed version says so and exits 0; `--force`
-  installs it again.
-* The repository is fixed (it names the signer of the binary). cfrs does
-  not read `CFRS_REPO` (a variable of `scripts/install.sh`); a warning says
-  so.
-
-## Build
-
-```sh
-cargo build --release
-```
-
-The binaries are `target/release/cfrs` and `target/release/pod-netns`. Rust
-1.89 or newer is necessary.
-
-A static binary has no run-time dependency on the C library of the host:
-
-```sh
-rustup target add x86_64-unknown-linux-musl
-CC_x86_64_unknown_linux_musl=clang cargo build --release --target x86_64-unknown-linux-musl
-```
-
-The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
-`clang`). The other commands do not.
-
-### Fuzz
-
-`fuzz/` has a libFuzzer target for each parser of bytes from the network
-(Cap'n Proto, the RPC of the edge, capsules, proxy URLs and answers, SRV
-and DoH, ACL rules, ingress rules, YAML, HTTP/2 headers, vnet frames). It
-needs a nightly toolchain and glibc. `.github/workflows/fuzz.yml` runs each
-target each week. A crash input becomes a unit test before the fix.
-
-```sh
-cargo +stable install cargo-fuzz --locked --version 0.13.1
-cd fuzz
-cargo +nightly-2026-10-15 run --bin seed -- corpus
-cargo +nightly-2026-10-15 fuzz run capnp_message corpus/capnp_message -- -max_total_time=60 -malloc_limit_mb=64
-```
-
-`cargo test` runs each target on its seeds and on 2000 fixed mutations
-(`fuzzing::tests::each_target_survives_mutations`).
-
-## Release binaries
+### Release binaries
 
 Each [release](https://github.com/Azathothas/cfrs/releases) has static
 Linux binaries of `cfrs` and `pod-netns` for `x86_64`, `aarch64`, `armv7`,
@@ -161,21 +92,6 @@ A binary that has one changed byte fails each check. The workflow
 `.github/workflows/release-proofs.yml` does these checks on a fresh runner
 after each release. It also does each check on a changed copy, which must
 fail.
-
-### Rebuild a release
-
-`scripts/rebuild.sh TAG [TARGET]` rebuilds `cfrs` and `pod-netns` of a
-release from its tag, at another path, in the pinned image of
-`images/build/Dockerfile` of the tag, with the command of `release.yml`.
-The two binaries must have the SHA-256 of `SHA256SUMS`. TARGET is
-`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` (the default is
-the one of the machine). It needs git, curl and docker
-(`CONTAINER=podman` for podman). `release-proofs.yml` runs it for both
-targets after each release.
-
-```sh
-sh scripts/rebuild.sh v0.3.0-beta.8
-```
 
 ### Install script
 
@@ -290,6 +206,40 @@ cfrs tunnel --unix /run/app.sock
 # Test the full path: a built-in origin, a tunnel, a fetch of the public URL.
 cfrs demo --exit-on-verify
 ```
+
+## Update
+
+```sh
+cfrs update --check              # say whether a newer release exists
+cfrs update                      # install it
+cfrs update --version v0.3.0-beta.1
+cfrs update --rollback           # put the binary before the update back
+```
+
+`cfrs update` installs a release only after these checks: the certificate
+of `SHA256SUMS.sigstore.json` chains to the Fulcio roots of Sigstore and
+names `release.yml` of this repository at the tag, the signature over
+`SHA256SUMS` is valid, the SHA-256 of the binary is its line in
+`SHA256SUMS`, and the new binary runs `--version` in 10 seconds, with no
+stdin, exits 0 and prints the version of the tag. Then the binary before
+is kept as `cfrs.prev` beside it, and a rename puts the new binary in
+place. `cfrs update --rollback` puts `cfrs.prev` back (it must pass the
+same run first) and keeps the binary that was in place as `cfrs.prev`;
+it uses no network. cfrs does not check the inclusion proof of the Rekor
+log. A prerelease is
+installed only with `--version`, or when the current binary is a
+prerelease.
+
+* `--version TAG` uses no request to the GitHub API: the URLs of the files
+  follow from the tag. A tag with no release exits 69 ("no release has the
+  tag").
+* With no `--version`, cfrs reads the GitHub API, else `releases.atom` (the
+  API answers 403 on a shared address; the feed has no quota).
+* `--version` of the installed version says so and exits 0; `--force`
+  installs it again.
+* The repository is fixed (it names the signer of the binary). cfrs does
+  not read `CFRS_REPO` (a variable of `scripts/install.sh`); a warning says
+  so.
 
 ## Tunnels
 
@@ -1209,6 +1159,58 @@ handle.shutdown().await;
 * `cfrs::vnet::NetStack` is the userspace IP stack.
 * `pod_netns::main_with_args` runs the `pod-netns` command line. The modules
   `pod_netns::upstream`, `socks`, `dns` and `tailscale` are also public.
+
+## Build
+
+```sh
+cargo build --release
+```
+
+The binaries are `target/release/cfrs` and `target/release/pod-netns`. Rust
+1.89 or newer is necessary.
+
+A static binary has no run-time dependency on the C library of the host:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=clang cargo build --release --target x86_64-unknown-linux-musl
+```
+
+The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
+`clang`). The other commands do not.
+
+### Fuzz
+
+`fuzz/` has a libFuzzer target for each parser of bytes from the network
+(Cap'n Proto, the RPC of the edge, capsules, proxy URLs and answers, SRV
+and DoH, ACL rules, ingress rules, YAML, HTTP/2 headers, vnet frames). It
+needs a nightly toolchain and glibc. `.github/workflows/fuzz.yml` runs each
+target each week. A crash input becomes a unit test before the fix.
+
+```sh
+cargo +stable install cargo-fuzz --locked --version 0.13.1
+cd fuzz
+cargo +nightly-2026-10-15 run --bin seed -- corpus
+cargo +nightly-2026-10-15 fuzz run capnp_message corpus/capnp_message -- -max_total_time=60 -malloc_limit_mb=64
+```
+
+`cargo test` runs each target on its seeds and on 2000 fixed mutations
+(`fuzzing::tests::each_target_survives_mutations`).
+
+### Rebuild a release
+
+`scripts/rebuild.sh TAG [TARGET]` rebuilds `cfrs` and `pod-netns` of a
+release from its tag, at another path, in the pinned image of
+`images/build/Dockerfile` of the tag, with the command of `release.yml`.
+The two binaries must have the SHA-256 of `SHA256SUMS`. TARGET is
+`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` (the default is
+the one of the machine). It needs git, curl and docker
+(`CONTAINER=podman` for podman). `release-proofs.yml` runs it for both
+targets after each release.
+
+```sh
+sh scripts/rebuild.sh v0.3.0-beta.8
+```
 
 ## Documents
 
