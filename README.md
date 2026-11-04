@@ -108,7 +108,8 @@ exits 0 when `curl` fails or is missing.
 
 * It uses the first downloader that it finds: `curl`, `wget`, `aria2c`,
   `http` (HTTPie), `python3`, `python` or `perl` (`HTTP::Tiny` with TLS),
-  and last `busybox wget` (also a `wget` that is the busybox applet).
+  and last `busybox wget` (also a `wget` that is the busybox applet: it
+  goes after `python3`, `python` and `perl`).
   HTTPS only; redirects to plain HTTP are refused. busybox wget does not
   check TLS certificates: the script says so in a warning, and with no
   `cosign` the check of `SHA256SUMS` then does not protect the download. A
@@ -118,19 +119,26 @@ exits 0 when `curl` fails or is missing.
   `SHA256SUMS` when `cosign` is installed. A failed check stops it, and
   cosign then shows its output.
 * It runs the new binary (`--version`) in the install directory before it
-  replaces the old binary. A binary that does not run on this machine does
-  not replace the old one.
+  replaces the old binary. A binary that does not run on this machine, or
+  that does not print `cfrs VERSION` of the release, does not replace the
+  old one. The copy is a new file from `mktemp` with mode 0755 (also with
+  a restrictive umask). When the path of the binary is a directory or
+  another file that is not a regular file, the script stops before the
+  downloads.
 * The directory: `CFRS_INSTALL_DIR`, else `/usr/local/bin` for root, else
   `$XDG_BIN_HOME`, else `~/.local/bin`. A line says how to add it to `PATH`.
   The script checks the directory before the downloads.
 * `CFRS_VERSION=<TAG>` (for example `v0.3.0-beta.11`) installs that release, with no request to
   the GitHub API. For the newest release, the script reads the API; when
   the API refuses (403 on a shared address), it reads `releases.atom`.
-  `GITHUB_TOKEN` or `GH_TOKEN` goes to `api.github.com` only.
+  A draft release is not used.
+  `GITHUB_TOKEN` or `GH_TOKEN` goes to `api.github.com` only. The token is
+  not in the trace of `DEBUG=1` and not in the arguments of the downloader:
+  curl reads it from stdin, wget from a private file.
 * `CFRS_POD_NETNS=1` also installs `pod-netns`. `CFRS_DOWNLOADER=wget`
   selects the downloader.
-* A missing file of the release and a failed download have different
-  messages. INT, TERM and HUP stop the script and remove its files.
+* A missing file of the release, an empty download and a failed download
+  have different messages. INT, TERM and HUP stop the script and remove its files.
 
 ### Ephemeral hosts
 

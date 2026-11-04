@@ -30,7 +30,7 @@
 #   GITHUB_TOKEN       Sent to api.github.com only (curl, wget), for its
 #   GH_TOKEN           quota on a shared address. Not sent to other hosts.
 #   NO_COLOR           No colors.
-#   DEBUG              set -x.
+#   DEBUG              set -x. The trace does not show the token.
 #
 # INT, TERM and HUP stop the script and remove its files. SIGKILL cannot be
 # caught: a temporary directory can then stay.
@@ -67,6 +67,15 @@ main() {
 
     # The directory first: a bad directory fails before the downloads.
     dir=$(install_dir)
+    names="cfrs"
+    if [ "${CFRS_POD_NETNS:-}" = 1 ]; then names="cfrs pod-netns"; fi
+    # Issue 270: mv into a directory with the name of the binary moves the
+    # file into it. A symlink to a file is allowed.
+    for name in $names; do
+        if [ -e "$dir/$name" ] && [ ! -f "$dir/$name" ]; then
+            fail "$dir/$name exists and is not a file; remove it or set CFRS_INSTALL_DIR"
+        fi
+    done
 
     tmp=$(make_temp)
     new_files=
@@ -79,9 +88,6 @@ main() {
     base="https://github.com/$repo/releases/download/$tag"
     info "release: $tag"
 
-    names="cfrs"
-    if [ "${CFRS_POD_NETNS:-}" = 1 ]; then names="cfrs pod-netns"; fi
-
     get "$base/SHA256SUMS" "$tmp/SHA256SUMS" SHA256SUMS
     verify_signature "$base" "$tmp"
     for name in $names; do
@@ -93,20 +99,37 @@ main() {
     # A copy in the directory, a run of the copy, then a rename: a binary
     # that does not run does not replace the old one (issues 169, 175), and a
     # running binary is not changed in place. The run is in the directory of
-    # the binary, because /tmp is often noexec.
+    # the binary, because /tmp is often noexec. Issue 270: the copy has a
+    # new name from mktemp (a symlink is not followed), and mode 0755 also
+    # with a restrictive umask. cfrs must print the version of the tag.
     for name in $names; do
         file="$name-$target"
-        new="$dir/.$name.new.$$"
-        new_files="$new_files $new"
-        chmod 0755 "$tmp/$file"
-        cp "$tmp/$file" "$new"
+        new=$(new_file "$dir/.$name.new")
+        new_files="$new_files
+$new"
+        cat "$tmp/$file" > "$new"
+        chmod 0755 "$new"
         if ! shown=$(run_version "$new"); then
             fail "$file does not run on this machine (uname -m: $(uname -m 2> /dev/null || echo unknown)); $dir/$name is not changed"
         fi
-        if [ "$name" = cfrs ]; then version_line=$shown; fi
+        case "$name" in
+            cfrs)
+                case "$shown" in
+                    "cfrs ${tag#v}" | "cfrs ${tag#v} "*) ;;
+                    *) fail "$file prints '$shown', not 'cfrs ${tag#v}'; $dir/$name is not changed" ;;
+                esac
+                version_line=$shown
+                new_cfrs=$new
+                ;;
+            *) new_pod_netns=$new ;;
+        esac
     done
     for name in $names; do
-        mv -f "$dir/.$name.new.$$" "$dir/$name"
+        case "$name" in
+            cfrs) new=$new_cfrs ;;
+            *) new=$new_pod_netns ;;
+        esac
+        mv -f "$new" "$dir/$name"
         ok "installed $dir/$name"
     done
     new_files=
@@ -114,11 +137,26 @@ main() {
     path_hint "$dir"
 }
 
-# Remove the files of this run.
+# Remove the files of this run. new_files has one path on each line, so a
+# space in the directory is kept (issue 270).
 cleanup() {
     rm -rf "$tmp"
-    # shellcheck disable=SC2086 # a list of paths with no spaces of ours
-    [ -z "${new_files:-}" ] || rm -f $new_files
+    [ -n "${new_files:-}" ] || return 0
+    printf '%s\n' "$new_files" | while IFS= read -r f; do
+        [ -z "$f" ] || rm -f -- "$f"
+    done
+}
+
+# A new empty file PREFIX.XXXXXX, made by this run: mktemp, else a name
+# with the pid that the shell makes with noclobber. Print its path.
+new_file() {
+    if command -v mktemp > /dev/null 2>&1; then
+        mktemp "$1.XXXXXX" 2> /dev/null && return 0
+    fi
+    f="$1.$$"
+    if [ -e "$f" ] || [ -L "$f" ]; then fail "$f exists already"; fi
+    (set -C && : > "$f") 2> /dev/null || fail "cannot make $f"
+    echo "$f"
 }
 
 # The output of FILE --version, with no stdin, in at most 10 s.
@@ -167,25 +205,33 @@ busybox_tls() {
 # does not check TLS certificates (issue 174). A wget that is the busybox
 # applet (Alpine) is busybox too.
 detect_downloader() {
+    fallback=
     for tool in ${CFRS_DOWNLOADER:-curl wget aria2c http python3 python perl busybox}; do
         if ! command -v "$tool" > /dev/null 2>&1; then continue; fi
         case "$tool" in
             wget)
+                # Issue 270: busybox wget is the last choice, also as wget.
                 if wget --help 2>&1 | head -n 2 | grep -q BusyBox; then
                     busybox_tls || continue
-                    echo wget-busybox
-                    return 0
+                    [ -n "$fallback" ] || fallback=wget-busybox
+                    continue
                 fi
                 ;;
             busybox)
                 busybox wget --help > /dev/null 2>&1 || continue
                 busybox_tls || continue
+                [ -n "$fallback" ] || fallback=busybox
+                continue
                 ;;
             perl) perl -MHTTP::Tiny -e 'exit(HTTP::Tiny->can_ssl ? 0 : 1)' > /dev/null 2>&1 || continue ;;
         esac
         echo "$tool"
         return 0
     done
+    if [ -n "$fallback" ]; then
+        echo "$fallback"
+        return 0
+    fi
     return 1
 }
 
@@ -204,13 +250,13 @@ warn_insecure() {
 }
 
 # Download URL to FILE with the downloader. HTTPS only. The status is the
-# status of the downloader; a file that is empty is an error too.
+# status of the downloader; a file that is empty gives 99 (issue 270).
 fetch() {
     url=$1
     out=$2
     rm -f "$out"
     download "$url" "$out" || return $?
-    [ -s "$out" ]
+    [ -s "$out" ] || return 99
 }
 
 # Download URL to FILE for WHAT, or fail with a message that tells a
@@ -219,6 +265,7 @@ get() {
     rc=0
     fetch "$1" "$2" || rc=$?
     [ "$rc" = 0 ] && return 0
+    [ "$rc" = 99 ] && fail "the download of $3 is empty: $1"
     case "$downloader:$rc" in
         curl:22 | wget:8) fail "no $3 in $tag" ;;
     esac
@@ -226,13 +273,35 @@ get() {
 }
 
 # A request to the GitHub API, with GITHUB_TOKEN or GH_TOKEN (curl and
-# wget). The token goes to api.github.com only.
+# wget). The token goes to api.github.com only. Issue 270: the token is not
+# in the trace of DEBUG and not in the arguments of the downloader (ps
+# shows them): curl reads the header from stdin (-K -), and wget from a
+# private wgetrc file in the temporary directory.
 fetch_api() {
+    case $- in *x*) trace=1 ;; *) trace= ;; esac
+    { set +x; } 2> /dev/null
+    api_rc=0
+    fetch_api_quiet "$1" "$2" || api_rc=$?
+    if [ -n "$trace" ]; then set -x; fi
+    return "$api_rc"
+}
+
+fetch_api_quiet() {
     token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
     rm -f "$2"
     case "$downloader:${token:+t}" in
-        curl:t) curl -fsSL --proto '=https' --tlsv1.2 -H "Authorization: Bearer $token" -o "$2" "$1" || return $? ;;
-        wget:t) wget -q --https-only --header="Authorization: Bearer $token" -O "$2" "$1" || return $? ;;
+        curl:t)
+            printf 'header = "Authorization: Bearer %s"\n' "$token" |
+                curl -fsSL --proto '=https' --tlsv1.2 -K - -o "$2" "$1" || return $?
+            ;;
+        wget:t)
+            rc_file="$tmp/wgetrc"
+            (umask 077 && printf 'header = Authorization: Bearer %s\n' "$token" > "$rc_file") || return 1
+            s=0
+            wget -q --https-only --config="$rc_file" -O "$2" "$1" || s=$?
+            rm -f "$rc_file"
+            [ "$s" = 0 ] || return "$s"
+            ;;
         *) download "$1" "$2" || return $? ;;
     esac
     [ -s "$2" ]
@@ -283,9 +352,10 @@ resolve_tag() {
         latest)
             t=
             # The API lists by tag name (beta.10 after beta.7): the newest
-            # is the highest version of the list.
+            # is the highest version of the list. A draft is not a release
+            # (issue 270).
             if fetch_api "https://api.github.com/repos/$repo/releases?per_page=30" "$tmp/releases.json" 2> "$tmp/api.err"; then
-                t=$(tr ',' '\n' < "$tmp/releases.json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | highest)
+                t=$(tr ',' '\n' < "$tmp/releases.json" | public_tags | highest)
             fi
             if [ -z "$t" ]; then
                 info "the GitHub API did not answer; reading releases.atom"
@@ -301,6 +371,22 @@ resolve_tag() {
         v*) echo "$1" ;;
         *) echo "v$1" ;;
     esac
+}
+
+# The tags of the release list on stdin (one JSON member on each line),
+# with no draft. The API puts "draft" after "tag_name" in each release.
+public_tags() {
+    awk '
+        /"tag_name"[[:space:]]*:/ {
+            if (t != "") print t
+            t = $0
+            sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", t)
+            sub(/".*/, "", t)
+            next
+        }
+        /"draft"[[:space:]]*:[[:space:]]*true/ { t = "" }
+        END { if (t != "") print t }
+    '
 }
 
 # The highest version of the tags on stdin (vX.Y.Z or vX.Y.Z-WORD.N): a

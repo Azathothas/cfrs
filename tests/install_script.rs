@@ -444,3 +444,227 @@ fn latest_is_the_highest_version() {
     let t = text(&out);
     assert!(t.contains("release: v1.0.0-beta.10"), "{t}");
 }
+
+/// A made-up token for the tests of issue 270.
+const TOKEN: &str = "cfrs-test-token-270-not-real";
+
+impl Lab {
+    /// The script with the umask `mask`.
+    fn run_umask(&self, mask: u32, extra: &[(&str, &str)]) -> Output {
+        use std::os::unix::process::CommandExt as _;
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install.sh");
+        let mut cmd = Command::new(self.bin().join("sh"));
+        cmd.arg(&script)
+            .env_clear()
+            .env("PATH", self.bin())
+            .env("HOME", &self.root)
+            .env("CFRS_VERSION", "v9.9.9")
+            .env("CFRS_INSTALL_DIR", self.dest())
+            .env("NO_COLOR", "1");
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        // SAFETY: umask is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::umask(mask as libc::mode_t);
+                Ok(())
+            });
+        }
+        cmd.output().unwrap()
+    }
+
+    fn entries(&self, dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+// Issue 270: DEBUG=1 does not show the token, and the token is not in the
+// arguments of curl. curl reads it from stdin.
+#[test]
+fn debug_does_not_show_the_token() {
+    let lab = Lab::new("token");
+    lab.script(
+        "curl",
+        &format!(
+            "echo \"$*\" >> {argv}\ncase \" $* \" in *' -K - '*) cat >> {stdin} ;; esac\nout=''; url=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac; done\nf={rel}/$(basename \"$url\")\n{SERVE}",
+            argv = lab.root.join("argv.log").display(),
+            stdin = lab.root.join("stdin.log").display(),
+            rel = lab.root.join("release").display(),
+        ),
+    );
+    std::fs::write(
+        lab.root.join("release/releases?per_page=30"),
+        r#"[{"tag_name": "v9.9.9", "draft": false}]"#,
+    )
+    .unwrap();
+    let out = lab.run(&[
+        ("CFRS_VERSION", "latest"),
+        ("DEBUG", "1"),
+        ("GITHUB_TOKEN", TOKEN),
+    ]);
+    let t = text(&out);
+    assert!(out.status.success(), "{t}");
+    assert!(t.contains("+ "), "no trace: {t}");
+    assert!(!t.contains(TOKEN), "{t}");
+    let argv = std::fs::read_to_string(lab.root.join("argv.log")).unwrap();
+    assert!(!argv.contains(TOKEN), "{argv}");
+    let stdin = std::fs::read_to_string(lab.root.join("stdin.log")).unwrap();
+    assert!(
+        stdin.contains(&format!("Authorization: Bearer {TOKEN}")),
+        "{stdin}"
+    );
+}
+
+// Issue 270: a wget that is busybox goes after python3.
+#[test]
+fn busybox_wget_goes_after_python3() {
+    let lab = Lab::new("bbpy");
+    lab.busybox(true);
+    lab.script(
+        "wget",
+        &format!("exec {} wget \"$@\"", lab.bin().join("busybox").display()),
+    );
+    lab.script(
+        "python3",
+        &format!(
+            "f={rel}/$(basename \"$3\")\n[ -f \"$f\" ] || exit 1\ncp \"$f\" \"$4\"",
+            rel = lab.root.join("release").display()
+        ),
+    );
+    let out = lab.run(&[]);
+    let t = text(&out);
+    assert!(out.status.success(), "{t}");
+    assert!(t.contains("downloader: python3"), "{t}");
+    assert!(!t.contains("does not check TLS"), "{t}");
+}
+
+// Issue 270: with the umask 077 the binary has mode 0755, and the copy is
+// a new file from mktemp in the install directory.
+#[test]
+fn a_restrictive_umask_gives_mode_0755() {
+    let lab = Lab::new("umask");
+    lab.curl();
+    let real = which("mktemp").unwrap();
+    std::fs::remove_file(lab.bin().join("mktemp")).unwrap();
+    lab.script(
+        "mktemp",
+        &format!(
+            "echo \"$*\" >> {log}\nexec {real} \"$@\"",
+            log = lab.root.join("mktemp.log").display(),
+            real = real.display()
+        ),
+    );
+    let out = lab.run_umask(0o077, &[]);
+    let t = text(&out);
+    assert!(out.status.success(), "{t}");
+    let mode = std::fs::metadata(lab.dest().join("cfrs"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o755, "{t}");
+    let log = std::fs::read_to_string(lab.root.join("mktemp.log")).unwrap();
+    let want = format!("{}/.cfrs.new.XXXXXX", lab.dest().display());
+    assert!(log.lines().any(|l| l == want), "{log}");
+    assert_eq!(lab.entries(&lab.dest()), vec!["cfrs"]);
+}
+
+// Issue 270: a space in the install directory leaves no copy after a
+// failure.
+#[test]
+fn a_space_in_the_directory_leaves_no_file() {
+    let lab = Lab::new("space");
+    lab.curl();
+    let rel = lab.root.join("release");
+    let bin = rel.join("cfrs-x86_64-unknown-linux-musl");
+    std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+    let sum = sha256_hex(&std::fs::read(&bin).unwrap());
+    std::fs::write(
+        rel.join("SHA256SUMS"),
+        format!("{sum}  cfrs-x86_64-unknown-linux-musl\n"),
+    )
+    .unwrap();
+    let dest = lab.root.join("my bin");
+    std::fs::create_dir_all(&dest).unwrap();
+    let out = lab.run(&[("CFRS_INSTALL_DIR", dest.to_str().unwrap())]);
+    let t = text(&out);
+    assert!(!out.status.success(), "{t}");
+    assert!(t.contains("does not run on this machine"), "{t}");
+    assert!(lab.entries(&dest).is_empty(), "{:?}", lab.entries(&dest));
+}
+
+// Issue 270: a directory at the path of the binary is refused before a
+// download.
+#[test]
+fn a_directory_at_the_binary_path_is_refused() {
+    let lab = Lab::new("isdir");
+    lab.curl_with(SERVE);
+    std::fs::create_dir_all(lab.dest().join("cfrs")).unwrap();
+    let out = lab.run(&[]);
+    let t = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{t}");
+    assert!(t.contains("exists and is not a file"), "{t}");
+    assert!(!t.contains("installed"), "{t}");
+    assert_eq!(lab.curl_log(), "", "a download before the check");
+    assert!(lab.dest().join("cfrs").is_dir());
+}
+
+// Issue 270: a binary that prints another version than the tag does not
+// replace the old one.
+#[test]
+fn a_binary_of_another_version_is_refused() {
+    let lab = Lab::new("otherversion");
+    lab.curl();
+    lab.release("v9.9.9", "cfrs 9.9.8 (test)");
+    let old = lab.dest().join("cfrs");
+    std::fs::write(&old, "old binary").unwrap();
+    let out = lab.run(&[]);
+    let t = text(&out);
+    assert!(!out.status.success(), "{t}");
+    assert!(
+        t.contains("prints 'cfrs 9.9.8 (test)', not 'cfrs 9.9.9'"),
+        "{t}"
+    );
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), "old binary");
+    assert_eq!(lab.entries(&lab.dest()), vec!["cfrs"]);
+}
+
+// Issue 270: latest does not select a draft (a token with push access sees
+// drafts in the API).
+#[test]
+fn latest_skips_a_draft() {
+    let lab = Lab::new("draft");
+    lab.curl_with(SERVE);
+    std::fs::write(
+        lab.root.join("release/releases?per_page=30"),
+        r#"[{"url": "u", "author": {"login": "a", "id": 1}, "tag_name": "v9.9.10", "target_commitish": "main", "name": "v9.9.10", "draft": true, "prerelease": true}, {"url": "u", "tag_name": "v9.9.9", "name": "v9.9.9", "draft": false, "prerelease": true}]"#,
+    )
+    .unwrap();
+    let out = lab.run(&[("CFRS_VERSION", "latest")]);
+    let t = text(&out);
+    assert!(out.status.success(), "{t}");
+    assert!(t.contains("release: v9.9.9"), "{t}");
+}
+
+// Issue 270: an empty download is named as empty, not as an exit of the
+// downloader.
+#[test]
+fn an_empty_download_is_named() {
+    let lab = Lab::new("empty");
+    lab.curl_with(
+        "case \"$url\" in *musl) : > \"$out\"; exit 0 ;; esac\n[ -f \"$f\" ] || exit 22\ncp \"$f\" \"$out\"",
+    );
+    let out = lab.run(&[]);
+    let t = text(&out);
+    assert!(!out.status.success(), "{t}");
+    assert!(
+        t.contains("the download of cfrs-x86_64-unknown-linux-musl is empty"),
+        "{t}"
+    );
+    assert!(!t.contains("exit 1 of"), "{t}");
+}
