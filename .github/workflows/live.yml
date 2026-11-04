@@ -453,6 +453,31 @@ jobs:
           python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('123401000001000000000000') + b'\x07example\x03com\x00\x00\x01\x00\x01')" |
             timeout 60 target/release/cfrs warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp.txt
           grep -q '12 34' nc-udp.txt
+      # The second name of the WARP API (owner ruling of 2026-11-04): a
+      # device registers, reads its status and is deleted through
+      # api.devices.cloudflare.com only (CFRS_WARP_API). Exit 75 (error
+      # 1015, the limit of new devices for each address) skips the step.
+      - name: WARP API through its second host
+        timeout-minutes: 3
+        run: |
+          set -eu
+          export CFRS_WARP_API=https://api.devices.cloudflare.com
+          ident="$RUNNER_TEMP/second-api.json"
+          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" register 2> second-reg.err || rc=$?
+          if [ "$rc" = 75 ] && grep -q 1015 second-reg.err; then
+            echo "the WARP service limits new devices for this address (1015): skipped"; exit 0
+          fi
+          tail -3 second-reg.err
+          test "$rc" = 0
+          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" status > second-status.out 2>&1 || rc=$?
+          rc2=0; timeout 60 target/release/cfrs warp --identity "$ident" delete 2> second-del.err || rc2=$?
+          echo "status: exit $rc; delete: exit $rc2"
+          grep -E '^(type|account)' second-status.out || true
+          test "$rc" = 0
+          test "$rc2" = 0
+          # The other host was not asked: a failure of the first host would
+          # log "cfrs tries the next host".
+          ! grep -q 'tries the next host' second-reg.err second-del.err
       # Issue 102: an unavailable path exits 69 in each command: warp tun
       # with no CAP_NET_ADMIN (no root here), and warp proxy whose only
       # listener is refused (a program holds the port).
