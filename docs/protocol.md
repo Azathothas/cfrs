@@ -241,6 +241,10 @@ Then it makes its own chunked framing and sends no origin headers.
 
 The API is `https://api.cloudflareclient.com/v0a5641`. All calls use the
 headers `User-Agent: WARP for Android` and `CF-Client-Version: a-6.38.9-5641`.
+After a dial, TLS or 5xx failure, cfrs sends the call again to the second
+name of the API, `https://api.devices.cloudflare.com` (it answered
+`GET /reg/{id}` of an unknown device with the same 404 on 2026-11-04).
+`CFRS_WARP_API=https://HOST[:PORT]` sets the one base to use.
 
 | Call | Use |
 | --- | --- |

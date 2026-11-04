@@ -138,6 +138,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "A test hook of the seccomp backend: no-fd does not open the memory of the program for writing (process_vm_writev is used); none also does not use process_vm_writev (getsockname and getpeername fail with EOPNOTSUPP).",
     },
     EnvVar {
+        names: &["CFRS_WARP_API"],
+        used_by: "warp (each command that calls the WARP API)",
+        meaning: "The one base of the WARP API: https://HOST[:PORT] (http:// for a loopback host only). Without it, cfrs tries https://api.cloudflareclient.com, then https://api.devices.cloudflare.com after a dial, TLS or 5xx failure. Another value is a configuration error (exit 78).",
+    },
+    EnvVar {
         names: &["CFRS_WARP_TCP_BURST"],
         used_by: "warp proxy, warp run, warp up, agent up",
         meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU: a number from 1 to 430, or none (no limit, the default): for a measurement of throughput. Another value is a configuration error (exit 78).",

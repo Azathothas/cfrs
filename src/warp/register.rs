@@ -23,6 +23,79 @@ use crate::egress::Proxy;
 /// API host. Reachable on TCP 443, which is the point of this module.
 pub const API_BASE: &str = "https://api.cloudflareclient.com";
 
+/// A second name of the same API (podssh): cfrs tries it after a dial, TLS
+/// or 5xx failure of the first. It resolved on 2026-11-02 to other
+/// Cloudflare addresses. A proxy allowlist can have one name and not the
+/// other.
+pub const API_SECOND: &str = "https://api.devices.cloudflare.com";
+
+/// The environment variable with the one API base to use
+/// (`https://HOST[:PORT]`).
+pub const API_VARIABLE: &str = "CFRS_WARP_API";
+
+/// The API bases to try, in order: [`API_VARIABLE`] alone when it is set,
+/// else [`API_BASE`] and [`API_SECOND`].
+pub fn api_bases(value: Option<&str>) -> Result<Vec<String>> {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(vec![API_BASE.to_string(), API_SECOND.to_string()]);
+    };
+    let value = value.trim_end_matches('/');
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| {
+            value
+                .strip_prefix("http://")
+                .filter(|r| r.starts_with("127.0.0.1:") || r.starts_with("localhost:"))
+        })
+        .with_context(|| {
+            format!("{API_VARIABLE}={value:?}: use https://HOST[:PORT] (http:// for a loopback host only)")
+        })?;
+    if rest.is_empty() || rest.contains(['/', '?', '@', '#']) {
+        bail!("{API_VARIABLE}={value:?}: use https://HOST[:PORT], with no path");
+    }
+    Ok(vec![value.to_string()])
+}
+
+/// Send `request` (made for [`API_BASE`]) to each API base in turn, until
+/// one answers with a status under 500. The error names each base.
+async fn send_api(request: crate::fetch::Request) -> Result<crate::fetch::Response> {
+    let bases = api_bases(std::env::var(API_VARIABLE).ok().as_deref())
+        .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
+    send_api_to(request, &bases).await
+}
+
+/// [`send_api`] with the bases `bases`.
+async fn send_api_to(
+    request: crate::fetch::Request,
+    bases: &[String],
+) -> Result<crate::fetch::Response> {
+    let path = request
+        .url
+        .strip_prefix(API_BASE)
+        .unwrap_or(&request.url)
+        .to_string();
+    let mut failures = Vec::new();
+    let count = bases.len();
+    for (i, base) in bases.iter().enumerate() {
+        let mut attempt = request.clone();
+        attempt.url = format!("{base}{path}");
+        match attempt.send().await {
+            Ok(response) if response.status < 500 || i + 1 == count => return Ok(response),
+            Ok(response) => failures.push(format!("{base}: HTTP {}", response.status)),
+            Err(err) if i + 1 == count => {
+                return Err(err.context(if failures.is_empty() {
+                    format!("the WARP API at {base}")
+                } else {
+                    format!("the WARP API at {base} (before: {})", failures.join("; "))
+                }))
+            }
+            Err(err) => failures.push(format!("{base}: {err:#}")),
+        }
+        tracing::info!(failed = %failures.last().map(String::as_str).unwrap_or(""), "the WARP API: cfrs tries the next host");
+    }
+    unreachable!("the last base returns")
+}
+
 /// API version segment. It must agree with the build number in
 /// [`CLIENT_VERSION`]; the service rejects a mismatched pair.
 pub const API_VERSION: &str = "v0a5641";
@@ -339,6 +412,17 @@ fn request(
     request
 }
 
+/// The send of an API request: see [`send_api`].
+trait SendApi {
+    async fn send_api(self) -> Result<crate::fetch::Response>;
+}
+
+impl SendApi for crate::fetch::Request {
+    async fn send_api(self) -> Result<crate::fetch::Response> {
+        send_api(self).await
+    }
+}
+
 fn with_json<T: Serialize>(
     request: crate::fetch::Request,
     body: &T,
@@ -382,7 +466,7 @@ pub async fn create_device_with_key(key: &str, proxy: Option<&Proxy>) -> Result<
         locale: hints.locale.unwrap_or_else(|| "en_US".into()),
     };
     let resp = with_json(request("POST", "/reg", None, proxy), &body)?
-        .send()
+        .send_api()
         .await
         .context("POST /reg")?;
     if let Some(err) = registration_error(resp.status, resp.header("retry-after"), &resp.text()) {
@@ -434,7 +518,7 @@ pub async fn enrol_masque(
         request("PATCH", &format!("/reg/{device_id}"), Some(token), proxy),
         &body,
     )?
-    .send()
+    .send_api()
     .await
     .context("PATCH /reg/{id}")?;
     check(resp)
@@ -443,7 +527,7 @@ pub async fn enrol_masque(
 /// Read the device record again (`GET /reg/{id}`).
 pub async fn get_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<Device> {
     let resp = request("GET", &format!("/reg/{device_id}"), Some(token), proxy)
-        .send()
+        .send_api()
         .await
         .context("GET /reg/{id}")?;
     check(resp)
@@ -462,7 +546,7 @@ pub async fn get_account(
         Some(token),
         proxy,
     )
-    .send()
+    .send_api()
     .await
     .context("GET /reg/{id}/account")?;
     json_body(resp)
@@ -503,7 +587,7 @@ pub async fn set_license(
         proxy,
     )
     .json(&serde_json::json!({ "license": license }))
-    .send()
+    .send_api()
     .await
     .context("PUT /reg/{id}/account")?;
     json_body(resp)
@@ -512,7 +596,7 @@ pub async fn set_license(
 /// Remove the device from the WARP service (`DELETE /reg/{id}`).
 pub async fn delete_device(device_id: &str, token: &str, proxy: Option<&Proxy>) -> Result<()> {
     let resp = request("DELETE", &format!("/reg/{device_id}"), Some(token), proxy)
-        .send()
+        .send_api()
         .await
         .context("DELETE /reg/{id}")?;
     if !resp.is_success() {
@@ -659,6 +743,83 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_api_bases() {
+        assert_eq!(api_bases(None).unwrap(), [API_BASE, API_SECOND]);
+        assert_eq!(api_bases(Some(" ")).unwrap(), [API_BASE, API_SECOND]);
+        assert_eq!(
+            api_bases(Some("https://api.devices.cloudflare.com/")).unwrap(),
+            [API_SECOND]
+        );
+        assert_eq!(
+            api_bases(Some("http://127.0.0.1:8080")).unwrap(),
+            ["http://127.0.0.1:8080"]
+        );
+        for bad in [
+            "http://api.cloudflareclient.com",
+            "api.cloudflareclient.com",
+            "https://api.cloudflareclient.com/v0",
+            "https://",
+        ] {
+            assert!(api_bases(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    /// An API on loopback that answers each request with `status`.
+    async fn answering(status: u16) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let text = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                );
+                let _ = socket.write_all(text.as_bytes()).await;
+            }
+        });
+        base
+    }
+
+    /// The second base answers after a dial failure or a 5xx of the first;
+    /// a 4xx of the first is its answer.
+    #[tokio::test]
+    async fn the_second_api_host_answers_after_a_failure() {
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_base = format!("http://{}", dead.local_addr().unwrap());
+        drop(dead);
+        let good = answering(200).await;
+        let busy = answering(503).await;
+        let refused = answering(403).await;
+        let request = || {
+            crate::fetch::Request::new("GET", format!("{API_BASE}/{API_VERSION}/reg/x"))
+                .timeout(std::time::Duration::from_secs(5))
+                .via(None)
+        };
+        let answer = send_api_to(request(), &[dead_base.clone(), good.clone()])
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 200);
+        let answer = send_api_to(request(), &[busy.clone(), good.clone()])
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 200);
+        let answer = send_api_to(request(), &[refused, good.clone()])
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 403, "a 4xx is an answer");
+        let answer = send_api_to(request(), &[good.clone(), busy.clone()])
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 200);
+        let err = send_api_to(request(), &[busy, dead_base])
+            .await
+            .expect_err("each base failed");
+        assert!(format!("{err:#}").contains("HTTP 503"), "{err:#}");
+    }
 
     // Issue 187: a 429 of the registration names the remedy.
     #[test]
