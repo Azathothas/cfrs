@@ -31,13 +31,12 @@ evidence; none is closed yet unless the issue says so):
   #278 (all five items), the #140 comment (`--l4` rules).
 * Instances and CLI: #249, #251, #252 (with the `ssh-config --host`
   newline), #253, #254, #255, #260, #262, #263, #264, #265, #266, #267.
-* Share, gate and config (merged at the end of the session if the push
-  was done): #228, #229, #231, #232, #233, #234, #240, #241, #250, #269
+* Share, gate and config: #228, #229, #231, #232, #233, #234, #240, #241, #250, #269
   (items 1 and 2; a regex `path:` is a config error), #271, #276.
 
-Not on `main` yet (parsers and egress branch, 13 commits, see below):
-#225, #226, #235, #237, #238, #239, #242, #243, #244, #259, #272 (items
-1 to 4, a part of 5), #273 (items 1, 3, 4), #274.
+* Parsers and egress: #225, #226, #235, #237, #238, #239, #242, #243,
+  #244, #259, #272 (items 1 to 4, a part of 5), #273 (items 1, 3, 4),
+  #274.
 
 Still open, not started:
 
@@ -89,9 +88,6 @@ fixed ones.
 If the session stopped before they were merged, their work is lost; redo
 it from the issue texts:
 
-* `worktree-agent-ae3285cfef1e21b24`: parsers and egress (13 commits,
-  listed above). Merge with `git cherry-pick`, resolve, run
-  `sh scripts/agent/check.sh`, push.
 * `worktree-agent-a04ad45a9b2362a4f`: QA #279 to #289 (pod-netns and
   vnet). Was running.
 
