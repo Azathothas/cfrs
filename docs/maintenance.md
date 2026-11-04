@@ -166,6 +166,26 @@ Rules that the tests check:
 
 ## Open work
 
+* **Batch 4 (the podssh study) is on `main`, not released.** No release
+  until the owner says go (`docs/decisions.md`). The next release note
+  must list these breaking changes under `## Breaking`:
+  * `cfrs doctor` says `fail` where it said `refused` (text and
+    `--json`); the JSON key is `status`, and `verdict` has the same value
+    for one release. `cfrs net doctor` says `ok`, `fail`, `unknown` in
+    place of `OK`, `FAIL`, `?`.
+  * `cfrs wait` exits 124 at its time limit; the socket rule (69 for a
+    live socket, 64 for a file that is not a socket); root with the `HOME`
+    of another user writes no file there (`CFRS_FOREIGN_HOME=allow`).
+  * `status`: `proxy.kind` is the real kind (it was `http` for each
+    proxy).
+* **Issues #212 to #278** came in during batch 4. They wait for the go of
+  the owner: then triage and plan them as one batch.
+* **Questions for the owner**: `docs/decisions.md` (a crates.io name, a
+  live check of the second WARP API host, MASQUE through the relay at
+  64 MiB).
+* **`cfrs pod doctor`** (crate `pod-netns`) keeps its own words (`ok`,
+  `no`, `available`) and has no `schema` key.
+
 * **v0.3.0-beta.11** is published (release run 41740989773, release-proofs
   41742427708 with the rebuild of x86_64 and aarch64). It fixes the choice
   of the newest release in `cfrs update` and `install.sh` (the API lists by
