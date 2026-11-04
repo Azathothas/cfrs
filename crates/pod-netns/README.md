@@ -97,6 +97,12 @@ see it. Use a unix socket for it (`-L unix:///path`).
   `single-request` to `RES_OPTIONS` of the program: glibc then sends the A
   and the AAAA query in two calls (issue 113). A program that clears its
   environment loses this option.
+* The supervisor checks each length that the program gives before it reads
+  the memory of the program. A datagram that does not fit in one SOCKS5 UDP
+  datagram of 65507 bytes (the header and the payload) gets `EMSGSIZE`, as
+  the kernel gives for a datagram that is too large. A `msghdr` with more
+  than 1024 iovecs also gets `EMSGSIZE`. A buffer that cannot be read gets
+  `EFAULT`.
 * With a proxy on a unix socket, UDP goes on the control connection first
   (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
   kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A

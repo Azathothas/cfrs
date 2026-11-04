@@ -1609,6 +1609,64 @@ fn so_error_gives_the_error_of_a_failed_connect() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const HUGE_SEND_CLIENT: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+int main(void) {
+    alarm(10);
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in d; memset(&d, 0, sizeof d);
+    d.sin_family = AF_INET; d.sin_port = htons(9999);
+    inet_pton(AF_INET, "10.66.0.1", &d.sin_addr);
+    static char b[80000];
+    long n = sendto(s, b, (size_t)1 << 40, 0, (struct sockaddr *)&d, sizeof d);
+    printf("HUGE:%ld:%d\n", n, n < 0 ? errno : 0);
+    n = sendto(s, b, 70000, 0, (struct sockaddr *)&d, sizeof d);
+    printf("LONG:%ld:%d\n", n, n < 0 ? errno : 0);
+    struct iovec iov[2] = { { b, 40000 }, { b, 40000 } };
+    struct msghdr m; memset(&m, 0, sizeof m);
+    m.msg_name = &d; m.msg_namelen = sizeof d; m.msg_iov = iov; m.msg_iovlen = 2;
+    n = sendmsg(s, &m, 0);
+    printf("IOV:%ld:%d\n", n, n < 0 ? errno : 0);
+    iov[0].iov_len = (size_t)1 << 40;
+    m.msg_iovlen = 1;
+    n = sendmsg(s, &m, 0);
+    printf("IOVHUGE:%ld:%d\n", n, n < 0 ? errno : 0);
+    printf("ALIVE\n");
+    return 0;
+}
+"#;
+
+/// Issue 303: a length of the program that is too large for a datagram
+/// gets EMSGSIZE. The supervisor does not allocate it. Before, a sendto
+/// of 1 TiB made the supervisor abort (exit 134).
+#[test]
+fn a_huge_datagram_length_gets_emsgsize() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-hugesend-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = build_program(&dir, "hugesend", HUGE_SEND_CLIENT, false);
+    let stdout = run(&dir, &[&dir.join("nobody.sock")], &program);
+    let emsgsize = libc::EMSGSIZE;
+    for call in ["HUGE", "LONG", "IOV", "IOVHUGE"] {
+        assert!(
+            stdout.contains(&format!("{call}:-1:{emsgsize}\n")),
+            "{call}: {stdout:?}"
+        );
+    }
+    assert!(stdout.contains("ALIVE"), "{stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 const UNSPEC_CLIENT: &str = r#"
 #include <stdio.h>
 #include <string.h>

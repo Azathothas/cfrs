@@ -1035,6 +1035,27 @@ async fn connect_loopback(
     Ok(Box::new(stream))
 }
 
+/// The largest datagram that the supervisor reads from the program: the
+/// largest payload of a UDP datagram. A longer length gets `EMSGSIZE`, as
+/// the kernel gives, with no read and no allocation (issue 303).
+pub(crate) const MAX_DATAGRAM: usize = 65535;
+
+/// The largest SOCKS5 UDP datagram (header and payload) that the relay
+/// sends: the largest UDP payload over IPv4. It also fits in a frame of the
+/// UDP in the stream (a `u16` length).
+pub(crate) const MAX_RELAYED: usize = 65507;
+
+/// Whether a payload of `len` bytes to `ip` (or to the name `name`) fits in
+/// one SOCKS5 UDP datagram of the relay.
+pub(crate) fn fits_relay(len: usize, ip: IpAddr, name: Option<&str>) -> bool {
+    let header = match (name, ip) {
+        (Some(name), _) => 4 + 1 + name.len().min(255) + 2,
+        (None, IpAddr::V4(_)) => 10,
+        (None, IpAddr::V6(_)) => 22,
+    };
+    len.saturating_add(header) <= MAX_RELAYED
+}
+
 pub(crate) async fn handle_sendto(
     lfd: RawFd,
     id: u64,
@@ -1063,17 +1084,25 @@ pub(crate) async fn handle_sendto(
     let Some((ip, port)) = target else {
         return notif_respond(lfd, id, -1, libc::EDESTADDRREQ);
     };
+    // The length comes from the program: check it before the read.
+    if len > MAX_DATAGRAM {
+        return notif_respond(lfd, id, -1, libc::EMSGSIZE);
+    }
+    let Ok(payload) = read_mem(mem, buf, len) else {
+        return notif_respond(lfd, id, -1, libc::EFAULT);
+    };
     if port == DNS_PORT {
-        let query = read_mem(mem, buf, len)?;
-        let Ok(parsed) = crate::dns::ParsedQuery::parse(&query) else {
+        let Ok(parsed) = crate::dns::ParsedQuery::parse(&payload) else {
             return notif_respond(lfd, id, -1, libc::EINVAL);
         };
         let reply = dns.answer(&parsed);
         let _ = pair.send(&reply).await;
         return notif_respond(lfd, id, len as i64, 0);
     }
-    let payload = read_mem(mem, buf, len)?;
     let name = dns.name_for_ip(ip).map(str::to_string);
+    if !fits_relay(len, ip, name.as_deref()) {
+        return notif_respond(lfd, id, -1, libc::EMSGSIZE);
+    }
     match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
         Ok(()) => notif_respond(lfd, id, len as i64, 0),
         Err(e) => {
@@ -1153,6 +1182,9 @@ pub(crate) async fn handle_sendmsg(
     }
 }
 
+/// The most iovecs in one `msghdr` (`UIO_MAXIOV` of the kernel).
+const UIO_MAXIOV: usize = 1024;
+
 /// Send one `struct msghdr` for the child. Return the byte count, or the
 /// errno to give the child. `Ok(None)` means: not a socket of ours.
 pub(crate) async fn send_msghdr(
@@ -1188,16 +1220,40 @@ pub(crate) async fn send_msghdr(
     let Some((ip, port)) = target else {
         return Ok(Some(Err(libc::EDESTADDRREQ)));
     };
-    let mut payload = Vec::new();
-    for i in 0..iov_len.min(8) {
-        let size = std::mem::size_of::<libc::iovec>();
-        let iov = read_mem(mem, iov_ptr + (i * size) as u64, size)?;
-        let base = read_word(&iov, std::mem::offset_of!(libc::iovec, iov_base));
-        let len = read_word(&iov, std::mem::offset_of!(libc::iovec, iov_len)) as usize;
+    // The lengths come from the program: check the count of the iovecs and
+    // the sum of their lengths before a read (issue 303). Before, only the
+    // first 8 iovecs were read, each up to 64 KiB.
+    if iov_len > UIO_MAXIOV {
+        return Ok(Some(Err(libc::EMSGSIZE)));
+    }
+    let size = std::mem::size_of::<libc::iovec>();
+    let Ok(iovs) = read_mem(mem, iov_ptr, iov_len * size) else {
+        return Ok(Some(Err(libc::EFAULT)));
+    };
+    let parts: Vec<(u64, usize)> = iovs
+        .chunks_exact(size)
+        .map(|iov| {
+            (
+                read_word(iov, std::mem::offset_of!(libc::iovec, iov_base)),
+                read_word(iov, std::mem::offset_of!(libc::iovec, iov_len)) as usize,
+            )
+        })
+        .collect();
+    let total = parts
+        .iter()
+        .fold(0usize, |sum, (_, len)| sum.saturating_add(*len));
+    if total > MAX_DATAGRAM {
+        return Ok(Some(Err(libc::EMSGSIZE)));
+    }
+    let mut payload = Vec::with_capacity(total);
+    for (base, len) in parts {
         if len == 0 {
             continue;
         }
-        payload.extend_from_slice(&read_mem(mem, base, len.min(65536))?);
+        let Ok(part) = read_mem(mem, base, len) else {
+            return Ok(Some(Err(libc::EFAULT)));
+        };
+        payload.extend_from_slice(&part);
     }
     if port == DNS_PORT {
         let Ok(parsed) = crate::dns::ParsedQuery::parse(&payload) else {
@@ -1208,6 +1264,9 @@ pub(crate) async fn send_msghdr(
         return Ok(Some(Ok(payload.len())));
     }
     let name = dns.name_for_ip(ip).map(str::to_string);
+    if !fits_relay(payload.len(), ip, name.as_deref()) {
+        return Ok(Some(Err(libc::EMSGSIZE)));
+    }
     match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
         Ok(()) => Ok(Some(Ok(payload.len()))),
         Err(_) => Ok(Some(Err(libc::ENETUNREACH))),
