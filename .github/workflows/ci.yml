@@ -43,6 +43,23 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace
+      # #213: rustdoc with no warning (a broken link renders as plain text
+      # on docs.rs).
+      - name: Docs
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --workspace
+      # #221: the files of each package. No publish (docs/decisions.md), but
+      # a packaging defect shows here, not at the first publish.
+      - name: Package lists
+        run: |
+          set -eu
+          for p in cfrs pod-netns; do cargo package --locked --list -p "$p" > "pkg-$p.txt"; done
+          for f in LICENSE README.md Cargo.toml; do
+            grep -qx "$f" pkg-cfrs.txt && grep -qx "$f" pkg-pod-netns.txt
+          done
+          grep -qx 'shim/cfrsnet.c' pkg-cfrs.txt
+          if grep -E '^(\.github|\.claude|docs|scripts|fuzz)/|^err\.txt$' pkg-cfrs.txt; then
+            echo "files of the repository in the package"; exit 1
+          fi
       - name: The man page renders with groff and mandoc
         run: |
           set -eu

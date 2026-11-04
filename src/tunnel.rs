@@ -1163,7 +1163,7 @@ impl TunnelHandle {
     /// no `index.html` answers 404 for `/`): it is logged at info, not as a
     /// warning.
     ///
-    /// The retries go on for [`VERIFY_BUDGET`] (issue 119: a new name can
+    /// The retries go on for `VERIFY_BUDGET` (issue 119: a new name can
     /// need more than a minute in public DNS). A failure exits 69.
     pub async fn verify_accepting(
         &self,

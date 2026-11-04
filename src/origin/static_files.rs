@@ -2,7 +2,7 @@
 //! hello-world page.
 //!
 //! These never dial anything. The tunnel layer calls
-//! [`InProcessResponse::respond`] and writes the reply straight back down the
+//! `InProcessResponse::respond` and writes the reply straight back down the
 //! visitor's channel. That keeps `static:` and `spa:` working in a sandbox
 //! where nothing can listen.
 

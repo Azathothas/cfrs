@@ -180,3 +180,35 @@ fn the_notebook_is_the_cell_of_the_readme() {
         );
     }
 }
+
+/// #223: the crate pod-netns ships the license text of the project.
+#[test]
+fn pod_netns_ships_the_license() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let main = std::fs::read(root.join("LICENSE")).unwrap();
+    let pod =
+        std::fs::read(root.join("crates/pod-netns/LICENSE")).expect("crates/pod-netns/LICENSE");
+    assert_eq!(main, pod, "crates/pod-netns/LICENSE is the root LICENSE");
+}
+
+/// #212: a relative link of the README is a 404 on the crate page, so
+/// each link of the README is a full URL or an anchor of the README.
+#[test]
+fn the_readme_has_no_relative_link() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in ["README.md", "crates/pod-netns/README.md"] {
+        let text = std::fs::read_to_string(root.join(name)).unwrap();
+        let mut bad = Vec::new();
+        for part in text.split("](").skip(1) {
+            let target = part.split(')').next().unwrap_or("");
+            let ok = target.starts_with("https://")
+                || target.starts_with("http://")
+                || target.starts_with('#')
+                || target.starts_with("mailto:");
+            if !ok {
+                bad.push(target.to_string());
+            }
+        }
+        assert!(bad.is_empty(), "{name}: relative links: {bad:?}");
+    }
+}

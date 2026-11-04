@@ -63,7 +63,7 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// Host[:port] from an absolute URL.
+/// `Host[:port]` from an absolute URL.
 pub fn authority_of(url: &str) -> Option<String> {
     let rest = url.split("://").nth(1)?;
     let authority = rest.split(['/', '?', '#']).next()?;

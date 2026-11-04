@@ -121,7 +121,7 @@ impl<T, E: Into<anyhow::Error>> ResultExt<T> for Result<T, E> {
     }
 }
 
-/// The text of a TLS error: "TLS alert: <description>" for an alert of the
+/// The text of a TLS error: "TLS alert: `<description>`" for an alert of the
 /// peer, the end of the connection for a reset or a close, else the text
 /// of the error.
 pub fn tls_text(err: &std::io::Error) -> String {

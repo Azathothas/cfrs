@@ -34,7 +34,7 @@ const MAX_HEADER_BYTES: usize = 8 * 1024;
 ///
 /// Returns an error if the proxy refuses the CONNECT (notably a `403` from an
 /// allow-list proxy), if the response is malformed, or if the header block
-/// exceeds [`MAX_HEADER_BYTES`].
+/// exceeds `MAX_HEADER_BYTES`.
 pub fn connect_tunnel(
     proxy_addr: &str,
     host: &str,

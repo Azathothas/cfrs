@@ -34,7 +34,7 @@
 //! * [`control`] — the shim/stack control protocol.
 //! * [`shim`] — build and locate the `LD_PRELOAD` library.
 //!
-//! The CLI exposes it as `cfrs net`; see [`crate::main`]'s `net` command.
+//! The CLI exposes it as `cfrs net`; see the `net` command of the binary.
 
 pub mod addr;
 pub mod control;
@@ -62,3 +62,13 @@ pub use proxy::{handle_connection, ProxyListen};
 pub use record::{PcapFile, RecordedPacket, Recorder, Replayer};
 pub use stack::{Clock, NetStack, StackConfig, StackEvent, TcpStream, UdpSocket};
 pub use tailscale_ssh::{LocalUser, Shims};
+
+// #215: the stack owns more than the 2 addresses that smoltcp allows by
+// default (the local address, the gateway, their IPv6 counterparts, each
+// address of a virtual listener). .cargo/config.toml sets the limit for a
+// build in the repository; a build without it (cargo install, a crate that
+// depends on cfrs) fails here, not later with lost addresses.
+const _: () = assert!(
+    smoltcp::config::IFACE_MAX_ADDR_COUNT >= 8,
+    "build cfrs with the environment variable SMOLTCP_IFACE_MAX_ADDR_COUNT=8 (.cargo/config.toml of the repository sets it)"
+);

@@ -932,7 +932,7 @@ pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Re
     result
 }
 
-/// [`write_private`] for the commands of the binary.
+/// `write_private` for the commands of the binary.
 pub fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     write_private(path, bytes)
 }

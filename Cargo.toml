@@ -7,9 +7,27 @@ license = "0BSD"
 build = "build.rs"
 description = "Cloudflare quick and named tunnels, and the Cloudflare WARP client, in one Rust binary for hosts with strong network limits."
 repository = "https://github.com/Azathothas/cfrs"
+homepage = "https://github.com/Azathothas/cfrs"
 readme = "README.md"
 keywords = ["cloudflare", "tunnel", "trycloudflare", "quic", "reverse-proxy"]
 categories = ["network-programming", "command-line-utilities"]
+# The files of the repository that the build and the tests of the crate do
+# not read (#221).
+exclude = [
+  "/.claude",
+  "/.github",
+  "/CLAUDE.md",
+  "/docs",
+  "/fuzz",
+  "/notebooks",
+  "/scripts",
+  "/cliff.toml",
+  "/deny.toml",
+]
+
+# Linux only (docs/decisions.md): docs.rs builds one target.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [workspace]
 members = [".", "crates/pod-netns"]

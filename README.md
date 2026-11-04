@@ -5,7 +5,7 @@
 | Tool | `cfrs` command |
 | --- | --- |
 | `cloudflared` quick tunnels and named tunnels | `cfrs tunnel`, `cfrs serve`, `cfrs share`, `cfrs connect` |
-| Try Cloudflare (`*.trycloudflare.com`) | `cfrs tunnel` with no account. A quick tunnel is for tests and development: no uptime guarantee, at most 200 requests in flight (more get `429`), no Server-Sent Events, and the Cloudflare Online Services Terms ([limits and terms](docs/protocol.md#7-limits-of-quick-tunnels)) |
+| Try Cloudflare (`*.trycloudflare.com`) | `cfrs tunnel` with no account. A quick tunnel is for tests and development: no uptime guarantee, at most 200 requests in flight (more get `429`), no Server-Sent Events, and the Cloudflare Online Services Terms ([limits and terms](https://github.com/Azathothas/cfrs/blob/main/docs/protocol.md#7-limits-of-quick-tunnels)) |
 | The Cloudflare WARP client | `cfrs warp` |
 
 `cfrs` is made for hosts with strong limits. The table gives each limit, the
@@ -762,7 +762,7 @@ Two backends are available. `--backend auto` (the default) selects one.
 Both backends answer DNS from a fake-IP pool (`198.18.0.0/15`; the
 `seccomp` backend answers AAAA from `fd63:6672:7300::/96` too) and send the
 name to the upstream. Thus no DNS query leaves the host. See
-[`crates/pod-netns/README.md`](crates/pod-netns/README.md) for all options.
+[`crates/pod-netns/README.md`](https://github.com/Azathothas/cfrs/blob/main/crates/pod-netns/README.md) for all options.
 
 ## Virtual network: `cfrs net`
 
@@ -785,7 +785,7 @@ or `?` (no answer in 3 s). It prints the commands that need each listener.
 `CFRS_UDP=off` makes a tunnel use no QUIC on UDP 7844; `CFRS_UDP=on` skips
 the probe at start.
 
-See [`docs/virtual-network.md`](docs/virtual-network.md).
+See [`docs/virtual-network.md`](https://github.com/Azathothas/cfrs/blob/main/docs/virtual-network.md).
 
 ## Tailscale on a sealed host
 
@@ -1231,16 +1231,16 @@ sh scripts/rebuild.sh v0.3.0-beta.8
 
 ## Documents
 
-* [`docs/protocol.md`](docs/protocol.md): the edge protocol and the WARP protocol.
-* [`docs/virtual-network.md`](docs/virtual-network.md): the shim, the stack and switch mode.
-* [`crates/pod-netns/README.md`](crates/pod-netns/README.md): pod-netns.
-* [`docs/target-environment.md`](docs/target-environment.md): the measured
+* [`docs/protocol.md`](https://github.com/Azathothas/cfrs/blob/main/docs/protocol.md): the edge protocol and the WARP protocol.
+* [`docs/virtual-network.md`](https://github.com/Azathothas/cfrs/blob/main/docs/virtual-network.md): the shim, the stack and switch mode.
+* [`crates/pod-netns/README.md`](https://github.com/Azathothas/cfrs/blob/main/crates/pod-netns/README.md): pod-netns.
+* [`docs/target-environment.md`](https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md): the measured
   hosts, the other host conditions, and the rules of cfrs for them.
-* [`SECURITY.md`](SECURITY.md): how to report a vulnerability, what
+* [`SECURITY.md`](https://github.com/Azathothas/cfrs/blob/main/SECURITY.md): how to report a vulnerability, what
   Cloudflare can see, what listens, where secrets are kept.
 
 ## License
 
-0BSD. See [`LICENSE`](LICENSE). See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the licenses of the
+0BSD. See [`LICENSE`](https://github.com/Azathothas/cfrs/blob/main/LICENSE). See
+[`THIRD_PARTY_NOTICES.md`](https://github.com/Azathothas/cfrs/blob/main/THIRD_PARTY_NOTICES.md) for the licenses of the
 included third-party files.

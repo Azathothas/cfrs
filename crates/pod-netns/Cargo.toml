@@ -7,8 +7,13 @@ rust-version = "1.89"
 license = "0BSD"
 description = "Run a program with all its network traffic sent through a SOCKS5, HTTP or tailnet upstream, with no LD_PRELOAD. A library and a CLI."
 repository = "https://github.com/Azathothas/cfrs"
+homepage = "https://github.com/Azathothas/cfrs"
+readme = "README.md"
 keywords = ["proxy", "seccomp", "netns", "socks5", "sandbox"]
 categories = ["network-programming", "command-line-utilities"]
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [lib]
 name = "pod_netns"

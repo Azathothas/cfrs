@@ -15,9 +15,9 @@
 //!   authentication is *required*; the allow-list itself never leaves the
 //!   machine. Nothing is read from the environment to build a policy: an
 //!   unconfigured gate must fail closed rather than open.
-//! * [`qr`] renders a URL as a terminal QR code so a tunnel can be opened on a
+//! * `qr` renders a URL as a terminal QR code so a tunnel can be opened on a
 //!   phone without typing a hostname.
-//! * [`static_files`] is the glue between [`crate::origin::StaticDir`] and the
+//! * `static_files` is the glue between [`crate::origin::StaticDir`] and the
 //!   byte pipe, adding the headers a tunnelled asset needs and refusing the
 //!   methods that have no meaning without a request body.
 //! * [`ShareLink`] validates a public URL before it is printed, because a share
