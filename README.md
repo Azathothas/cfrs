@@ -582,7 +582,11 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   first that cfrs can write of `CFRS_STATE_DIR`, `$XDG_STATE_HOME/cfrs`,
   `~/.local/state/cfrs`, `$XDG_RUNTIME_DIR/cfrs` and `cfrs-<uid>` in the
   temporary directory. The file mode is 0600. cfrs checks the directory
-  before it registers a device. Use `--identity PATH` for a different file,
+  before it registers a device. cfrs writes no file in a directory of
+  another user (root with the `HOME` of a user): the state directory skips
+  that `HOME`, and `warp ssh-config --write`, `warp up --persist` and
+  `--env-d`, and `autostart` exit 78. `CFRS_FOREIGN_HOME=allow` writes
+  anyway. Use `--identity PATH` for a different file,
   `--ephemeral` or `CFRS_STATE_DIR=none` to use a new device for one run.
 * IPv6: the stack has the IPv4 and the IPv6 address of the device. The
   proxy asks for A and AAAA records through the tunnel and tries IPv4

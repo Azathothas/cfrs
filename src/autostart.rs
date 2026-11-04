@@ -297,9 +297,11 @@ fn unit_path(name: &str) -> Result<PathBuf> {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
     };
-    Ok(base
+    let unit = base
         .join("systemd/user")
-        .join(format!("cfrs-{name}.service")))
+        .join(format!("cfrs-{name}.service"));
+    crate::state::check_own(&unit)?;
+    Ok(unit)
 }
 
 /// The way of this host, with the reason when there is none.

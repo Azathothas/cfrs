@@ -64,6 +64,59 @@ pub fn candidates(env: &dyn Fn(&str) -> Option<OsString>) -> Option<Vec<(String,
     Some(out)
 }
 
+/// `CFRS_FOREIGN_HOME=allow`: write in a directory of another user anyway.
+pub const FOREIGN_HOME_VARIABLE: &str = "CFRS_FOREIGN_HOME";
+
+/// The owner of `path`, or of its nearest directory that exists.
+fn owner_of(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut at = Some(path);
+    while let Some(p) = at {
+        if let Ok(meta) = std::fs::metadata(p) {
+            return Some(meta.uid());
+        }
+        at = p.parent();
+    }
+    None
+}
+
+/// An error when `path`, a file or a directory that cfrs is to write (or
+/// its nearest directory that exists), belongs to another user (podssh
+/// #118: root with the HOME of a user made root-owned files in that home,
+/// and OpenSSH then refused the user's ~/.ssh/config).
+/// `CFRS_FOREIGN_HOME=allow` writes anyway, with a warning.
+pub fn check_own(path: &Path) -> Result<()> {
+    check_own_with(
+        path,
+        unsafe { libc::geteuid() },
+        std::env::var(FOREIGN_HOME_VARIABLE).ok().as_deref() == Some("allow"),
+    )
+}
+
+fn check_own_with(path: &Path, me: u32, allow: bool) -> Result<()> {
+    let Some(owner) = owner_of(path) else {
+        return Ok(());
+    };
+    if owner == me {
+        return Ok(());
+    }
+    if allow {
+        tracing::warn!(
+            path = %path.display(),
+            owner,
+            "{FOREIGN_HOME_VARIABLE}=allow: cfrs writes in a directory of another user"
+        );
+        return Ok(());
+    }
+    Err(crate::exit::fault(
+        crate::exit::Fault::Config,
+        anyhow::anyhow!(
+            "{} belongs to the user {owner}, not to this user ({me}): cfrs writes no file of another user (a file of root in the home of a user breaks it). Run as that user (sudo -u USER, or sudo -H), give another path, or set {FOREIGN_HOME_VARIABLE}=allow",
+            path.display()
+        ),
+    ))
+}
+
 /// The state directory of this process, or `None` with `CFRS_STATE_DIR=none`.
 /// The error names each path that cfrs tried, and why it failed.
 pub fn state_dir() -> Result<Option<PathBuf>> {
@@ -77,6 +130,14 @@ pub fn choose(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Option<PathBuf>>
     };
     let mut failures = Vec::new();
     for (source, dir) in candidates {
+        // A HOME of another user is skipped, with a warning (podssh #118).
+        if source == "$HOME" || source == "$XDG_STATE_HOME" {
+            if let Err(err) = check_own(&dir) {
+                tracing::warn!("{err:#}; cfrs uses the next state directory");
+                failures.push(format!("{} ({source}): {err:#}", dir.display()));
+                continue;
+            }
+        }
         match prepare(&dir) {
             Ok(()) => return Ok(Some(dir)),
             Err(err) => failures.push(format!("{} ({source}): {err:#}", dir.display())),
@@ -231,6 +292,22 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // podssh #118: a directory of another user is refused; allow writes.
+    #[test]
+    fn a_directory_of_another_user_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = unsafe { libc::geteuid() };
+        let path = dir.path().join("a/b/c.conf");
+        assert!(check_own_with(&path, me, false).is_ok());
+        let err = check_own_with(&path, me + 1, false).unwrap_err();
+        assert_eq!(crate::exit::code_of(&err), 78);
+        assert!(
+            format!("{err:#}").contains("CFRS_FOREIGN_HOME=allow"),
+            "{err:#}"
+        );
+        assert!(check_own_with(&path, me + 1, true).is_ok());
+    }
 
     // Issue 178: a stat error is not a missing file.
     #[test]

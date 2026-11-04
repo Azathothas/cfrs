@@ -1634,6 +1634,9 @@ fn ssh_config_file(
 ) -> Result<()> {
     use cfrs::warp::ssh_config as sc;
     let path = sc::expand(config).fault(Fault::Config)?;
+    if write || remove {
+        cfrs::state::check_own(&path)?;
+    }
     let old = match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,

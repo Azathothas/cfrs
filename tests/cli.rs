@@ -1455,3 +1455,58 @@ fn the_error_program_gets_no_secret() {
     assert!(!env.contains("secret"), "{env}");
     assert!(env.contains("CFRS_SOMETHING=kept"), "{env}");
 }
+
+/// podssh #118: root with the HOME of another user writes no file there.
+/// ssh-config --write exits 78; CFRS_FOREIGN_HOME=allow writes. The state
+/// directory skips that HOME. Needs root (to chown); skipped otherwise.
+#[test]
+fn root_writes_no_file_in_the_home_of_another_user() {
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("skipping: not root");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let c = |p: &std::path::Path| {
+        let p = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::chown(p.as_ptr(), 4242, 4242) }, 0);
+    };
+    c(&home);
+    c(&home.join(".ssh"));
+    let run = |extra: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(["warp", "ssh-config", "--write", "--host", "example.org"])
+            .env("HOME", &home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CFRS_STATE_DIR")
+            .env_remove("CFRS_FOREIGN_HOME")
+            .env_remove("CFRS_ERROR_PROGRAM");
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    };
+    let out = run(&[]);
+    assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("CFRS_FOREIGN_HOME=allow"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!home.join(".ssh/config").exists());
+    let out = run(&[("CFRS_FOREIGN_HOME", "allow")]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(home.join(".ssh/config").exists());
+    // The state directory is not made in that HOME.
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["status"])
+        .env("HOME", &home)
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("CFRS_STATE_DIR")
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!home.join(".local/state/cfrs").exists());
+}

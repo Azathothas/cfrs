@@ -113,6 +113,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "OWNER/NAME of the releases for scripts/install.sh. cfrs update does not use it: its repository names the signer of the binary. A warning says so.",
     },
     EnvVar {
+        names: &["CFRS_FOREIGN_HOME"],
+        used_by: "the state directory, warp ssh-config --write, warp up --persist and --env-d, autostart",
+        meaning: "allow: write in a directory of another user anyway (with a warning). By default, cfrs writes no file in a directory that belongs to another user (root with the HOME of a user): the state directory skips that HOME, and the other commands exit 78.",
+    },
+    EnvVar {
         names: &["CFRS_AUTH_USER", "CFRS_AUTH_PASSWORD_FILE"],
         used_by: "tunnel, serve, share, demo, connect",
         meaning: "The values of --auth-user and --auth-password-file: each visitor of the tunnel must give this user and password (HTTP Basic); cfrs connect sends them in the WebSocket upgrade. The file has the password on its first line and mode 0600.",

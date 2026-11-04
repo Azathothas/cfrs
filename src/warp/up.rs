@@ -439,9 +439,11 @@ pub fn without_block(text: &str) -> String {
 }
 
 fn shell_files() -> Result<Vec<PathBuf>> {
-    let home = std::env::var_os("HOME").context("no HOME")?;
+    let home = PathBuf::from(std::env::var_os("HOME").context("no HOME")?);
+    // podssh #118: no file of root in the home of another user.
+    crate::state::check_own(&home)?;
     let shell = std::env::var("SHELL").unwrap_or_default();
-    Ok(shell_files_in(&PathBuf::from(home), &shell))
+    Ok(shell_files_in(&home, &shell))
 }
 
 /// The files of the sh block (issue 115): `~/.bashrc`, `~/.profile`, and
@@ -459,6 +461,7 @@ fn shell_files_in(home: &Path, shell: &str) -> Vec<PathBuf> {
 /// the shell or its config directory exists.
 fn fish_file() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
+    crate::state::check_own(&home).ok()?;
     let dir = home.join(".config/fish");
     let shell = std::env::var("SHELL").unwrap_or_default();
     (shell.ends_with("fish") || dir.exists()).then(|| dir.join("conf.d/cfrs-warp.fish"))
@@ -517,7 +520,9 @@ pub fn env_d_path() -> Result<PathBuf> {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
     };
-    Ok(config.join("environment.d/90-cfrs-warp.conf"))
+    let path = config.join("environment.d/90-cfrs-warp.conf");
+    crate::state::check_own(&path)?;
+    Ok(path)
 }
 
 /// The text of the environment.d file for the proxy on 127.0.0.1:`port`
