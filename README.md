@@ -1002,6 +1002,10 @@ or a container that kills each process of its run also ends it.
   line for it.
   `--no-restart` turns the supervisor off. `cfrs stop` stops the supervisor
   and its instance.
+* cfrs never removes a lock file that a live process holds. When the
+  record of a live instance cannot be read, `cfrs ps` shows the instance
+  with the state `unknown`, and `cfrs stop` exits 69 and removes nothing.
+  `cfrs stop --all` goes on to the next instance after a failure.
 * `cfrs autostart add NAME --from INSTANCE` makes a detached instance start
   at boot too.
 * `cfrs status` lists the instances.

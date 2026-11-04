@@ -745,3 +745,43 @@ fn a_named_foreground_process_keeps_no_secret_in_its_record() {
     );
     let _ = child.wait();
 }
+
+// Issue 264: stop on a record that does not parse removed the locks of the
+// live instance; the instance ran on, hidden, and its name was free.
+#[test]
+fn stop_keeps_the_locks_of_a_live_instance_with_a_bad_record() {
+    let env = Env::new();
+    let switch = env.switch();
+    let args = [
+        "net", "switch", "--listen", &switch, "--detach", "--name", "cor",
+    ];
+    let start = env.run(&args);
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let pid = ready_doc(&start)["pid"].as_i64().unwrap() as i32;
+    let record = env.run.join("cor.json");
+    let saved = std::fs::read(&record).unwrap();
+    std::fs::write(&record, "").unwrap();
+    let stop = env.run(&["stop", "cor", "--timeout", "2"]);
+    let err = String::from_utf8_lossy(&stop.stderr);
+    assert_eq!(stop.status.code(), Some(69), "{err}");
+    assert!(err.contains("cannot be read"), "{err}");
+    assert!(env.run.join("cor.lock").exists(), "the lock stays");
+    assert!(alive(pid));
+    let entry = instance(&env, "cor");
+    assert_eq!(entry["state"], "unknown", "{entry}");
+    let again = env.run(&args);
+    assert_ne!(again.status.code(), Some(0), "a second instance started");
+    // The record back: the instance stops as usual.
+    std::fs::write(&record, saved).unwrap();
+    let stop = env.run(&["stop", "cor", "--timeout", "5"]);
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    wait_until("the instance ends", || !alive(pid));
+}

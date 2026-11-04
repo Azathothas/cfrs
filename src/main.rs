@@ -1880,7 +1880,12 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
     } else {
         let name = name.unwrap_or_default();
         cfrs::instances::check_name(&name).map_err(|e| cfrs::exit::fault(Fault::Usage, e))?;
-        if cfrs::instances::read(&dir, &name).is_none() || !cfrs::instances::is_alive(&dir, &name) {
+        let alive = cfrs::instances::is_alive(&dir, &name);
+        if alive && cfrs::instances::read(&dir, &name).is_none() {
+            // Issue 264: the locks of a live instance stay.
+            return Err(cfrs::detach::unreadable(&dir, &name));
+        }
+        if !alive {
             cfrs::instances::remove(&dir, &name);
             return Err(cfrs::exit::fault(
                 Fault::Unavailable,
@@ -1889,11 +1894,23 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
         }
         vec![name]
     };
+    let mut failed = None;
     for name in names {
-        cfrs::detach::stop(&dir, &name, std::time::Duration::from_secs(timeout))?;
-        println!("cfrs: stopped  {name}");
+        match cfrs::detach::stop(&dir, &name, std::time::Duration::from_secs(timeout)) {
+            Ok(()) => println!("cfrs: stopped  {name}"),
+            // --all: one instance that cannot stop does not keep the
+            // others running.
+            Err(err) if all => {
+                eprintln!("cfrs: stop {name}: {err:#}");
+                failed = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
     }
-    Ok(())
+    match failed {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// `cfrs logs`.

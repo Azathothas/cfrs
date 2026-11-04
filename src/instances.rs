@@ -187,16 +187,48 @@ pub fn secrets_of(vars: &[(String, String)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The lock files that this process holds, as (device, inode). A lock of
+/// this process is not a lock of another instance: [`remove`] can delete
+/// it (the end of a registered process, the end of a supervisor).
+static OWN: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn id_of(file: &File) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    file.metadata().ok().map(|m| (m.dev(), m.ino()))
+}
+
+fn own() -> std::sync::MutexGuard<'static, Vec<(u64, u64)>> {
+    OWN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// An exclusive `flock` that this process holds until the value is dropped
 /// (or the process ends).
 #[derive(Debug)]
 pub struct Held(File);
 
 impl Held {
+    fn new(file: File) -> Held {
+        if let Some(id) = id_of(&file) {
+            own().push(id);
+        }
+        Held(file)
+    }
+
     /// The file descriptor, which must stay open (a detached child keeps it
     /// across its start).
     pub fn fd(&self) -> i32 {
         self.0.as_raw_fd()
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(id) = id_of(&self.0) {
+            let mut own = own();
+            if let Some(i) = own.iter().position(|x| *x == id) {
+                own.swap_remove(i);
+            }
+        }
     }
 }
 
@@ -218,7 +250,7 @@ pub fn try_lock(path: &Path) -> Result<Option<Held>> {
     // SAFETY: flock on a descriptor of this process.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
-        return Ok(Some(Held(file)));
+        return Ok(Some(Held::new(file)));
     }
     let err = std::io::Error::last_os_error();
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
@@ -233,7 +265,7 @@ pub fn lock(path: &Path) -> Result<Held> {
     loop {
         // SAFETY: flock on a descriptor of this process.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(Held(file));
+            return Ok(Held::new(file));
         }
         let err = std::io::Error::last_os_error();
         if err.kind() != std::io::ErrorKind::Interrupted {
@@ -254,14 +286,57 @@ pub fn is_alive(dir: &Path, name: &str) -> bool {
         .any(|lock| matches!(try_lock(lock), Ok(None)))
 }
 
-/// Remove the files of `name` (not the log, which can tell why it ended).
-pub fn remove(dir: &Path, name: &str) {
-    let Ok(p) = paths(dir, name) else {
-        return;
+/// The state of one lock file for [`remove`].
+enum LockState {
+    /// No file.
+    Missing,
+    /// Nobody else holds it: this process holds it now (`Some`), or held
+    /// it before (`None`).
+    Free(Option<Held>),
+    /// Another process holds it (or it cannot be opened).
+    Busy,
+}
+
+fn lock_state(path: &Path) -> LockState {
+    let file = match std::fs::OpenOptions::new().read(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LockState::Missing,
+        Err(_) => return LockState::Busy,
     };
-    let _ = std::fs::remove_file(p.record);
-    let _ = std::fs::remove_file(p.lock);
-    let _ = std::fs::remove_file(p.child_lock);
+    if id_of(&file).is_some_and(|id| own().contains(&id)) {
+        return LockState::Free(None);
+    }
+    // SAFETY: flock on a descriptor of this process.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        LockState::Free(Some(Held::new(file)))
+    } else {
+        LockState::Busy
+    }
+}
+
+/// Remove the files of `name` (not the log, which can tell why it ended).
+/// A lock that another process holds is never removed (issue 264: `stop`
+/// on an unreadable record removed the locks of a live instance, and a
+/// second instance could start with the name). Then nothing is removed,
+/// and the result is false.
+pub fn remove(dir: &Path, name: &str) -> bool {
+    let Ok(p) = paths(dir, name) else {
+        return false;
+    };
+    let mut free = Vec::new();
+    for lock in [&p.lock, &p.child_lock] {
+        match lock_state(lock) {
+            LockState::Missing => {}
+            LockState::Free(held) => free.push((lock, held)),
+            LockState::Busy => return false,
+        }
+    }
+    let _ = std::fs::remove_file(&p.record);
+    // Each lock is removed while this process holds it.
+    for (lock, _held) in &free {
+        let _ = std::fs::remove_file(lock);
+    }
+    true
 }
 
 /// One instance of [`list`].
@@ -288,6 +363,18 @@ pub fn list(dir: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
     for name in names {
         let Some(record) = read(dir, &name) else {
+            // Issue 264: a live instance with a record that does not parse
+            // is shown (state unknown), not hidden.
+            if check_name(&name).is_ok() && is_alive(dir, &name) {
+                out.push(Entry {
+                    record: Record {
+                        name: name.clone(),
+                        state: "unknown".into(),
+                        ..Record::default()
+                    },
+                    alive: true,
+                });
+            }
             continue;
         };
         if is_alive(dir, &name) {
@@ -362,6 +449,44 @@ mod tests {
         );
         assert!(!dir.path().join("x.lock").exists());
         assert!(std::fs::read_dir(&inner).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn remove_leaves_a_lock_that_another_process_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path(), "h").unwrap();
+        std::fs::write(&p.record, "").unwrap();
+        std::fs::write(&p.lock, "").unwrap();
+        // A lock of another process: a child that holds it.
+        let mut child = std::process::Command::new("flock")
+            .arg("-o")
+            .arg(&p.lock)
+            .args(["sleep", "30"])
+            .spawn()
+            .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while try_lock(&p.lock).unwrap().is_some() {
+            assert!(std::time::Instant::now() < until, "the child holds no lock");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!remove(dir.path(), "h"));
+        assert!(p.lock.exists(), "a held lock stays");
+        assert!(p.record.exists(), "the record of a live instance stays");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(remove(dir.path(), "h"));
+        assert!(!p.lock.exists());
+        assert!(!p.record.exists());
+    }
+
+    #[test]
+    fn remove_deletes_a_lock_of_this_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path(), "o").unwrap();
+        let held = try_lock(&p.lock).unwrap().unwrap();
+        assert!(remove(dir.path(), "o"));
+        assert!(!p.lock.exists());
+        drop(held);
     }
 
     #[test]

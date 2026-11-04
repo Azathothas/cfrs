@@ -670,6 +670,9 @@ pub fn wait_ready_record(dir: &Path, name: &str, timeout: Duration) -> Result<se
 /// until its lock is free for `timeout`, then SIGKILL. Remove its record.
 pub fn stop(dir: &Path, name: &str, timeout: Duration) -> Result<()> {
     let Some(record) = instances::read(dir, name) else {
+        if instances::is_alive(dir, name) {
+            return Err(unreadable(dir, name));
+        }
         bail!("no instance {name}");
     };
     if !instances::is_alive(dir, name) {
@@ -720,8 +723,26 @@ pub fn stop(dir: &Path, name: &str, timeout: Duration) -> Result<()> {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    instances::remove(dir, name);
+    // Issue 264: the files of an instance that still runs stay.
+    if !instances::remove(dir, name) {
+        return Err(crate::exit::fault(
+            crate::exit::Fault::Unavailable,
+            anyhow::anyhow!("the instance {name} still runs after SIGKILL; its files stay"),
+        ));
+    }
     Ok(())
+}
+
+/// The error of a live instance whose record does not parse (issue 264).
+pub fn unreadable(dir: &Path, name: &str) -> anyhow::Error {
+    crate::exit::fault(
+        crate::exit::Fault::Unavailable,
+        anyhow::anyhow!(
+            "the record of {name} cannot be read, but the instance runs; its files stay. \
+             Find its process with: fuser {}/{name}.lock",
+            dir.display()
+        ),
+    )
 }
 
 /// The supervisor of a detached child (issue 73). It has no async runtime.
