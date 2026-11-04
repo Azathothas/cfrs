@@ -317,13 +317,27 @@ pub fn lock(path: &Path) -> Result<Held> {
 /// Whether a process holds a lock of the instance `name`: the lock of the
 /// supervisor, or the lock of its child (a child goes on when its
 /// supervisor is killed).
+/// It makes no file (issue 266: `cfrs wait NAME` made `NAME.lock` and
+/// `NAME.child.lock`).
 pub fn is_alive(dir: &Path, name: &str) -> bool {
     let Ok(p) = paths(dir, name) else {
         return false;
     };
-    [p.lock, p.child_lock]
-        .iter()
-        .any(|lock| matches!(try_lock(lock), Ok(None)))
+    [p.lock, p.child_lock].iter().any(|lock| is_held(lock))
+}
+
+/// Whether another process holds the lock of `path`. A missing file is not
+/// held, and is not made.
+pub fn is_held(path: &Path) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) else {
+        return false;
+    };
+    // SAFETY: flock on a descriptor of this process.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        // Free: the lock ends when the file is closed.
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
 }
 
 /// The state of one lock file for [`remove`].
@@ -387,8 +401,10 @@ pub struct Entry {
     pub alive: bool,
 }
 
-/// The instances of `dir`, by name. A record whose lock nobody holds is
-/// stale: it is removed, and it is not in the list.
+/// The live instances of `dir`, by name. A record whose lock nobody holds
+/// is stale: it is not in the list. The list writes nothing (issue 266:
+/// `status` and `bug-report` removed files); [`prune`] removes the stale
+/// records.
 pub fn list(dir: &Path) -> Vec<Entry> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
@@ -423,11 +439,28 @@ pub fn list(dir: &Path) -> Vec<Entry> {
                 record,
                 alive: true,
             });
-        } else {
-            remove(dir, &name);
         }
     }
     out
+}
+
+/// Remove the files of each stale instance of `dir` (`cfrs ps`).
+pub fn prune(dir: &Path) {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            Some(name.strip_suffix(".json")?.to_string())
+        })
+        .filter(|name| check_name(name).is_ok())
+        .collect();
+    for name in names {
+        if read(dir, &name).is_some() && !is_alive(dir, &name) {
+            remove(dir, &name);
+        }
+    }
 }
 
 /// A short hash (16 hex) of the arguments and of the secret values.
@@ -531,6 +564,13 @@ mod tests {
     }
 
     #[test]
+    fn is_alive_makes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_alive(dir.path(), "nosuch"));
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
     fn a_held_lock_is_alive_and_a_free_lock_is_stale() {
         let dir = tempfile::tempdir().unwrap();
         let record = Record {
@@ -552,8 +592,10 @@ mod tests {
         assert_eq!(listed[0].record, record);
         drop(held);
         assert!(!is_alive(dir.path(), "t"));
-        assert!(list(dir.path()).is_empty(), "a stale record is removed");
-        assert!(read(dir.path(), "t").is_none());
+        assert!(list(dir.path()).is_empty(), "a stale record is not listed");
+        assert!(read(dir.path(), "t").is_some(), "list writes nothing");
+        prune(dir.path());
+        assert!(read(dir.path(), "t").is_none(), "prune removes it");
     }
 
     #[test]

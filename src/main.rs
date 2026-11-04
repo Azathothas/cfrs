@@ -1802,6 +1802,7 @@ fn exposes_failed(exposed: &serde_json::Value) -> usize {
 /// `cfrs ps`: the instances of the run directory.
 fn instances_ps(json: bool) -> Result<()> {
     let dir = cfrs::instances::lookup_dir();
+    cfrs::instances::prune(&dir);
     let list = cfrs::instances::list(&dir);
     if json {
         let items: Vec<serde_json::Value> = list
