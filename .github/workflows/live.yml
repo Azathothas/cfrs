@@ -187,7 +187,7 @@ jobs:
         run: |
           set -eu
           target/release/cfrs net doctor | tee doctor.out
-          grep -E '^UDP egress .* OK +answered' doctor.out
+          grep -E '^UDP egress .* ok +answered' doctor.out
           sudo iptables -I OUTPUT -p udp --dport 7844 -j REJECT
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j REJECT' EXIT
           target/release/cfrs net doctor | grep -E '^UDP egress .* fail +refused'

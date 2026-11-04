@@ -92,7 +92,7 @@ pub const NEEDS: &str = "\
 listen(AF_INET): warp proxy --listen tcp://, connect -L tcp://, net proxy
 listen(AF_UNIX): warp proxy --listen unix:, connect -L unix://
 no listener: tunnel, serve, share and demo (the edge carries each request)
-UDP egress: refused makes --protocol auto skip QUIC on UDP 7844; ? keeps the
+UDP egress: refused makes --protocol auto skip QUIC on UDP 7844; unknown keeps the
   order (the next leg starts after 2 s); CFRS_UDP=off|on|probe sets it
 ";
 
