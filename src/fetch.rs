@@ -133,6 +133,8 @@ fn target(url: &str) -> Result<Target> {
     } else {
         bail!("the URL is not http:// or https://");
     };
+    // The fragment is not sent, and it can come before a path (issue 242).
+    let rest = rest.split('#').next().unwrap_or(rest);
     let (authority, path) = match rest.find(['/', '?']) {
         Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], rest[i..].to_string()),
         Some(i) => (&rest[..i], format!("/{}", &rest[i..])),
@@ -158,6 +160,14 @@ fn target(url: &str) -> Result<Target> {
     };
     if host.is_empty() {
         bail!("the URL has no host");
+    }
+    // The host and the path go in the request head as they are.
+    if !host
+        .bytes()
+        .chain(path.bytes())
+        .all(|b| b > b' ' && b != 0x7f)
+    {
+        bail!("the URL has a space or a control character");
     }
     Ok(Target {
         tls,
@@ -428,6 +438,30 @@ mod tests {
         );
         assert!(target("ftp://x").is_err());
         assert!(target("https://user:pw@x/").is_err());
+    }
+
+    /// Issue 242: a fragment after the host is not part of the host, and
+    /// a control character or a space in the URL is an error.
+    #[test]
+    fn a_fragment_is_not_part_of_the_host() {
+        let t = target("https://host#frag").unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.port, t.path.as_str()),
+            ("host", 443, "/")
+        );
+        let t = target("https://host:8443#f/x").unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.port, t.path.as_str()),
+            ("host", 8443, "/")
+        );
+        for bad in [
+            "https://ho\rst/",
+            "https://host/a b",
+            "https://host/a\r\nX: y",
+            "http://host/\x7f",
+        ] {
+            assert!(target(bad).is_err(), "{bad:?}");
+        }
     }
 
     async fn parse(raw: &[u8]) -> Result<Response> {
