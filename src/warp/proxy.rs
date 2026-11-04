@@ -440,8 +440,9 @@ pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound) -> WarpProxy {
     }
     let task = match bound {
         Bound::Tcp(listener, _) => tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                client(live.clone(), stream);
+            while let Ok((stream, peer)) = listener.accept().await {
+                let local = stream.local_addr().ok().map(|a| a.ip());
+                client_on(live.clone(), stream, local.map(|l| (l, peer.ip())));
             }
         }),
         Bound::Unix(listener, _) => tokio::spawn(async move {
@@ -454,8 +455,23 @@ pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound) -> WarpProxy {
     WarpProxy { listen, task }
 }
 
+tokio::task_local! {
+    /// The local and the peer address of the control connection of a TCP
+    /// client (#278): the UDP relay binds the local address, and takes the
+    /// datagrams of the peer address only.
+    static CONTROL_ADDRESSES: (IpAddr, IpAddr);
+}
+
 /// Serve one client of the proxy on its own task.
 fn client<S>(live: Arc<super::Live<WarpStack>>, stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    client_on(live, stream, None)
+}
+
+/// [`client`] with the addresses of a TCP control connection.
+fn client_on<S>(live: Arc<super::Live<WarpStack>>, stream: S, addresses: Option<(IpAddr, IpAddr)>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -484,7 +500,12 @@ where
         };
         let udp = Some(stack.clone());
         let dial = move |host, port| route(stack.clone(), host, port);
-        if let Err(err) = handle_client_auth(stream, dial, udp, CREDENTIALS.get()).await {
+        let serve = handle_client_auth(stream, dial, udp, CREDENTIALS.get());
+        let result = match addresses {
+            Some(addresses) => CONTROL_ADDRESSES.scope(addresses, serve).await,
+            None => serve.await,
+        };
+        if let Err(err) = result {
             debug!(error = %err, "WARP proxy client failed");
         }
     });
@@ -649,7 +670,16 @@ where
             0x01 => request,
             0x03 => match udp {
                 Some(stack) => {
-                    return udp_associate_from(stream, stack, UdpClient::of(&request)).await
+                    let mut client = UdpClient::of(&request);
+                    let control = CONTROL_ADDRESSES.try_with(|a| *a).ok();
+                    if let Some((_, peer)) = control {
+                        // A remote client: only its own address.
+                        if !peer.is_loopback() {
+                            client.ip.get_or_insert(peer);
+                        }
+                    }
+                    let bind = relay_bind_ip(control.map(|(local, _)| local));
+                    return udp_associate_on(stream, stack, client, bind).await;
                 }
                 None => {
                     socks::socks5_reply(&mut stream, 0x07, None).await?;
@@ -796,13 +826,24 @@ async fn udp_associate<S>(control: S, stack: Arc<WarpStack>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    udp_associate_from(control, stack, UdpClient::default()).await
+    udp_associate_on(control, stack, UdpClient::default(), relay_bind_ip(None)).await
 }
 
-async fn udp_associate_from<S>(
+/// The address of the UDP relay (#278): the local address of the TCP
+/// control connection, so that a client of another host can reach it;
+/// 127.0.0.1 for a unix socket. An unspecified address is not sent back.
+fn relay_bind_ip(local: Option<IpAddr>) -> IpAddr {
+    match local {
+        Some(ip) if !ip.is_unspecified() => ip,
+        _ => IpAddr::from([127, 0, 0, 1]),
+    }
+}
+
+async fn udp_associate_on<S>(
     mut control: S,
     stack: Arc<WarpStack>,
     client_of: UdpClient,
+    bind: IpAddr,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -810,7 +851,7 @@ where
     // Issue 114: a failure gets a SOCKS5 reply (general failure), not a
     // closed connection with no reply.
     let sockets = async {
-        let local = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        let local = tokio::net::UdpSocket::bind(SocketAddr::new(bind, 0))
             .await
             .context("a UDP socket on 127.0.0.1 for the relay (a host that refuses it can use the UDP association in the stream, command 0x83)")?;
         let tunnel = stack.udp_bind().await?;
@@ -1563,6 +1604,20 @@ mod tests {
         let mut by_ip = UdpClient::of(&named("127.0.0.2", 0));
         assert!(!by_ip.accept(a));
         assert!(by_ip.accept("127.0.0.2:9".parse().unwrap()));
+    }
+
+    /// #278: the relay binds the local address of the control connection.
+    #[test]
+    fn the_udp_relay_binds_the_address_of_the_control_connection() {
+        assert_eq!(relay_bind_ip(None), IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(
+            relay_bind_ip(Some("0.0.0.0".parse().unwrap())),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        assert_eq!(
+            relay_bind_ip(Some("10.1.2.3".parse().unwrap())),
+            "10.1.2.3".parse::<IpAddr>().unwrap()
+        );
     }
 
     /// #278: a second local socket can not take the replies of the client.
