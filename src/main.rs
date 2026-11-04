@@ -4526,6 +4526,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             check,
             config,
         } => {
+            // Issue 252: a pattern with a newline wrote an own ProxyCommand.
+            if let Some(host) = host {
+                cfrs::warp::ssh_config::check_host(host).fault(Fault::Usage)?;
+            }
             let exe = std::env::current_exe()?.canonicalize()?;
             if !(*write || *remove || *check) {
                 print!(

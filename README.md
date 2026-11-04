@@ -717,6 +717,9 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   stale; `--remove [--host PATTERN]` removes it. No other line of the file
   changes. A `Host` line of the file with the same pattern is an error, and
   the files of `Include` are not read. `cfrs warp down` keeps the block.
+  `--host` is one pattern of 1 to 255 characters from `A-Z a-z 0-9 . _ -
+  * ? ! : @ % , [ ]`; a space, a newline or another control character
+  exits 64, and nothing is printed or written.
 * `cfrs warp tun --default-route` (CAP_NET_ADMIN) sends the whole host
   through WARP: a host route keeps each address of the MASQUE connection
   (the proxy, the front door, the relay) outside the TUN when the TUN

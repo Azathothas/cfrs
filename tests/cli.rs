@@ -1749,3 +1749,26 @@ fn json_documents_have_the_schema_and_the_version() {
         }
     }
 }
+
+// Issue 252: a --host with a newline wrote an own Host block with a
+// ProxyCommand into the SSH config.
+#[test]
+fn ssh_config_refuses_a_host_with_a_newline_or_a_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    std::fs::write(&config, "Host box\n    User me\n").unwrap();
+    let config = config.to_str().unwrap();
+    for host in ["x\nHost *\n    ProxyCommand evil\n#", "a b", "a\tb", ""] {
+        for extra in [&["--write", "--config", config][..], &[]] {
+            let mut args = vec!["warp", "ssh-config", "--host", host];
+            args.extend_from_slice(extra);
+            let out = cfrs(&args);
+            assert_eq!(out.status.code(), Some(64), "{host:?}: {}", stderr(&out));
+            assert!(out.stdout.is_empty(), "{host:?}");
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(config).unwrap(),
+        "Host box\n    User me\n"
+    );
+}

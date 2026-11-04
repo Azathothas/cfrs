@@ -35,8 +35,30 @@ fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// The block for `host`, with its markers and a final newline.
+/// Check a `--host` pattern before it goes into a config line (issue 252).
+/// A newline would start a new line of the file (for example a second
+/// `Host *` with its own `ProxyCommand`), and a space gives more than one
+/// pattern. One pattern has 1 to 255 characters from
+/// `A-Z a-z 0-9 . _ - * ? ! : @ % , [ ]`.
+pub fn check_host(host: &str) -> Result<()> {
+    let good = !host.is_empty()
+        && host.len() <= 255
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-*?!:@%,[]".contains(&b));
+    if !good {
+        bail!(
+            "--host {host:?}: give one Host pattern of 1 to 255 characters from \
+             A-Z a-z 0-9 . _ - * ? ! : @ % , [ ] (no space, no control character)"
+        );
+    }
+    Ok(())
+}
+
+/// The block for `host`, with its markers and a final newline. The caller
+/// checks `host` with [`check_host`].
 pub fn block(exe: &Path, host: &str) -> String {
+    debug_assert!(check_host(host).is_ok(), "{host:?}");
     format!(
         "{}\nHost {host}\n    ProxyCommand {} warp nc %h %p\n{}\n",
         begin(host),
@@ -230,6 +252,26 @@ mod tests {
 
     fn b(host: &str) -> String {
         block(Path::new(EXE), host)
+    }
+
+    #[test]
+    fn a_host_with_a_space_or_a_control_character_is_refused() {
+        for bad in [
+            "",
+            "x\nHost *\n    ProxyCommand evil\n#",
+            "x\r",
+            "a b",
+            "a\tb",
+            "a\0b",
+            "pat*tern with spaces",
+            "x\u{7f}",
+            "\u{e9}",
+        ] {
+            assert!(check_host(bad).is_err(), "{bad:?}");
+        }
+        for good in ["*", "*.corp", "a-b.example", "!x", "10.0.0.?", "u@h:22"] {
+            check_host(good).unwrap();
+        }
     }
 
     #[test]
