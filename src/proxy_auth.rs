@@ -71,11 +71,68 @@ pub struct Challenge {
     pub qop: Option<String>,
 }
 
-/// Parse the parameters of `Digest a="b", c=d, ...`. `None` when the text
-/// is not a Digest challenge, or names an algorithm that cfrs does not
-/// have.
+/// Split a list of a header value at the commas that are not in quotes.
+fn split_list(value: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let (mut start, mut in_quotes, mut escaped) = (0, false, false);
+    for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if in_quotes && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_quotes = !in_quotes;
+        } else if c == ',' && !in_quotes {
+            items.push(&value[start..i]);
+            start = i + 1;
+        }
+    }
+    items.push(&value[start..]);
+    items
+}
+
+/// The challenges of a `Proxy-Authenticate` value: the scheme and the
+/// parameters of each. One value can hold several challenges:
+/// `Basic realm="a", Digest realm="b", nonce="n"` (RFC 9110 section 11.6.1).
+fn challenges(value: &str) -> Vec<(&str, Vec<&str>)> {
+    let mut out: Vec<(&str, Vec<&str>)> = Vec::new();
+    for item in split_list(value) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let end = item.find([' ', '\t', '=']).unwrap_or(item.len());
+        let after = item[end..].trim_start();
+        if after.starts_with('=') {
+            // A parameter of the challenge before.
+            if let Some((_, params)) = out.last_mut() {
+                params.push(item);
+            }
+        } else {
+            let params = if after.is_empty() {
+                Vec::new()
+            } else {
+                vec![after]
+            };
+            out.push((&item[..end], params));
+        }
+    }
+    out
+}
+
+/// The Digest challenge of a `Proxy-Authenticate` value. The scheme name
+/// has any case, and the value can hold other challenges before or after
+/// it (issue 274). `None` when the value has no Digest challenge, or the
+/// challenge names an algorithm that cfrs does not have.
 pub fn parse_challenge(value: &str) -> Option<Challenge> {
-    let rest = value.trim().strip_prefix("Digest")?.trim_start();
+    let (_, params) = challenges(value)
+        .into_iter()
+        .find(|(scheme, _)| scheme.eq_ignore_ascii_case("digest"))?;
+    parse_digest_params(&params.join(", "))
+}
+
+/// Parse the parameters `a="b", c=d, ...` of a Digest challenge.
+fn parse_digest_params(rest: &str) -> Option<Challenge> {
     let mut c = Challenge {
         algorithm: "MD5".into(),
         ..Challenge::default()
@@ -486,6 +543,33 @@ mod tests {
         );
         assert!(value.contains("nc=00000001"));
         assert!(value.contains("opaque=\"FQhe/qaU925kfnzjCev0ciny7QMkPqMAFRtzCUYo5tdS\""));
+    }
+
+    /// Issue 274: the scheme has any case, and a value with more than one
+    /// challenge gives its Digest challenge.
+    #[test]
+    fn a_digest_challenge_among_others() {
+        let lower = parse_challenge("digest realm=\"x\", nonce=\"n\", qop=\"auth\"").unwrap();
+        assert_eq!((lower.realm.as_str(), lower.nonce.as_str()), ("x", "n"));
+        assert_eq!(lower.qop.as_deref(), Some("auth"));
+        let both = parse_challenge(
+            "Basic realm=\"a, b\", Digest realm=\"x\", nonce=\"n\", qop=\"auth,auth-int\", algorithm=MD5",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                both.realm.as_str(),
+                both.nonce.as_str(),
+                both.algorithm.as_str()
+            ),
+            ("x", "n", "MD5")
+        );
+        assert_eq!(both.qop.as_deref(), Some("auth"));
+        let after = parse_challenge("NTLM, Negotiate, DIGEST nonce=\"n2\", realm=\"y\"").unwrap();
+        assert_eq!((after.realm.as_str(), after.nonce.as_str()), ("y", "n2"));
+        // The parameters of the Digest challenge stop at the next scheme.
+        let before = parse_challenge("Digest realm=\"x\", nonce=\"n\", Basic realm=\"z\"").unwrap();
+        assert_eq!(before.realm, "x");
     }
 
     #[test]

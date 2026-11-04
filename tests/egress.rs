@@ -375,3 +375,62 @@ fn a_proxy_host_that_does_not_resolve_is_an_error_not_a_crash() {
     assert_eq!(code, Some(69), "{text}");
     assert!(text.contains("the proxy host cfrs-proxy.invalid"), "{text}");
 }
+
+/// Issue 274: socks5:// resolves the target with the chain of cfrs, so a
+/// --resolve pin is used. The proxy gets the IPv4 address of the pin.
+#[test]
+fn socks5_resolves_the_target_with_the_pins() {
+    let (api_port, api_hits) = api(true);
+    let (socks_port, targets) = socks5(None);
+    let proxy = format!("socks5://127.0.0.1:{socks_port}");
+    let api_url = format!("http://cfrs-pinned.test:{api_port}");
+    let (_, text) = cfrs(
+        &[
+            "--resolve",
+            "cfrs-pinned.test=127.0.0.1",
+            "tunnel",
+            "--hello-world",
+            "--service-url",
+            &api_url,
+        ],
+        &[("ALL_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+    );
+    let targets = targets.lock().unwrap().clone();
+    assert!(
+        targets.contains(&format!("127.0.0.1:{api_port}")),
+        "{targets:?}\n{text}"
+    );
+    assert_eq!(api_hits.load(Ordering::SeqCst), 1, "{text}");
+}
+
+/// Issue 274: a --proxy URL with no user part is shown in the errors; the
+/// password of a URL with a user part is not.
+#[test]
+fn a_proxy_url_with_no_password_is_shown() {
+    let (_, text) = cfrs(
+        &[
+            "--proxy",
+            "http://127.0.0.1:9",
+            "update",
+            "--version",
+            "v9.9.9",
+            "--check",
+        ],
+        &[],
+    );
+    assert!(text.contains("http://127.0.0.1:9"), "{text}");
+    assert!(!text.contains("<hidden>"), "{text}");
+    let (_, text) = cfrs(
+        &[
+            "--proxy",
+            "http://user:secretpw@127.0.0.1:9",
+            "update",
+            "--version",
+            "v9.9.9",
+            "--check",
+        ],
+        &[],
+    );
+    assert!(!text.contains("secretpw"), "{text}");
+    assert!(text.contains("127.0.0.1:9"), "{text}");
+}

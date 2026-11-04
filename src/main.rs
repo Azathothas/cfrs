@@ -2373,7 +2373,9 @@ fn network_options(cli: &Cli) -> Result<()> {
                 "--proxy (or CFRS_PROXY) {shown:?} has no scheme; give http://, socks5:// or socks5h://HOST:PORT"
             );
         }
-        cfrs::report::hide(spec);
+        for secret in Proxy::secret_parts(spec) {
+            cfrs::report::hide(&secret);
+        }
         set_choice(ProxyChoice::Via(
             Proxy::parse_trusted(spec).context("--proxy")?,
         ));

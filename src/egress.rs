@@ -150,6 +150,31 @@ impl Proxy {
         Self::parse(spec)
     }
 
+    /// The parts of the proxy URL `spec` that are secret, for
+    /// [`crate::report::hide`]: the user and password text, the password
+    /// as written and percent-decoded. A URL with no user part has no
+    /// secret (issue 274: the whole URL was hidden). The command of a
+    /// `+exec:` proxy is secret as a whole.
+    pub fn secret_parts(spec: &str) -> Vec<String> {
+        let spec = spec.trim();
+        if let Some((_, command)) = spec.split_once("+exec:") {
+            return vec![spec.to_string(), command.trim().to_string()];
+        }
+        let rest = spec.split_once("://").map_or(spec, |(_, rest)| rest);
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let Some((userinfo, _)) = authority.rsplit_once('@') else {
+            return Vec::new();
+        };
+        let mut parts = vec![userinfo.to_string()];
+        if let Some((_, pass)) = userinfo.split_once(':') {
+            parts.push(pass.to_string());
+            if let Ok(decoded) = percent_decode(pass) {
+                parts.push(decoded);
+            }
+        }
+        parts
+    }
+
     /// Read the proxy from the variables of [`PROXY_VARIABLES`]. Returns
     /// `None` when no variable is set. A value that cannot be parsed is
     /// skipped with a warning.
@@ -490,12 +515,13 @@ impl Proxy {
                     req.extend_from_slice(host.as_bytes());
                 }
                 Err(_) => {
-                    let ip = tokio::net::lookup_host((host, port))
+                    // The chain of cfrs: --resolve pins, the system
+                    // resolver, DoH (issue 274).
+                    let ip = *crate::resolve::resolve(host)
                         .await
                         .with_context(|| format!("resolving {host} for socks5:// (use socks5h:// to let the proxy resolve it)"))?
-                        .next()
-                        .with_context(|| format!("{host} has no address"))?
-                        .ip();
+                        .first()
+                        .with_context(|| format!("{host} has no address"))?;
                     match ip {
                         IpAddr::V4(ip) => {
                             req.push(1);
