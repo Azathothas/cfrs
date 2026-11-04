@@ -94,6 +94,11 @@ connection of each visitor request. One request (one stream) uses one
 connection, so `--ha-connections` does not make one transfer faster; it can
 let more requests run at the same time on more connections.
 
+Each connection starts at another region, as in cloudflared: connection 0
+(and 2) dials the addresses of `region1` first, connection 1 (and 3) the
+addresses of `region2`. A fault of one region then does not hit each
+connection. IPv4 addresses stay before IPv6 addresses.
+
 ### 3.2 HTTP/2
 
 `connection/http2.go`. On the TLS connection, the edge is the HTTP/2 client and
