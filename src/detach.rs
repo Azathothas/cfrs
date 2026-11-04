@@ -225,14 +225,18 @@ pub fn register(name: &str, command: &str) -> Result<()> {
     let paths = instances::paths(&dir, name)?;
     let lock = instances::try_lock(&paths.lock)?
         .with_context(|| format!("the instance {name} runs already"))?;
+    // Issue 262: the record had the raw command line (a proxy password
+    // was in ps --json).
+    let (args, vars) = split_args();
+    let secrets = instances::secrets_of(&vars);
     let record = Record {
         name: name.to_string(),
         pid: std::process::id(),
         supervisor: None,
         started: instances::now(),
         command: command.to_string(),
-        args: std::env::args().skip(1).collect(),
-        hash: String::new(),
+        hash: instances::hash_of(&without_detach_options(&args), &secrets),
+        args,
         cwd: std::env::current_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_default(),
@@ -251,6 +255,18 @@ pub fn register(name: &str, command: &str) -> Result<()> {
     });
     REGISTERED.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+/// The arguments of this process with the secrets moved out (issues 262
+/// and 265): `--token` and a `--proxy` with a user part go to the
+/// variables. The record, `ps --json` and the command line of a child get
+/// the arguments; the secret variables go to the environment of a child.
+pub fn split_args() -> (Vec<String>, crate::autostart::Vars) {
+    let typed: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    crate::autostart::split_secrets(&typed, &|k| std::env::var(k).ok())
 }
 
 /// At the end of a registered process: remove its record.
@@ -444,16 +460,8 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
         return Err(fault(Fault::Unavailable, anyhow::anyhow!(why)));
     }
     let dir = instances::run_dir().map_err(|e| fault(Fault::Config, e))?;
-    let typed: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    let (args, vars) = crate::autostart::split_secrets(&typed, &|k| std::env::var(k).ok());
-    let secrets: Vec<(String, String)> = vars
-        .iter()
-        .filter(|(k, _)| k == "TUNNEL_TOKEN" || k == "CFRS_PROXY")
-        .cloned()
-        .collect();
+    let (args, vars) = split_args();
+    let secrets = instances::secrets_of(&vars);
     // The hash leaves out the options of --detach itself: a second start
     // with another --ready-timeout is the same instance.
     let hashed = without_detach_options(&args);

@@ -981,7 +981,8 @@ or a container that kills each process of its run also ends it.
   instance and exits 124 (as `timeout`). An instance that ends before it is ready gives its
   own exit code.
 * A token or a proxy password on the command line goes to the environment
-  of the instance, not to its arguments or its record.
+  of the instance, not to its arguments or its record. The record of a
+  foreground `--name` (no `--detach`) has no secret either.
 * The files are in `$XDG_RUNTIME_DIR/cfrs/run/` (else `run` in the state
   directory, or `CFRS_RUN_DIR`), mode 0700: `NAME.json` (0600), `NAME.lock`
   (held while the instance runs) and `NAME.log` (0600, cut at 1 MiB; the

@@ -699,3 +699,49 @@ fn logs_stop_and_wait_refuse_a_name_that_leaves_the_run_directory() {
     assert_eq!(listing(&outer), before, "the outer directory is unchanged");
     assert!(listing(&env.run).is_empty(), "{:?}", listing(&env.run));
 }
+
+// Issue 262: the record of a foreground --name had the raw command line: the
+// proxy password was in the record and in ps --json.
+#[test]
+fn a_named_foreground_process_keeps_no_secret_in_its_record() {
+    let env = Env::new();
+    let switch = env.switch();
+    let mut child = env
+        .cmd(&[
+            "--proxy",
+            "http://u:SECRETPW@127.0.0.1:9",
+            "net",
+            "switch",
+            "--listen",
+            &switch,
+            "--name",
+            "fgs",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the record is ready", || {
+        env.ps()["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "fgs" && i["state"] == "ready")
+    });
+    let ps = env.run(&["ps", "--json"]);
+    let ps = String::from_utf8_lossy(&ps.stdout);
+    assert!(!ps.contains("SECRETPW"), "{ps}");
+    let entry = instance(&env, "fgs");
+    assert!(entry["args"].to_string().contains("switch"), "{entry}");
+    let record = std::fs::read_to_string(env.run.join("fgs.json")).unwrap();
+    assert!(!record.contains("SECRETPW"), "{record}");
+    let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+    assert_eq!(record["hash"].as_str().map(str::len), Some(16), "{record}");
+    let stop = env.run(&["stop", "fgs", "--timeout", "5"]);
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let _ = child.wait();
+}

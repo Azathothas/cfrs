@@ -176,6 +176,17 @@ pub fn write(dir: &Path, record: &Record) -> Result<()> {
     std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
 }
 
+/// The variables that hold a secret of an instance.
+pub const SECRET_VARIABLES: &[&str] = &["TUNNEL_TOKEN", "CFRS_PROXY"];
+
+/// The secret variables of `vars` ([`SECRET_VARIABLES`]).
+pub fn secrets_of(vars: &[(String, String)]) -> Vec<(String, String)> {
+    vars.iter()
+        .filter(|(k, _)| SECRET_VARIABLES.contains(&k.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// An exclusive `flock` that this process holds until the value is dropped
 /// (or the process ends).
 #[derive(Debug)]
