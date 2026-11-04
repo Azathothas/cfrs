@@ -38,7 +38,10 @@ fn each_new_release_note_has_a_breaking_section() {
         }
         checked += 1;
     }
-    assert!(checked > 0, "no release note after v0.3.0-beta.6 was checked");
+    assert!(
+        checked > 0,
+        "no release note after v0.3.0-beta.6 was checked"
+    );
 }
 
 /// Each repository path in backticks in the documents exists (podssh: a
@@ -54,7 +57,9 @@ fn each_path_in_the_documents_exists() {
         "docs/virtual-network.md",
         "docs/target-environment.md",
     ];
-    let prefixes = ["scripts/", "docs/", "src/", "tests/", "crates/", ".github/", "fuzz/"];
+    let prefixes = [
+        "scripts/", "docs/", "src/", "tests/", "crates/", ".github/", "fuzz/",
+    ];
     let mut missing = Vec::new();
     let mut seen = 0;
     for document in documents {
