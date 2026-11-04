@@ -332,11 +332,13 @@ struct RawConfig {
     protocol: Option<String>,
     #[serde(default, rename = "ha-connections")]
     ha_connections: Option<u8>,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// The top-level keys of a cloudflared config.yml. cfrs reads `tunnel`,
-/// `credentials-file`, `ingress`, `protocol` and `ha-connections`, and
-/// ignores the others. A key outside this list is a typo: an error.
+/// `credentials-file`, `token`, `ingress`, `protocol` and `ha-connections`,
+/// and ignores the others. A key outside this list is a typo: an error.
 pub const CLOUDFLARED_KEYS: &[&str] = &[
     "tunnel",
     "credentials-file",
@@ -547,7 +549,7 @@ fn check_top_values(file: &std::path::Path, value: &serde_json::Value) -> Result
             file.display()
         ),
     };
-    for key in ["tunnel", "credentials-file", "protocol"] {
+    for key in ["tunnel", "credentials-file", "protocol", "token"] {
         if let Some(v) = map.get(key) {
             if !v.is_string() && !v.is_null() {
                 bail!("{}: {key}: give a string", file.display());
@@ -596,7 +598,9 @@ fn nearest_key(key: &str, known: &[&'static str]) -> Option<&'static str> {
 ///   `tunnel:` is the name or the UUID of the tunnel, as in cloudflared. A
 ///   UUID must be the TunnelID of the file.
 /// * With `tunnel:` only, it is a named-tunnel token.
-/// * With neither, cfrs starts a quick tunnel, and says so.
+/// * With `token:`, the value is the named-tunnel token. `credentials-file:`
+///   is then an error. A `tunnel:` must then be the tunnel id of the token.
+/// * With none of the three, cfrs starts a quick tunnel, and says so.
 /// * A key that cloudflared does not know is an error: at the top level,
 ///   in an ingress rule and in `originRequest`.
 /// * The top-level `originRequest` is the default of each rule.
@@ -626,7 +630,54 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
         }
         config.ingress = crate::ingress::ingress_from_raw(raw.ingress)?;
     }
-    match (raw.tunnel, raw.credentials_file) {
+    if let Some(token) = &raw.token {
+        // Issue 269: a token of the file is the named tunnel, not a quick
+        // tunnel.
+        crate::report::hide(token);
+        if raw.credentials_file.is_some() {
+            bail!(
+                "{}: token: and credentials-file: both give the credentials; give one",
+                path.display()
+            );
+        }
+        let credentials = parse_token(token)
+            .with_context(|| format!("{}: token: is not a tunnel token", path.display()))?;
+        if let (Some(tunnel), Credentials::Explicit { tunnel_id, .. }) = (&raw.tunnel, &credentials)
+        {
+            if Uuid::parse_str(tunnel.trim()).ok() != Some(*tunnel_id) {
+                bail!(
+                    "{}: tunnel: {tunnel} is not the tunnel id of token: ({tunnel_id}); remove tunnel: or correct it",
+                    path.display()
+                );
+            }
+        }
+        config.credentials = credentials;
+    } else {
+        credentials_of_file(path, raw.tunnel, raw.credentials_file, &mut config)?;
+    }
+    if let Some(protocol) = raw.protocol {
+        config.protocol = Protocol::parse(&protocol)?;
+    }
+    if let Some(ha) = raw.ha_connections {
+        if !(1..=8).contains(&ha) {
+            bail!(
+                "{}: ha-connections: {ha} is not from 1 to 8",
+                path.display()
+            );
+        }
+        config.ha_connections = ha;
+    }
+    Ok(config)
+}
+
+/// The credentials of `tunnel:` and `credentials-file:` of a config file.
+fn credentials_of_file(
+    path: &std::path::Path,
+    tunnel: Option<String>,
+    credentials_file: Option<PathBuf>,
+    config: &mut Config,
+) -> Result<()> {
+    match (tunnel, credentials_file) {
         (tunnel, Some(file)) => {
             let credentials = parse_credentials_file(&file)?;
             if let (Some(tunnel), Credentials::Explicit { tunnel_id, .. }) = (&tunnel, &credentials)
@@ -654,24 +705,12 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
         }
         (None, None) => {
             tracing::info!(
-                "{} has no tunnel: and no credentials-file:; cfrs starts a quick tunnel",
+                "{} has no tunnel:, no credentials-file: and no token:; cfrs starts a quick tunnel",
                 path.display()
             );
         }
     }
-    if let Some(protocol) = raw.protocol {
-        config.protocol = Protocol::parse(&protocol)?;
-    }
-    if let Some(ha) = raw.ha_connections {
-        if !(1..=8).contains(&ha) {
-            bail!(
-                "{}: ha-connections: {ha} is not from 1 to 8",
-                path.display()
-            );
-        }
-        config.ha_connections = ha;
-    }
-    Ok(config)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -802,6 +841,47 @@ mod tests {
             err.contains("line 3: the key \"service\" is given two times"),
             "{err}"
         );
+    }
+
+    // Issue 269: token: of a file gives the named tunnel, not a quick tunnel.
+    #[test]
+    fn a_token_key_makes_a_named_tunnel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |text: String| {
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map_err(|e| format!("{e:#}"))
+        };
+        let id = "ffd86bd5-1bff-456b-8c2c-75a014cdc4c8";
+        let token = crate::cloudflare::http2::base64_encode(
+            format!(r#"{{"a":"0123456789abcdef","t":"{id}","s":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}}"#)
+                .as_bytes(),
+        );
+        let catch_all = "ingress:\n  - service: http://127.0.0.1:1\n";
+        for head in [
+            format!("token: {token}\n"),
+            format!("tunnel: {id}\ntoken: {token}\n"),
+        ] {
+            let config = load(format!("{head}{catch_all}")).unwrap();
+            match config.credentials {
+                Credentials::Explicit { tunnel_id, .. } => assert_eq!(tunnel_id.to_string(), id),
+                other => panic!("{other:?}"),
+            }
+        }
+        let err = load(format!("token: not-a-token\n{catch_all}")).unwrap_err();
+        assert!(err.contains("token: is not a tunnel token"), "{err}");
+        let err = load(format!(
+            "tunnel: 00000000-1bff-456b-8c2c-75a014cdc4c8\ntoken: {token}\n{catch_all}"
+        ))
+        .unwrap_err();
+        assert!(err.contains("is not the tunnel id of token:"), "{err}");
+        let err = load(format!(
+            "token: {token}\ncredentials-file: /nonexistent.json\n{catch_all}"
+        ))
+        .unwrap_err();
+        assert!(err.contains("give one"), "{err}");
+        let err = load(format!("token: 5\n{catch_all}")).unwrap_err();
+        assert!(err.contains("token: give a string"), "{err}");
     }
 
     // Issue 170: a misspelt key of a rule or of originRequest is an error.

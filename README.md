@@ -321,8 +321,13 @@ ingress:
   refuses a file where it does not.
 * With `credentials-file:`, `tunnel:` is the name or the UUID of the tunnel,
   as in cloudflared. A UUID must be the `TunnelID` of the file. With
-  `tunnel:` only, it is a tunnel token. With neither, cfrs starts a quick
-  tunnel.
+  `tunnel:` only, it is a tunnel token.
+* `token:` is the tunnel token of a named tunnel. `token:` with
+  `credentials-file:` is an error. With `token:`, a `tunnel:` must be the
+  tunnel id of the token.
+* With no `tunnel:`, no `credentials-file:` and no `token:`, cfrs starts a
+  quick tunnel. `--token`, `TUNNEL_TOKEN` and `--credentials-file` win over
+  the file.
 * cfrs ignores the cloudflared keys that it does not use (`metrics`,
   `loglevel`, `warp-routing`, `tcpKeepAlive`, ...). Another key is an error
   (exit 78), with the nearest key. cfrs checks the keys at the top level, in
