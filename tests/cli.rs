@@ -436,7 +436,7 @@ fn bad_flag_values_are_usage_errors() {
             &["tunnel", "--hello-world", "--transport", "bogus"],
             "possible values",
         ),
-        (&["tunnel", "--port", "0"], "--port 0"),
+        (&["tunnel", "--port", "0"], "1..=65535"),
         (
             &["tunnel", "--unix", "/nonexistent/x.sock"],
             "--unix /nonexistent/x.sock",
@@ -1984,5 +1984,55 @@ fn invalid_values_are_refused() {
         stderr(&out).contains("CFRS_EDGE entry \"zz\""),
         "{}",
         stderr(&out)
+    );
+}
+
+// Issue 253: the shape of the error messages.
+#[test]
+fn error_messages_have_one_shape() {
+    // A parent command with no subcommand: an error and a short usage.
+    for parent in ["net", "warp", "relay", "autostart", "agent"] {
+        let out = cfrs(&[parent]);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(64), "{parent}: {err}");
+        assert!(err.contains("error:"), "{parent}: {err}");
+        assert!(err.lines().count() < 15, "{parent}: {err}");
+    }
+    // --ca-file is named once.
+    let out = cfrs(&["--ca-file", "/nonexistent/roots.pem", "status"]);
+    assert_eq!(out.status.code(), Some(78));
+    assert_eq!(
+        stderr(&out).matches("--ca-file").count(),
+        1,
+        "{}",
+        stderr(&out)
+    );
+    // --port 0 is refused by the parser, for tunnel and share.
+    for args in [&["tunnel", "--port", "0"][..], &["share", "--port", "0"]] {
+        let out = cfrs(args);
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("--port"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+    // An empty value names its flag.
+    for flag in ["--url", "--tcp", "--forward", "--unix"] {
+        let out = cfrs(&["tunnel", flag, ""]);
+        assert_eq!(out.status.code(), Some(64), "{flag}: {}", stderr(&out));
+        assert!(stderr(&out).contains(flag), "{flag}: {}", stderr(&out));
+    }
+    // stop with no target names --all too.
+    let out = cfrs(&["stop"]);
+    assert_eq!(out.status.code(), Some(64));
+    assert!(stderr(&out).contains("--all"), "{}", stderr(&out));
+    // net addresses names its columns.
+    let out = cfrs(&["net", "addresses"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("ADDRESS"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }

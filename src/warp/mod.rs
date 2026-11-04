@@ -943,6 +943,12 @@ pub(crate) fn check_private(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path)
         .with_context(|| format!("reading the WARP identity from {}", path.display()))?;
+    if meta.is_dir() {
+        return Err(crate::exit::fault(
+            crate::exit::Fault::Usage,
+            anyhow::anyhow!("{} is a directory; give the identity file", path.display()),
+        ));
+    }
     let uid = unsafe { libc::geteuid() };
     if meta.uid() != uid {
         anyhow::bail!(
@@ -1087,5 +1093,13 @@ mod private_file_tests {
         );
         let err = WarpClient::load(&path).err().unwrap().to_string();
         assert!(err.contains("mode 0644"), "{err}");
+        // Issue 253: a directory is not a loose file.
+        let err = check_private(dir.path()).unwrap_err();
+        assert_eq!(crate::exit::code_of(&err), 64);
+        let err = err.to_string();
+        assert!(
+            err.contains("is a directory") && !err.contains("chmod"),
+            "{err}"
+        );
     }
 }

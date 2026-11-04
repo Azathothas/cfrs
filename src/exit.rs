@@ -97,14 +97,14 @@ pub const TABLE: &[ExitCode] = &[
         meaning: "The quick-tunnel service refused a provision for now (HTTP 429): the error report (CFRS_ERROR_PROGRAM) has retry_after_s. Also: --detach lost the pipe to the command that started it. Try again later.",
     },
     ExitCode {
-        code: TIMEOUT,
-        name: "timeout",
-        meaning: "--detach: the instance was not ready in --ready-timeout seconds (it is stopped), as timeout(1) exits.",
-    },
-    ExitCode {
         code: CONFIG,
         name: "config",
         meaning: "A configuration that cannot be used: a variable of the environment such as CFRS_EDGE, a configuration file given with --config, a tunnel token or a credentials file (as a flag or as a key of the file), or a roots file of --ca-file.",
+    },
+    ExitCode {
+        code: TIMEOUT,
+        name: "timeout",
+        meaning: "--detach: the instance was not ready in --ready-timeout seconds (it is stopped), as timeout(1) exits.",
     },
 ];
 
@@ -157,6 +157,12 @@ pub fn code_of(err: &anyhow::Error) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue 254: the table lists the codes in ascending order.
+    #[test]
+    fn the_codes_ascend() {
+        assert!(TABLE.windows(2).all(|w| w[0].code < w[1].code));
+    }
     use anyhow::Context;
 
     #[test]

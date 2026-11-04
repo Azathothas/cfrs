@@ -51,8 +51,8 @@ use cfrs::{Protocol, Transport, Tunnel};
     about = "Cloudflare tunnels and the WARP client for hosts with strong network limits"
 )]
 struct Cli {
-    /// The only file of TLS roots (PEM) for each connection that cfrs opens
-    /// as a client. Without it, cfrs reads SSL_CERT_FILE, else cfrs-ca.pem
+    /// A file of TLS roots (PEM). cfrs uses only these roots for each
+    /// connection that it opens as a client. Without it, cfrs reads SSL_CERT_FILE, else cfrs-ca.pem
     /// beside the binary, the system bundle and the compiled-in roots.
     #[arg(long, global = true, value_name = "PATH")]
     ca_file: Option<PathBuf>,
@@ -114,18 +114,23 @@ enum Command {
     Ports(PortsArgs),
     /// Print a text for a bug report: the version, cfrs status, the
     /// detached instances and the end of their logs, and the names of the
-    /// variables that are set. Ids, tokens and credentials are hidden. No
-    /// network unless --doctor.
+    /// variables that are set. Device IDs, tunnel IDs, tokens and
+    /// credentials are hidden. No network unless --doctor.
     BugReport {
         /// Also run cfrs doctor and add its JSON (network).
         #[arg(long)]
         doctor: bool,
     },
-    /// Print a completion script for a shell: bash, zsh, fish or elvish.
+    /// Print a completion script for a shell: bash, zsh, fish, elvish or
+    /// powershell.
     ///
     /// Bash: cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs.
     /// Zsh: cfrs completions zsh > ~/.zfunc/_cfrs (with ~/.zfunc in fpath).
     /// Fish: cfrs completions fish > ~/.config/fish/completions/cfrs.fish.
+    /// Elvish: cfrs completions elvish > ~/.config/elvish/lib/cfrs.elv, and
+    /// use cfrs in ~/.config/elvish/rc.elv.
+    /// PowerShell: cfrs completions powershell > ~/.config/powershell/cfrs.ps1,
+    /// and . ~/.config/powershell/cfrs.ps1 in $PROFILE.
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
@@ -147,6 +152,8 @@ enum Command {
     /// Run a program with all its traffic sent through a proxy (pod-netns).
     ///
     /// Give the pod-netns arguments after `pod`. See `cfrs pod --help`.
+    /// cfrs gives the line after `pod` to pod-netns: the global options of
+    /// cfrs (-q, -v, --color, --log-format) do not apply to it.
     #[command(disable_help_flag = true)]
     Pod {
         /// The pod-netns arguments.
@@ -165,12 +172,14 @@ enum Command {
     /// the APIs, the edge (7844) and MASQUE (443), and UDP 7844. Exit 0 when
     /// at least one leg (quic, http2, quic+warp) can work, 1 when none can.
     Doctor(DoctorArgs),
-    /// Start a cfrs command at boot and after a logout, with no root: a
-    /// systemd user unit, else an @reboot line in the crontab.
+    /// Start a cfrs command at boot, with no root: a systemd user unit (it
+    /// stops at logout unless linger is on), else an @reboot line in the
+    /// crontab.
     Autostart(AutostartArgs),
-    /// One command for a sandbox with basic networking (issue 87): test
+    /// One command for a sandbox with basic networking: test
     /// what works, start WARP when it is needed, expose ports, and print
     /// what works now and the commands to use.
+    #[command(subcommand_required = true, arg_required_else_help = false)]
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
@@ -182,9 +191,9 @@ enum Command {
         json: bool,
     },
     /// Stop a detached instance: SIGTERM, then SIGKILL after --timeout.
+    #[command(group = clap::ArgGroup::new("target").args(["name", "all"]).required(true))]
     Stop {
         /// The name of the instance (cfrs ps).
-        #[arg(required_unless_present = "all")]
         name: Option<String>,
         /// Stop each instance.
         #[arg(long, conflicts_with = "name")]
@@ -216,6 +225,7 @@ enum Command {
 }
 
 #[derive(Args, Debug)]
+#[command(subcommand_required = true, arg_required_else_help = false)]
 struct AutostartArgs {
     #[command(subcommand)]
     command: AutostartCommand,
@@ -383,9 +393,9 @@ struct TunnelOpts {
     #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp", "relay"])]
     transport: String,
     /// The WebSocket-to-TCP relay of --transport relay: a URL, or a comma
-    /// list of hosts of one deployment. CFRS_RELAY_TOKEN gives a token;
-    /// without it, cfrs mints one.
-    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    /// list of hosts of one deployment. The variable CFRS_RELAY_TOKEN (not
+    /// CFRS_RELAY) gives a token; without it, cfrs mints one.
+    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", hide_env_values = true, default_value = cfrs::ws_relay::DEFAULT_RELAY)]
     relay: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.
     /// Without it, every run registers a new anonymous device.
@@ -394,7 +404,7 @@ struct TunnelOpts {
     /// How the next edge leg starts: staggered (when the leg before has not
     /// registered in 2 s, or at once when it fails) or serial (only after the
     /// leg before failed).
-    #[arg(long, global = true, default_value = "staggered", env = "CFRS_LEG_FAILOVER", value_parser = ["staggered", "serial"])]
+    #[arg(long, global = true, default_value = "staggered", env = "CFRS_LEG_FAILOVER", hide_env_values = true, value_parser = ["staggered", "serial"])]
     leg_failover: String,
     /// Do not fetch the public URL to prove reachability.
     #[arg(long, global = true)]
@@ -421,6 +431,7 @@ struct TunnelOpts {
         value_name = "USER",
         global = true,
         env = "CFRS_AUTH_USER",
+        hide_env_values = true,
         requires = "auth_password_file"
     )]
     auth_user: Option<String>,
@@ -431,6 +442,7 @@ struct TunnelOpts {
         value_name = "FILE",
         global = true,
         env = "CFRS_AUTH_PASSWORD_FILE",
+        hide_env_values = true,
         requires = "auth_user"
     )]
     auth_password_file: Option<PathBuf>,
@@ -566,19 +578,19 @@ struct TunnelArgs {
     #[command(flatten)]
     common: TunnelOpts,
     /// HTTP or HTTPS origin.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     url: Option<String>,
     /// HTTP origin on a unix socket.
     #[arg(long)]
     unix: Option<PathBuf>,
     /// HTTP origin on 127.0.0.1:<PORT>.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
     /// Raw TCP origin.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     tcp: Option<String>,
     /// Expose a raw stream over a WebSocket endpoint (tcp://host:port or unix:/path).
-    #[arg(long)]
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     forward: Option<String>,
     /// cloudflared's built-in hello world.
     #[arg(long)]
@@ -592,7 +604,12 @@ struct TunnelArgs {
     token: Option<String>,
     /// Read the named-tunnel token from this file (for example a secret
     /// of a container). The token is not on the command line.
-    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "TUNNEL_TOKEN_FILE",
+        hide_env_values = true
+    )]
     token_file: Option<PathBuf>,
     /// cloudflared credentials JSON file.
     #[arg(long)]
@@ -624,7 +641,12 @@ struct ServeArgs {
     token: Option<String>,
     /// Read the named-tunnel token from this file (for example a secret
     /// of a container). The token is not on the command line.
-    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "TUNNEL_TOKEN_FILE",
+        hide_env_values = true
+    )]
     token_file: Option<PathBuf>,
 }
 
@@ -650,7 +672,7 @@ struct ShareArgs {
     #[arg(long)]
     file: Option<PathBuf>,
     /// Local HTTP port to share (proxy mode).
-    #[arg(long, conflicts_with = "unix")]
+    #[arg(long, conflicts_with = "unix", value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
     /// A unix socket of a local HTTP server to share (proxy mode), for a
     /// host with no TCP listener.
@@ -666,8 +688,8 @@ struct ShareArgs {
     #[arg(long, default_value_t = 900)]
     idle_secs: u64,
     /// Upload mode: the most bytes of one upload request. A larger request
-    /// gets 413 and saves nothing (cfrs drops its body). The edge of
-    /// Cloudflare takes at most 100 MB in one request.
+    /// gets 413 and saves nothing (cfrs drops its body). The Cloudflare
+    /// edge accepts at most 100 MB in one request.
     #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST, value_parser = clap::value_parser!(u64).range(1..))]
     max_request: u64,
     /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
@@ -676,14 +698,20 @@ struct ShareArgs {
     token: Option<String>,
     /// Read the named-tunnel token from this file (for example a secret
     /// of a container). The token is not on the command line.
-    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "TUNNEL_TOKEN_FILE",
+        hide_env_values = true
+    )]
     token_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
+#[command(subcommand_required = true, arg_required_else_help = false)]
 struct RelayArgs {
     /// The relay for a new pair. A pair keeps the relay that made it.
-    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", hide_env_values = true, default_value = cfrs::ws_relay::DEFAULT_RELAY)]
     relay: String,
     #[command(subcommand)]
     command: RelayCommand,
@@ -760,6 +788,7 @@ struct ConnectArgs {
         long,
         value_name = "USER",
         env = "CFRS_AUTH_USER",
+        hide_env_values = true,
         requires = "auth_password_file"
     )]
     auth_user: Option<String>,
@@ -769,6 +798,7 @@ struct ConnectArgs {
         long,
         value_name = "FILE",
         env = "CFRS_AUTH_PASSWORD_FILE",
+        hide_env_values = true,
         requires = "auth_user"
     )]
     auth_password_file: Option<PathBuf>,
@@ -795,7 +825,12 @@ struct DemoArgs {
     token: Option<String>,
     /// Read the named-tunnel token from this file (for example a secret
     /// of a container). The token is not on the command line.
-    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "TUNNEL_TOKEN_FILE",
+        hide_env_values = true
+    )]
     token_file: Option<PathBuf>,
 }
 
@@ -922,10 +957,8 @@ fn main() {
         // Issue 173: a roots file that cannot be used exits 78 for each
         // command (status and doctor too), before any work.
         if let Err(err) = cfrs::trust::roots() {
-            let err = cfrs::exit::fault(
-                cfrs::exit::Fault::Config,
-                err.context(format!("--ca-file {}", path.display())),
-            );
+            // Issue 253: trust::roots names the file already.
+            let err = cfrs::exit::fault(cfrs::exit::Fault::Config, err);
             print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
             let code = cfrs::exit::code_of(&err);
             cfrs::report::send(command.as_deref(), code, Some(&err));
@@ -2898,7 +2931,7 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
         {
             bail!("--url {url}: the port 0 is not a port");
         }
-        service = Some(Service::parse(url)?);
+        service = Some(Service::parse(url).with_context(|| format!("--url {url}"))?);
     }
     if let Some(path) = &args.unix {
         choices += 1;
@@ -2912,9 +2945,6 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
     }
     if let Some(port) = args.port {
         choices += 1;
-        if port == 0 {
-            bail!("--port 0: give a port from 1 to 65535");
-        }
         service = Some(Service::Http(format!("http://127.0.0.1:{port}")));
     }
     if let Some(addr) = &args.tcp {
@@ -3843,12 +3873,14 @@ fn _mode(mode: ShareMode) -> ShareMode {
 // ── userspace virtual networking ─────────────────────────────────────────────
 
 #[derive(Args, Debug)]
+#[command(subcommand_required = true, arg_required_else_help = false)]
 struct NetArgs {
     #[command(subcommand)]
     command: NetCommand,
 }
 
 #[derive(Args, Debug)]
+#[command(subcommand_required = true, arg_required_else_help = false)]
 struct WarpArgs {
     /// The file that keeps the device and its MASQUE key, so that each run
     /// uses the same device. Default: warp.json in the state directory
@@ -3867,6 +3899,7 @@ struct WarpArgs {
         value_name = "SPEC",
         global = true,
         env = "CFRS_WARP_RESOLVERS",
+        hide_env_values = true,
         value_delimiter = ','
     )]
     resolver: Vec<String>,
@@ -3875,7 +3908,8 @@ struct WarpArgs {
         long,
         value_name = "NAME",
         global = true,
-        env = "CFRS_WARP_DEVICE_NAME"
+        env = "CFRS_WARP_DEVICE_NAME",
+        hide_env_values = true
     )]
     device_name: Option<String>,
     /// The model that a new device declares (default PC).
@@ -3883,7 +3917,8 @@ struct WarpArgs {
         long,
         value_name = "MODEL",
         global = true,
-        env = "CFRS_WARP_DEVICE_MODEL"
+        env = "CFRS_WARP_DEVICE_MODEL",
+        hide_env_values = true
     )]
     device_model: Option<String>,
     /// The locale that a new device declares, as en_US (default en_US).
@@ -3891,7 +3926,8 @@ struct WarpArgs {
         long,
         value_name = "LOCALE",
         global = true,
-        env = "CFRS_WARP_DEVICE_LOCALE"
+        env = "CFRS_WARP_DEVICE_LOCALE",
+        hide_env_values = true
     )]
     device_locale: Option<String>,
     /// Split the TLS ClientHello of the MASQUE connection into records:
@@ -3901,7 +3937,7 @@ struct WarpArgs {
         long,
         value_name = "MODE",
         global = true,
-        env = "CFRS_WARP_FRAGMENT",
+        env = "CFRS_WARP_FRAGMENT", hide_env_values = true,
         num_args = 0..=1,
         default_missing_value = "record"
     )]
@@ -3912,12 +3948,19 @@ struct WarpArgs {
         long,
         value_name = "MIN[-MAX]",
         global = true,
-        env = "CFRS_WARP_FRAGMENT_SIZE"
+        env = "CFRS_WARP_FRAGMENT_SIZE",
+        hide_env_values = true
     )]
     fragment_size: Option<String>,
     /// The congestion controller of the TCP connections of the userspace
     /// stack (what the stack sends): none (the default), reno or cubic.
-    #[arg(long, value_name = "NAME", global = true, env = "CFRS_WARP_CC")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        global = true,
+        env = "CFRS_WARP_CC",
+        hide_env_values = true
+    )]
     cc: Option<String>,
     /// Close each MASQUE session on purpose at this age, and open a new one
     /// (a new egress address). The TCP flows of the old session end.
@@ -3926,7 +3969,7 @@ struct WarpArgs {
         long,
         value_name = "SECS",
         global = true,
-        env = "CFRS_WARP_SESSION_MAX_AGE",
+        env = "CFRS_WARP_SESSION_MAX_AGE", hide_env_values = true,
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     session_max_age: Option<u64>,
@@ -3947,9 +3990,9 @@ struct WarpArgs {
     /// no proxy and no relay).
     #[arg(
         long,
-        value_name = "h2|h3",
+        value_name = "PROTOCOL",
         global = true,
-        env = "CFRS_WARP_MASQUE_TRANSPORT",
+        env = "CFRS_WARP_MASQUE_TRANSPORT", hide_env_values = true,
         value_parser = ["h2", "h3"]
     )]
     masque_transport: Option<String>,
@@ -3958,9 +4001,9 @@ struct WarpArgs {
     /// cfrs registers when the file has none).
     #[arg(
         long,
-        value_name = "masque|wireguard",
+        value_name = "TRANSPORT",
         global = true,
-        env = "CFRS_WARP_TRANSPORT",
+        env = "CFRS_WARP_TRANSPORT", hide_env_values = true,
         value_parser = ["masque", "wireguard"]
     )]
     transport: Option<String>,
@@ -3970,7 +4013,8 @@ struct WarpArgs {
         long,
         value_name = "IP:PORT",
         global = true,
-        env = "CFRS_WARP_WG_ENDPOINT"
+        env = "CFRS_WARP_WG_ENDPOINT",
+        hide_env_values = true
     )]
     wireguard_endpoint: Option<std::net::SocketAddr>,
     /// wg: a second WireGuard device inside the tunnel (its own device in
@@ -3978,9 +4022,9 @@ struct WarpArgs {
     /// With --transport wireguard, both hops are WireGuard.
     #[arg(
         long,
-        value_name = "none|wg",
+        value_name = "CARRY",
         global = true,
-        env = "CFRS_WARP_CARRY",
+        env = "CFRS_WARP_CARRY", hide_env_values = true,
         value_parser = ["none", "wg"]
     )]
     carry: Option<String>,
@@ -3990,7 +4034,8 @@ struct WarpArgs {
         long,
         value_name = "IP:PORT",
         global = true,
-        env = "CFRS_WARP_CARRY_ENDPOINT"
+        env = "CFRS_WARP_CARRY_ENDPOINT",
+        hide_env_values = true
     )]
     carry_endpoint: Option<std::net::SocketAddr>,
 
@@ -4099,6 +4144,7 @@ enum WarpCommand {
             value_name = "LISTEN=HOST:PORT",
             required = true,
             env = "CFRS_WARP_FORWARD",
+            hide_env_values = true,
             value_delimiter = ','
         )]
         local: Vec<String>,
@@ -4141,6 +4187,7 @@ enum WarpCommand {
             long,
             value_name = "USER",
             env = "CFRS_PROXY_USER",
+            hide_env_values = true,
             requires = "proxy_password_file"
         )]
         proxy_user: Option<String>,
@@ -4150,6 +4197,7 @@ enum WarpCommand {
             long,
             value_name = "FILE",
             env = "CFRS_PROXY_PASSWORD_FILE",
+            hide_env_values = true,
             requires = "proxy_user"
         )]
         proxy_password_file: Option<PathBuf>,
@@ -4163,6 +4211,7 @@ enum WarpCommand {
             long = "rule",
             value_name = "KIND:VALUE=ACTION",
             env = "CFRS_WARP_RULES",
+            hide_env_values = true,
             value_delimiter = ','
         )]
         rules: Vec<String>,
@@ -4170,7 +4219,7 @@ enum WarpCommand {
         /// door of WARP (UDP 443), with no IP stack. UDP is not served. The
         /// rules (-r, --rules-file, --rule-default) apply; an address rule
         /// (cidr:) decides an address, not a name, as no name is resolved.
-        #[arg(long, env = "CFRS_WARP_L4", conflicts_with_all = ["dns", "listen_identity"])]
+        #[arg(long, env = "CFRS_WARP_L4", hide_env_values = true, conflicts_with_all = ["dns", "listen_identity"])]
         l4: bool,
         /// The TLS name of the L4 door.
         #[arg(long, value_name = "NAME", default_value = cfrs::warp::l4::L4_SNI, requires = "l4")]
@@ -4183,7 +4232,12 @@ enum WarpCommand {
         listen_identity: Vec<String>,
         /// A file with one rule on each line (# starts a comment), after
         /// the --rule rules. cfrs reads it again when it changes.
-        #[arg(long, value_name = "FILE", env = "CFRS_WARP_RULES_FILE")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            env = "CFRS_WARP_RULES_FILE",
+            hide_env_values = true
+        )]
         rules_file: Option<PathBuf>,
         /// The action when no rule matches.
         #[arg(long, value_name = "ACTION", default_value = "tunnel")]
@@ -4197,7 +4251,7 @@ enum WarpCommand {
         #[command(flatten)]
         detach: DetachArgs,
     },
-    /// Start WARP for this sandbox, in the background (issue 78): a
+    /// Start WARP for this sandbox, in the background: a
     /// detached warp proxy on 127.0.0.1:PORT and on a unix socket, and an
     /// env file with the proxy variables. Later shells join it with
     /// `eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`, `cfrs warp
@@ -4241,6 +4295,7 @@ enum WarpCommand {
             long,
             value_name = "USER",
             env = "CFRS_PROXY_USER",
+            hide_env_values = true,
             requires = "proxy_password_file"
         )]
         proxy_user: Option<String>,
@@ -4250,6 +4305,7 @@ enum WarpCommand {
             long,
             value_name = "FILE",
             env = "CFRS_PROXY_PASSWORD_FILE",
+            hide_env_values = true,
             requires = "proxy_user"
         )]
         proxy_password_file: Option<PathBuf>,
@@ -4276,8 +4332,8 @@ enum WarpCommand {
     /// the env file is there).
     Shell,
     /// A byte pipe from stdin and stdout to HOST:PORT through WARP, for
-    /// `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH (issue
-    /// 85). It uses the running cfrs warp up, else a WARP session of its
+    /// `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH.
+    /// It uses the running cfrs warp up, else a WARP session of its
     /// own.
     Nc {
         host: String,
@@ -4302,7 +4358,7 @@ enum WarpCommand {
     },
     /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
     /// With --write, --remove or --check: own the block in the SSH config
-    /// file, between two marker lines (issue 130).
+    /// file, between two marker lines.
     SshConfig {
         /// The Host pattern of the block (default * for the printed block;
         /// --write and --check need one).
@@ -4330,7 +4386,7 @@ enum WarpCommand {
         /// The interface name.
         #[arg(long, default_value = "cfrs0")]
         interface: String,
-        /// Send the whole host through WARP (issue 77): host routes keep the
+        /// Send the whole host through WARP: host routes keep the
         /// MASQUE connection outside, default routes go to the TUN (IPv4 and
         /// IPv6), DNS goes to 1.1.1.1. The default routes go away while the
         /// session is down; each change is put back at the end.
@@ -5925,6 +5981,8 @@ async fn net(args: NetArgs) -> Result<()> {
                 subnet.gateway(cfrs::vnet::Family::V4),
                 subnet.gateway(cfrs::vnet::Family::V6)
             );
+            // Issue 254: the columns have names.
+            println!("cfrsnet: {:<20} ABSTRACT SOCKET", "ADDRESS");
             for port in [53u16, 80, 443, 8080] {
                 let addr = VirtAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(10, 66, 0, 2)), port);
                 println!("cfrsnet: {addr:<20} \\0{}", addr.abstract_name()?);
@@ -6258,6 +6316,60 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issues 253 and 254: a lint of each help screen. No issue numbers of
+    /// this project, no `[env: X=]`, no `<a|b>` value name next to a list
+    /// of possible values, and each shell of completions.
+    #[test]
+    fn each_help_screen_passes_the_lint() {
+        fn walk(cmd: &clap::Command, path: String, out: &mut Vec<(String, String)>) {
+            let mut cmd = cmd.clone();
+            out.push((path.clone(), cmd.render_long_help().to_string()));
+            for sub in cmd.get_subcommands() {
+                if sub.get_name() != "help" {
+                    walk(sub, format!("{path} {}", sub.get_name()), out);
+                }
+            }
+        }
+        let mut screens = Vec::new();
+        let mut root = Cli::command();
+        root.build();
+        walk(&root, "cfrs".into(), &mut screens);
+        let mut faults = Vec::new();
+        for (path, help) in &screens {
+            for line in help.lines() {
+                let lower = line.to_ascii_lowercase();
+                if let Some(at) = lower.find("issue ") {
+                    if lower[at + 6..].starts_with(|c: char| c.is_ascii_digit()) {
+                        faults.push(format!("{path}: an issue number: {line}"));
+                    }
+                }
+                if line.contains("=]") && line.contains("[env: ") {
+                    faults.push(format!("{path}: an env value bracket: {line}"));
+                }
+                if let Some(at) = line.find(" <") {
+                    let name = &line[at + 2..];
+                    if let Some(end) = name.find('>') {
+                        let value = &name[..end];
+                        if value.contains('|')
+                            && !value.contains("--")
+                            && !line.trim_start().starts_with("Usage:")
+                        {
+                            faults.push(format!("{path}: a value name with |: {line}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+        let completions = &screens
+            .iter()
+            .find(|(p, _)| p == "cfrs completions")
+            .unwrap()
+            .1;
+        assert!(completions.contains("PowerShell"), "{completions}");
+        assert!(completions.contains("Elvish"), "{completions}");
+    }
 
     /// E1: each command of cfrs is in one group of the top help.
     #[test]

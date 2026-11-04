@@ -79,7 +79,7 @@ impl From<&ExitCode> for ExitRow {
 /// The paragraphs of DESCRIPTION.
 const DESCRIPTION: &[&str] = &[
     "cfrs is one binary for Cloudflare quick tunnels (trycloudflare), named tunnels and the Cloudflare WARP client. It is made for hosts with strong network limits: no root, no TUN device, no network namespace, no UDP, no AF_INET bind, or only TCP 443 out.",
-    "A tunnel reaches the edge with one of four legs: QUIC on UDP 7844, HTTP/2 on TCP 7844 (directly or through HTTPS_PROXY), QUIC inside a WARP MASQUE tunnel on TCP 443, or HTTP/2 in a WebSocket to the relay of --relay (TCP 443, --transport relay). With --protocol auto and --transport auto, cfrs tries the first three in that order.",
+    "A tunnel reaches the edge with one of four legs: QUIC on UDP 7844, HTTP/2 on TCP 7844 (directly or through HTTPS_PROXY), QUIC inside a WARP MASQUE tunnel on TCP 443, or HTTP/2 through the WebSocket relay on TCP 443 (--transport relay). With --protocol auto and --transport auto, cfrs tries the first three in that order.",
     "cfrs pod runs a program with all its traffic sent through a proxy, with no LD_PRELOAD (pod-netns). cfrs net gives programs virtual IP addresses on a host that refuses AF_INET binds.",
     "This manual is generated from the command tree of the binary. cfrs man --roff writes it as a man(7) page, and cfrs man --json writes its tables.",
 ];

@@ -124,7 +124,7 @@ impl Service {
         match value {
             "hello_world" => Ok(Service::HelloWorld),
             "metrics" => Ok(Service::Metrics),
-            other => bail!("unsupported service {other:?}"),
+            other => bail!("unsupported service {other:?}: give http://, https://, unix:, unix+tls:, tcp://, forward:, static:, spa:, http_status:CODE, hello_world or metrics"),
         }
     }
 
