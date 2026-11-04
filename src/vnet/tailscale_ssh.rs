@@ -158,8 +158,11 @@ pub fn render_id(passwd: &Path, fallback_gid: u32) -> String {
 /// The scripts are made executable; the table is not (it is read by the
 /// daemon, which runs as the same user).
 pub fn install(dir: &Path, users: &[LocalUser]) -> Result<Shims> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating shim directory {}", dir.display()))?;
+    // Issue 247: the directory must belong to this user, and other users
+    // must not write it. Each file is written new and renamed into place,
+    // so a planted symlink is replaced and not followed.
+    crate::state::prepare(dir)
+        .with_context(|| format!("checking the shim directory {}", dir.display()))?;
 
     let passwd = dir.join("passwd");
     let group = dir.join("group");
@@ -167,12 +170,10 @@ pub fn install(dir: &Path, users: &[LocalUser]) -> Result<Shims> {
     let id = dir.join("id");
     let fallback_gid = users.first().map_or(0, |u| u.gid);
 
-    std::fs::write(&passwd, render_passwd(users))
-        .with_context(|| format!("writing {}", passwd.display()))?;
-    std::fs::write(&group, render_group(users))
-        .with_context(|| format!("writing {}", group.display()))?;
-    write_executable(&getent, &render_getent(&passwd, &group))?;
-    write_executable(&id, &render_id(&passwd, fallback_gid))?;
+    crate::state::replace_file(&passwd, render_passwd(users).as_bytes(), 0o644)?;
+    crate::state::replace_file(&group, render_group(users).as_bytes(), 0o644)?;
+    crate::state::replace_file(&getent, render_getent(&passwd, &group).as_bytes(), 0o755)?;
+    crate::state::replace_file(&id, render_id(&passwd, fallback_gid).as_bytes(), 0o755)?;
 
     let compiled = shim::compile_source(FAKEPWD_SOURCE, FAKEPWD_FILE, dir)?;
 
@@ -184,17 +185,6 @@ pub fn install(dir: &Path, users: &[LocalUser]) -> Result<Shims> {
         id,
         fakepwd: compiled.path,
     })
-}
-
-fn write_executable(path: &Path, contents: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-        .with_context(|| format!("chmod 0755 {}", path.display()))?;
-    Ok(())
 }
 
 /// The environment a dynamic client needs to see the synthetic users.
@@ -219,6 +209,40 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cfrs-ts-shims-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    // Issue 247: a symlink in the shim directory is replaced, and its
+    // target is not written.
+    #[test]
+    fn install_does_not_write_through_a_symlink() {
+        let dir = scratch("symlink");
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        for name in ["passwd", "group", "getent", "id"] {
+            std::os::unix::fs::symlink(&victim, dir.join(name)).unwrap();
+        }
+        let shims = install(&dir, &[LocalUser::new("user", 966, 965)]).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        for path in [&shims.passwd, &shims.group, &shims.getent, &shims.id] {
+            assert!(crate::state::own_file(path), "{}", path.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Issue 247: a directory that other users can write is refused.
+    #[test]
+    fn install_refuses_a_directory_open_to_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("open");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = install(&dir, &[LocalUser::new("user", 966, 965)]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("other users can write"),
+            "{err:#}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

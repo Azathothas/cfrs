@@ -254,9 +254,8 @@ pub fn allows_exec(dir: &Path) -> bool {
 
 /// A directory for a file that must run or be loaded (a shim), named
 /// `name`: the first of the temporary directory, the state directory and
-/// `$XDG_RUNTIME_DIR` that is writable and not `noexec`.
+/// `$XDG_RUNTIME_DIR` that is private, writable and not `noexec`.
 pub fn exec_dir(name: &str) -> Result<PathBuf> {
-    let mut tried = Vec::new();
     let mut candidates = vec![std::env::temp_dir().join(name)];
     if let Ok(Some(state)) = state_dir() {
         candidates.push(state.join(name));
@@ -264,6 +263,15 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
     if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         candidates.push(PathBuf::from(run).join(name));
     }
+    exec_dir_from(candidates)
+}
+
+/// [`exec_dir`] with the candidates in `candidates`. Issue 247: a
+/// directory that exists already must be a directory of this user (not a
+/// symlink) that other users cannot write, because cfrs loads the code in
+/// it.
+fn exec_dir_from(candidates: Vec<PathBuf>) -> Result<PathBuf> {
+    let mut tried = Vec::new();
     for dir in candidates {
         if let Err(err) = std::fs::DirBuilder::new()
             .recursive(true)
@@ -271,6 +279,10 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
             .create(&dir)
         {
             tried.push(format!("{}: {err}", dir.display()));
+            continue;
+        }
+        if let Err(err) = check_private_dir(&dir) {
+            tried.push(format!("{}: {err:#}", dir.display()));
             continue;
         }
         if !allows_exec(&dir) {
@@ -287,6 +299,81 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
         "no directory can hold a shim: {}; use --out",
         tried.join("; ")
     )
+}
+
+/// Check that `dir` is a directory of this user, not a symlink, and that
+/// other users cannot write it.
+pub fn check_private_dir(dir: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(dir).context("reading the directory")?;
+    if meta.file_type().is_symlink() {
+        bail!("the path is a symlink");
+    }
+    if !meta.is_dir() {
+        bail!("the path is not a directory");
+    }
+    let uid = unsafe { libc::geteuid() };
+    if meta.uid() != uid {
+        bail!(
+            "the directory belongs to user {}, not to this user ({uid})",
+            meta.uid()
+        );
+    }
+    if meta.mode() & 0o022 != 0 {
+        bail!(
+            "other users can write the directory (mode {:04o})",
+            meta.mode() & 0o7777
+        );
+    }
+    Ok(())
+}
+
+/// True when `path` is a regular file of this user (not a symlink) that
+/// other users cannot write.
+pub fn own_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| {
+        meta.file_type().is_file()
+            && meta.uid() == unsafe { libc::geteuid() }
+            && meta.mode() & 0o022 == 0
+    })
+}
+
+/// Write `bytes` to `path` with the mode `mode`. The data goes to a new
+/// file with a unique name in the same directory, and a rename puts it at
+/// `path`. A symlink or a file of another user at `path` is replaced, not
+/// followed.
+pub fn replace_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let temp = temp_name(path);
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        std::fs::rename(&temp, path)
+    })();
+    if let Err(err) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(())
+}
+
+/// A new name beside `path` for a temporary file: `.NAME.PID.N.tmp`.
+pub fn temp_name(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map_or_else(
+        || std::ffi::OsString::from("file"),
+        |name| name.to_os_string(),
+    );
+    let mut temp = std::ffi::OsString::from(".");
+    temp.push(name);
+    temp.push(format!(".{}.{n}.tmp", std::process::id()));
+    path.with_file_name(temp)
 }
 
 #[cfg(test)]
@@ -446,6 +533,45 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         assert!(check_file_writable(&file.join("warp.json")).is_err());
         assert!(check_file_writable(&dir.path().join("new/warp.json")).is_ok());
+    }
+
+    // Issue 247: an exec directory that exists and that other users can
+    // write, or that is a symlink, is not used.
+    #[test]
+    fn exec_dir_refuses_a_directory_open_to_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = dir.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let link = dir.path().join("link");
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let good = dir.path().join("good");
+        let chosen = exec_dir_from(vec![open.clone(), link.clone(), good.clone()]).unwrap();
+        assert_eq!(chosen, good);
+        assert_eq!(std::fs::metadata(&good).unwrap().mode() & 0o777, 0o700);
+        let err = exec_dir_from(vec![open, link]).unwrap_err().to_string();
+        assert!(err.contains("other users can write"), "{err}");
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    // Issue 247: a write replaces a symlink and does not follow it.
+    #[test]
+    fn replace_file_does_not_follow_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let path = dir.path().join("passwd");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        replace_file(&path, b"new", 0o644).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(own_file(&path));
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o644);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]

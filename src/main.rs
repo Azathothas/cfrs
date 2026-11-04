@@ -5648,7 +5648,10 @@ struct SocksifyArgs {
 
 #[derive(Args, Debug)]
 struct TsShimsArgs {
-    /// Directory for passwd, group, getent, id and fakepwd.so.
+    /// Directory for passwd, group, getent, id and fakepwd.so. It must
+    /// belong to this user, and other users must not write it. Default:
+    /// `cfrs-ts-shims` in the first private directory that is not noexec
+    /// (as for `net shim`).
     #[arg(long)]
     out: Option<PathBuf>,
     /// Local login name. Default: the current user.
@@ -6127,7 +6130,8 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
     let directory = args
         .out
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("cfrs-ts-shims"));
+        .map(Ok)
+        .unwrap_or_else(|| cfrs::state::exec_dir("cfrs-ts-shims"))?;
     let mut user = tailscale_ssh::current_user();
     if let Some(name) = args.user {
         user.name = name;

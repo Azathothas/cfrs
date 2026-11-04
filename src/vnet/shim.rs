@@ -220,12 +220,14 @@ pub(crate) fn compile_source(source_text: &str, file_name: &str, directory: &Pat
     let source = directory.join(file_name.replace(".so", ".c"));
     // Only rewrite when the content differs, so a rebuild loop is cheap and an
     // editor's mtime is not fought.
-    let needs_write = std::fs::read(&source)
-        .map(|existing| existing != source_text.as_bytes())
-        .unwrap_or(true);
+    // Issue 247: a source of another user, or a symlink, is replaced.
+    let needs_write = !crate::state::own_file(&source)
+        || std::fs::read(&source)
+            .map(|existing| existing != source_text.as_bytes())
+            .unwrap_or(true);
     if needs_write {
-        std::fs::write(&source, source_text)
-            .with_context(|| format!("writing shim source {}", source.display()))?;
+        crate::state::replace_file(&source, source_text.as_bytes(), 0o644)
+            .context("writing the shim source")?;
     }
     let output = directory.join(file_name);
     const FLAGS: &[&str] = &["-O2", "-shared", "-fPIC", "-ldl", "-lpthread"];
@@ -249,10 +251,7 @@ pub(crate) fn compile_source(source_text: &str, file_name: &str, directory: &Pat
     let cc = match compiler() {
         Ok(cc) => cc,
         Err(err) => {
-            if output.is_file()
-                && std::fs::read_to_string(&source_stamp_path)
-                    .is_ok_and(|s| s.trim() == source_stamp)
-            {
+            if cached(&output, &source_stamp_path, &source_stamp) {
                 return Ok(Shim {
                     path: output,
                     origin: ShimOrigin::Cached,
@@ -279,44 +278,76 @@ pub(crate) fn compile_source(source_text: &str, file_name: &str, directory: &Pat
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     };
-    if output.is_file() && std::fs::read_to_string(&stamp_path).is_ok_and(|s| s.trim() == stamp) {
+    if cached(&output, &stamp_path, &stamp) {
         return Ok(Shim {
             path: output,
             origin: ShimOrigin::Cached,
         });
     }
+    // The compiler writes a new file; a rename puts it at `output`, so a
+    // symlink at `output` is replaced and not followed.
+    let built = crate::state::temp_name(&output);
     let mut command = Command::new(&cc);
     command
         .arg("-O2")
         .arg("-shared")
         .arg("-fPIC")
         .arg("-o")
-        .arg(&output)
+        .arg(&built)
         .arg(&source)
         .arg("-ldl")
         .arg("-lpthread");
-    let result = command
-        .output()
-        .with_context(|| format!("running {cc} to build the shim"))?;
+    let result = command.output();
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            let _ = std::fs::remove_file(&built);
+            return Err(err).with_context(|| format!("running {cc} to build the shim"));
+        }
+    };
     if !result.status.success() {
+        let _ = std::fs::remove_file(&built);
         bail!(
             "compiling the shim failed ({}):\n{}",
             result.status,
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    if !output.is_file() {
+    if !built.is_file() {
         bail!(
             "{cc} reported success but {} does not exist",
-            output.display()
+            built.display()
         );
     }
-    let _ = std::fs::write(&stamp_path, format!("{stamp}\n"));
-    let _ = std::fs::write(&source_stamp_path, format!("{source_stamp}\n"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let made = std::fs::set_permissions(&built, std::fs::Permissions::from_mode(0o755))
+            .and_then(|()| std::fs::rename(&built, &output));
+        if let Err(err) = made {
+            let _ = std::fs::remove_file(&built);
+            return Err(err).with_context(|| format!("writing {}", output.display()));
+        }
+    }
+    let _ = crate::state::replace_file(&stamp_path, format!("{stamp}\n").as_bytes(), 0o644);
+    let _ = crate::state::replace_file(
+        &source_stamp_path,
+        format!("{source_stamp}\n").as_bytes(),
+        0o644,
+    );
     Ok(Shim {
         path: output,
         origin: ShimOrigin::Compiled,
     })
+}
+
+/// True when the library `output` and its stamp `stamp_path` are files of
+/// this user that other users cannot write, and the stamp is `stamp`.
+/// Issue 247: the stamp is a hash of public text, so a library that another
+/// user put in the directory, or a symlink, is not used.
+fn cached(output: &Path, stamp_path: &Path, stamp: &str) -> bool {
+    crate::state::own_file(output)
+        && crate::state::own_file(stamp_path)
+        && std::fs::read_to_string(stamp_path).is_ok_and(|s| s.trim() == stamp)
 }
 
 /// The C compiler to use: `$CC`, else `cc`, else `gcc`/`clang`.
@@ -381,6 +412,42 @@ mod tests {
         assert!(SHIM_SOURCE.contains("cfrsnet"));
         assert!(SHIM_SOURCE.contains("dlsym"));
         assert!(SHIM_SOURCE.contains("AF_UNIX"));
+    }
+
+    // Issue 247: a cached library that is a symlink, or that other users
+    // can write, is built again; the stamp alone is not trusted.
+    #[test]
+    fn a_planted_library_is_not_used_from_the_cache() {
+        use std::os::unix::fs::PermissionsExt;
+        if compiler().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let first = build(dir.path()).unwrap();
+        assert_eq!(first.origin, ShimOrigin::Compiled);
+        assert_eq!(build(dir.path()).unwrap().origin, ShimOrigin::Cached);
+        // A symlink with the correct stamp.
+        let planted = dir.path().join("planted.so");
+        std::fs::copy(&first.path, &planted).unwrap();
+        std::fs::remove_file(&first.path).unwrap();
+        std::os::unix::fs::symlink(&planted, &first.path).unwrap();
+        let again = build(dir.path()).unwrap();
+        assert_eq!(again.origin, ShimOrigin::Compiled);
+        assert!(!std::fs::symlink_metadata(&again.path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // A library that other users can write.
+        std::fs::set_permissions(&again.path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let again = build(dir.path()).unwrap();
+        assert_eq!(again.origin, ShimOrigin::Compiled);
+        let mode = std::fs::metadata(&again.path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        // No temporary file is left.
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(!name.to_string_lossy().ends_with(".tmp"), "{name:?}");
+        }
     }
 
     #[test]

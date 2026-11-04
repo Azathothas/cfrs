@@ -905,6 +905,35 @@ fn socksify_takes_a_socket_path() {
     assert!(String::from_utf8_lossy(&default.stdout).contains("/tmp/cfrssocks.sock"));
 }
 
+/// Issue 247: `net ts-shims` with no `--out` does not use a directory in
+/// the temporary directory that other users can write.
+#[test]
+fn ts_shims_skips_a_directory_open_to_others() {
+    use std::os::unix::fs::PermissionsExt;
+    if cfrs::vnet::shim::compiler().is_err() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().join("tmp");
+    let hostile = tmp.join("cfrs-ts-shims");
+    std::fs::create_dir_all(&hostile).unwrap();
+    std::fs::set_permissions(&hostile, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let state = dir.path().join("state");
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["net", "ts-shims"])
+        .env("TMPDIR", &tmp)
+        .env("CFRS_STATE_DIR", &state)
+        .env_remove("XDG_RUNTIME_DIR")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let chosen = state.join("cfrs-ts-shims");
+    assert!(text.contains(&*chosen.to_string_lossy()), "{text}");
+    assert_eq!(std::fs::read_dir(&hostile).unwrap().count(), 0);
+}
+
 /// Issue 57: no panic on a bad argument or a closed pipe; a missing
 /// subcommand and a missing origin are usage errors; --json is accepted.
 #[test]
