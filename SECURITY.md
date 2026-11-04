@@ -51,6 +51,28 @@ binaries" in `README.md`.
   see the names that cfrs resolves. A pin (`--resolve`) or a proxy sends no
   name to them.
 
+## What the relay can see
+
+The WebSocket-to-TCP relay of `--transport relay` and of the reverse mode
+(`cfrs relay`) is a service of the owner of cfrs
+(`tcp.ssh.relay.ajam.dev` and the hosts of its pool). Another relay is set
+with `--relay` or `CFRS_RELAY`.
+
+* `--transport relay`: the relay opens TCP to the edge. It sees the edge
+  address and port, the public IP address of the host, the time and the
+  volume. It does not see the tunnel: the TLS to the edge (with the edge
+  roots of cfrs) is inside the WebSocket.
+* The reverse mode (`relay node`, `relay connect`): the relay carries the
+  bytes of each session as they are. There is no encryption from end to
+  end in cfrs. Use a protocol with its own encryption through it (SSH,
+  TLS).
+* The token goes only to the hosts of one deployment: the hosts under the
+  parent domain of the first host (`src/relay_pool.rs`). A fixed token
+  (`CFRS_RELAY_TOKEN`) goes to each host of the list.
+* The relay can end a session at any time. It ends each session at 64 MiB
+  or after 12 h. cfrs replaces an edge connection before that (60 MiB,
+  11 h 30 min).
+
 ## What listens
 
 cfrs listens only when a command asks for it. A tunnel connects out to the
@@ -79,6 +101,8 @@ defaults in this table against `cfrs man --json`.
 | Named-tunnel token and secret | In memory only. Give it in `TUNNEL_TOKEN`, a config file or a cloudflared credentials file. `--token` also works, but other users of the host can read a command line. |
 | WARP device token, MASQUE private key, WARP+ license | The identity file (`cfrs man files`), mode 0600, in a directory with mode 0700. cfrs writes it to a new file and then renames it. cfrs refuses an identity file that belongs to another user, or that the group or other users can read. |
 | Proxy user and password | In the proxy variables or `-x`. |
+| Relay token | `CFRS_RELAY_TOKEN`, or a minted token in `relay-token-HOST.json` (mode 0600) in the state directory. cfrs does not use a cache file that is a link, of another user, readable by others or over 64 KiB. |
+| Relay pair (node, connect and stop tokens) | `relay/NAME.json` in the state directory, mode 0600. |
 
 These rules apply to each secret:
 
