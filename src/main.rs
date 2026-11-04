@@ -1684,6 +1684,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 ));
             }
             doc["advice"] = advice.into();
+            let doc = cfrs::status::stamped(doc);
             println!("{doc}");
             // Issue 97: WARP was needed and did not start: not a success.
             if warp_wanted && !doc["warp_error"].is_null() {
@@ -1768,7 +1769,13 @@ fn instances_ps(json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::json!({ "instances": items }));
+        println!(
+            "{}",
+            cfrs::status::stamped(serde_json::json!({
+                "instances": items,
+                "dir": dir.display().to_string(),
+            }))
+        );
         return Ok(());
     }
     if list.is_empty() {
@@ -2418,7 +2425,10 @@ async fn async_main(cli: Cli) -> Result<()> {
                 }
             }
             if args.json {
-                println!("{}", serde_json::json!({ "ports": ports }));
+                println!(
+                    "{}",
+                    cfrs::status::stamped(serde_json::json!({ "ports": ports }))
+                );
             } else {
                 for port in ports {
                     println!("{port}");
@@ -2475,7 +2485,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         Command::Doctor(args) if args.agent => {
             let report = cfrs::agent::run(Duration::from_secs(args.timeout.max(3))).await;
             if args.json {
-                println!("{}", serde_json::to_string(&report)?);
+                println!("{}", cfrs::status::stamped(serde_json::to_value(&report)?));
             } else {
                 print!("{}", cfrs::agent::text(&report));
             }
@@ -2618,7 +2628,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
 async fn preflight(config: &Config, show: Show) -> Result<()> {
     let report = cfrs::preflight::check(config).await;
     if show.json {
-        println!("{}", report.to_json());
+        println!("{}", cfrs::status::stamped(report.to_json()));
     } else {
         print!("{}", report.text());
     }
@@ -3619,6 +3629,7 @@ fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
             doc["forward"] = handle.forward().into();
             doc["forward_path"] = path.into();
         }
+        let doc = cfrs::status::stamped(doc);
         println!("{doc}");
     } else {
         announce_text(handle);
@@ -5722,7 +5733,7 @@ async fn net(args: NetArgs) -> Result<()> {
                     .collect();
                 println!(
                     "{}",
-                    serde_json::json!({"probes": rows, "verdict": verdict})
+                    cfrs::status::stamped(serde_json::json!({"probes": rows, "verdict": verdict}))
                 );
                 return Ok(());
             }

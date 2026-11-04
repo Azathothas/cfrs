@@ -300,7 +300,7 @@ impl Report {
 
     pub fn to_json(&self) -> Value {
         let ms = |d: Option<Duration>| d.map(|d| (d.as_secs_f64() * 10000.0).round() / 10.0);
-        json!({
+        crate::status::stamped(json!({
             "ok": self.ok(),
             "roads": self.roads().iter().map(|(road, verdict, reason)| json!({
                 "road": road,
@@ -353,7 +353,7 @@ impl Report {
                 "verdict": l.verdict.name(),
                 "reason": l.reason,
             })).collect::<Vec<_>>(),
-        })
+        }))
     }
 
     pub fn text(&self) -> String {

@@ -103,6 +103,24 @@ fn tty(fd: i32) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
+/// The version line of cfrs, as `cfrs --version` gives it.
+pub const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("CFRS_BUILD_COMMIT"),
+    ")"
+);
+
+/// `doc` with `schema` (1) and `cfrs` (the version) when it is an object
+/// (E3): each JSON document of cfrs has the two keys.
+pub fn stamped(mut doc: Value) -> Value {
+    if let Some(map) = doc.as_object_mut() {
+        map.insert("schema".into(), json!(1));
+        map.insert("cfrs".into(), json!(VERSION));
+    }
+    doc
+}
+
 /// The status of this host.
 pub fn document() -> Value {
     json!({

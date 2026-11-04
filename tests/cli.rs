@@ -1672,3 +1672,33 @@ fn status_names_the_kind_and_the_source_of_the_proxy() {
     assert_eq!(doc["proxy"]["kind"], "socks5h+unix");
     assert_eq!(doc["proxy"]["source"], "--proxy");
 }
+
+/// E3: the JSON documents have schema and cfrs; ps --json names its dir.
+#[test]
+fn json_documents_have_the_schema_and_the_version() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        &["ps", "--json"][..],
+        &["ports", "--json"][..],
+        &["status"][..],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("CFRS_RUN_DIR", dir.path())
+            .output()
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", stderr(&out)));
+        assert_eq!(doc["schema"], 1, "{args:?}: {doc}");
+        assert!(
+            doc["cfrs"]
+                .as_str()
+                .unwrap()
+                .starts_with(env!("CARGO_PKG_VERSION")),
+            "{args:?}: {doc}"
+        );
+        if args[0] == "ps" {
+            assert!(doc["dir"].is_string(), "{doc}");
+        }
+    }
+}
