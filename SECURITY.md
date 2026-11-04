@@ -82,7 +82,7 @@ edge; it does not listen. The commands below listen:
 | --- | --- | --- |
 | `cfrs warp proxy` | `tcp://127.0.0.1:40000` | Each user of the host (loopback TCP). Use `--listen unix:/path` for the owner only. |
 | `cfrs net proxy` | `unix:/tmp/cfrsnet.socks` | The owner only (socket mode 0600). |
-| `cfrs net switch` | `unix:/tmp/cfrsnet.switch` | The owner only (socket mode 0600, and the user of the peer, `SO_PEERCRED`). |
+| `cfrs net switch` | `unix:/tmp/cfrsnet.switch` | The owner only (socket mode 0600, and the user of the peer, `SO_PEERCRED`). A TCP listener takes each peer that sends the shared token (`CFRS_SWITCH_TOKEN` or `--switch-token-file`); with no token it does not start. The token is not encrypted. The switch drops a packet whose source address is of another peer. |
 | `cfrs net proxy --control NAME`, `--import VIRT`, the shim | abstract names `\0NAME`, `\0cfrsnet/...` | The same user only (`SO_PASSCRED`, `SO_PEERCRED`). An abstract name has no file permissions. |
 | `cfrs net tailscale` | `unix:/tmp/cfrssocks.sock` | The owner only (socket mode 0600). |
 | `cfrs connect -L` | no default | `tcp://port` binds `127.0.0.1`. A Unix socket has mode 0600. |

@@ -132,6 +132,22 @@ stream. The switch records the source address of each peer. It sends each
 packet to the peer that owns the destination address, and it sends a packet
 for an unknown address to all other peers.
 
+* A source address is of the first peer that sends from it, until that peer
+  disconnects. The switch drops a packet of another peer with that source
+  address, and counts it.
+* A unix listener takes the same user only (`SO_PEERCRED`).
+* A TCP listener needs a shared token. Set `CFRS_SWITCH_TOKEN`, or give
+  `--switch-token-file PATH` (the text of the file with no white space at
+  the ends). With no token, `cfrs net switch --listen tcp://...` exits 64.
+  `cfrs net proxy --switch tcp://...` sends the same token, from the same
+  variable or its own `--switch-token-file`.
+* The first line of a TCP peer is `cfrs-switch/1 TOKEN` and a line feed.
+  The switch answers `ok` and a line feed, then the frames start. A peer
+  with a wrong first line gets `refused` and the switch closes it. A peer
+  that sends no line in 10 s is closed. The token is not encrypted: on a
+  network that others can see, use a tunnel (`cfrs tunnel --forward`) or
+  another encrypted path.
+
 ```sh
 # Host S: the switch. Expose it with a tunnel when the hosts are far apart:
 cfrs net switch --listen unix:/tmp/sw.sock

@@ -133,6 +133,9 @@ struct Table {
     next_id: u64,
     peers: HashMap<u64, mpsc::Sender<Vec<u8>>>,
     owners: HashMap<IpAddr, u64>,
+    /// The packets that were dropped because their source address is of
+    /// another peer.
+    spoofed: u64,
 }
 
 impl Table {
@@ -140,7 +143,21 @@ impl Table {
         let Some((src, dst)) = packet_addresses(&packet) else {
             return;
         };
-        self.owners.insert(src, from);
+        // Issue 309: a source address is of the first peer that sends from
+        // it, until that peer leaves. A packet of another peer with that
+        // source is dropped. Before, the last sender took the address and
+        // got the replies to it.
+        match self.owners.entry(src) {
+            std::collections::hash_map::Entry::Occupied(entry) if *entry.get() != from => {
+                self.spoofed += 1;
+                debug!(%src, peer = from, owner = *entry.get(), "dropped a packet with the source address of another peer");
+                return;
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(from);
+            }
+        }
         match self.owners.get(&dst).copied() {
             Some(owner) if owner != from => {
                 if let Some(peer) = self.peers.get(&owner) {
@@ -192,17 +209,144 @@ fn peer_is(stream: &tokio::net::UnixStream, owner: u32) -> bool {
     }
 }
 
+/// The variable with the shared token of a TCP switch (issue 309).
+pub const TOKEN_VARIABLE: &str = "CFRS_SWITCH_TOKEN";
+
+/// The first line that a peer of a TCP switch sends: this text, the token
+/// and a line feed. The switch answers `ok` and a line feed, or closes.
+const HELLO: &str = "cfrs-switch/1 ";
+
+/// The longest first line that a TCP switch reads.
+const HELLO_MAX: usize = 4096;
+
+/// The time that a TCP peer has for the first line, and for the answer.
+const HELLO_TIME: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The token of a TCP switch: the text of `file` with no white space at the
+/// ends, else the value of [`TOKEN_VARIABLE`]. `None` when there is none.
+pub fn token(file: Option<&std::path::Path>) -> Result<Option<String>> {
+    if let Some(path) = file {
+        let meta =
+            std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+        if meta.len() > HELLO_MAX as u64 {
+            anyhow::bail!(
+                "{} is not a token file: it has {} bytes",
+                path.display(),
+                meta.len()
+            );
+        }
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let token = text.trim();
+        if token.is_empty() {
+            anyhow::bail!("the token file {} is empty", path.display());
+        }
+        return Ok(Some(token.to_string()));
+    }
+    Ok(std::env::var(TOKEN_VARIABLE)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty()))
+}
+
+/// Check a token for a first line or a newline in it.
+fn check_token(token: &str) -> Result<()> {
+    if token.is_empty() || token.len() > HELLO_MAX - HELLO.len() - 1 {
+        anyhow::bail!(
+            "the switch token is empty or longer than {} bytes",
+            HELLO_MAX - HELLO.len() - 1
+        );
+    }
+    if token.bytes().any(|b| b == b'\n' || b == b'\r') {
+        anyhow::bail!("the switch token has a line end in it");
+    }
+    Ok(())
+}
+
+/// Compare two byte strings in a time that does not depend on where they
+/// differ.
+fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Read one line (up to `\n`, at most [`HELLO_MAX`] bytes) byte by byte, so
+/// that no byte after it is taken from the stream.
+async fn read_line<S: AsyncRead + Unpin>(stream: &mut S) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < HELLO_MAX {
+        if stream.read(&mut byte).await? == 0 {
+            break;
+        }
+        if byte[0] == b'\n' {
+            return Ok(line);
+        }
+        line.push(byte[0]);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "no line end",
+    ))
+}
+
+/// The switch side of the first line: true when the peer sent the token.
+async fn take_hello(stream: &mut tokio::net::TcpStream, token: &str) -> bool {
+    let Ok(Ok(line)) = tokio::time::timeout(HELLO_TIME, read_line(stream)).await else {
+        return false;
+    };
+    let mut want = HELLO.as_bytes().to_vec();
+    want.extend_from_slice(token.as_bytes());
+    if !same_bytes(&line, &want) {
+        let _ = stream.write_all(b"refused\n").await;
+        return false;
+    }
+    stream.write_all(b"ok\n").await.is_ok()
+}
+
+/// The peer side of the first line: send the token, and wait for `ok`.
+async fn give_hello(stream: &mut tokio::net::TcpStream, token: &str) -> Result<()> {
+    check_token(token)?;
+    stream
+        .write_all(format!("{HELLO}{token}\n").as_bytes())
+        .await
+        .context("sending the token to the switch")?;
+    let answer = tokio::time::timeout(HELLO_TIME, read_line(stream))
+        .await
+        .context("the switch did not answer the token in time")?
+        .context("reading the answer of the switch")?;
+    if answer != b"ok" {
+        anyhow::bail!(
+            "the switch refused the token: give the token of the switch ({TOKEN_VARIABLE} or --switch-token-file)"
+        );
+    }
+    Ok(())
+}
+
 /// Accept peers on `listen` and forward packets between them.
-pub async fn serve(listen: ProxyListen) -> Result<Switch> {
-    serve_for(listen, own_uid()).await
+///
+/// A TCP listener needs `token` (issue 309): each TCP peer sends it first,
+/// and a peer with no token or a wrong one is closed. A unix listener takes
+/// the same user only, and needs no token.
+pub async fn serve(listen: ProxyListen, token: Option<String>) -> Result<Switch> {
+    serve_for(listen, token, own_uid()).await
 }
 
 /// [`serve`], with the user that a unix peer must have.
-async fn serve_for(listen: ProxyListen, owner: u32) -> Result<Switch> {
+async fn serve_for(listen: ProxyListen, token: Option<String>, owner: u32) -> Result<Switch> {
     let table = Arc::new(Mutex::new(Table::default()));
     let mut listen = listen;
     let task = match &listen {
         ProxyListen::Tcp(addr) => {
+            let Some(token) = token else {
+                anyhow::bail!(
+                    "a TCP switch needs a shared token: set {TOKEN_VARIABLE}, or give --switch-token-file"
+                );
+            };
+            check_token(&token)?;
+            let token: Arc<str> = token.into();
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("binding tcp://{addr}"))?;
@@ -210,9 +354,17 @@ async fn serve_for(listen: ProxyListen, owner: u32) -> Result<Switch> {
             // chose for port 0), not the requested one.
             listen = ProxyListen::Tcp(listener.local_addr()?);
             tokio::spawn(async move {
-                while let Ok((stream, from)) = listener.accept().await {
-                    debug!(%from, "switch peer connected");
-                    tokio::spawn(peer(stream, table.clone()));
+                while let Ok((mut stream, from)) = listener.accept().await {
+                    let table = table.clone();
+                    let token = token.clone();
+                    tokio::spawn(async move {
+                        if !take_hello(&mut stream, &token).await {
+                            warn!(%from, "refused a switch peer with no token or a wrong one");
+                            return;
+                        }
+                        debug!(%from, "switch peer connected");
+                        peer(stream, table).await;
+                    });
                 }
             })
         }
@@ -326,19 +478,29 @@ where
 }
 
 /// Connect `stack` to the switch at `switch`. The returned task moves the
-/// packets until the connection closes.
+/// packets until the connection closes. A TCP switch needs its `token`
+/// (issue 309); a unix switch needs none.
 pub async fn attach(
     stack: &NetStack,
     switch: &ProxyListen,
     faults: Faults,
+    token: Option<&str>,
 ) -> Result<JoinHandle<()>> {
     let link_in = stack.link_in();
     let link_out = stack.link_out();
     Ok(match switch {
         ProxyListen::Tcp(addr) => {
-            let stream = tokio::net::TcpStream::connect(addr)
+            let Some(token) = token else {
+                anyhow::bail!(
+                    "a TCP switch needs its token: set {TOKEN_VARIABLE}, or give --switch-token-file"
+                );
+            };
+            let mut stream = tokio::net::TcpStream::connect(addr)
                 .await
                 .with_context(|| format!("connecting to the switch at tcp://{addr}"))?;
+            give_hello(&mut stream, token)
+                .await
+                .with_context(|| format!("the switch at tcp://{addr}"))?;
             tokio::spawn(pump(link_in, link_out, stream, faults))
         }
         ProxyListen::Unix(path) => {
@@ -611,7 +773,7 @@ mod tests {
     async fn two_stacks_talk_through_a_lossy_switch() {
         let dir = tempfile::tempdir().unwrap();
         let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
-        let switch = serve(listen.clone()).await.unwrap();
+        let switch = serve(listen.clone(), None).await.unwrap();
 
         let server = NetStack::over_link(config(2));
         let client = NetStack::over_link(config(3));
@@ -621,8 +783,8 @@ mod tests {
             reorder: 0.05,
             seed: 42,
         };
-        let _a = attach(&server, &listen, faults).await.unwrap();
-        let _b = attach(&client, &listen, faults).await.unwrap();
+        let _a = attach(&server, &listen, faults, None).await.unwrap();
+        let _b = attach(&client, &listen, faults, None).await.unwrap();
 
         let address = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8080);
         let mut listener = server.listen(address).await.unwrap();
@@ -650,6 +812,123 @@ mod tests {
         switch.abort();
     }
 
+    fn v4_packet(src: [u8; 4], dst: [u8; 4]) -> Vec<u8> {
+        let mut packet = vec![0u8; 20];
+        packet[0] = 0x45;
+        packet[12..16].copy_from_slice(&src);
+        packet[16..20].copy_from_slice(&dst);
+        packet
+    }
+
+    /// Issue 309: a packet with the source address of another peer is
+    /// dropped and counted, and the replies to that address still go to
+    /// its owner.
+    #[test]
+    fn a_spoofed_source_address_is_dropped() {
+        let mut table = Table::default();
+        let mut queues = Vec::new();
+        for id in 1..=3u64 {
+            let (tx, rx) = mpsc::channel(16);
+            table.peers.insert(id, tx);
+            queues.push(rx);
+        }
+        // Peer 1 is 10.66.0.2, peer 2 is 10.66.0.3.
+        table.forward(1, v4_packet([10, 66, 0, 2], [10, 66, 0, 3]));
+        table.forward(2, v4_packet([10, 66, 0, 3], [10, 66, 0, 2]));
+        for rx in &mut queues {
+            while rx.try_recv().is_ok() {}
+        }
+        // Peer 3 sends with the source address of peer 1.
+        table.forward(3, v4_packet([10, 66, 0, 2], [10, 66, 0, 3]));
+        assert_eq!(table.spoofed, 1);
+        assert!(queues[1].try_recv().is_err(), "the spoofed packet arrived");
+        // A reply to 10.66.0.2 goes to peer 1, not to peer 3.
+        table.forward(2, v4_packet([10, 66, 0, 3], [10, 66, 0, 2]));
+        assert!(queues[0].try_recv().is_ok(), "peer 1 lost its reply");
+        assert!(queues[2].try_recv().is_err(), "peer 3 got the reply");
+        // When peer 1 leaves, another peer can take the address.
+        table.remove(1);
+        table.forward(3, v4_packet([10, 66, 0, 2], [10, 66, 0, 3]));
+        assert_eq!(table.spoofed, 1);
+    }
+
+    /// Issue 309: a TCP switch needs a token. A peer with a wrong first line
+    /// gets "refused" and no packet; two stacks with the token talk.
+    #[tokio::test]
+    async fn a_tcp_switch_takes_peers_with_its_token_only() {
+        let listen = ProxyListen::parse("tcp://127.0.0.1:0").unwrap();
+        let err = serve(listen.clone(), None).await.err().expect("no token");
+        assert!(err.to_string().contains("token"), "{err}");
+
+        let switch = serve(listen, Some("test-switch-token".into()))
+            .await
+            .unwrap();
+        let tcp = switch.listen.clone();
+        let ProxyListen::Tcp(addr) = tcp else {
+            unreachable!()
+        };
+
+        let server = NetStack::over_link(config(2));
+        let client = NetStack::over_link(config(3));
+        assert!(attach(&server, &tcp, Faults::default(), None)
+            .await
+            .is_err());
+        let wrong = attach(&server, &tcp, Faults::default(), Some("wrong"))
+            .await
+            .expect_err("a wrong token");
+        assert!(
+            format!("{wrong:#}").contains("refused the token"),
+            "{wrong:#}"
+        );
+        let _a = attach(&server, &tcp, Faults::default(), Some("test-switch-token"))
+            .await
+            .unwrap();
+        let _b = attach(&client, &tcp, Faults::default(), Some("test-switch-token"))
+            .await
+            .unwrap();
+
+        // A peer that sends a packet and no token gets no packet back.
+        let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut frame = FrameEncoder::encode(&v4_packet([10, 66, 0, 9], [10, 66, 0, 99])).unwrap();
+        frame.push(b'\n');
+        raw.write_all(&frame).await.unwrap();
+
+        let address = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8080);
+        let mut listener = server.listen(address).await.unwrap();
+        let accept = tokio::spawn(async move {
+            let mut conn = listener.accept().await.unwrap();
+            conn.write_all(b"pong").await.unwrap();
+            AsyncWriteExt::shutdown(&mut conn).await.unwrap();
+        });
+        let mut conn =
+            tokio::time::timeout(std::time::Duration::from_secs(10), client.connect(address))
+                .await
+                .expect("connect in time")
+                .unwrap();
+        let mut got = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            conn.read_to_end(&mut got),
+        )
+        .await
+        .expect("reply in time")
+        .unwrap();
+        assert_eq!(got, b"pong");
+        accept.await.unwrap();
+
+        // The switch answers "refused" and closes. A reset (the switch did
+        // not read the rest of the frame) can drop the answer.
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            raw.read_to_end(&mut seen),
+        )
+        .await
+        .expect("the switch keeps a peer with no token");
+        assert!(b"refused\n".starts_with(&seen), "{seen:?}");
+        switch.abort();
+    }
+
     /// Issue 65: a stack on a switch reaches its own listener, at its own
     /// address and at another address that a forward binds. Before, the
     /// packet went to the switch, which drops a packet back to its sender.
@@ -657,9 +936,11 @@ mod tests {
     async fn a_stack_reaches_its_own_listener_through_a_switch() {
         let dir = tempfile::tempdir().unwrap();
         let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
-        let switch = serve(listen.clone()).await.unwrap();
+        let switch = serve(listen.clone(), None).await.unwrap();
         let stack = NetStack::over_link(config(3));
-        let _a = attach(&stack, &listen, Faults::default()).await.unwrap();
+        let _a = attach(&stack, &listen, Faults::default(), None)
+            .await
+            .unwrap();
         for ip in [Ipv4Addr::new(10, 66, 0, 3), Ipv4Addr::new(10, 66, 0, 9)] {
             let address = VirtAddr::new(IpAddr::V4(ip), 8080);
             let mut listener = stack.listen(address).await.unwrap();
@@ -731,7 +1012,7 @@ mod tests {
     async fn a_switch_peer_of_another_user_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
-        let switch = serve_for(listen.clone(), own_uid().wrapping_add(1))
+        let switch = serve_for(listen.clone(), None, own_uid().wrapping_add(1))
             .await
             .unwrap();
         let ProxyListen::Unix(path) = &listen else {
@@ -754,11 +1035,11 @@ mod tests {
     async fn exported_and_imported_names_meet_through_the_switch() {
         let dir = tempfile::tempdir().unwrap();
         let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
-        let switch = serve(listen.clone()).await.unwrap();
+        let switch = serve(listen.clone(), None).await.unwrap();
         let a = Arc::new(NetStack::over_link(config(2)));
         let b = Arc::new(NetStack::over_link(config(3)));
-        let _la = attach(&a, &listen, Faults::default()).await.unwrap();
-        let _lb = attach(&b, &listen, Faults::default()).await.unwrap();
+        let _la = attach(&a, &listen, Faults::default(), None).await.unwrap();
+        let _lb = attach(&b, &listen, Faults::default(), None).await.unwrap();
 
         // Both "hosts" share one abstract namespace in this test. Thus B
         // connects through its stack directly, which is what an imported name

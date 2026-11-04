@@ -855,6 +855,18 @@ cfrs net switch --listen unix:/tmp/cfrsnet.switch   # connect stacks
 cfrs net proxy --switch unix:/tmp/cfrsnet.switch --address 10.66.0.3
 ```
 
+A unix switch takes the same user only. A TCP switch needs a shared token:
+set `CFRS_SWITCH_TOKEN`, or give `--switch-token-file PATH`, to the switch
+and to each `net proxy --switch tcp://...`. With no token, the switch does
+not start (exit 64). A peer with no token or a wrong one is closed. The
+switch drops a packet whose source address is of another peer.
+
+```sh
+export CFRS_SWITCH_TOKEN="$(head -c 24 /dev/urandom | base64)"
+cfrs net switch --listen tcp://0.0.0.0:7000
+cfrs net proxy --switch tcp://switch-host:7000 --address 10.66.0.3
+```
+
 `cfrs net doctor` calls `bind` and then `listen` for each stream socket
 (a policy can allow one and refuse the other; `SO_ACCEPTCONN` confirms the
 listen), and sends one QUIC packet to the edge on UDP 7844: answered, refused

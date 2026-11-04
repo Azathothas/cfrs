@@ -1679,6 +1679,7 @@ fn a_port_0_listener_prints_the_bound_port() {
             .args(args)
             .args(["--listen", "tcp://127.0.0.1:0", "--run-for", "20"])
             .env_remove("CFRS_ERROR_PROGRAM")
+            .env("CFRS_SWITCH_TOKEN", "test-switch-token")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -1697,6 +1698,58 @@ fn a_port_0_listener_prints_the_bound_port() {
         assert_ne!(addr.port(), 0, "{args:?}: {line}");
         connect.unwrap_or_else(|e| panic!("{args:?}: connect to {addr}: {e}"));
     }
+}
+
+/// Issue 309: a TCP switch with no token is a usage error (64), and so is
+/// a TCP --switch of net proxy with no token. A unix switch needs none.
+#[test]
+fn a_tcp_switch_needs_a_token() {
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("CFRS_SWITCH_TOKEN")
+            .output()
+            .unwrap();
+        (out.status.code(), stderr(&out))
+    };
+    let (code, err) = run(&[
+        "net",
+        "switch",
+        "--listen",
+        "tcp://127.0.0.1:0",
+        "--run-for",
+        "1",
+    ]);
+    assert_eq!(code, Some(64), "{err}");
+    assert!(err.contains("CFRS_SWITCH_TOKEN"), "{err}");
+    let (code, err) = run(&[
+        "net",
+        "proxy",
+        "--switch",
+        "tcp://127.0.0.1:9",
+        "--address",
+        "10.66.0.3",
+        "--run-for",
+        "1",
+    ]);
+    assert_eq!(code, Some(64), "{err}");
+    assert!(err.contains("CFRS_SWITCH_TOKEN"), "{err}");
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("token");
+    std::fs::write(&empty, "\n").unwrap();
+    let (code, err) = run(&[
+        "net",
+        "switch",
+        "--listen",
+        "tcp://127.0.0.1:0",
+        "--switch-token-file",
+        empty.to_str().unwrap(),
+        "--run-for",
+        "1",
+    ]);
+    assert_eq!(code, Some(64), "{err}");
+    assert!(err.contains("empty"), "{err}");
 }
 
 /// podssh: status, ps, stop, logs and wait read the run directory and make

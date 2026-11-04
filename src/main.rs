@@ -5970,6 +5970,10 @@ struct ProxyArgs {
     /// of a loopback link, so it reaches stacks on other hosts.
     #[arg(long)]
     switch: Option<String>,
+    /// With a TCP --switch: read the shared token of the switch from this
+    /// file. Without it, the token is the variable CFRS_SWITCH_TOKEN.
+    #[arg(long, value_name = "PATH", requires = "switch")]
+    switch_token_file: Option<PathBuf>,
     /// The IPv4 address of this stack on the switch, for example 10.66.0.3.
     #[arg(long)]
     address: Option<std::net::Ipv4Addr>,
@@ -6001,9 +6005,16 @@ struct ProxyArgs {
 
 #[derive(Args, Debug)]
 struct SwitchArgs {
-    /// Where to accept stacks: unix:/path or tcp://host:port.
+    /// Where to accept stacks: unix:/path or tcp://host:port. A TCP
+    /// listener needs a shared token (CFRS_SWITCH_TOKEN or
+    /// --switch-token-file); a unix listener takes the same user only.
     #[arg(long, default_value = "unix:/tmp/cfrsnet.switch")]
     listen: String,
+    /// With a TCP --listen: read the shared token from this file. Without
+    /// it, the token is the variable CFRS_SWITCH_TOKEN. Each TCP peer must
+    /// send it.
+    #[arg(long, value_name = "PATH")]
+    switch_token_file: Option<PathBuf>,
     /// Stay up for this many seconds instead of until Ctrl-C.
     #[arg(long)]
     run_for: Option<u64>,
@@ -6104,7 +6115,20 @@ async fn net(args: NetArgs) -> Result<()> {
         NetCommand::Proxy(args) => net_proxy(args).await,
         NetCommand::Switch(args) => {
             let listen = cfrs::vnet::proxy::ProxyListen::parse(&args.listen)?;
-            let switch = cfrs::vnet::switch::serve(listen).await?;
+            // Issue 309: a TCP switch needs a shared token.
+            let token =
+                cfrs::vnet::switch::token(args.switch_token_file.as_deref()).fault(Fault::Usage)?;
+            if let Some(token) = &token {
+                cfrs::report::hide(token);
+            }
+            if matches!(listen, cfrs::vnet::proxy::ProxyListen::Tcp(_)) && token.is_none() {
+                return Err(anyhow::anyhow!(
+                    "a TCP switch needs a shared token: set {}, or give --switch-token-file",
+                    cfrs::vnet::switch::TOKEN_VARIABLE
+                ))
+                .fault(Fault::Usage);
+            }
+            let switch = cfrs::vnet::switch::serve(listen, token).await?;
             // Issue 300: the bound address (a TCP port 0 gives the port).
             println!("cfrs: switch   {}", switch.listen);
             cfrs::detach::ready(listen_doc(&switch.listen));
@@ -6186,8 +6210,21 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
             let switch = ProxyListen::parse(switch)
                 .context("--switch")
                 .fault(Fault::Usage)?;
+            // Issue 309: a TCP switch needs its shared token.
+            let token =
+                cfrs::vnet::switch::token(args.switch_token_file.as_deref()).fault(Fault::Usage)?;
+            if let Some(token) = &token {
+                cfrs::report::hide(token);
+            }
+            if matches!(switch, ProxyListen::Tcp(_)) && token.is_none() {
+                return Err(anyhow::anyhow!(
+                    "a TCP switch needs its token: set {}, or give --switch-token-file",
+                    cfrs::vnet::switch::TOKEN_VARIABLE
+                ))
+                .fault(Fault::Usage);
+            }
             _link = Some(
-                cfrs::vnet::switch::attach(&net, &switch, faults)
+                cfrs::vnet::switch::attach(&net, &switch, faults, token.as_deref())
                     .await
                     .fault(Fault::Unavailable)?,
             );

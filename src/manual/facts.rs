@@ -273,6 +273,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The printed environment adds the shim in front of the current value.",
     },
     EnvVar {
+        names: &["CFRS_SWITCH_TOKEN"],
+        used_by: "net switch, net proxy --switch",
+        meaning: "The shared token of a TCP switch, when --switch-token-file is not given. net switch --listen tcp://... needs it (else exit 64), and each TCP peer sends it first; a peer with no token or a wrong one is closed. A unix switch needs no token: it takes the same user only.",
+    },
+    EnvVar {
         names: &["CFRSNET_SHIM", "CFRSSOCKS_SHIM"],
         used_by: "net shim, net socksify",
         meaning: "The path of a shim that is already built. cfrs uses it instead of a build.",
@@ -472,6 +477,10 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         command: "cfrs net proxy --forward 10.66.0.2:8080=unix:/run/app.sock",
         meaning: "A virtual address for a real service.",
+    },
+    Example {
+        command: "cfrs net switch --listen tcp://127.0.0.1:7000 --switch-token-file /run/secrets/switch",
+        meaning: "A switch on TCP. Each stack gives the same token: --switch-token-file, or CFRS_SWITCH_TOKEN.",
     },
     Example {
         command: "cfrs status",
