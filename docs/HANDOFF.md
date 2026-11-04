@@ -23,7 +23,7 @@ Fixed on `main` (close each issue with the commit and a green CI run as
 evidence; none is closed yet unless the issue says so):
 
 * Packaging and docs: #211 (exclude list), #212, #213, #214 (except
-  `share.rs` fetch_update if the share batch is not merged), #215, #216,
+  share.rs: a compare_exchange loop), #215, #216,
   #219, #220, #221, #223, #245, #246, #256, #257, #258. #222 and #224
   are steps of the stable release (`docs/maintenance.md`, Release).
 * Update and install: #227, #236, #247, #270, #275.

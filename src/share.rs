@@ -14,6 +14,34 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// `fetch_update` of an atomic with a loop of `compare_exchange_weak`
+/// (#214: `fetch_update` is deprecated in a later Rust; `try_update`
+/// needs a newer Rust than the MSRV). Gives the old value, or `Err` with
+/// the value when `f` gives `None`.
+macro_rules! update_atomic {
+    ($atomic:expr, $f:expr) => {{
+        let atomic = $atomic;
+        let f = $f;
+        let mut now = atomic.load(Ordering::SeqCst);
+        loop {
+            match f(now) {
+                None => break Err(now),
+                Some(next) => {
+                    match atomic.compare_exchange_weak(
+                        now,
+                        next,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(old) => break Ok(old),
+                        Err(seen) => now = seen,
+                    }
+                }
+            }
+        }
+    }};
+}
+
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
@@ -486,13 +514,11 @@ impl Staging<'_> {
     /// Take `n` bytes of the session total, or say no.
     fn reserve_bytes(&mut self, n: u64) -> bool {
         let max = self.state.max_total;
-        let ok = self
-            .state
-            .used_bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(n).filter(|t| *t <= max)
-            })
-            .is_ok();
+        let used_bytes = &self.state.used_bytes;
+        let ok = update_atomic!(used_bytes, |used: u64| used
+            .checked_add(n)
+            .filter(|t| *t <= max))
+        .is_ok();
         if ok {
             self.bytes += n;
         }
@@ -688,11 +714,8 @@ async fn upload_receive(
         let name = sanitize_filename(&original);
         // Reserve a slot of the file limit first: two uploads at the same
         // time cannot both take the last one.
-        let reserved = state
-            .used_files
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < state.max_files).then_some(n + 1)
-            });
+        let used_files = &state.used_files;
+        let reserved = update_atomic!(used_files, |n| (n < state.max_files).then_some(n + 1));
         if reserved.is_err() {
             return refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,

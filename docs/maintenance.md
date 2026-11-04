@@ -245,6 +245,6 @@ Rules that the tests check:
   an ECH config.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.
-* **`AtomicU64::fetch_update`** (`src/share.rs`, `src/warp/live.rs`): Rust
-  deprecates it in a later release. `try_update` needs a newer Rust than
-  the MSRV (1.89). Change it when the MSRV moves.
+* **`try_update`**: `src/share.rs` uses a loop of `compare_exchange_weak`
+  (macro `update_atomic!`) in place of the deprecated `fetch_update`
+  (#214). Use `try_update` when the MSRV has it as a stable API.
