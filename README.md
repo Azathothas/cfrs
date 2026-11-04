@@ -1033,8 +1033,10 @@ cfrs autostart remove web
 Then a table of the legs `quic`, `http2`, `quic+warp` and `http2+relay`
 (TCP and TLS to the relay; the relay protocol is not tried), with the
 reason for each leg that cannot work, and the roads: `direct` (quic or
-http2), `warp` (quic+warp) and `relay` (http2+relay). Exit 0: at least one
-leg can work. Exit 1: none can. `--json` gives one document; `--samples` and `--timeout`
+http2), `warp` (quic+warp) and `relay` (http2+relay). The last line,
+`next:`, gives the step to take: the `cfrs tunnel` command for the legs
+that work, the clock to set, or the report for an issue (`next` in
+`--json`). Exit 0: at least one leg can work. Exit 1: none can. `--json` gives one document; `--samples` and `--timeout`
 make it shorter.
 
 ```sh

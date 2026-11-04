@@ -347,6 +347,7 @@ impl Report {
                 "detail": self.udp.1.detail(),
             },
             "names": self.names,
+            "next": self.next(),
             "legs": self.legs.iter().map(|l| json!({
                 "leg": l.name,
                 "verdict": l.verdict.name(),
@@ -435,7 +436,31 @@ impl Report {
             "\ncfrs doctor: {can} of {} legs can work on this host\n",
             self.legs.len()
         ));
+        out.push_str(&format!("next: {}\n", self.next()));
         out
+    }
+
+    /// The step to take now (E5): the command that uses a leg that can
+    /// work, else what to look at first.
+    pub fn next(&self) -> String {
+        if self.clock.verdict == Verdict::Refused {
+            // The detail names the fix (timedatectl, ntpdate).
+            return self.clock.detail.clone();
+        }
+        let ok = |name: &str| {
+            self.legs
+                .iter()
+                .any(|l| l.name == name && l.verdict == Verdict::Ok)
+        };
+        let url = "--url http://localhost:8080";
+        if ok("quic") || ok("http2") || ok("quic+warp") {
+            // --transport auto tries quic, http2 and quic+warp in turn.
+            format!("cfrs tunnel {url} (the default legs work here)")
+        } else if ok("http2+relay") {
+            format!("cfrs tunnel --transport relay {url} (only the relay works here)")
+        } else {
+            "no leg works: read the proxy and path lines above, then cfrs bug-report --doctor for an issue".to_string()
+        }
     }
 }
 
@@ -1225,6 +1250,24 @@ mod tests {
         let json = report.to_json();
         assert_eq!(json["roads"][2]["road"], "relay");
         assert!(report.text().contains("roads\n  direct"));
+
+        // E5: the last line names the step to take.
+        assert!(report.text().ends_with(
+            "next: cfrs tunnel --url http://localhost:8080 (the default legs work here)\n"
+        ));
+        assert_eq!(json["next"], report.next());
+        let mut relay_only = report.clone();
+        relay_only.legs = vec![
+            leg("http2", Verdict::Refused),
+            leg("http2+relay", Verdict::Ok),
+        ];
+        assert!(relay_only.next().contains("--transport relay"));
+        let mut none = report.clone();
+        none.legs = vec![leg("http2", Verdict::Refused)];
+        assert!(none.next().contains("cfrs bug-report --doctor"));
+        let mut clock = report.clone();
+        clock.clock = clock_of(1000, 100, "api.example");
+        assert!(clock.next().contains("set the clock"), "{}", clock.next());
     }
 
     #[test]
