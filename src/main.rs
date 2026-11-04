@@ -1318,7 +1318,52 @@ fn top_command() -> clap::Command {
         "{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{START_HERE}\n\n{}Options:\n{{options}}{{after-help}}",
         grouped_commands(&cmd)
     );
-    cmd.help_template(template)
+    let root = Cli::command();
+    with_examples(cmd.help_template(template), "cfrs", &root)
+}
+
+/// The command path of an example: `cfrs`, then each word that names a
+/// subcommand (`cfrs warp proxy -r` is `cfrs warp proxy`).
+fn example_path(cmd: &clap::Command, line: &str) -> String {
+    let mut path = String::from("cfrs");
+    let mut at = cmd;
+    for word in line.split_whitespace().skip(1) {
+        match at.find_subcommand(word) {
+            Some(sub) => {
+                path.push(' ');
+                path.push_str(word);
+                at = sub;
+            }
+            None => break,
+        }
+    }
+    path
+}
+
+/// E7: the examples of `cfrs man examples` in the help of their command
+/// (`cfrs tunnel --help`), from the one table of the manual.
+fn with_examples(cmd: clap::Command, path: &str, root: &clap::Command) -> clap::Command {
+    let examples: Vec<&cfrs::manual::facts::Example> = cfrs::manual::facts::EXAMPLES
+        .iter()
+        .filter(|e| path != "cfrs" && example_path(root, e.command) == path)
+        .collect();
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect();
+    let mut cmd = cmd;
+    for name in names {
+        let sub_path = format!("{path} {name}");
+        cmd = cmd.mut_subcommand(&name, |sub| with_examples(sub, &sub_path, root));
+    }
+    if examples.is_empty() {
+        return cmd;
+    }
+    let mut text = String::from("Examples:");
+    for e in examples {
+        text.push_str(&format!("\n  {}\n      {}", e.command, e.meaning));
+    }
+    cmd.after_help(text)
 }
 
 /// The lines after a usage error (E8, E10): a word that is no command but
@@ -6228,6 +6273,43 @@ mod tests {
             "{hints:?}"
         );
         assert_eq!(hints.len(), 1, "{hints:?}");
+    }
+
+    /// E7: an example is in the help of its command.
+    #[test]
+    fn the_help_of_a_command_has_its_examples() {
+        let help = |path: &[&str]| -> String {
+            let mut cmd = top_command();
+            for name in path {
+                cmd = cmd.find_subcommand(name).unwrap().clone();
+            }
+            cmd.render_long_help().to_string()
+        };
+        let tunnel = help(&["tunnel"]);
+        assert!(tunnel.contains("Examples:"), "{tunnel}");
+        assert!(
+            tunnel.contains("cfrs tunnel --url http://127.0.0.1:8080"),
+            "{tunnel}"
+        );
+        assert!(!tunnel.contains("cfrs warp"), "{tunnel}");
+        let node = help(&["relay", "node"]);
+        assert!(node.contains("cfrs relay node --to 127.0.0.1:22"), "{node}");
+        assert_eq!(
+            example_path(&Cli::command(), "cfrs warp proxy -r 1080"),
+            "cfrs warp proxy"
+        );
+        // Each example belongs to a command (not to cfrs alone).
+        for e in cfrs::manual::facts::EXAMPLES
+            .iter()
+            .filter(|e| e.command.starts_with("cfrs "))
+        {
+            assert_ne!(
+                example_path(&Cli::command(), e.command),
+                "cfrs",
+                "{}",
+                e.command
+            );
+        }
     }
 
     /// E8: a word that is no command names the command for it.

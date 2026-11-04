@@ -370,6 +370,30 @@ pub struct Example {
 /// the tests of `main.rs`.
 pub const EXAMPLES: &[Example] = &[
     Example {
+        command: "cfrs doctor",
+        meaning: "Test the path from this host to the edge; the last line names the step to take.",
+    },
+    Example {
+        command: "cfrs agent up",
+        meaning: "In a sandbox: test what works, start WARP when it is needed, and print the commands to use.",
+    },
+    Example {
+        command: "cfrs tunnel --url http://127.0.0.1:8080 --detach",
+        meaning: "A quick tunnel in the background: one JSON document with the URL, then exit 0.",
+    },
+    Example {
+        command: "cfrs ps --json",
+        meaning: "The instances that run in the background, as one JSON document.",
+    },
+    Example {
+        command: "cfrs relay pair",
+        meaning: "Ask the relay for a pair: a name, and the tokens of the node and of the operator.",
+    },
+    Example {
+        command: "cfrs relay node --to 127.0.0.1:22",
+        meaning: "Give the SSH server of this host to the operators of the pair, through the relay.",
+    },
+    Example {
         command: "cfrs update --check",
         meaning: "Say whether a newer release exists. cfrs update installs it after it checks the cosign signature and the SHA-256.",
     },

@@ -130,7 +130,31 @@ pub fn command(manual: &Manual, c: &CommandPage) -> String {
             8,
         ));
     }
+    let own: Vec<_> = manual
+        .examples
+        .iter()
+        .filter(|e| !c.path.is_empty() && example_of(e.command, c))
+        .collect();
+    if !own.is_empty() {
+        out.push('\n');
+        out.push_str(&fill("Examples:", 8));
+        for e in own {
+            out.push_str(&fill(e.meaning, 8));
+            out.push_str(&fill(&format!("$ {}", e.command), 12));
+        }
+    }
     out
+}
+
+/// Whether the example `line` is of the page `c`: its words after `cfrs`
+/// are the path of `c`, and the next word is no subcommand of `c`.
+fn example_of(line: &str, c: &CommandPage) -> bool {
+    let words: Vec<&str> = line.split_whitespace().skip(1).collect();
+    words.len() >= c.path.len()
+        && words.iter().zip(&c.path).all(|(w, p)| w == p)
+        && words
+            .get(c.path.len())
+            .is_none_or(|next| !c.subcommands.iter().any(|s| s == next))
 }
 
 /// The section `ENVIRONMENT`.
