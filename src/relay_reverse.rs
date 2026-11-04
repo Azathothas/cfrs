@@ -304,6 +304,117 @@ pub async fn node(relay: &Relay, pair: &Pair, target: &Target) -> Result<()> {
     }
 }
 
+/// The times before the expiry of a pair at which the node warns, the
+/// longest first (podssh).
+pub const WARN_BEFORE: [Duration; 3] = [
+    Duration::from_secs(24 * 3600),
+    Duration::from_secs(6 * 3600),
+    Duration::from_secs(3600),
+];
+
+/// `5 h 59 min`, `59 min`, or `less than a minute`.
+pub fn left_words(left: Duration) -> String {
+    let minutes = left.as_secs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "less than a minute".to_string(),
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+/// The part of [`WARN_BEFORE`] that `left` is in: the index of the shortest
+/// time that is not shorter than `left`; none more than 24 h before.
+fn band(left: Duration) -> Option<usize> {
+    WARN_BEFORE.iter().rposition(|before| *before >= left)
+}
+
+/// The warning for `pair` with `left` time. `follow`: the node takes the
+/// next stored pair at the expiry.
+pub fn expiry_line(pair: &Pair, left: Duration, follow: bool) -> String {
+    let when = format!(
+        "the pair {} expires in {}, at {}",
+        pair.name,
+        left_words(left),
+        crate::warp::register::utc_minutes(pair.expires / 1000)
+    );
+    if follow {
+        format!("{when}; make the next pair now (cfrs relay pair): this node takes it at the expiry, and its operators need its name and connect token")
+    } else {
+        format!("{when}; the next pair needs cfrs relay pair and a new start of the node (a node with no pair name takes the next pair at the expiry)")
+    }
+}
+
+/// Warn for `pair` at each part of [`WARN_BEFORE`] once; the first at
+/// once when the node starts within it. Ends at the expiry.
+async fn warn_expiry(pair: Pair, follow: bool) {
+    let mut said: Option<usize> = None;
+    loop {
+        let left = pair.left();
+        if left.is_zero() {
+            return;
+        }
+        if let Some(part) = band(left) {
+            if said.is_none_or(|before| part > before) {
+                tracing::warn!("{}", expiry_line(&pair, left, follow));
+                said = Some(part);
+            }
+        }
+        // Look again at the next time of WARN_BEFORE, at most each 10 min
+        // (the clock of the host can jump).
+        let edge = WARN_BEFORE
+            .iter()
+            .find(|before| **before < left)
+            .map(|before| left - *before);
+        let wait = edge
+            .unwrap_or(Duration::from_secs(600))
+            .min(Duration::from_secs(600))
+            .max(Duration::from_secs(1));
+        tokio::time::sleep(wait.min(left)).await;
+    }
+}
+
+/// The stored pair that the node takes at the expiry of `ending`: one
+/// that expires later and has time left.
+pub fn next_pair(stored: Option<Pair>, ending: &Pair) -> Option<Pair> {
+    stored.filter(|next| next.expires > ending.expires && !next.left().is_zero())
+}
+
+/// Run the node of `pair`, with the expiry warnings. With `follow` (the
+/// pair directory, when no pair name was given), the node takes the next
+/// stored pair at the expiry, with no new start.
+pub async fn run_node(follow: Option<&Path>, pair: Pair, target: &Target) -> Result<()> {
+    let mut pair = pair;
+    loop {
+        let relay = Relay::single(&pair.relay, None)?;
+        let warnings = tokio::spawn(warn_expiry(pair.clone(), follow.is_some()));
+        let result = tokio::select! {
+            result = node(&relay, &pair, target) => result,
+            _ = tokio::time::sleep(pair.left()) => Err(fault(
+                Fault::Config,
+                anyhow::anyhow!("the pair {} expired; make a new pair (cfrs relay pair)", pair.name),
+            )),
+        };
+        warnings.abort();
+        let expired = pair.left() < Duration::from_secs(5);
+        let next = match follow {
+            Some(dir) if result.is_err() && expired => next_pair(load(dir, None).ok(), &pair),
+            _ => None,
+        };
+        let Some(next) = next else {
+            return result;
+        };
+        crate::report::hide(&next.node_token);
+        tracing::warn!(
+            old = %pair.name,
+            new = %next.name,
+            expires = %crate::warp::register::utc_minutes(next.expires / 1000),
+            "the pair expired; the node takes the next stored pair"
+        );
+        pair = next;
+    }
+}
+
 /// The meaning of a close of the node socket by the relay.
 fn node_close(code: u16, reason: &str) -> NodeEnd {
     let text = format!("{code} {reason}");
@@ -875,6 +986,62 @@ mod tests {
         assert!(valid_id("0123456789abcdef0123456789abcdef"));
         assert!(!valid_id("0123456789ABCDEF0123456789abcdef"));
         assert!(!valid_id("0123"));
+    }
+
+    #[test]
+    fn the_expiry_words_and_parts() {
+        assert_eq!(left_words(Duration::from_secs(30)), "less than a minute");
+        assert_eq!(left_words(Duration::from_secs(59 * 60 + 59)), "59 min");
+        assert_eq!(left_words(Duration::from_secs(6 * 3600)), "6 h");
+        assert_eq!(
+            left_words(Duration::from_secs(5 * 3600 + 59 * 60)),
+            "5 h 59 min"
+        );
+        assert_eq!(band(Duration::from_secs(25 * 3600)), None);
+        assert_eq!(band(Duration::from_secs(24 * 3600)), Some(0));
+        assert_eq!(band(Duration::from_secs(7 * 3600)), Some(0));
+        assert_eq!(band(Duration::from_secs(6 * 3600)), Some(1));
+        assert_eq!(band(Duration::from_secs(59 * 60)), Some(2));
+        let pair = test_pair("abc", 0);
+        let line = expiry_line(&pair, Duration::from_secs(3600), true);
+        assert!(
+            line.contains("the pair abc expires in 1 h, at 1970-01-01 00:00 UTC"),
+            "{line}"
+        );
+        assert!(line.contains("takes it at the expiry"), "{line}");
+        let line = expiry_line(&pair, Duration::from_secs(3600), false);
+        assert!(line.contains("a new start of the node"), "{line}");
+    }
+
+    #[test]
+    fn the_next_pair_expires_later_and_has_time_left() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let ending = test_pair("old", now + 1000);
+        let later = test_pair("new", now + 3_600_000);
+        assert_eq!(next_pair(Some(later.clone()), &ending).unwrap().name, "new");
+        assert!(
+            next_pair(Some(ending.clone()), &ending).is_none(),
+            "the same pair"
+        );
+        assert!(
+            next_pair(Some(test_pair("gone", 1)), &test_pair("x", 0)).is_none(),
+            "expired"
+        );
+        assert!(next_pair(None, &ending).is_none());
+    }
+
+    fn test_pair(name: &str, expires: u64) -> Pair {
+        Pair {
+            name: name.into(),
+            node_token: "n".into(),
+            connect_token: "c".into(),
+            stop_token: String::new(),
+            expires,
+            relay: "https://relay.example".into(),
+        }
     }
 
     /// No frame goes before `ready` or after a `close`, and each session

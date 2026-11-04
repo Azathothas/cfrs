@@ -3027,11 +3027,14 @@ async fn relay(args: RelayArgs) -> Result<()> {
         }
         RelayCommand::Node { pair, to, .. } => {
             let target = reverse::Target::parse(&to).fault(Fault::Usage)?;
+            // With no pair name, the node takes the next stored pair at
+            // the expiry.
+            let follow = pair.is_none().then_some(dir.as_path());
             let pair = reverse::load(&dir, pair.as_deref()).fault(Fault::Usage)?;
             cfrs::report::hide(&pair.node_token);
-            let relay = cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+            cfrs::ws_relay::Relay::single(&pair.relay, None).fault(Fault::Config)?;
             tokio::select! {
-                result = reverse::node(&relay, &pair, &target) => result,
+                result = reverse::run_node(follow, pair, &target) => result,
                 _ = shutdown_signal() => Ok(()),
             }
         }

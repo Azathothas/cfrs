@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cfrs::relay_reverse::{connect, node, Pair, Target};
+use cfrs::relay_reverse::{connect, node, run_node, save, Pair, Target};
 use cfrs::ws_relay::Relay;
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -63,7 +63,7 @@ async fn serve(socket: tokio::net::TcpStream, state: Arc<Mutex<State>>, id: Stri
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let path = request.uri().path().to_string();
-        let good = (path == format!("/v1/node/{NAME}") && token == "node")
+        let good = (path.starts_with("/v1/node/") && token == "node")
             || (path == format!("/v1/connect/{NAME}") && token == "connect");
         *seen.lock().unwrap() = path;
         if good {
@@ -499,4 +499,58 @@ async fn a_local_side_that_does_not_read_stops_no_other_session() {
         .expect("session a is closed")
         .unwrap()
         .unwrap();
+}
+
+// podssh: at the expiry, a node with no pair name takes the next stored
+// pair, with no new start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_takes_the_next_pair_at_the_expiry() {
+    let (url, state) = fake_relay(None).await;
+    let target = Target::parse(&echo().await).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut ending = pair(&url);
+    ending.expires = now + 3000;
+    save(&ending, dir.path()).unwrap();
+    let path = dir.path().to_path_buf();
+    let node = tokio::spawn(async move { run_node(Some(&path), ending, &target).await });
+    wait_for_node(&state, 1).await;
+    // The next pair is made while the node runs.
+    let mut next = pair(&url);
+    next.name = "testnode2".into();
+    save(&next, dir.path()).unwrap();
+    for _ in 0..400 {
+        if state.lock().unwrap().node_sockets >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        state.lock().unwrap().node_sockets >= 2,
+        "the node opened the next pair"
+    );
+    assert!(!node.is_finished(), "the node goes on");
+    node.abort();
+}
+
+// A node of a named pair ends at the expiry (exit 78).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_named_node_ends_at_the_expiry() {
+    let (url, _state) = fake_relay(None).await;
+    let target = Target::parse(&echo().await).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut ending = pair(&url);
+    ending.expires = now + 2000;
+    let err = tokio::time::timeout(Duration::from_secs(20), run_node(None, ending, &target))
+        .await
+        .expect("the node ends")
+        .unwrap_err();
+    assert_eq!(cfrs::exit::code_of(&err), 78, "{err:#}");
+    assert!(format!("{err:#}").contains("expired"), "{err:#}");
 }

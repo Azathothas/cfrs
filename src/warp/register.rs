@@ -276,6 +276,12 @@ fn now_rfc3339_millis() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z")
 }
 
+/// `YYYY-MM-DD HH:MM UTC` of Unix seconds.
+pub(crate) fn utc_minutes(secs: u64) -> String {
+    let (y, mo, d, h, mi, _) = civil_from_unix(secs);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02} UTC")
+}
+
 /// Convert Unix seconds to a civil UTC date, so the crate needs no time library.
 fn civil_from_unix(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     let days = (secs / 86_400) as i64;
