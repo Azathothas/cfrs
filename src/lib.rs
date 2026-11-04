@@ -47,6 +47,34 @@ macro_rules! eprintln {
     }};
 }
 
+/// `fetch_update` of an atomic with a loop of `compare_exchange_weak`
+/// (#214: `fetch_update` is deprecated in a later Rust; `try_update`
+/// needs a newer Rust than the MSRV). Gives the old value, or `Err` with
+/// the value when `f` gives `None`.
+macro_rules! update_atomic {
+    ($atomic:expr, $f:expr) => {{
+        let atomic = $atomic;
+        let f = $f;
+        let mut now = atomic.load(::std::sync::atomic::Ordering::SeqCst);
+        loop {
+            match f(now) {
+                None => break Err(now),
+                Some(next) => {
+                    match atomic.compare_exchange_weak(
+                        now,
+                        next,
+                        ::std::sync::atomic::Ordering::SeqCst,
+                        ::std::sync::atomic::Ordering::SeqCst,
+                    ) {
+                        Ok(old) => break Ok(old),
+                        Err(seen) => now = seen,
+                    }
+                }
+            }
+        }
+    }};
+}
+
 pub mod agent;
 pub mod autostart;
 pub mod bug_report;

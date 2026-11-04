@@ -35,6 +35,10 @@ form of the rulings that apply to each session.
 | 2026-11-04 | pod seccomp UDP (#285) | The seccomp backend intercepts `recvfrom` and `recvmsg` on its sockets, so a UDP reader sees the real source address. A read of a connected socket stays direct. |
 | 2026-11-04 | vnet sockets (#288, #289) | The unix sockets of the shim and the switch take the same user only (`SO_PEERCRED`, `SO_PASSCRED`). The switch drops a frame whose source address is not of its peer. The TCP listener of the switch needs a shared token (`CFRS_SWITCH_TOKEN` or a file). Breaking for a TCP switch with no token. |
 | 2026-11-04 | QA findings | File each valid finding of the QA archive on GitHub; close the ones that are fixed on `main` at once, with the commit as evidence. |
+| 2026-11-04 | Serial leg bound (#273 item 2) | The bound of a serial leg attempt comes from the budgets of the leg: the handshake and the registration with its retries. It is not a fixed 8 s. |
+| 2026-11-04 | `path:` (#269 item 3) | An ingress `path:` is a regular expression, as in cloudflared. Add the `regex` dependency. |
+| 2026-11-04 | Library `StaticServer` (#276 item 1) | `StaticServer` streams the body of a file of any size. The response type gets a body reader. Breaking for the library. |
+| 2026-11-04 | Deferred issues | Keep #89, #140, #149, #151, #161, #222 and #224 open, each with a status comment. Close each other issue when it is fixed. |
 
 ## Superseded
 

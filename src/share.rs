@@ -14,34 +14,6 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// `fetch_update` of an atomic with a loop of `compare_exchange_weak`
-/// (#214: `fetch_update` is deprecated in a later Rust; `try_update`
-/// needs a newer Rust than the MSRV). Gives the old value, or `Err` with
-/// the value when `f` gives `None`.
-macro_rules! update_atomic {
-    ($atomic:expr, $f:expr) => {{
-        let atomic = $atomic;
-        let f = $f;
-        let mut now = atomic.load(Ordering::SeqCst);
-        loop {
-            match f(now) {
-                None => break Err(now),
-                Some(next) => {
-                    match atomic.compare_exchange_weak(
-                        now,
-                        next,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    ) {
-                        Ok(old) => break Ok(old),
-                        Err(seen) => now = seen,
-                    }
-                }
-            }
-        }
-    }};
-}
-
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
@@ -594,17 +566,17 @@ fn refuse(status: StatusCode, message: String) -> Response {
 /// An error is the response to send.
 async fn next_chunk(
     field: &mut axum::extract::multipart::Field<'_>,
-) -> Result<Option<bytes::Bytes>, Response> {
+) -> Result<Option<bytes::Bytes>, Box<Response>> {
     match tokio::time::timeout(CHUNK_LIMIT, field.chunk()).await {
         Ok(Ok(chunk)) => Ok(chunk),
-        Ok(Err(err)) => Err(refuse(
+        Ok(Err(err)) => Err(Box::new(refuse(
             StatusCode::BAD_REQUEST,
             format!("upload aborted: {err}"),
-        )),
-        Err(_) => Err(refuse(
+        ))),
+        Err(_) => Err(Box::new(refuse(
             StatusCode::REQUEST_TIMEOUT,
             format!("no data for {} s", CHUNK_LIMIT.as_secs()),
-        )),
+        ))),
     }
 }
 
@@ -700,7 +672,7 @@ async fn upload_receive(
                 let chunk = match next_chunk(&mut field).await {
                     Ok(Some(chunk)) => chunk,
                     Ok(None) => break,
-                    Err(response) => return response,
+                    Err(response) => return *response,
                 };
                 state.control.touch();
                 request_bytes += chunk.len() as u64;
@@ -748,7 +720,7 @@ async fn upload_receive(
             let chunk = match next_chunk(&mut field).await {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
-                Err(response) => return response,
+                Err(response) => return *response,
             };
             // A long upload is activity: --idle-secs does not stop it.
             state.control.touch();

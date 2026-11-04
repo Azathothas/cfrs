@@ -40,7 +40,7 @@ impl StaticDir {
     /// Answer one request.
     ///
     /// Each file that is sent (the request path, a directory index and the
-    /// SPA index) goes through [`StaticDir::resolve`]: the root check, the
+    /// SPA index) goes through `StaticDir::resolve`: the root check, the
     /// dotfile rule and the file-type check apply to each one.
     pub fn respond<W: ResponseWriter>(
         &self,
