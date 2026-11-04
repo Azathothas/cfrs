@@ -18,7 +18,7 @@
 //! The relay authenticates tokens, not persons: give the connect token only
 //! over a channel that you trust.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -356,8 +356,11 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
     tracing::info!(name = %pair.name, %target, "the node is connected to the relay");
     crate::detach::ready(node_ready(pair, target));
     let (mut sink, mut stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<Message>(256);
-    let mut sessions: HashMap<String, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let (out_tx, mut out_rx) = mpsc::channel::<Out>(256);
+    // The data queue of each session, and its task.
+    let mut sessions: HashMap<String, (mpsc::Sender<Vec<u8>>, tokio::task::AbortHandle)> =
+        HashMap::new();
+    let mut gate = Gate::default();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
     loop {
@@ -373,12 +376,18 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
                     let id = doc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     match kind {
                         "open" if valid_id(&id) => {
-                            let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
-                            sessions.insert(id.clone(), data_tx);
-                            tokio::spawn(session(target.clone(), id, data_rx, out_tx.clone()));
+                            if !gate.opened(&id) {
+                                tracing::debug!(%id, "the relay opened an id that is open");
+                                continue;
+                            }
+                            let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(SESSION_QUEUE);
+                            let task = tokio::spawn(session(target.clone(), id.clone(), data_rx, out_tx.clone()));
+                            sessions.insert(id, (data_tx, task.abort_handle()));
                         }
                         "close" => {
-                            // Dropping the sender ends the session task.
+                            // Dropping the sender ends the session task. Its
+                            // frames that are queued do not go out.
+                            gate.closed_by_relay(&id);
                             sessions.remove(&id);
                         }
                         "hello" => tracing::debug!("hello from the relay"),
@@ -392,9 +401,25 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
                     let Ok(id) = std::str::from_utf8(&data[..ID_LEN]) else {
                         continue;
                     };
-                    if let Some(tx) = sessions.get(id) {
-                        if tx.send(data[ID_LEN..].to_vec()).await.is_err() {
-                            sessions.remove(id);
+                    let Some((tx, _)) = sessions.get(id) else { continue };
+                    // The reader never waits for one session: a local side
+                    // that does not read ends its own session.
+                    let reason = match tx.try_send(data[ID_LEN..].to_vec()) {
+                        Ok(()) => continue,
+                        Err(mpsc::error::TrySendError::Full(_)) => "the local side does not read",
+                        Err(mpsc::error::TrySendError::Closed(_)) => "the session ended",
+                    };
+                    let id = id.to_string();
+                    if let Some((_, task)) = sessions.remove(&id) {
+                        // A local side that does not read can hold the task
+                        // in a write.
+                        task.abort();
+                    }
+                    tracing::info!(%id, reason, "a session is closed");
+                    let end = Out::end(&id, "close", Some(reason));
+                    if gate.pass(&end) {
+                        if let Err(err) = sink.send(end.message).await {
+                            return Ok(NodeEnd::Again(format!("{err}")));
                         }
                     }
                 }
@@ -406,8 +431,14 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
                 }
                 Some(Ok(_)) => {}
             },
-            Some(message) = out_rx.recv() => {
-                if let Err(err) = sink.send(message).await {
+            Some(out) = out_rx.recv() => {
+                if !gate.pass(&out) {
+                    continue;
+                }
+                if out.kind == OutKind::End {
+                    sessions.remove(&out.id);
+                }
+                if let Err(err) = sink.send(out.message).await {
                     return Ok(NodeEnd::Again(format!("{err}")));
                 }
             }
@@ -420,29 +451,112 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
     }
 }
 
+/// The frames that a session of the node can queue for one session.
+const SESSION_QUEUE: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutKind {
+    Ready,
+    Data,
+    /// `close` or `reject`: the last message of a session.
+    End,
+}
+
+/// A message of a session task to the relay.
+struct Out {
+    id: String,
+    kind: OutKind,
+    message: Message,
+}
+
+impl Out {
+    fn ready(id: &str) -> Self {
+        Self {
+            id: id.into(),
+            kind: OutKind::Ready,
+            message: control("ready", id, None),
+        }
+    }
+
+    fn data(id: &str, frame: Vec<u8>) -> Self {
+        Self {
+            id: id.into(),
+            kind: OutKind::Data,
+            message: Message::binary(frame),
+        }
+    }
+
+    fn end(id: &str, kind: &str, reason: Option<&str>) -> Self {
+        Self {
+            id: id.into(),
+            kind: OutKind::End,
+            message: control(kind, id, reason),
+        }
+    }
+}
+
+/// The state of each session on the node socket. The relay closes the
+/// whole node socket for a frame before `ready` or for an id that is not
+/// open (`1003`), so the writer sends a frame only in the correct state.
+#[derive(Default)]
+struct Gate {
+    /// Opened by the relay; no `ready` yet.
+    opening: HashSet<String>,
+    /// `ready` sent; data can go.
+    open: HashSet<String>,
+}
+
+impl Gate {
+    /// The relay opened `id`. False when `id` is open already.
+    fn opened(&mut self, id: &str) -> bool {
+        !self.open.contains(id) && self.opening.insert(id.to_string())
+    }
+
+    /// The relay closed `id`: nothing more goes for it.
+    fn closed_by_relay(&mut self, id: &str) {
+        self.opening.remove(id);
+        self.open.remove(id);
+    }
+
+    /// Whether `out` can go to the relay now.
+    fn pass(&mut self, out: &Out) -> bool {
+        match out.kind {
+            OutKind::Ready => {
+                let ok = self.opening.remove(&out.id);
+                if ok {
+                    self.open.insert(out.id.clone());
+                }
+                ok
+            }
+            OutKind::Data => self.open.contains(&out.id),
+            OutKind::End => self.opening.remove(&out.id) | self.open.remove(&out.id),
+        }
+    }
+}
+
 /// One session of the node: connect to the target, then copy bytes until
-/// one side ends.
+/// one side ends. A `close` goes at each end.
 async fn session(
     target: Target,
     id: String,
     mut data_rx: mpsc::Receiver<Vec<u8>>,
-    out: mpsc::Sender<Message>,
+    out: mpsc::Sender<Out>,
 ) {
     let io = match tokio::time::timeout(LOCAL_CONNECT, target.connect()).await {
         Ok(Ok(io)) => io,
         Ok(Err(err)) => {
             let reason = format!("{target}: {err:#}");
             tracing::info!(%id, %reason, "a session is refused");
-            let _ = out.send(control("reject", &id, Some(&reason))).await;
+            let _ = out.send(Out::end(&id, "reject", Some(&reason))).await;
             return;
         }
         Err(_) => {
             let reason = format!("{target}: no answer in {} s", LOCAL_CONNECT.as_secs());
-            let _ = out.send(control("reject", &id, Some(&reason))).await;
+            let _ = out.send(Out::end(&id, "reject", Some(&reason))).await;
             return;
         }
     };
-    if out.send(control("ready", &id, None)).await.is_err() {
+    if out.send(Out::ready(&id)).await.is_err() {
         return;
     }
     tracing::info!(%id, %target, "a session is open");
@@ -454,32 +568,35 @@ async fn session(
             let mut buf = vec![0u8; FRAME];
             loop {
                 let n = match read.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => return None,
+                    Err(err) => return Some(format!("the read of the local side failed: {err}")),
                     Ok(n) => n,
                 };
                 let mut frame = Vec::with_capacity(ID_LEN + n);
                 frame.extend_from_slice(id.as_bytes());
                 frame.extend_from_slice(&buf[..n]);
-                if out.send(Message::binary(frame)).await.is_err() {
-                    return;
+                if out.send(Out::data(&id, frame)).await.is_err() {
+                    return None;
                 }
             }
-            let _ = out.send(control("close", &id, None)).await;
         }
     };
     let to_local = async move {
         while let Some(data) = data_rx.recv().await {
-            if write.write_all(&data).await.is_err() {
-                break;
+            if let Err(err) = write.write_all(&data).await {
+                return Some(format!("the write to the local side failed: {err}"));
             }
         }
         let _ = write.shutdown().await;
+        None
     };
-    tokio::select! {
-        _ = to_relay => {}
-        _ = to_local => {}
-    }
-    tracing::info!(%id, "a session ended");
+    let reason = tokio::select! {
+        reason = to_relay => reason,
+        reason = to_local => reason,
+    };
+    // After a close of the relay, the gate drops this close.
+    let _ = out.send(Out::end(&id, "close", reason.as_deref())).await;
+    tracing::info!(%id, reason = reason.as_deref().unwrap_or("an end of the stream"), "a session ended");
 }
 
 /// The operator side: open a session to the node `name`, wait for
@@ -758,6 +875,37 @@ mod tests {
         assert!(valid_id("0123456789abcdef0123456789abcdef"));
         assert!(!valid_id("0123456789ABCDEF0123456789abcdef"));
         assert!(!valid_id("0123"));
+    }
+
+    /// No frame goes before `ready` or after a `close`, and each session
+    /// has one end.
+    #[test]
+    fn the_gate_passes_frames_in_the_correct_state() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let mut gate = Gate::default();
+        assert!(!gate.pass(&Out::data(id, vec![1])), "no data before open");
+        assert!(!gate.pass(&Out::ready(id)), "no ready before open");
+        assert!(gate.opened(id));
+        assert!(!gate.opened(id), "an open id is not opened again");
+        assert!(!gate.pass(&Out::data(id, vec![1])), "no data before ready");
+        assert!(gate.pass(&Out::ready(id)));
+        assert!(gate.pass(&Out::data(id, vec![1])));
+        assert!(gate.pass(&Out::end(id, "close", None)));
+        assert!(!gate.pass(&Out::data(id, vec![1])), "no data after close");
+        assert!(!gate.pass(&Out::end(id, "close", None)), "one close only");
+
+        // A close of the relay: the queued frames and the close of the
+        // session task do not go.
+        assert!(gate.opened(id));
+        assert!(gate.pass(&Out::ready(id)));
+        gate.closed_by_relay(id);
+        assert!(!gate.pass(&Out::data(id, vec![1])));
+        assert!(!gate.pass(&Out::end(id, "close", None)));
+
+        // A reject before ready.
+        assert!(gate.opened(id));
+        assert!(gate.pass(&Out::end(id, "reject", Some("refused"))));
+        assert!(!gate.pass(&Out::ready(id)));
     }
 
     #[test]

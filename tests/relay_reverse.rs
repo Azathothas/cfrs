@@ -442,3 +442,61 @@ async fn a_close_with_an_error_code_after_the_input_ends_is_an_error() {
         .unwrap();
     assert_eq!(out, b"part");
 }
+
+/// A TCP target: the first connection is never read (it is held open), the
+/// others are echoed.
+async fn stuck_then_echo() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let mut first = true;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            if std::mem::take(&mut first) {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(120)).await;
+                    drop(socket);
+                });
+                continue;
+            }
+            tokio::spawn(async move {
+                let (mut r, mut w) = socket.split();
+                let _ = tokio::io::copy(&mut r, &mut w).await;
+            });
+        }
+    });
+    addr
+}
+
+// podssh: a local side that does not read ends its own session. Before,
+// the node waited for its queue, and each other session of the node
+// stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_side_that_does_not_read_stops_no_other_session() {
+    let (url, state) = fake_relay(None).await;
+    let target = Target::parse(&stuck_then_echo().await).unwrap();
+    let node_relay = Relay::new(&url, None).unwrap();
+    let node_pair = pair(&url);
+    tokio::spawn(async move { node(&node_relay, &node_pair, &target).await });
+    wait_for_node(&state, 1).await;
+    let relay = Arc::new(Relay::new(&url, None).unwrap());
+    // Session A goes to the connection that is never read.
+    let flood = {
+        let relay = relay.clone();
+        tokio::spawn(async move {
+            let input = vec![7u8; 48 << 20];
+            let mut out = Vec::new();
+            connect(&relay, NAME, "connect", &input[..], &mut out).await
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Session B goes through the same node.
+    let b: Vec<u8> = (0..100_000u32).map(|i| (i % 17) as u8).collect();
+    let back = round_trip(relay.clone(), b.clone()).await;
+    assert!(back == b, "session b");
+    // The node closed session A.
+    tokio::time::timeout(Duration::from_secs(30), flood)
+        .await
+        .expect("session a is closed")
+        .unwrap()
+        .unwrap();
+}
