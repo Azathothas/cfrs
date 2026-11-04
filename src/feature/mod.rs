@@ -816,7 +816,31 @@ impl crate::util::http::ResponseWriter for BufferedResponse {
         self.body.extend_from_slice(body);
         Ok(())
     }
+
+    /// Keep the body in the buffer, up to [`MAX_BUFFERED_BODY`] bytes. A
+    /// larger body is an error of kind `FileTooLarge`, and nothing of it is
+    /// read.
+    fn body_reader(&mut self, len: u64, reader: &mut dyn io::Read) -> io::Result<()> {
+        if len > MAX_BUFFERED_BODY {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!(
+                    "a body of {len} bytes is over the buffer limit of {MAX_BUFFERED_BODY} bytes"
+                ),
+            ));
+        }
+        let start = self.body.len();
+        io::Read::read_to_end(&mut io::Read::take(reader, len), &mut self.body)?;
+        if (self.body.len() - start) as u64 != len {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(())
+    }
 }
+
+/// The largest body that a [`BufferedResponse`] keeps (issue 276). A larger
+/// file of a [`StaticServer`] gets 413.
+pub const MAX_BUFFERED_BODY: u64 = 64 * 1024 * 1024;
 
 /// Serves a `static:` or `spa:` origin in process, with the headers a
 /// tunnelled site needs.
@@ -919,8 +943,19 @@ impl StaticServer {
         // `StaticDir::respond` writes through the ResponseWriter trait, so it
         // fills the same buffer. Its own status and headers take precedence
         // because it knows which file it found; the headers added above stay.
-        self.inner.respond(req, &mut out)?;
-        Ok(out)
+        match self.inner.respond(req, &mut out) {
+            Ok(()) => Ok(out),
+            Err(e) if e.kind() == io::ErrorKind::FileTooLarge => {
+                let mut out = BufferedResponse::new();
+                for (name, value) in Self::security_headers() {
+                    out.header(name, value);
+                }
+                out.status(413);
+                out.text("413 the file is too large for this server\n")?;
+                Ok(out)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -1592,6 +1627,26 @@ mod tests {
             );
         }
         let _ = std::fs::remove_file(&secret);
+    }
+
+    // Issue 276: a file over the buffer limit gets 413; the file is not
+    // read into memory.
+    #[test]
+    fn a_file_over_the_buffer_limit_gets_413() {
+        let d = tmpdir("static-big");
+        let big = std::fs::File::create(d.join("big.bin")).expect("create");
+        big.set_len(MAX_BUFFERED_BODY + 1).expect("set_len");
+        std::fs::write(d.join("small.txt"), b"small").expect("write");
+        let origin =
+            crate::origin::Origin::parse(&format!("static:{}", d.display())).expect("parse");
+        let server = StaticServer::from_origin(&origin).expect("from origin");
+        let resp = server.respond(&req("GET", "/big.bin")).expect("respond");
+        assert_eq!(resp.status, 413);
+        assert!(resp.body.len() < 100);
+        assert_eq!(resp.header_value("x-content-type-options"), Some("nosniff"));
+        let resp = server.respond(&req("GET", "/small.txt")).expect("respond");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"small");
     }
 
     #[test]

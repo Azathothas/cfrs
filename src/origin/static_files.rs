@@ -176,15 +176,6 @@ fn send_file<W: ResponseWriter>(
         _ => return writer.status(404).text("404 not found"),
     };
 
-    let body = {
-        use std::io::Read;
-        let mut body = Vec::new();
-        match (&file).read_to_end(&mut body) {
-            Ok(_) => body,
-            Err(_) => return writer.status(403).text("403 forbidden"),
-        }
-    };
-
     let mime = content_type(path);
     // Honour a conditional request so a browser does not refetch unchanged
     // assets on every reload.
@@ -205,7 +196,13 @@ fn send_file<W: ResponseWriter>(
         }
     }
 
-    writer.status(200).header("Content-Type", mime).body(&body)
+    // Issue 276: stream the file from the open handle. The whole file is
+    // not read into memory.
+    let mut file = file;
+    writer
+        .status(200)
+        .header("Content-Type", mime)
+        .body_reader(meta.len(), &mut file)
 }
 
 /// Guess a content type from the extension.
@@ -317,6 +314,48 @@ mod tests {
             self.body.extend_from_slice(b);
             Ok(())
         }
+    }
+
+    // #276: a file is sent in chunks, not read into memory in one piece.
+    #[test]
+    fn a_file_is_sent_in_chunks() {
+        #[derive(Default)]
+        struct Chunks {
+            status: u16,
+            calls: usize,
+            largest: usize,
+            total: usize,
+        }
+        impl ResponseWriter for Chunks {
+            fn status(&mut self, code: u16) -> &mut Self {
+                self.status = code;
+                self
+            }
+            fn header(&mut self, _: &str, _: &str) -> &mut Self {
+                self
+            }
+            fn body(&mut self, b: &[u8]) -> std::io::Result<()> {
+                self.calls += 1;
+                self.largest = self.largest.max(b.len());
+                self.total += b.len();
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let size = 1024 * 1024 + 7;
+        std::fs::write(dir.path().join("big.bin"), vec![7u8; size]).unwrap();
+        let mut out = Chunks::default();
+        StaticDir::new(dir.path())
+            .respond(&req("/big.bin"), &mut out)
+            .unwrap();
+        assert_eq!(out.status, 200);
+        assert_eq!(out.total, size);
+        assert!(
+            out.largest <= crate::util::http::BODY_CHUNK,
+            "{}",
+            out.largest
+        );
+        assert!(out.calls > 1);
     }
 
     // podssh #105: a FIFO in the root is not served (a read blocks).

@@ -132,10 +132,41 @@ fn find_head_end(buf: &[u8]) -> Option<usize> {
 }
 
 /// Something that can accumulate an HTTP response.
+/// The largest chunk of [`ResponseWriter::body_reader`].
+pub const BODY_CHUNK: usize = 64 * 1024;
+
 pub trait ResponseWriter {
     fn status(&mut self, code: u16) -> &mut Self;
     fn header(&mut self, name: &str, value: &str) -> &mut Self;
     fn body(&mut self, body: &[u8]) -> io::Result<()>;
+
+    /// Finish with a body of `len` bytes that `reader` gives.
+    ///
+    /// The default copies the body in chunks of at most [`BODY_CHUNK`]
+    /// bytes, with one call of [`ResponseWriter::body`] for each chunk (one
+    /// call with an empty chunk for `len` 0). It does not keep the whole
+    /// body in memory. A writer for which `body` finishes the response must
+    /// override this method. A reader that ends before `len` bytes gives
+    /// an `UnexpectedEof` error.
+    fn body_reader(&mut self, len: u64, reader: &mut dyn io::Read) -> io::Result<()> {
+        if len == 0 {
+            return self.body(&[]);
+        }
+        let mut buf = vec![0u8; BODY_CHUNK.min(len as usize)];
+        let mut left = len;
+        while left > 0 {
+            let want = buf.len().min(left as usize);
+            let n = match reader.read(&mut buf[..want]) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            self.body(&buf[..n])?;
+            left -= n as u64;
+        }
+        Ok(())
+    }
 
     /// Finish the head with no body.
     fn raw_head(&mut self, code: u16, phrase: &str, extra: &[(String, String)]) -> io::Result<()> {
