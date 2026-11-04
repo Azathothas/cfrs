@@ -469,7 +469,8 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 * An uploaded file has mode 0600 (only the user of cfrs can read it),
   with each umask.
 * One upload request holds at most `--max-request` bytes (default
-  100000000, the limit of the Cloudflare edge for one request body). A
+  100000000, the limit of the Cloudflare edge for one request body). Each
+  field of the request counts, also a field with no file. A
   larger `Content-Length` gets 413 and saves nothing: cfrs reads the body
   and drops it first (until its end, a pause of 5 s, or 120 s), because an
   answer before the end of the upload does not reach the visitor reliably

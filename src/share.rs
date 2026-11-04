@@ -329,6 +329,9 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
         // route, the multipart stream ended at the limit, the rest of a
         // refused body was not read, and the edge gave 500 over HTTP/2 in
         // place of the 413. The handler counts the bytes of the request.
+        // Issue 232: this layer removes each body limit of axum on the
+        // route. The counter of the handler is the only limit: it counts
+        // each field, with or with no file name.
         .route(
             "/s/{token}/upload",
             post(upload_receive).layer(DefaultBodyLimit::disable()),
@@ -526,6 +529,24 @@ fn refuse(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
+/// The next chunk of a multipart field, with the time limit [`CHUNK_LIMIT`].
+/// An error is the response to send.
+async fn next_chunk(
+    field: &mut axum::extract::multipart::Field<'_>,
+) -> Result<Option<bytes::Bytes>, Response> {
+    match tokio::time::timeout(CHUNK_LIMIT, field.chunk()).await {
+        Ok(Ok(chunk)) => Ok(chunk),
+        Ok(Err(err)) => Err(refuse(
+            StatusCode::BAD_REQUEST,
+            format!("upload aborted: {err}"),
+        )),
+        Err(_) => Err(refuse(
+            StatusCode::REQUEST_TIMEOUT,
+            format!("no data for {} s", CHUNK_LIMIT.as_secs()),
+        )),
+    }
+}
+
 /// The longest pause of a body that is read and dropped.
 const DROP_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// The longest time to read and drop a body.
@@ -611,6 +632,22 @@ async fn upload_receive(
             }
         };
         let Some(original) = field.file_name().map(str::to_string) else {
+            // Issue 232: a field with no file name counts toward
+            // --max-request too. Its bytes are dropped.
+            let mut field = field;
+            loop {
+                let chunk = match next_chunk(&mut field).await {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(response) => return response,
+                };
+                state.control.touch();
+                request_bytes += chunk.len() as u64;
+                if request_bytes > state.max_request {
+                    over = true;
+                    break 'fields;
+                }
+            }
             continue;
         };
         let name = sanitize_filename(&original);
@@ -655,18 +692,10 @@ async fn upload_receive(
         let mut field = field;
         let mut written = 0u64;
         loop {
-            let chunk = match tokio::time::timeout(CHUNK_LIMIT, field.chunk()).await {
-                Ok(Ok(Some(chunk))) => chunk,
-                Ok(Ok(None)) => break,
-                Ok(Err(err)) => {
-                    return refuse(StatusCode::BAD_REQUEST, format!("upload aborted: {err}"))
-                }
-                Err(_) => {
-                    return refuse(
-                        StatusCode::REQUEST_TIMEOUT,
-                        format!("no data for {} s", CHUNK_LIMIT.as_secs()),
-                    )
-                }
+            let chunk = match next_chunk(&mut field).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(response) => return response,
             };
             // A long upload is activity: --idle-secs does not stop it.
             state.control.touch();
@@ -1205,6 +1234,46 @@ mod tests {
             }
         });
         (axum::body::Body::from_stream(stream), read)
+    }
+
+    // Issue 232: a field with no file name counts toward --max-request. A
+    // chunked body (no Content-Length) with a large text field gets 413.
+    #[tokio::test]
+    async fn a_field_with_no_file_name_is_counted() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.max_request = 1000;
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let field = |size: usize| {
+            let mut body =
+                b"--XB\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\n".to_vec();
+            body.extend(std::iter::repeat_n(b'n', size));
+            body.extend_from_slice(b"\r\n");
+            body
+        };
+        let mut body = field(3000);
+        body.extend(multipart(&[("a.txt", 10)]));
+        let (stream, _) = counted(body);
+        let response = app
+            .router()
+            .oneshot(upload_request(&token, stream))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 413);
+        assert!(files_in(dir.path()).is_empty());
+        // A small text field and a file are under the limit.
+        let mut body = field(100);
+        body.extend(multipart(&[("a.txt", 10)]));
+        let (stream, _) = counted(body);
+        let response = app
+            .router()
+            .oneshot(upload_request(&token, stream))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(files_in(dir.path()), ["a.txt"]);
     }
 
     // Live run 41556133042: a refused body is read to its end before the
