@@ -676,7 +676,7 @@ cfrs warp tun --interface cfrs0        # TUN interface (needs CAP_NET_ADMIN)
   `127.0.0.1:PORT` and on a unix socket, and writes an env file with the
   proxy variables. When the host refuses the TCP listener, `warp up` starts
   with the socket only: the env file has no proxy variables, `warp env` says
-  so, and `warp exec` and `warp shell` work. Later shells join it:
+  so and exits 69 with no output, and `warp exec` and `warp shell` work. Later shells join it:
   * `eval "$(cfrs warp env)"`: `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`,
     `NO_PROXY` (and the lower-case forms), `CARGO_HTTP_PROXY` and the npm
     variables. The proxy also forwards `http://` URLs (for apt).

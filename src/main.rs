@@ -4245,7 +4245,8 @@ enum WarpCommand {
     /// block in ~/.bashrc and ~/.profile.
     Down,
     /// Print the proxy variables of the running cfrs warp up, for
-    /// `eval "$(cfrs warp env)"`.
+    /// `eval "$(cfrs warp env)"`. Exit 69 with no output when warp up has no
+    /// TCP listener (no proxy variables).
     Env,
     /// Run a program under the pod of the running cfrs warp up: TCP, DNS
     /// and UDP go through WARP, also for static binaries.
@@ -4554,10 +4555,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         WarpCommand::Down => return cfrs::warp::up::down(),
         WarpCommand::Env => {
             let text = cfrs::warp::up::env_text()?;
+            // Issue 255: no proxy variables is not a success: a script
+            // that runs `eval "$(cfrs warp env)" && CMD` must not run CMD
+            // with no proxy.
             if !text.contains("ALL_PROXY") {
-                eprintln!(
-                    "cfrs: warp env: the TCP listener of cfrs warp up did not start, so there are no proxy variables; use: cfrs warp exec -- CMD"
-                );
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!(
+                        "warp env: the TCP listener of cfrs warp up did not start, so there are no proxy variables; use: cfrs warp exec -- CMD"
+                    ),
+                ));
             }
             print!("{text}");
             return Ok(());

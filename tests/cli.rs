@@ -1896,3 +1896,57 @@ fn autostart_from_an_instance_keeps_its_secrets_and_drops_detach_options() {
         "{args}"
     );
 }
+
+// Issue 255: warp env with no proxy variables (warp up on the socket only)
+// exits 69 and prints nothing on stdout.
+#[test]
+fn warp_env_with_no_proxy_variables_exits_69() {
+    let dir = tempfile::tempdir().unwrap();
+    let run_dir = dir.path().join("run");
+    std::fs::create_dir(&run_dir).unwrap();
+    std::fs::write(
+        run_dir.join("warp.env"),
+        "# cfrs warp up\nCFRS_WARP_SOCKET=/x\n",
+    )
+    .unwrap();
+    // The lock of a live warp up: a child holds it.
+    let lock = run_dir.join("warp.lock");
+    std::fs::write(&lock, "").unwrap();
+    let mut holder = Command::new("flock")
+        .arg("-o")
+        .arg(&lock)
+        .args(["sleep", "30"])
+        .spawn()
+        .unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while Command::new("flock")
+        .args(["-n"])
+        .arg(&lock)
+        .arg("true")
+        .status()
+        .unwrap()
+        .success()
+    {
+        assert!(std::time::Instant::now() < until, "the child holds no lock");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["warp", "env"])
+        .env("CFRS_RUN_DIR", &run_dir)
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .output()
+        .unwrap();
+    let _ = holder.kill();
+    let _ = holder.wait();
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr(&out).contains("no proxy variables"),
+        "{}",
+        stderr(&out)
+    );
+}
