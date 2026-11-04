@@ -283,10 +283,25 @@ mod tests {
         let gate = Gate::pin();
         let mut headers = HeaderMap::new();
         assert!(!gate.is_open(&headers));
-        assert!(gate.unlock("000000").is_none() || gate.unlock("000000").is_some());
 
+        // Issue 218: a wrong code is refused and counts one failure. The
+        // wrong code differs from the PIN in each digit.
         let pin = gate.pin_display().unwrap().to_string();
+        let wrong: String = pin
+            .bytes()
+            .map(|d| char::from(b'0' + (d - b'0' + 1) % 10))
+            .collect();
+        assert_ne!(wrong, pin);
+        assert!(
+            gate.unlock(&wrong).is_none(),
+            "the wrong code must not unlock"
+        );
+        assert_eq!(gate.failures.load(Ordering::SeqCst), 1);
+        assert!(!gate.locked_out());
+
+        // The correct code opens the gate and sets the count to 0.
         let cookie = gate.unlock(&pin).expect("correct pin");
+        assert_eq!(gate.failures.load(Ordering::SeqCst), 0);
         let value = cookie.split(';').next().unwrap().to_string();
         headers.insert(
             axum::http::header::COOKIE,
