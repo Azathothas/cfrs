@@ -871,6 +871,10 @@ impl Driver {
         );
         socket.set_timeout(Some(TCP_TIMEOUT.into()));
         socket.set_keep_alive(Some(TCP_KEEPALIVE.into()));
+        // podssh: no Nagle. A small write (a keystroke of SSH, a small
+        // request) goes at once; with Nagle it waited for the ACK of the
+        // data before it (one round trip through WARP).
+        socket.set_nagle_enabled(false);
         // Issue 134: none unless --cc says otherwise (smoltcp 0.12 takes
         // cubic by default when its feature is on).
         socket.set_congestion_control(cc());
@@ -1241,6 +1245,12 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // podssh: the TCP sockets of the stack have no Nagle.
+    #[test]
+    fn the_tcp_sockets_have_no_nagle() {
+        assert!(!Driver::tcp_socket().nagle_enabled());
+    }
 
     fn driver(config: &StackConfig) -> Driver {
         let mut device = LinkDevice::tunnel_bounded(TUNNEL_MTU, 16);
