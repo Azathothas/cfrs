@@ -92,26 +92,36 @@ pub fn load(
     let mut store = RootCertStore::empty();
     let mut sources = Vec::new();
     if let Some((source, path)) = explicit {
-        let n =
+        let added =
             add_file(&mut store, &path).with_context(|| format!("{source} {}", path.display()))?;
-        if n == 0 {
-            bail!("{source} {}: the file has no certificate", path.display());
+        if added.roots == 0 {
+            match added.skipped.first() {
+                None => bail!("{source} {}: the file has no certificate", path.display()),
+                Some(reason) => bail!(
+                    "{source} {}: the file has {} certificates, none usable as a root: {reason}",
+                    path.display(),
+                    added.skipped.len()
+                ),
+            }
         }
-        sources.push(format!("{source} {} ({n} roots)", path.display()));
+        sources.push(format!("{source} {} ({})", path.display(), added.count()));
         return Ok(Roots {
             store: Arc::new(store),
             sources,
         });
     }
     if let Some(path) = beside.filter(|p| p.is_file()) {
-        let n = add_file(&mut store, path).with_context(|| format!("{}", path.display()))?;
-        sources.push(format!("{} ({n} roots)", path.display()));
+        let added = add_file(&mut store, path).with_context(|| format!("{}", path.display()))?;
+        if added.roots == 0 {
+            tracing::warn!(file = %path.display(), "the file of roots beside the binary has no usable root");
+        }
+        sources.push(format!("{} ({})", path.display(), added.count()));
     }
     for bundle in bundles {
         let path = Path::new(bundle);
-        if let Ok(n) = add_file(&mut store, path) {
-            if n > 0 {
-                sources.push(format!("{bundle} ({n} roots)"));
+        if let Ok(added) = add_file(&mut store, path) {
+            if added.roots > 0 {
+                sources.push(format!("{bundle} ({})", added.count()));
                 break;
             }
         }
@@ -127,16 +137,41 @@ pub fn load(
     })
 }
 
+/// The certificates of one file of roots.
+struct Added {
+    /// The number of roots added.
+    roots: usize,
+    /// The reason for each certificate that rustls cannot use as a root.
+    skipped: Vec<String>,
+}
+
+impl Added {
+    /// `2 roots`, or `2 roots, 1 skipped`.
+    fn count(&self) -> String {
+        match self.skipped.len() {
+            0 => format!("{} roots", self.roots),
+            n => format!("{} roots, {n} skipped", self.roots),
+        }
+    }
+}
+
 /// Add the certificates of the PEM file `path`. A certificate that rustls
-/// cannot use as a root is skipped; a file that cannot be read or parsed is
-/// an error. Gives the number of roots added.
-fn add_file(store: &mut RootCertStore, path: &Path) -> Result<usize> {
+/// cannot use as a root is skipped with a warning (issue 239); a file that
+/// cannot be read or parsed is an error.
+fn add_file(store: &mut RootCertStore, path: &Path) -> Result<Added> {
     let pem = std::fs::read(path).context("reading the file")?;
-    let mut added = 0;
+    let mut added = Added {
+        roots: 0,
+        skipped: Vec::new(),
+    };
     for cert in CertificateDer::pem_slice_iter(&pem) {
         let cert = cert.context("parsing the PEM")?;
-        if store.add(cert).is_ok() {
-            added += 1;
+        match store.add(cert) {
+            Ok(()) => added.roots += 1,
+            Err(err) => {
+                tracing::warn!(file = %path.display(), error = %err, "a certificate is not usable as a root; it is skipped");
+                added.skipped.push(err.to_string());
+            }
         }
     }
     Ok(added)
@@ -357,6 +392,44 @@ mod tests {
         std::fs::write(&empty, "").unwrap();
         let err = load(Some(("--ca-file", empty)), None, &[]).unwrap_err();
         assert!(err.to_string().contains("has no certificate"), "{err}");
+    }
+
+    /// Issue 239: a certificate that is not usable as a root is counted,
+    /// and a file with no usable root names the reason.
+    #[test]
+    fn a_skipped_root_is_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let good = params.self_signed(&ca).unwrap().pem();
+        // The DER of an empty SEQUENCE: valid PEM, not a certificate.
+        let bad = "-----BEGIN CERTIFICATE-----\nMAA=\n-----END CERTIFICATE-----\n";
+
+        let mixed = dir.path().join("mixed.pem");
+        std::fs::write(&mixed, format!("{good}{bad}")).unwrap();
+        let roots = load(Some(("--ca-file", mixed.clone())), None, &[]).unwrap();
+        assert_eq!(roots.store.len(), 1);
+        assert!(
+            roots.sources[0].ends_with("(1 roots, 1 skipped)"),
+            "{:?}",
+            roots.sources
+        );
+        let beside = load(None, Some(&mixed), &[]).unwrap();
+        assert!(
+            beside.sources[0].ends_with("(1 roots, 1 skipped)"),
+            "{:?}",
+            beside.sources
+        );
+
+        let only_bad = dir.path().join("bad.pem");
+        std::fs::write(&only_bad, bad).unwrap();
+        let err = load(Some(("--ca-file", only_bad)), None, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("the file has 1 certificates, none usable as a root: "),
+            "{err}"
+        );
     }
 
     /// Only these files may set a certificate verifier of their own: the
