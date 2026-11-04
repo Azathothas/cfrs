@@ -124,23 +124,33 @@ impl Transport for Direct {
             }
 
             let mut last: Option<std::io::Error> = None;
+            let mut tried = false;
             for addr in &addrs {
+                // A bind address has one family: an address of the other
+                // family cannot use it (issue 273).
+                if self
+                    .bind_address
+                    .is_some_and(|bind| bind.is_ipv6() != addr.is_ipv6())
+                {
+                    continue;
+                }
+                tried = true;
+                // The socket has the family of the address (issue 273).
+                let socket = if addr.is_ipv6() {
+                    tokio::net::TcpSocket::new_v6()
+                } else {
+                    tokio::net::TcpSocket::new_v4()
+                }
+                .map_err(|e| {
+                    TransportError::Unreachable(format!("socket for {host}:{port}: {e}"))
+                })?;
                 // Bind to a specific local address when one was configured, so a
                 // multi-homed host picks the interface cloudflared would.
-                let socket = match self.bind_address {
-                    Some(bind) => {
-                        let socket = tokio::net::TcpSocket::new_v4().map_err(|e| {
-                            TransportError::Unreachable(format!("socket for {host}:{port}: {e}"))
-                        })?;
-                        socket.bind(bind).map_err(|e| {
-                            TransportError::Unreachable(format!("bind {bind}: {e}"))
-                        })?;
-                        socket
-                    }
-                    None => tokio::net::TcpSocket::new_v4().map_err(|e| {
-                        TransportError::Unreachable(format!("socket for {host}:{port}: {e}"))
-                    })?,
-                };
+                if let Some(bind) = self.bind_address {
+                    socket
+                        .bind(bind)
+                        .map_err(|e| TransportError::Unreachable(format!("bind {bind}: {e}")))?;
+                }
                 match tokio::time::timeout(timeout, socket.connect(*addr)).await {
                     Ok(Ok(stream)) => {
                         if self.no_delay {
@@ -157,6 +167,12 @@ impl Transport for Direct {
                 }
             }
 
+            if !tried {
+                return Err(TransportError::Unreachable(format!(
+                    "{host} has no address of the family of the bind address {}",
+                    self.bind_address.map(|b| b.to_string()).unwrap_or_default()
+                )));
+            }
             Err(TransportError::Unreachable(format!(
                 "cannot connect to {host}:{port}{}",
                 last.map(|e| format!(": {e}")).unwrap_or_default()
@@ -360,6 +376,35 @@ mod tests {
         fn name(&self) -> &'static str {
             "fixed"
         }
+    }
+
+    /// Issue 273: Direct connects to an IPv6 address. Before, each socket
+    /// was IPv4 (os error 97 for an IPv6 address).
+    #[tokio::test]
+    async fn direct_connects_to_an_ipv6_address() {
+        // An IPv4 bind address cannot reach an IPv6 target: a clear error,
+        // with no socket of the wrong family.
+        let bound = Direct {
+            bind_address: Some("127.0.0.1:0".parse().unwrap()),
+            ..Direct::new()
+        };
+        let err = match bound.connect("::1", 9, Duration::from_secs(5)).await {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("an IPv4 socket reached an IPv6 address"),
+        };
+        assert!(err.contains("the family of the bind address"), "{err}");
+        let listener = match tokio::net::TcpListener::bind("[::1]:0").await {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!("no IPv6 loopback here: {err}");
+                return;
+            }
+        };
+        let port = listener.local_addr().unwrap().port();
+        assert!(Direct::new()
+            .connect("::1", port, Duration::from_secs(5))
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

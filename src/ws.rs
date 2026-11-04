@@ -80,20 +80,30 @@ pub async fn serve_websocket(
         return write_response_meta(&mut writer, 400, &plain("missing Sec-WebSocket-Key")).await;
     };
 
+    // Dial first: the visitor gets 101 only for a target that answers
+    // (issue 273), else 502.
+    let service = match target {
+        ForwardTarget::Tcp(addr) => Service::Tcp(addr.clone()),
+        ForwardTarget::Unix(path) => Service::Unix(path.clone()),
+    };
+    let io = match net::dial(&service, &OriginOptions::default()).await {
+        Ok(io) => io,
+        Err(err) => {
+            const TEXT: &str = "cfrs: the forward target does not answer\n";
+            write_response_meta(&mut writer, 502, &plain(TEXT)).await?;
+            futures::io::AsyncWriteExt::write_all(&mut writer, TEXT.as_bytes()).await?;
+            futures::io::AsyncWriteExt::close(&mut writer).await?;
+            return Err(err)
+                .with_context(|| format!("dialing forward target {}", target.describe()));
+        }
+    };
+
     let headers = vec![
         ("Upgrade".to_string(), "websocket".to_string()),
         ("Connection".to_string(), "Upgrade".to_string()),
         ("Sec-WebSocket-Accept".to_string(), accept_key(key)),
     ];
     write_response_meta(&mut writer, 101, &headers).await?;
-
-    let service = match target {
-        ForwardTarget::Tcp(addr) => Service::Tcp(addr.clone()),
-        ForwardTarget::Unix(path) => Service::Unix(path.clone()),
-    };
-    let io = net::dial(&service, &OriginOptions::default())
-        .await
-        .with_context(|| format!("dialing forward target {}", target.describe()))?;
 
     // The edge stream is a QUIC bidi pair; join it into one socket for the
     // WebSocket codec. `into_inner` recovers the quinn halves from the
@@ -350,6 +360,41 @@ impl LocalSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue 273: a forward target that does not answer gives 502, not
+    /// 101 and then a closed WebSocket.
+    #[tokio::test]
+    async fn a_target_that_does_not_answer_gives_502() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+        let request = cqstream::ConnectRequest {
+            dest: "https://x/__cfrs/ws".into(),
+            conn_type: cqstream::ConnectionType::Websocket,
+            metadata: vec![(
+                "HttpHeader:Sec-Websocket-Key".into(),
+                "dGhlIHNhbXBsZSBub25jZQ==".into(),
+            )],
+        };
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let reader: EdgeReader = Box::pin(futures::io::empty());
+        let writer: EdgeWriter = Box::pin(
+            tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(near),
+        );
+        let target = ForwardTarget::Tcp(addr.to_string());
+        let result = serve_websocket(&target, &request, reader, writer, &Metrics::new()).await;
+        assert!(result.is_err());
+        let mut far = tokio_util::compat::TokioAsyncReadCompatExt::compat(far);
+        let (_, meta) = cqstream::read_connect_response(&mut far).await.unwrap();
+        assert!(
+            meta.contains(&("HttpStatus".to_string(), "502".to_string())),
+            "{meta:?}"
+        );
+        assert!(
+            !meta.iter().any(|(k, _)| k.contains("Sec-WebSocket-Accept")),
+            "{meta:?}"
+        );
+    }
 
     #[test]
     fn accept_key_matches_rfc_example() {

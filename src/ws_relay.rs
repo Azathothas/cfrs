@@ -129,15 +129,37 @@ impl Host {
         if rest.contains('/') || rest.contains('?') || rest.contains('@') || rest.is_empty() {
             bail!("the relay URL {url:?} must be only a scheme and a host, for example {DEFAULT_RELAY}");
         }
-        let (host, port) = match rest.rsplit_once(':') {
-            Some((host, port)) if !host.contains(':') => (
-                host.to_string(),
-                port.parse::<u16>()
-                    .with_context(|| format!("the port of the relay URL {url:?}"))?,
-            ),
-            _ => (rest.to_string(), if tls { 443 } else { 80 }),
+        let default = if tls { 443 } else { 80 };
+        let port_of = |text: &str| {
+            text.parse::<u16>()
+                .with_context(|| format!("the port of the relay URL {url:?}"))
         };
-        if !tls && !matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]") {
+        // The host is kept with no brackets; url() adds them (issue 273).
+        let (host, port) = if let Some(v6) = rest.strip_prefix('[') {
+            let (host, tail) = v6
+                .split_once(']')
+                .with_context(|| format!("the relay URL {url:?} has no ]"))?;
+            let port = match tail {
+                "" => default,
+                _ => port_of(
+                    tail.strip_prefix(':')
+                        .with_context(|| format!("the relay URL {url:?} has text after the ]"))?,
+                )?,
+            };
+            (host.to_string(), port)
+        } else {
+            match rest.rsplit_once(':') {
+                Some((host, _)) if host.contains(':') => bail!(
+                    "write the IPv6 address of the relay URL {url:?} in brackets: https://[::1]:8443"
+                ),
+                Some((host, port)) => (host.to_string(), port_of(port)?),
+                None => (rest.to_string(), default),
+            }
+        };
+        if host.is_empty() {
+            bail!("the relay URL {url:?} has no host");
+        }
+        if !tls && !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
             bail!("the relay URL {url:?} must use https:// (plain http:// is for a loopback relay only)");
         }
         Ok(Self { tls, host, port })
@@ -147,9 +169,18 @@ impl Host {
         let scheme = if self.tls { "https" } else { "http" };
         let default = if self.tls { 443 } else { 80 };
         if self.port == default {
-            format!("{scheme}://{}", self.host)
+            format!("{scheme}://{}", self.authority_host())
         } else {
-            format!("{scheme}://{}:{}", self.host, self.port)
+            format!("{scheme}://{}:{}", self.authority_host(), self.port)
+        }
+    }
+
+    /// The host as a URL writes it: an IPv6 address in brackets.
+    fn authority_host(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
         }
     }
 }
@@ -591,7 +622,7 @@ async fn websocket_at(
         io
     };
     let scheme = if host.tls { "wss" } else { "ws" };
-    let url = format!("{scheme}://{}:{}{path}", host.host, host.port);
+    let url = format!("{scheme}://{}:{}{path}", host.authority_host(), host.port);
     let mut request = url
         .into_client_request()
         .context("the WebSocket request to the relay")?;
@@ -765,9 +796,26 @@ mod tests {
             "https://user@relay.example",
             "https://",
             "https://relay.example:x",
+            "https://::1",
+            "https://[::1",
+            "https://[::1]x",
+            "http://[2001:db8::1]",
         ] {
             assert!(Relay::new(bad, None).is_err(), "{bad}");
         }
+    }
+
+    /// Issue 273: an IPv6 relay host in brackets keeps its port.
+    #[test]
+    fn an_ipv6_relay_host_keeps_its_port() {
+        let relay = Relay::new("https://[::1]:8443", None).unwrap();
+        assert_eq!((relay.host(), relay.port()), ("::1", 8443));
+        assert_eq!(relay.url(), "https://[::1]:8443");
+        let relay = Relay::new("http://[::1]:8080", None).unwrap();
+        assert_eq!((relay.host(), relay.port()), ("::1", 8080));
+        let relay = Relay::new("https://[2001:db8::1]", None).unwrap();
+        assert_eq!((relay.host(), relay.port()), ("2001:db8::1", 443));
+        assert_eq!(relay.url(), "https://[2001:db8::1]");
     }
 
     #[test]
