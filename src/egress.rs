@@ -1356,6 +1356,7 @@ mod tests {
     /// answer, and the proxy checks it.
     #[tokio::test]
     async fn a_digest_proxy_takes_the_answer() {
+        crate::test_host::need_loopback!();
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

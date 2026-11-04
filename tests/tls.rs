@@ -1,6 +1,8 @@
 //! The TLS roots of cfrs, end to end: a local HTTPS server with a private CA
 //! stands in for the quick-tunnel API (as a TLS-inspecting proxy would).
 
+mod test_host;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
@@ -104,6 +106,7 @@ fn tunnel(port: u16, env: &[(&str, &str)], args: &[&str]) -> String {
 
 #[test]
 fn a_private_ca_is_trusted_only_when_it_is_given() {
+    test_host::need_loopback!();
     let ca = ca(false);
     let port = serve(&ca);
     let dir = tempfile::tempdir().unwrap();
@@ -142,6 +145,7 @@ fn ca_other() -> String {
 
 #[test]
 fn an_expired_certificate_names_the_host_clock() {
+    test_host::need_loopback!();
     let ca = ca(true);
     let port = serve(&ca);
     let dir = tempfile::tempdir().unwrap();
@@ -163,6 +167,7 @@ fn an_expired_certificate_names_the_host_clock() {
 /// network and the destination; the hint is not the CA or the clock.
 #[test]
 fn a_reset_in_the_tls_handshake_names_the_network() {
+    test_host::need_loopback!();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {

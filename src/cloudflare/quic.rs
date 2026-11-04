@@ -195,6 +195,7 @@ mod tests {
     /// default of quinn (100), the stream after the 100th waits.
     #[tokio::test]
     async fn the_edge_can_open_200_streams_at_the_same_time() {
+        crate::test_host::need_loopback!();
         let pair = testing::local_pair().await;
         let edge = pair.edge.clone();
         let opener = tokio::spawn(async move {

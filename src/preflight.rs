@@ -559,6 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_port_fails_with_its_address() {
+        crate::test_host::need_loopback!();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -575,6 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_open_port_passes_and_gets_no_request() {
+        crate::test_host::need_loopback!();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let peer = tokio::spawn(async move {

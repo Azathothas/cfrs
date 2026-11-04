@@ -2,6 +2,8 @@
 //! a SOCKS5 proxy, an HTTP proxy that answers 407, and an edge that only
 //! counts its connections. No test here uses the network.
 
+mod test_host;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -201,6 +203,7 @@ fn cfrs(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
 /// not try QUIC, and one line says why.
 #[test]
 fn socks5_carries_the_api_and_the_edge() {
+    test_host::need_loopback!();
     for auth in [None, Some(("alice", "s3cret"))] {
         let (api_port, api_hits) = api(true);
         let (edge_port, edge_hits) = edge();
@@ -259,6 +262,7 @@ fn socks5_carries_the_api_and_the_edge() {
 /// takes the proxy (which is closed here).
 #[test]
 fn no_proxy_bypasses_the_proxy() {
+    test_host::need_loopback!();
     let (api_port, hits) = api(false);
     let api_url = format!("http://127.0.0.1:{api_port}");
     let closed = "http://127.0.0.1:9";
@@ -287,6 +291,7 @@ fn no_proxy_bypasses_the_proxy() {
 /// A 407 names each scheme that the proxy asks for.
 #[test]
 fn a_407_names_the_schemes() {
+    test_host::need_loopback!();
     let port = proxy_407();
     let proxy = format!("http://127.0.0.1:{port}");
     let (code, text) = cfrs(
@@ -311,6 +316,7 @@ fn a_407_names_the_schemes() {
 /// not by its own time-out.
 #[tokio::test]
 async fn a_silent_address_does_not_hold_the_dial() {
+    test_host::need_loopback!();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let good = listener.local_addr().unwrap();
     // TEST-NET-1: no host answers there.
@@ -328,6 +334,7 @@ async fn a_silent_address_does_not_hold_the_dial() {
 /// the second line names the proxy hop.
 #[test]
 fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
+    test_host::need_loopback!();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -380,6 +387,7 @@ fn a_proxy_host_that_does_not_resolve_is_an_error_not_a_crash() {
 /// --resolve pin is used. The proxy gets the IPv4 address of the pin.
 #[test]
 fn socks5_resolves_the_target_with_the_pins() {
+    test_host::need_loopback!();
     let (api_port, api_hits) = api(true);
     let (socks_port, targets) = socks5(None);
     let proxy = format!("socks5://127.0.0.1:{socks_port}");

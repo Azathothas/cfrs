@@ -193,6 +193,7 @@ mod tests {
 
     #[test]
     fn a_silent_peer_is_unknown_not_answered() {
+        crate::test_host::need_loopback!();
         // A bound socket that never answers: a bind alone is not an answer.
         let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
         let got = probe(silent.local_addr().unwrap(), Duration::from_millis(200));
@@ -207,6 +208,7 @@ mod tests {
 
     #[test]
     fn an_answer_is_answered() {
+        crate::test_host::need_loopback!();
         let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
         let addr = peer.local_addr().unwrap();
         let echo = std::thread::spawn(move || {
@@ -225,6 +227,7 @@ mod tests {
 
     #[test]
     fn a_closed_port_is_refused() {
+        crate::test_host::need_loopback!();
         let addr = UdpSocket::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()

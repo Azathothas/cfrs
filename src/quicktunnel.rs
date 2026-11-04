@@ -667,6 +667,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_429_waits_for_retry_after() {
+        crate::test_host::need_loopback!();
         let (url, count) = scripted(vec![
             (429, "Retry-After: 1\r\n", "slow down"),
             (200, "", OK_BODY),
@@ -682,6 +683,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_long_retry_after_fails_with_the_wait() {
+        crate::test_host::need_loopback!();
         let (url, count) = scripted(vec![(429, "Retry-After: 9999\r\n", "error code: 1015")]);
         let err = provision(&url, AuthMode::Public, "t", TO, BUDGET)
             .await
@@ -696,6 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_5xx_is_retried_and_a_403_is_not() {
+        crate::test_host::need_loopback!();
         let (url, count) = scripted(vec![
             (500, "Retry-After: 0\r\n", ""),
             (502, "Retry-After: 0\r\n", ""),

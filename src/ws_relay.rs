@@ -846,6 +846,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::result_large_err)] // the callback type of tungstenite
     async fn bytes_go_through_a_local_relay() {
+        crate::test_host::need_loopback!();
         use futures::{SinkExt as _, StreamExt as _};
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

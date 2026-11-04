@@ -2,6 +2,8 @@
 //! two sessions at the same time through one node, a refused session, and
 //! a node socket that the relay drops (the node opens it again).
 
+mod test_host;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -265,6 +267,7 @@ async fn hello() -> String {
 // closed the session, and the output was empty.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_answer_comes_back_after_the_input_ends() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     let target = Target::parse(&hello().await).unwrap();
     let node_relay = Relay::new(&url, None).unwrap();
@@ -287,6 +290,7 @@ async fn the_answer_comes_back_after_the_input_ends() {
 // half-close) ends the session after EOF_IDLE.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_ends_after_the_idle_time_when_the_input_ended() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     let target = Target::parse(&echo().await).unwrap();
     let node_relay = Relay::new(&url, None).unwrap();
@@ -319,6 +323,7 @@ async fn wait_for_node(state: &Arc<Mutex<State>>, sockets: usize) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_sessions_at_the_same_time_through_one_node() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     let target = Target::parse(&echo().await).unwrap();
     let node_relay = Relay::new(&url, None).unwrap();
@@ -338,6 +343,7 @@ async fn two_sessions_at_the_same_time_through_one_node() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_to_a_closed_port_is_refused_with_the_reason() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     // A port with no listener.
     let closed = {
@@ -369,6 +375,7 @@ async fn a_session_to_a_closed_port_is_refused_with_the_reason() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_node_socket_is_opened_again() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(Some(300)).await;
     let target = Target::parse(&echo().await).unwrap();
     let node_relay = Relay::new(&url, None).unwrap();
@@ -383,6 +390,7 @@ async fn a_dropped_node_socket_is_opened_again() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wrong_connect_token_is_a_config_error() {
+    test_host::need_loopback!();
     let (url, _state) = fake_relay(None).await;
     let relay = Relay::new(&url, None).unwrap();
     let err = connect(&relay, NAME, "wrong", tokio::io::empty(), tokio::io::sink())
@@ -420,6 +428,7 @@ async fn closing_relay(code: u16) -> String {
 // error (exit 69): the output can be cut. Before, it exited 0.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_close_with_an_error_code_after_the_input_ends_is_an_error() {
+    test_host::need_loopback!();
     let url = closing_relay(1009).await;
     let relay = Relay::new(&url, None).unwrap();
     let mut out = Vec::new();
@@ -472,6 +481,7 @@ async fn stuck_then_echo() -> String {
 // stopped.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_local_side_that_does_not_read_stops_no_other_session() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     let target = Target::parse(&stuck_then_echo().await).unwrap();
     let node_relay = Relay::new(&url, None).unwrap();
@@ -505,6 +515,7 @@ async fn a_local_side_that_does_not_read_stops_no_other_session() {
 // pair, with no new start.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_takes_the_next_pair_at_the_expiry() {
+    test_host::need_loopback!();
     let (url, state) = fake_relay(None).await;
     let target = Target::parse(&echo().await).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -539,6 +550,7 @@ async fn a_node_takes_the_next_pair_at_the_expiry() {
 // A node of a named pair ends at the expiry (exit 78).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_named_node_ends_at_the_expiry() {
+    test_host::need_loopback!();
     let (url, _state) = fake_relay(None).await;
     let target = Target::parse(&echo().await).unwrap();
     let now = std::time::SystemTime::now()

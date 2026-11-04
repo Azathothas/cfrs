@@ -117,6 +117,9 @@ pub mod service;
 pub mod share;
 pub mod state;
 pub mod status;
+#[cfg(test)]
+#[path = "../tests/test_host/mod.rs"]
+mod test_host;
 pub mod tls_fragment;
 pub mod transport;
 pub mod trust;

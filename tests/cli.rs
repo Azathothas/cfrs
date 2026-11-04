@@ -1,6 +1,8 @@
 //! The command line of the cfrs binary: exit codes, usage messages and the
 //! generated manual. No test here uses the network.
 
+mod test_host;
+
 use std::process::{Command, Output};
 
 fn cfrs(args: &[&str]) -> Output {
@@ -341,6 +343,7 @@ fn a_log_to_a_pipe_has_no_colours() {
 /// SIGTERM stops cfrs as SIGINT does: a clean shutdown and exit 0.
 #[test]
 fn sigterm_is_a_clean_stop() {
+    test_host::need_loopback!();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -470,6 +473,7 @@ fn bad_flag_values_are_usage_errors() {
 /// the info and debug lines; -v adds the debug lines.
 #[test]
 fn log_controls() {
+    test_host::need_loopback!();
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -513,6 +517,7 @@ fn log_controls() {
 /// no token in the output.
 #[test]
 fn check_mode() {
+    test_host::need_loopback!();
     const TOKEN: &str = "eyJhIjogIjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwgInQiOiAiZmZkODZiZDUtMWJmZi00NTZiLThjMmMtNzVhMDE0Y2RjNGM4IiwgInMiOiAiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOD0ifQ==";
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
@@ -624,6 +629,7 @@ fn check_mode() {
 /// is refused (issue 12).
 #[test]
 fn doctor_tells_listen_from_bind() {
+    test_host::need_loopback!();
     use std::os::unix::process::CommandExt;
     fn deny_listen_and_sendto() -> std::io::Result<()> {
         const RET_ALLOW: u32 = 0x7fff_0000;
@@ -839,6 +845,7 @@ exit 2"#,
 /// exit 69, and `pod -x` to a dead upstream warns and still runs.
 #[test]
 fn a_missing_upstream_is_named_at_start() {
+    test_host::need_loopback!();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("nope.sock");
     let out = cfrs(&[
@@ -1237,6 +1244,7 @@ fn the_config_file_gives_the_protocol_and_the_connections() {
 /// tunnel receives HTTP; the public URL is not verified.
 #[test]
 fn tunnel_tcp_takes_the_scheme_and_warns() {
+    test_host::need_loopback!();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("tcp://{addr}");
@@ -1502,6 +1510,7 @@ fn the_fault_flags_need_a_switch_and_a_probability() {
 /// file that others can read is a configuration error.
 #[test]
 fn auth_user_flags() {
+    test_host::need_loopback!();
     let dir = tempfile::tempdir().unwrap();
     let pass = dir.path().join("pass");
     std::fs::write(&pass, "secret\n").unwrap();
@@ -1589,10 +1598,15 @@ fn root_writes_no_file_in_the_home_of_another_user() {
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     let c = |p: &std::path::Path| {
         let p = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
-        assert_eq!(unsafe { libc::chown(p.as_ptr(), 4242, 4242) }, 0);
+        unsafe { libc::chown(p.as_ptr(), 4242, 4242) }
     };
-    c(&home);
-    c(&home.join(".ssh"));
+    // Issue 217: root of a user namespace (unshare -U) has no uid 4242.
+    if c(&home) != 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("skipping, root cannot give a file to uid 4242 (a user namespace?): {err}");
+        return;
+    }
+    assert_eq!(c(&home.join(".ssh")), 0);
     let run = |extra: &[(&str, &str)]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
         cmd.args(["warp", "ssh-config", "--write", "--host", "example.org"])

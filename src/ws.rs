@@ -366,6 +366,7 @@ mod tests {
     /// 101 and then a closed WebSocket.
     #[tokio::test]
     async fn a_target_that_does_not_answer_gives_502() {
+        crate::test_host::need_loopback!();
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = closed.local_addr().unwrap();
         drop(closed);

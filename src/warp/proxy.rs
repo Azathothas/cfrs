@@ -1623,6 +1623,7 @@ mod tests {
     /// #278: a second local socket can not take the replies of the client.
     #[tokio::test]
     async fn another_local_sender_can_not_take_the_udp_association() {
+        crate::test_host::need_loopback!();
         let (stack, _) = stack_with_dns(0);
         let (mut client, server) = tokio::io::duplex(1024);
         let task = tokio::spawn(udp_associate(server, stack.clone()));
@@ -1663,6 +1664,7 @@ mod tests {
     // IPv4 after it gets its answer, and a second association works.
     #[tokio::test]
     async fn a_udp_association_survives_a_datagram_to_ipv6() {
+        crate::test_host::need_loopback!();
         let (stack, _) = stack_with_dns(0);
         for round in 0..2 {
             let (mut client, server) = tokio::io::duplex(1024);
@@ -1756,6 +1758,7 @@ mod tests {
     /// this host) does not stop the unix socket, which takes clients.
     #[tokio::test]
     async fn a_refused_tcp_listener_does_not_stop_the_unix_socket() {
+        crate::test_host::need_loopback!();
         let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("warp.sock");

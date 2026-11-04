@@ -105,6 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_probe_splits_open_and_closed_ports() {
+        crate::test_host::need_loopback!();
         let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (a, b) = (

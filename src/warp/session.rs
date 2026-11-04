@@ -879,6 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_over_http3_carries_datagrams_and_capsules() {
+        crate::test_host::need_loopback!();
         let (addr, pin, server) = h3_front_door().await;
         let client_id = Identity::generate().unwrap();
         let dial = Dial {
@@ -915,6 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn http3_refuses_a_proxy_and_a_wrong_key() {
+        crate::test_host::need_loopback!();
         let (addr, _pin, server) = h3_front_door().await;
         let client_id = Identity::generate().unwrap();
         let other = Identity::generate().unwrap();

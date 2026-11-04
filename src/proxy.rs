@@ -1248,6 +1248,7 @@ mod tests {
     /// --max-request gets 413 before the body; the connection stays open.
     #[tokio::test(flavor = "multi_thread")]
     async fn large_share_uploads_on_one_quic_connection() {
+        crate::test_host::need_loopback!();
         use crate::cloudflare::schema::ConnectionType;
         use crate::cloudflare::stream::HTTP_STATUS_KEY;
         use futures::io::AsyncWriteExt as _;
@@ -1363,6 +1364,7 @@ mod tests {
     /// that cfrs read first goes back in front of the request).
     #[tokio::test]
     async fn an_rpc_stream_is_reset_and_a_data_stream_is_served() {
+        crate::test_host::need_loopback!();
         use crate::cloudflare::schema::ConnectionType;
         use std::sync::Arc;
         use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -1722,6 +1724,7 @@ mod tests {
     // not get the header.
     #[tokio::test]
     async fn the_credential_in_front_of_the_tunnel() {
+        crate::test_host::need_loopback!();
         use tokio::io::AsyncReadExt as _;
         use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
         // An origin that answers with the request head it got.
@@ -1810,6 +1813,7 @@ mod tests {
     // Issue 199: an HTTP request to a raw TCP origin gets 501, with no dial.
     #[tokio::test]
     async fn an_http_request_to_a_tcp_origin_gets_501() {
+        crate::test_host::need_loopback!();
         use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let service = Service::Tcp(listener.local_addr().unwrap().to_string());

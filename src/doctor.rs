@@ -1134,6 +1134,7 @@ mod tests {
     // Issue 180: a refused direct dial is an answer, not unknown.
     #[tokio::test]
     async fn a_direct_refusal_is_an_answer() {
+        crate::test_host::need_loopback!();
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()

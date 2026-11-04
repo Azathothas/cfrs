@@ -1471,6 +1471,7 @@ mod tests {
     // Issue 119: the retries go on for a time budget, not for a count.
     #[tokio::test]
     async fn verify_waits_through_edge_errors() {
+        crate::test_host::need_loopback!();
         let url = origin(vec![530, 530, 502, 200]).await;
         let ok = verify_fetch(
             &url,
@@ -1486,6 +1487,7 @@ mod tests {
     // Issue 119: a verify that fails exits 69 (unavailable), not 1.
     #[tokio::test]
     async fn a_failed_verify_exits_69_after_the_budget() {
+        crate::test_host::need_loopback!();
         let url = origin(vec![530]).await;
         let start = std::time::Instant::now();
         let err = verify_fetch(
@@ -1505,6 +1507,7 @@ mod tests {
     // Issue 119: a 404 of `serve` with no index.html is its normal answer.
     #[tokio::test]
     async fn an_accepted_status_of_the_origin_verifies() {
+        crate::test_host::need_loopback!();
         let url = origin(vec![404]).await;
         let ok = verify_fetch(
             &url,
@@ -1521,6 +1524,7 @@ mod tests {
     /// address needs no lookup, and a URL with no host is "none".
     #[tokio::test]
     async fn the_dns_step_of_a_url() {
+        crate::test_host::need_localhost!();
         assert_eq!(public_dns("https://127.0.0.1:8443/s/x/").await, "system");
         assert_eq!(public_dns("https://localhost/").await, "system");
         assert_eq!(public_dns("https:///x").await, "none");

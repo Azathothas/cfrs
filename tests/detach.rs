@@ -1,6 +1,8 @@
 //! `--detach` (issues 70, 71, 72): an instance in the background, with no
 //! network. `cfrs net switch` is ready when its listener is bound.
 
+mod test_host;
+
 use std::io::Read as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -399,6 +401,7 @@ fn detach_options_need_detach_and_other_commands_refuse_it() {
 
 #[test]
 fn no_ready_in_time_exits_75_and_leaves_no_record() {
+    test_host::need_loopback!();
     let env = Env::new();
     // A provisioning endpoint that accepts and never answers.
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

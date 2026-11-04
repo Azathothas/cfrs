@@ -364,6 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_origin_on_localhost_connects_and_a_refusal_names_the_address() {
+        crate::test_host::need_loopback!();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(connect_origin("localhost", port).await.is_ok());

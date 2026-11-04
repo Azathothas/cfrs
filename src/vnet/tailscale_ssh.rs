@@ -320,9 +320,12 @@ mod tests {
             shims.fakepwd.display()
         );
         let env = client_environment(&shims);
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "LD_PRELOAD" && v.ends_with("fakepwd.so")));
+        // The shim is the first entry; an LD_PRELOAD of the test run
+        // (issue 217: a CI job that refuses bind) follows it.
+        assert!(env.iter().any(|(k, v)| k == "LD_PRELOAD"
+            && v.split(':')
+                .next()
+                .is_some_and(|p| p.ends_with("fakepwd.so"))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

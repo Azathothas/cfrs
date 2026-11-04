@@ -984,6 +984,7 @@ mod tests {
     /// each packet back.
     #[tokio::test]
     async fn a_tunnel_over_udp_carries_packets_both_ways() {
+        crate::test_host::need_loopback!();
         let peer_private = random::<32>();
         let keys = Keys {
             private: random::<32>(),
@@ -1041,6 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_answer_is_an_error_that_names_the_door() {
+        crate::test_host::need_loopback!();
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let peer = Peer {
             keys: Keys {

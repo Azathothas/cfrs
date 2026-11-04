@@ -788,6 +788,7 @@ mod tests {
     /// a 4xx of the first is its answer.
     #[tokio::test]
     async fn the_second_api_host_answers_after_a_failure() {
+        crate::test_host::need_loopback!();
         let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let dead_base = format!("http://{}", dead.local_addr().unwrap());
         drop(dead);

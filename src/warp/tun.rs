@@ -343,6 +343,15 @@ mod tests {
             }
         };
         assert_eq!(tun.name, name);
+        // Issue 217: in a new network namespace (unshare -n), /sys can be
+        // the sysfs of the namespace before, with no entry for the new
+        // interface.
+        if !std::path::Path::new(&format!("/sys/class/net/{name}")).exists() {
+            eprintln!(
+                "skipping, /sys/class/net has no {name} (the sysfs of another network namespace)"
+            );
+            return;
+        }
         let mtu = std::fs::read_to_string(format!("/sys/class/net/{name}/mtu")).unwrap();
         assert_eq!(mtu.trim(), "1280");
         let flags = std::fs::read_to_string(format!("/sys/class/net/{name}/flags")).unwrap();

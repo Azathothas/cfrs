@@ -188,6 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_flow_through_an_l4_door_on_the_loopback() {
+        crate::test_host::need_loopback!();
         use super::super::identity::Identity;
         crate::net::init_crypto();
         let server_id = Identity::generate().unwrap();

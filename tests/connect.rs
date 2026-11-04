@@ -1,6 +1,8 @@
 //! `cfrs connect` against local fakes: the egress layer (issues 191 and
 //! 198), the start check (issue 207) and the socket file (issue 202).
 
+mod test_host;
+
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -143,6 +145,7 @@ fn stop(child: Child) -> (Option<i32>, String) {
 // no DNS is used. Issue 202: the socket file is removed at the end.
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_dials_through_the_proxy() {
+    test_host::need_loopback!();
     let (port, lines) = fake_proxy().await;
     let dir = temp_dir("proxy");
     let sock = dir.join("s.sock");
@@ -175,6 +178,7 @@ async fn connect_dials_through_the_proxy() {
 // Issue 191: connect uses the pins of --resolve.
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_uses_resolve_pins() {
+    test_host::need_loopback!();
     let port = echo_server().await;
     let dir = temp_dir("pins");
     let sock = dir.join("s.sock");

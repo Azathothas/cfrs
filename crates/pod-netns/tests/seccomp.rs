@@ -10,6 +10,9 @@
 //! `UDP ASSOCIATE`. If the host does not offer `SECCOMP_RET_USER_NOTIF` they
 //! report that and pass, as the other shim tests do without a compiler.
 
+#[path = "../../../tests/test_host/mod.rs"]
+mod test_host;
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -624,6 +627,7 @@ fn seccomp_backend_chains_two_proxies() {
 
 #[test]
 fn seccomp_backend_relays_udp() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -753,6 +757,7 @@ fn seccomp_backend_routes_by_rule() {
 
 #[test]
 fn seccomp_backend_accepts_inbound() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -957,6 +962,7 @@ fn seccomp_backend_dials_the_tailnet_with_no_shim() {
 
 #[test]
 fn pod_netns_serves_a_udp_front_door() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -1234,6 +1240,7 @@ int main(void){
 
 #[test]
 fn seccomp_inbound_wakes_epoll_and_accept_does_not_block_the_child() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -1342,6 +1349,7 @@ fn the_program_does_not_get_the_host_proxy() {
 /// connect through it fails).
 #[test]
 fn seccomp_backend_sends_loopback_direct() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -1405,6 +1413,7 @@ int main(int argc, char **argv) {
 /// Issue 99: AAAA gets a fake ULA address, and connect maps it to the name.
 #[test]
 fn seccomp_backend_resolves_ipv6_by_name() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
@@ -1472,6 +1481,7 @@ int main(void) {
 /// memory of the program, it fails with EOPNOTSUPP (not the AF_UNIX pair).
 #[test]
 fn getpeername_is_the_inet_address_or_eopnotsupp() {
+    test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;

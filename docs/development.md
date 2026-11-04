@@ -27,6 +27,21 @@ Run `sh scripts/agent/check.sh`. It runs `cargo fmt --all --check`,
 * **Loopback only.** A unit or integration test uses loopback servers
   (`127.0.0.1:0`, a Unix socket in a temporary directory). It does not
   use the internet. The `live.yml` workflow does the live checks.
+* **Skip on a host with no loopback.** A host can refuse
+  `bind(AF_INET)`, have no loopback interface, or not resolve
+  `localhost` (issue 217). A test that needs TCP or UDP on `127.0.0.1`
+  starts with `crate::test_host::need_loopback!();` (in `src/`) or
+  `test_host::need_loopback!();` (in `tests/` and `crates/pod-netns/tests/`,
+  after `mod test_host;`). A test that resolves `localhost` starts with
+  `need_localhost!()`. The probe is `tests/test_host/mod.rs`. On such a
+  host the test prints `skipping, REASON` and returns.
+* **The restricted-host check.** `sh scripts/restricted-host.sh` runs
+  `cargo test --workspace` with `bind()` of `AF_INET` and `AF_INET6`
+  refused (EACCES) in each test binary (`scripts/deny-bind.c`). The CI job
+  `restricted-host` runs it. A new test that binds a loopback socket
+  and has no skip fails there. For the case of no loopback, run the test
+  binary in a new network namespace:
+  `unshare -Urn target/debug/deps/cfrs-HASH` (the loopback is down there).
 * **No shared state.** A test makes its own temporary directory
   (`tempfile`) and sets `CFRS_STATE_DIR` or the paths that it needs. It
   does not write in the `HOME` of the host.

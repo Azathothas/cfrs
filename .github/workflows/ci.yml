@@ -3,6 +3,7 @@ name: ci
 # The checks of each push to main and each pull request:
 #
 # * test: format, clippy, the tests, the man page.
+# * restricted-host: the tests with bind(AF_INET) refused.
 # * msrv: the workspace builds with the rust-version of Cargo.toml.
 # * static: static musl binaries for x86_64 and aarch64, with their sizes.
 # * workflows: the rules of scripts/check-workflows.py.
@@ -72,6 +73,37 @@ jobs:
           if [ -s groff.log ]; then cat groff.log; exit 1; fi
           mandoc -T lint -W error cfrs.1
           mandoc -T utf8 cfrs.1 | head -20
+
+  # #217: the tests on a host that refuses bind(AF_INET). Each test binary
+  # has an LD_PRELOAD object that makes bind() of AF_INET and AF_INET6 fail
+  # with EACCES (scripts/restricted-host.sh). A test that needs the
+  # loopback skips; no test fails or waits for a time limit.
+  restricted-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Test with bind(AF_INET) refused
+        run: sh scripts/restricted-host.sh
+      # The plant: a loopback test with no skip must fail, with EACCES.
+      - name: The check fails on its plant
+        run: |
+          set -u
+          sed -i '/fn the_probe_splits_open_and_closed_ports/{n;/need_loopback/d}' src/ports.rs
+          git diff --quiet -- src/ports.rs && { echo "the plant did not change src/ports.rs"; exit 1; }
+          if sh scripts/restricted-host.sh --lib ports::tests::the_probe_splits_open_and_closed_ports > "$RUNNER_TEMP/plant.log" 2>&1; then
+            cat "$RUNNER_TEMP/plant.log"
+            echo "the planted test passed"
+            exit 1
+          fi
+          grep -m1 PermissionDenied "$RUNNER_TEMP/plant.log" || { cat "$RUNNER_TEMP/plant.log"; echo "the plant failed for another cause"; exit 1; }
+          git checkout -- src/ports.rs
 
   # The rust-version of Cargo.toml builds the workspace. Then a planted call
   # of an API that is newer than that version must fail to build.
@@ -247,7 +279,7 @@ jobs:
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [test, msrv, static, workflows, plant]
+    needs: [test, restricted-host, msrv, static, workflows, plant]
     if: always()
     steps:
       - name: Each job passed

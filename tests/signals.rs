@@ -2,6 +2,8 @@
 //! also with --run-for, and SIGHUP stays ignored when the parent ignored
 //! it (nohup).
 
+mod test_host;
+
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -125,6 +127,7 @@ fn child_of(pid: u32) -> Option<u32> {
 // raised signal, and cfrs went on.
 #[test]
 fn a_sigterm_to_pid_1_during_provisioning_stops_cfrs() {
+    test_host::need_loopback!();
     let ok = Command::new("unshare")
         .args([
             "--pid",

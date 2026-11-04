@@ -1,6 +1,8 @@
 //! `cfrs doctor` against a local test proxy that refuses, carries nothing,
 //! or terminates TLS with its own CA (issue 11). No test uses the network.
 
+mod test_host;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -157,6 +159,7 @@ fn path<'a>(doc: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
 
 #[test]
 fn a_proxy_that_refuses_7844_and_terminates_tls() {
+    test_host::need_loopback!();
     let port = proxy(|authority| {
         if authority.ends_with(":7844") {
             Action::Refuse
@@ -198,6 +201,7 @@ fn a_proxy_that_refuses_7844_and_terminates_tls() {
 
 #[test]
 fn a_proxy_that_allows_names_and_refuses_addresses() {
+    test_host::need_loopback!();
     let port = proxy(|authority| {
         let host = authority.rsplit_once(':').map(|(h, _)| h).unwrap_or("");
         if host.parse::<std::net::IpAddr>().is_ok() {
@@ -218,6 +222,7 @@ fn a_proxy_that_allows_names_and_refuses_addresses() {
 
 #[test]
 fn a_proxy_that_answers_200_and_carries_nothing() {
+    test_host::need_loopback!();
     let port = proxy(|_| Action::Silent);
     let (code, doc, all) = doctor(port);
     assert_eq!(code, Some(1));
