@@ -733,10 +733,14 @@ jobs:
           done
           sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
           sudo ip netns exec r105 env HTTPS_PROXY=http://10.105.0.1:3128 CFRS_RUN_DIR=/tmp/cfrs-run-105 \
-            timeout 120 target/release/cfrs warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out
+            timeout 120 target/release/cfrs warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out 2> tun105.err ||
+            { cat tun105.err; exit 1; }
+          cat tun105.err
           tail -1 tun105.out > tun105.json
           jq -e '.default_route == true' tun105.json
-          grep 'outside: none needed' tun105.out
+          # Issue 263: stdout of --detach is one JSON document; the human
+          # lines are on stderr.
+          grep 'outside: none needed' tun105.err
           sudo ip netns exec r105 ip route | grep 'dev cfrs0'
           sudo ip netns exec r105 cat /etc/resolv.conf
           sudo ip netns exec r105 curl -fsS --max-time 20 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
