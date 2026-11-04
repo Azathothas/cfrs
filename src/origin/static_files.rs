@@ -187,7 +187,7 @@ fn send_file<W: ResponseWriter>(
                 .map(|d| d.as_secs())
                 .unwrap_or(0)
         );
-        if inm.split(',').any(|t| t.trim() == tag) {
+        if crate::util::http::etag_matches(inm, &tag) {
             return writer
                 .status(304)
                 .header("ETag", &tag)

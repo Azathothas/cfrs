@@ -492,7 +492,12 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 * A download name that is not ASCII goes in `filename*=UTF-8''...` (RFC
   5987), with an ASCII `filename=`.
 * `--stop-after` stops the session after the first transfer. `--idle-secs`
-  stops it after a time with no activity.
+  stops it after a time with no activity. The idle clock starts when the
+  session serves, not before the provisioning.
+* Each reply of a share session has `Cache-Control: no-store`. In proxy
+  mode, the replies of the local server keep their own headers.
+* A download answers `If-None-Match: *` and a weak tag (`W/"..."`) with
+  304.
 
 ### A credential in front of a tunnel
 

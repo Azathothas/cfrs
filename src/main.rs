@@ -3832,6 +3832,30 @@ async fn wait(deadline: Option<tokio::time::Instant>, controls: Vec<Arc<ShareCon
     }
 }
 
+/// Ready when a control has no activity for `idle_secs` (never for 0).
+///
+/// Issue 271: the idle clock starts at the call, when the session serves,
+/// not when the session was built (before the provisioning).
+fn idle_watch(
+    controls: Vec<Arc<ShareControl>>,
+    idle_secs: u64,
+) -> impl std::future::Future<Output = ()> {
+    for control in &controls {
+        control.touch();
+    }
+    let idle = (idle_secs > 0).then(|| Duration::from_secs(idle_secs));
+    async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if let Some(idle) = idle {
+                if controls.iter().any(|c| c.idle_for() >= idle) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// [`wait`] that also ends after `idle_secs` with no request (a planned
 /// end too).
 async fn wait_with_idle(
@@ -3839,20 +3863,7 @@ async fn wait_with_idle(
     controls: Vec<Arc<ShareControl>>,
     idle_secs: u64,
 ) {
-    let idle = (idle_secs > 0).then(|| Duration::from_secs(idle_secs));
-    let watch = {
-        let controls = controls.clone();
-        async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                if let Some(idle) = idle {
-                    if controls.iter().any(|c| c.idle_for() >= idle) {
-                        return;
-                    }
-                }
-            }
-        }
-    };
+    let watch = idle_watch(controls.clone(), idle_secs);
     tokio::select! {
         _ = shutdown_signal() => {}
         _ = sleep_until_opt(deadline) => cfrs::detach::planned_end(),
@@ -6377,6 +6388,19 @@ mod tests {
             .1;
         assert!(completions.contains("PowerShell"), "{completions}");
         assert!(completions.contains("Elvish"), "{completions}");
+    }
+
+    // Issue 271: the idle clock of a share starts when the session serves.
+    // A control that was built 1.1 s before does not end a session with
+    // --idle-secs 1 at the first check (5 s); in 60 s of the paused clock
+    // the watch does not end.
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_clock_starts_when_the_session_serves() {
+        let control = Arc::new(ShareControl::default());
+        std::thread::sleep(Duration::from_millis(1100));
+        let watch = idle_watch(vec![control], 1);
+        let ended = tokio::time::timeout(Duration::from_secs(60), watch).await;
+        assert!(ended.is_err(), "the watch ended at the first check");
     }
 
     /// E1: each command of cfrs is in one group of the top help.

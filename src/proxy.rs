@@ -756,9 +756,12 @@ async fn write_simple_response_with(
     body: &[u8],
     extra: &[(String, String)],
 ) -> Result<()> {
+    // Issue 271: a reply that cfrs makes (the PIN page, the unlock
+    // redirect, an error) is not stored by a cache.
     let mut headers = vec![
         ("Content-Type".to_string(), content_type.to_string()),
         ("Content-Length".to_string(), body.len().to_string()),
+        ("Cache-Control".to_string(), "no-store".to_string()),
     ];
     headers.extend(extra.iter().cloned());
     write_response_meta(writer, status, &headers).await?;

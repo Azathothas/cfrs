@@ -197,6 +197,15 @@ pub trait ResponseWriter {
     }
 }
 
+/// True when an `If-None-Match` value matches `etag` (RFC 9110 13.1.2):
+/// `*` matches each tag, and the compare is weak (`W/"a"` matches `"a"`).
+/// Issue 271: before, `*` and a weak tag did not match.
+pub fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    let bare = |t: &str| t.trim().strip_prefix("W/").unwrap_or(t.trim()).to_string();
+    let etag = bare(etag);
+    if_none_match.trim() == "*" || if_none_match.split(',').any(|t| bare(t) == etag)
+}
+
 /// Build a complete response into a `Vec<u8>`.
 ///
 /// Used on the hot path where the response is written straight to a socket.
@@ -331,6 +340,17 @@ mod tests {
         strip_hop_by_hop(&mut h);
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].0, "host");
+    }
+
+    // Issue 271: `*` and a weak tag match; a list matches by each member.
+    #[test]
+    fn etag_matches_star_weak_tags_and_lists() {
+        assert!(etag_matches("*", "\"a\""));
+        assert!(etag_matches("W/\"a\"", "\"a\""));
+        assert!(etag_matches("\"x\", \"a\"", "\"a\""));
+        assert!(etag_matches(" W/\"x\" , W/\"a\" ", "\"a\""));
+        assert!(!etag_matches("\"x\"", "\"a\""));
+        assert!(!etag_matches("", "\"a\""));
     }
 
     #[test]

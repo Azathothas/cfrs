@@ -246,12 +246,28 @@ impl Gate {
     }
 }
 
+/// Escape text for HTML content and for a quoted attribute value.
+pub fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The `next` value of the page: at most 512 characters, then escaped
+/// (issue 271: before, `&` and the quotes were removed, and
+/// `?x=1&y=2` became `?x=1y=2`).
 fn escape_attr(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !matches!(c, '<' | '>' | '"' | '\'' | '&'))
-        .take(512)
-        .collect()
+    let cut: String = value.chars().take(512).collect();
+    escape_html(&cut)
 }
 
 #[cfg(test)]
@@ -395,6 +411,17 @@ mod tests {
             &headers(&[("origin", "https://evil.example")]),
             None
         ));
+    }
+
+    // Issue 271: the next value keeps `&` and the quotes, escaped.
+    #[test]
+    fn the_next_value_is_escaped_not_filtered() {
+        let gate = Gate::pin();
+        let page = gate.page_html("/s/t/?x=1&y=2", false);
+        assert!(page.contains("value=\"/s/t/?x=1&amp;y=2\""), "{page}");
+        assert!(!page.contains("x=1y=2"), "{page}");
+        let page = gate.page_html("/a\"b'<c>", false);
+        assert!(page.contains("/a&quot;b&#39;&lt;c&gt;"), "{page}");
     }
 
     #[test]

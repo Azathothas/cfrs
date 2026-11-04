@@ -341,6 +341,7 @@ fn upload_router(config: &ShareConfig, control: Arc<ShareControl>) -> Router {
             Arc::new(config.token.clone()),
             check_session,
         ))
+        .layer(axum::middleware::map_response(no_store))
         .with_state(state)
 }
 
@@ -866,6 +867,7 @@ fn download_router(config: &ShareConfig, control: Arc<ShareControl>) -> Result<R
             Arc::new(config.token.clone()),
             check_session,
         ))
+        .layer(axum::middleware::map_response(no_store))
         .with_state(state))
 }
 
@@ -946,7 +948,9 @@ async fn download_file(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    if header_text(header::IF_NONE_MATCH).is_some_and(|v| v.split(',').any(|t| t.trim() == etag)) {
+    if header_text(header::IF_NONE_MATCH)
+        .is_some_and(|v| crate::util::http::etag_matches(&v, &etag))
+    {
         return Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, &etag)
@@ -1099,12 +1103,17 @@ async fn create_unique_with(
     Err(std::io::Error::other("no free file name"))
 }
 
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+use crate::gate::escape_html as html_escape;
+
+/// Issue 271: each response of a share session has `Cache-Control:
+/// no-store` (the landing page, the file, the PIN page, the unlock reply).
+/// A cache of the edge or of a browser keeps no copy.
+async fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(header::HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `Content-Disposition` for a download of `name` (RFC 6266): `filename=`
@@ -1642,6 +1651,72 @@ mod tests {
         assert!(!body.contains("os error"), "{body}");
         assert!(!body.contains(dir.path().to_str().unwrap()), "{body}");
         assert!(body.contains("not available"), "{body}");
+    }
+
+    // Issue 271: `If-None-Match: *` and a weak tag give 304; each response
+    // of a share has `Cache-Control: no-store`.
+    #[tokio::test]
+    async fn a_download_answers_a_weak_tag_and_is_not_stored() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"abc").unwrap();
+        let mut config = ShareConfig::download(&file);
+        let token = config.token.clone();
+        let app = ShareApp::new(config.clone()).unwrap();
+        let get = |path: String, inm: Option<String>| {
+            let mut b = http::Request::builder().uri(path);
+            if let Some(v) = inm {
+                b = b.header("if-none-match", v);
+            }
+            app.router()
+                .oneshot(b.body(axum::body::Body::empty()).unwrap())
+        };
+        let full = get(format!("/s/{token}/file"), None).await.unwrap();
+        assert_eq!(full.headers()[header::CACHE_CONTROL], "no-store");
+        let etag = full.headers()[header::ETAG].to_str().unwrap().to_string();
+        for inm in [
+            "*".to_string(),
+            format!("W/{etag}"),
+            format!("\"x\", {etag}"),
+        ] {
+            let response = get(format!("/s/{token}/file"), Some(inm.clone()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 304, "{inm}");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+        let landing = get(format!("/s/{token}/"), None).await.unwrap();
+        assert_eq!(landing.headers()[header::CACHE_CONTROL], "no-store");
+
+        config.gate = Gate::pin();
+        let app = ShareApp::new(config).unwrap();
+        let locked = app
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/s/{token}/"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(locked.headers()[header::CACHE_CONTROL], "no-store");
+        let dir = tempfile::tempdir().unwrap();
+        let config = ShareConfig::upload(dir.path());
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        let landing = app
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/s/{token}/"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(landing.headers()[header::CACHE_CONTROL], "no-store");
     }
 
     /// Twelve uploads of one name at the same time: twelve files, each with
