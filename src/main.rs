@@ -798,6 +798,7 @@ fn main() {
     // A detached child (issue 70) closes the descriptors that it got and
     // drops its flag before anything else.
     let args = cfrs::detach::prepare(std::env::args_os().collect());
+    let args = cloudflared_compat(args);
     let argv: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
@@ -1019,6 +1020,113 @@ fn main() {
 /// `--log-format json` (issue 181): the last error line is JSON too.
 static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Flags of cloudflared that cfrs does not have, with the advice for each
+/// (E9).
+const CLOUDFLARED_FLAGS: &[(&str, &str)] = &[
+    (
+        "--logfile",
+        "the log goes to stderr: redirect it (2>FILE), or use --detach and cfrs logs",
+    ),
+    (
+        "--log-directory",
+        "the log goes to stderr: redirect it, or use --detach and cfrs logs",
+    ),
+    (
+        "--pidfile",
+        "use --detach: cfrs ps shows the pid, cfrs stop stops it",
+    ),
+    ("--metrics", "cfrs has no metrics listener flag"),
+    (
+        "--origincert",
+        "a named tunnel needs --token, --token-file or --credentials-file",
+    ),
+    (
+        "--autoupdate-freq",
+        "cfrs does not update itself: cfrs update",
+    ),
+    (
+        "--grace-period",
+        "cfrs drains the open streams for up to 90 s at a stop",
+    ),
+    (
+        "--edge-ip-version",
+        "cfrs tries IPv4 and IPv6 edge addresses",
+    ),
+    ("--region", "cfrs uses the global region"),
+    (
+        "--retries",
+        "cfrs connects again with a backoff and no limit",
+    ),
+    ("--tag", "cfrs sends no tags"),
+    ("--post-quantum", "cfrs has no post-quantum option"),
+];
+
+/// cloudflared arguments for `tunnel` (E9): `tunnel run` is `tunnel`;
+/// `--no-autoupdate` is ignored; `--loglevel LEVEL` becomes -v, -vv or -q
+/// (info: nothing). Other arguments stay. Only before `--`, and only when
+/// the command is `tunnel`.
+fn cloudflared_compat(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let Some(words) = args
+        .iter()
+        .map(|a| a.to_str().map(str::to_string))
+        .collect::<Option<Vec<String>>>()
+    else {
+        return args;
+    };
+    let end = words.iter().position(|w| w == "--").unwrap_or(words.len());
+    let Some(at) = words[..end].iter().position(|w| w == "tunnel") else {
+        return args;
+    };
+    // The command is tunnel (not a value "tunnel" of another command).
+    let plain: Vec<String> = words
+        .iter()
+        .filter(|w| *w != "--no-autoupdate")
+        .cloned()
+        .collect();
+    if command_name(&plain).as_deref() != Some("tunnel") {
+        return args;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let word = &words[i];
+        if i >= end {
+            out.push(word.clone());
+            i += 1;
+            continue;
+        }
+        if i == at + 1 && word == "run" {
+            i += 1;
+            continue;
+        }
+        if word == "--no-autoupdate" {
+            i += 1;
+            continue;
+        }
+        let level = if let Some(level) = word.strip_prefix("--loglevel=") {
+            i += 1;
+            Some(level.to_string())
+        } else if word == "--loglevel" {
+            i += 2;
+            words.get(i - 1).cloned()
+        } else {
+            None
+        };
+        if let Some(level) = level {
+            match level.to_ascii_lowercase().as_str() {
+                "debug" => out.push("-v".into()),
+                "trace" => out.push("-vv".into()),
+                "warn" | "error" | "fatal" | "panic" => out.push("-q".into()),
+                _ => {}
+            }
+            continue;
+        }
+        out.push(word.clone());
+        i += 1;
+    }
+    out.into_iter().map(Into::into).collect()
+}
+
 /// The token of a file (E4): the text with no white space at the ends; an
 /// error for an empty or a large file.
 fn read_token_file(path: &std::path::Path) -> Result<String> {
@@ -1232,7 +1340,16 @@ fn usage_hints(err: &clap::Error) -> Vec<String> {
                 lines.push(hint);
             }
         }
-        ErrorKind::UnknownArgument => {}
+        ErrorKind::UnknownArgument => {
+            let word = invalid().unwrap_or_default();
+            let name = word.split('=').next().unwrap_or("");
+            if let Some((flag, advice)) = CLOUDFLARED_FLAGS.iter().find(|(f, _)| *f == name) {
+                lines.push(format!(
+                    "hint: {flag} is a flag of cloudflared, not of cfrs; {advice}"
+                ));
+                return lines;
+            }
+        }
         _ => return lines,
     }
     lines.push(format!(
@@ -6039,6 +6156,67 @@ mod tests {
             );
         }
         assert!(foreground_hint(Some("relay node"), &tunnel, false, true).is_some());
+    }
+
+    /// E9: the arguments of cloudflared for a tunnel.
+    #[test]
+    fn cloudflared_arguments_work() {
+        let run = |a: &[&str]| -> Vec<String> {
+            cloudflared_compat(a.iter().map(Into::into).collect())
+                .into_iter()
+                .map(|o| o.into_string().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            run(&["cfrs", "--no-autoupdate", "tunnel", "run", "--token", "T"]),
+            ["cfrs", "tunnel", "--token", "T"]
+        );
+        assert_eq!(
+            run(&["cfrs", "tunnel", "--loglevel", "debug", "--url", "u"]),
+            ["cfrs", "tunnel", "-v", "--url", "u"]
+        );
+        assert_eq!(
+            run(&["cfrs", "tunnel", "--loglevel=warn"]),
+            ["cfrs", "tunnel", "-q"]
+        );
+        assert_eq!(
+            run(&["cfrs", "tunnel", "--loglevel", "info"]),
+            ["cfrs", "tunnel"]
+        );
+        // Not for another command, and not after --.
+        let other = [
+            "cfrs",
+            "warp",
+            "run",
+            "--",
+            "tunnel",
+            "run",
+            "--no-autoupdate",
+        ];
+        assert_eq!(run(&other), other);
+        let other = ["cfrs", "serve", "--name", "tunnel", "--dir", "run"];
+        assert_eq!(run(&other), other);
+        // A parse of the result works.
+        let parsed = top_command().try_get_matches_from(run(&[
+            "cfrs",
+            "tunnel",
+            "run",
+            "--no-autoupdate",
+            "--loglevel",
+            "error",
+            "--url",
+            "http://127.0.0.1:1",
+        ]));
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let err = top_command()
+            .try_get_matches_from(["cfrs", "tunnel", "--logfile", "x"])
+            .unwrap_err();
+        let hints = usage_hints(&err);
+        assert!(
+            hints[0].contains("--logfile is a flag of cloudflared"),
+            "{hints:?}"
+        );
+        assert_eq!(hints.len(), 1, "{hints:?}");
     }
 
     /// E8: a word that is no command names the command for it.

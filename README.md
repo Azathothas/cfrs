@@ -346,6 +346,12 @@ line, so `TUNNEL_TOKEN` or a file is safer. `--token-file PATH` (or
 is removed. `cfrs relay connect --token-file PATH` reads a connect token,
 and `cfrs warp license -` reads the license key from stdin.
 
+A command line of cloudflared works for a tunnel: `cfrs tunnel run --token
+T` is `cfrs tunnel --token T`, `--no-autoupdate` is ignored, and
+`--loglevel debug|info|warn|error` becomes `-v`, nothing or `-q`. Another
+flag of cloudflared (`--logfile`, `--pidfile`, `--metrics`, ...) is a usage
+error with the step to take in cfrs.
+
 ### Edge protocol and transport
 
 `--protocol` selects the protocol to the edge. `--transport` selects the
