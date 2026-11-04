@@ -475,14 +475,18 @@ pub async fn create_device_with_key(key: &str, proxy: Option<&Proxy>) -> Result<
     check(resp)
 }
 
-/// The error of a refused registration (issue 187): a 429 (error 1015)
-/// names the remedy and the Retry-After. None for another status.
+/// The error of a refused registration (issue 187): a 429, or another
+/// error status with the text of error 1015, names the remedy and the
+/// Retry-After. None for another status. A success (2xx) is never this
+/// error: its body is random ids, keys and the token of the device, and
+/// can hold the digits 1015.
 pub fn registration_error(
     status: u16,
     retry_after: Option<&str>,
     body: &str,
 ) -> Option<anyhow::Error> {
-    if status != 429 && !body.contains("1015") {
+    let limited = status == 429 || (status >= 400 && body.contains("1015"));
+    if !limited {
         return None;
     }
     let wait = retry_after
@@ -831,6 +835,16 @@ mod tests {
         assert!(text.contains("wait 120 s"), "{text}");
         assert_eq!(api_status(&err), Some(429));
         assert!(registration_error(400, None, "bad key").is_none());
+        assert!(registration_error(403, None, "error code: 1015").is_some());
+    }
+
+    // Live run 41867078670: a 200 whose body holds the digits 1015 is a
+    // registered device, not the limit of error 1015.
+    #[test]
+    fn a_success_with_1015_in_the_body_is_not_the_limit() {
+        let body = r#"{"id":"a1015b","key":"x","token":"t-1015","account":{"id":"f"}}"#;
+        assert!(registration_error(200, None, body).is_none());
+        assert!(registration_error(201, None, body).is_none());
     }
 
     // Issue 141: the hints are checked; the default body is as before.
