@@ -86,6 +86,33 @@ fn pin_from(mut next: impl FnMut() -> u32) -> String {
     }
 }
 
+/// True when an unlock request does not come from another site (issue
+/// 229). A browser sends `Sec-Fetch-Site`: it must be `same-origin` or
+/// `none`. Else an `Origin` must have the authority `host` (when `host` is
+/// known); `Origin: null` is refused. A request with neither header (curl)
+/// passes: the check stops a page of another site, not a client that
+/// knows the URL.
+pub fn same_site(headers: &HeaderMap, host: Option<&str>) -> bool {
+    let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    if let Some(site) = text("sec-fetch-site") {
+        return matches!(site.trim(), "same-origin" | "none");
+    }
+    let Some(origin) = text("origin") else {
+        return true;
+    };
+    let origin = origin.trim();
+    if origin == "null" {
+        return false;
+    }
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return true;
+    };
+    origin
+        .split_once("://")
+        .map(|(_, authority)| authority.trim_end_matches('/'))
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
 impl Gate {
     pub fn off() -> Self {
         Self {
@@ -175,7 +202,7 @@ impl Gate {
         }
         self.failures.store(0, Ordering::SeqCst);
         Some(format!(
-            "{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
+            "{COOKIE_NAME}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400",
             self.session
         ))
     }
@@ -317,6 +344,57 @@ mod tests {
         }
         assert!(!gate.locked_out());
         assert!(gate.unlock(&pin).is_some());
+    }
+
+    // Issue 229: the cookie has Secure, HttpOnly and SameSite=Lax.
+    #[test]
+    fn the_cookie_is_secure() {
+        let gate = Gate::pin();
+        let pin = gate.pin_display().unwrap().to_string();
+        let cookie = gate.unlock(&pin).unwrap();
+        for part in ["; Secure", "; HttpOnly", "; SameSite=Lax"] {
+            assert!(cookie.contains(part), "{cookie}");
+        }
+    }
+
+    // Issue 229: an unlock from another site is refused.
+    #[test]
+    fn same_site_refuses_another_site() {
+        let headers = |pairs: &[(&'static str, &str)]| {
+            let mut map = HeaderMap::new();
+            for (k, v) in pairs {
+                map.insert(*k, HeaderValue::from_str(v).unwrap());
+            }
+            map
+        };
+        let host = Some("x.trycloudflare.com");
+        assert!(same_site(&headers(&[]), host));
+        assert!(same_site(
+            &headers(&[("sec-fetch-site", "same-origin")]),
+            host
+        ));
+        assert!(same_site(&headers(&[("sec-fetch-site", "none")]), host));
+        assert!(!same_site(
+            &headers(&[("sec-fetch-site", "cross-site")]),
+            host
+        ));
+        assert!(!same_site(
+            &headers(&[("sec-fetch-site", "same-site")]),
+            host
+        ));
+        assert!(same_site(
+            &headers(&[("origin", "https://x.trycloudflare.com")]),
+            host
+        ));
+        assert!(!same_site(
+            &headers(&[("origin", "https://evil.example")]),
+            host
+        ));
+        assert!(!same_site(&headers(&[("origin", "null")]), host));
+        assert!(same_site(
+            &headers(&[("origin", "https://evil.example")]),
+            None
+        ));
     }
 
     #[test]

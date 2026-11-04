@@ -465,6 +465,13 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
   start a new one. Requests at the same time get at most 10 compares in
   total. A correct code sets the count of wrong codes to 0. After the
   unlock, the browser goes back to a path of the same site only.
+* The unlock cookie has `HttpOnly`, `Secure` and `SameSite=Lax`: open the
+  session with `https://` (a browser does not keep a `Secure` cookie of
+  plain http). An unlock POST from another site (`Sec-Fetch-Site`, or an
+  `Origin` that is not the host) gets 403 and uses no try. A client that
+  knows the URL can still use the 10 tries: the edge does not give cfrs
+  the address of the visitor, so the limit is for the session, not for
+  each visitor.
 * A locked GET or HEAD gets the PIN page with 200 (for a browser). A locked
   request with another method (an upload POST, an API call) gets the page
   with 403, and nothing is done. A wrong PIN gets 403.

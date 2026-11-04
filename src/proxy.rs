@@ -572,7 +572,7 @@ async fn share_proxy(
     control: &ShareControl,
     stop_after: bool,
     request: &cqstream::ConnectRequest,
-    _host: &str,
+    host: &str,
     mut reader: EdgeReader,
     mut writer: EdgeWriter,
     metrics: &Metrics,
@@ -593,6 +593,17 @@ async fn share_proxy(
             .await;
         }
         let body = read_body(&mut reader, len).await?;
+        // Issue 229: an unlock from another site does not use a try of the
+        // PIN.
+        if !crate::gate::same_site(&headers, Some(host)) {
+            return write_simple_response(
+                &mut writer,
+                403,
+                "text/plain; charset=utf-8",
+                b"an unlock from another site is refused",
+            )
+            .await;
+        }
         let fields = parse_form(&body);
         let password = fields
             .iter()

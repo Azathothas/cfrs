@@ -369,12 +369,36 @@ struct UnlockForm {
 
 async fn unlock_upload(
     State(state): State<Arc<UploadState>>,
+    headers: HeaderMap,
+    uri: Uri,
     Form(form): Form<UnlockForm>,
 ) -> Response {
-    unlock_response(&state.gate, &form.password, &form.next)
+    unlock_response(&state.gate, &headers, &uri, &form.password, &form.next)
 }
 
-fn unlock_response(gate: &Gate, password: &str, next: &str) -> Response {
+/// The host of a request: the `Host` header, else the authority of the URI.
+fn request_host<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
+}
+
+fn unlock_response(
+    gate: &Gate,
+    headers: &HeaderMap,
+    uri: &Uri,
+    password: &str,
+    next: &str,
+) -> Response {
+    // Issue 229: an unlock from another site does not use a try of the PIN.
+    if !crate::gate::same_site(headers, request_host(headers, uri)) {
+        return (
+            StatusCode::FORBIDDEN,
+            "an unlock from another site is refused",
+        )
+            .into_response();
+    }
     match gate.unlock(password) {
         Some(cookie) => {
             let next = crate::gate::safe_next(next);
@@ -853,9 +877,11 @@ fn download_router(config: &ShareConfig, control: Arc<ShareControl>) -> Result<R
 
 async fn unlock_download(
     State(state): State<Arc<DownloadState>>,
+    headers: HeaderMap,
+    uri: Uri,
     Form(form): Form<UnlockForm>,
 ) -> Response {
-    unlock_response(&state.gate, &form.password, &form.next)
+    unlock_response(&state.gate, &headers, &uri, &form.password, &form.next)
 }
 
 async fn download_landing(
@@ -1639,6 +1665,42 @@ mod tests {
         assert_eq!(status, 403);
         assert_eq!(crate::gate::locked_status("HEAD"), 200);
         assert_eq!(crate::gate::locked_status("PUT"), 403);
+    }
+
+    // Issue 229: an unlock POST of another site gets 403, and the count of
+    // wrong codes does not change.
+    #[tokio::test]
+    async fn an_unlock_from_another_site_is_refused() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ShareConfig::upload(dir.path());
+        config.gate = Gate::pin();
+        let gate = config.gate.clone();
+        let app = ShareApp::new(config).unwrap();
+        for _ in 0..crate::gate::MAX_FAILURES {
+            let request = http::Request::builder()
+                .method("POST")
+                .uri(UNLOCK_PATH)
+                .header("host", "x.trycloudflare.com")
+                .header("origin", "https://evil.example")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from("password=000000&next=/"))
+                .unwrap();
+            let response = app.router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), 403);
+        }
+        assert!(!gate.locked_out());
+        let pin = gate.pin_display().unwrap().to_string();
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(UNLOCK_PATH)
+            .header("host", "x.trycloudflare.com")
+            .header("origin", "https://x.trycloudflare.com")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(format!("password={pin}&next=/")))
+            .unwrap();
+        let response = app.router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 303);
     }
 
     /// podssh #105: a FIFO put at the path of the shared file after the
