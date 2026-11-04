@@ -121,6 +121,9 @@ pub async fn dial(service: &Service, options: &OriginOptions) -> Result<BoxedIo>
                 let (host, port, tls) = parse_http_url(url)?;
                 let tcp = connect_origin(&host, port).await?;
                 if tls {
+                    if options.no_tls_verify {
+                        note_unverified(url);
+                    }
                     tls_wrap(tcp, &host, options.no_tls_verify).await
                 } else {
                     Ok(Box::new(tcp) as BoxedIo)
@@ -153,6 +156,9 @@ async fn dial_unix(path: &std::path::Path, tls: bool, options: &OriginOptions) -
         .await
         .with_context(|| format!("connecting to unix:{}", path.display()))?;
     if tls {
+        if options.no_tls_verify {
+            note_unverified(&format!("unix+tls:{}", path.display()));
+        }
         tls_wrap(stream, "localhost", options.no_tls_verify).await
     } else {
         Ok(Box::new(stream) as BoxedIo)
@@ -214,6 +220,23 @@ pub fn parse_http_url(url: &str) -> Result<(String, u16, bool)> {
         bail!("origin URL has no host");
     }
     Ok((host, port, tls))
+}
+
+/// One warning for each origin whose TLS certificate is not checked
+/// (noTLSVerify, #248): the first dial of it says so; the later dials do
+/// not (a warning for each request would fill the log). Gives true for
+/// the first call of `origin`.
+fn note_unverified(origin: &str) -> bool {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.iter().any(|o| o == origin) {
+        return false;
+    }
+    if seen.len() < 256 {
+        seen.push(origin.to_string());
+    }
+    tracing::warn!(%origin, "noTLSVerify: cfrs does not check the TLS certificate of this origin");
+    true
 }
 
 async fn tls_wrap<S>(stream: S, server_name: &str, no_verify: bool) -> Result<BoxedIo>
@@ -318,6 +341,15 @@ fn _pathbuf(_: PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #248: the first dial of an origin with noTLSVerify warns; the next
+    /// dials of it do not.
+    #[test]
+    fn an_unverified_origin_is_named_one_time() {
+        assert!(note_unverified("https://a.test.invalid:8443"));
+        assert!(!note_unverified("https://a.test.invalid:8443"));
+        assert!(note_unverified("https://b.test.invalid:8443"));
+    }
 
     // Issue 119: localhost needs no resolver (a host with no /etc/hosts).
     #[test]

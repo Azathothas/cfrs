@@ -4,7 +4,8 @@
 //! the origins, the files and the directories, the edge legs, `CFRS_EDGE`.
 //! It makes no call to the Cloudflare API, opens no edge connection, opens
 //! no listening socket, sends no HTTP request to an origin, and writes no
-//! file. It prints no token, no secret and no PIN.
+//! file. It makes one DNS lookup: the SRV record of the edge, with the
+//! system resolver (#277). It prints no token, no secret and no PIN.
 
 use std::path::Path;
 use std::time::Duration;
@@ -19,6 +20,32 @@ use crate::share::ShareMode;
 pub const CONNECT_LIMIT: Duration = Duration::from_secs(3);
 
 /// The result of one check.
+/// The time for the DNS lookup of the edge.
+const EDGE_LOOKUP: Duration = Duration::from_secs(5);
+
+/// The row of the edge for the lookup `found` (the number of addresses).
+/// A failure is a warning: the run tries DNS over HTTPS, then the static
+/// list.
+fn edge_row(found: anyhow::Result<usize>) -> (Status, String) {
+    match found {
+        Ok(n) if n > 0 => (
+            Status::Pass,
+            format!(
+                "{n} edge address(es) by DNS ({})",
+                crate::edge_discovery::EDGE_SRV
+            ),
+        ),
+        Ok(_) => (
+            Status::Warn,
+            "the system resolver gives no edge address; the run tries DNS over HTTPS, then the static list".into(),
+        ),
+        Err(err) => (
+            Status::Warn,
+            format!("the system resolver cannot find the edge ({err:#}); the run tries DNS over HTTPS, then the static list"),
+        ),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Pass,
@@ -163,7 +190,17 @@ pub async fn check(config: &Config) -> Report {
             Status::Pass,
             format!("CFRS_EDGE gives {} address(es)", list.len()),
         ),
-        Ok(None) => report.push("edge", Status::Pass, "edge discovery by DNS"),
+        Ok(None) => {
+            // #277: the row names a lookup, so it makes the lookup.
+            let found = tokio::time::timeout(
+                EDGE_LOOKUP,
+                crate::edge_discovery::discover_system(crate::cloudflare::IpVersionFilter::Auto),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("no answer in {} s", EDGE_LOOKUP.as_secs())));
+            let (status, detail) = edge_row(found.map(|edges| edges.len()));
+            report.push("edge", status, detail);
+        }
         Err(err) => report.config_fail("edge", format!("{err:#}")),
     }
 
@@ -464,6 +501,21 @@ fn writable(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #277: the edge row comes from a lookup; a failed lookup warns.
+    #[test]
+    fn the_edge_row_comes_from_a_lookup() {
+        let (status, detail) = edge_row(Ok(20));
+        assert_eq!(status.name(), Status::Pass.name());
+        assert!(detail.starts_with("20 edge address(es)"), "{detail}");
+        let (status, detail) = edge_row(Err(anyhow::anyhow!("SERVFAIL")));
+        assert_eq!(status.name(), Status::Warn.name());
+        assert!(
+            detail.contains("SERVFAIL") && detail.contains("static list"),
+            "{detail}"
+        );
+        assert_eq!(edge_row(Ok(0)).0.name(), Status::Warn.name());
+    }
     use crate::config::Config;
     use crate::ingress::Ingress;
     use crate::share::ShareConfig;

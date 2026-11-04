@@ -178,7 +178,6 @@ mod tests {
 // Shared helpers: TLS configuration, HTTP, and metrics.
 
 pub mod http;
-pub mod metrics;
 pub mod tls;
 
 /// Whether the process is being run for tests, so behaviour that would touch

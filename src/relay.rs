@@ -61,8 +61,20 @@ impl Default for RelayConfig {
             address: DEFAULT_RELAY.to_string(),
             proxy: None,
             username: "cfrs".to_string(),
-            unix_socket: std::path::PathBuf::from("/tmp/cfrs-origin.sock"),
+            unix_socket: default_origin_socket(),
             connect_timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+/// The default socket of the origin (#230): `origin.sock` in a private
+/// directory of this user (`state::exec_dir`, mode 0700), not a fixed path
+/// in the shared `/tmp` that another user can make first.
+pub fn default_origin_socket() -> std::path::PathBuf {
+    match crate::state::exec_dir("cfrs-relay") {
+        Ok(dir) => dir.join("origin.sock"),
+        Err(_) => {
+            std::env::temp_dir().join(format!("cfrs-origin-{}.sock", unsafe { libc::geteuid() }))
         }
     }
 }
@@ -503,6 +515,23 @@ pub async fn run(config: RelayConfig) -> Result<(TunnelHandle, Handle<Client>), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #230: the default origin socket is in a private directory of this
+    /// user, not a fixed path of the shared /tmp.
+    #[test]
+    fn the_default_origin_socket_is_private() {
+        use std::os::unix::fs::MetadataExt as _;
+        let path = RelayConfig::default().unix_socket;
+        assert_ne!(path, std::path::PathBuf::from("/tmp/cfrs-origin.sock"));
+        if let Some(dir) = path
+            .parent()
+            .filter(|d| d.is_dir() && *d != std::env::temp_dir())
+        {
+            let meta = std::fs::metadata(dir).unwrap();
+            assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+            assert_eq!(meta.mode() & 0o077, 0, "{}", dir.display());
+        }
+    }
 
     #[test]
     fn splits_a_valid_host_port() {
