@@ -229,23 +229,35 @@ impl Tunnel {
                 LegKind::QuicDirect => Box::pin(bounded(limited, async move {
                     let edges = direct_targets().await?;
                     let endpoint = quic_dial::build_endpoint()?;
-                    let (conn, control, location) =
-                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
+                    let (conn, control, location) = register_retrying(|| {
+                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges)
+                    })
+                    .await?;
                     Ok((First::Quic(edges, endpoint, conn, control, location), None))
                 })),
                 LegKind::H2Direct | LegKind::H2Relay => Box::pin(bounded(limited, async move {
                     let edges = direct_targets().await?;
                     let options = rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
-                    let leg = crate::edge_h2::connect(
-                        &edges, auth, tunnel_id, 0, &options, runtime, ingress,
-                    )
+                    let leg = register_retrying(|| {
+                        crate::edge_h2::connect(
+                            &edges,
+                            auth,
+                            tunnel_id,
+                            0,
+                            &options,
+                            runtime.clone(),
+                            ingress.clone(),
+                        )
+                    })
                     .await?;
                     Ok((First::H2(edges, leg), None))
                 })),
                 LegKind::QuicWarp => Box::pin(async move {
                     let (edges, link, endpoint) = warp_targets(warp_identity.as_deref()).await?;
-                    let (conn, control, location) =
-                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges).await?;
+                    let (conn, control, location) = register_retrying(|| {
+                        connect_once(&endpoint, auth, tunnel_id, 0, false, &edges)
+                    })
+                    .await?;
                     let kept = Some(link);
                     Ok((First::Quic(edges, endpoint, conn, control, location), kept))
                 }),
@@ -676,6 +688,49 @@ enum First {
 
 /// Give `attempt` a time limit when another leg can follow it. A filtered
 /// port does not answer, so do not wait for the transport's own timeout.
+/// The tries of the first registration of a leg.
+const REGISTER_TRIES: u32 = 3;
+
+/// Run `attempt` again when the edge refuses the registration and asks for
+/// a retry (`retry: yes`), at most [`REGISTER_TRIES`] times, after the wait
+/// that it asks for (1 s to 5 s). A new quick tunnel can be "not found" at
+/// the edge for a moment after its provision; before, the first refusal
+/// ended the leg, and with one leg the start exited 69.
+async fn register_retrying<T, F, Fut>(mut attempt: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut tries = 1;
+    loop {
+        let err = match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(err) => err,
+        };
+        let refused = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<rpc::Refused>())
+            .filter(|r| r.should_retry)
+            .cloned();
+        match refused {
+            Some(refused) if tries < REGISTER_TRIES => {
+                let wait = refused
+                    .retry_after
+                    .clamp(Duration::from_secs(1), Duration::from_secs(5));
+                info!(
+                    cause = %refused.cause,
+                    try_ = tries,
+                    wait_s = wait.as_secs(),
+                    "the edge refused the registration and asks for a retry; cfrs tries again"
+                );
+                tokio::time::sleep(wait).await;
+                tries += 1;
+            }
+            _ => return Err(err),
+        }
+    }
+}
+
 async fn bounded<T>(
     limited: bool,
     attempt: impl std::future::Future<Output = Result<T>>,
@@ -1268,6 +1323,51 @@ async fn public_dns(url: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A refusal with retry: yes in the first registration is tried again
+    // (live run 41743390095: "Tunnel not found" for a new quick tunnel); a
+    // refusal with retry: no ends the leg at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_retryable_refusal_of_the_first_registration_is_tried_again() {
+        let refused = |retry: bool| {
+            anyhow::Error::new(rpc::Refused {
+                cause: "Unauthorized: Tunnel not found".into(),
+                should_retry: retry,
+                retry_after: Duration::from_secs(1),
+            })
+        };
+        let mut calls = 0;
+        let got = register_retrying(|| {
+            calls += 1;
+            let n = calls;
+            async move {
+                if n < 3 {
+                    Err(refused(true))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(got, 3);
+        let mut calls = 0;
+        let err = register_retrying(|| {
+            calls += 1;
+            async { Err::<(), _>(refused(false)) }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(format!("{err:#}").contains("retry: no"));
+        let mut calls = 0;
+        let _ = register_retrying(|| {
+            calls += 1;
+            async { Err::<(), _>(refused(true)) }
+        })
+        .await;
+        assert_eq!(calls, REGISTER_TRIES);
+    }
 
     /// A local HTTP origin: answer N of `statuses` gives the Nth status,
     /// then the last one again.
