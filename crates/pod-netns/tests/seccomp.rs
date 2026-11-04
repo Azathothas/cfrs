@@ -1436,12 +1436,15 @@ fn seccomp_backend_resolves_ipv6_by_name() {
     assert_eq!(rx.recv().unwrap(), "example.com:80");
 
     // A name pinned to an IPv4 address has no AAAA: a clean EAI_NODATA, not
-    // EAI_SYSTEM.
+    // EAI_SYSTEM. After a NODATA answer, glibc tries the search domains of
+    // the host (example.com.SEARCH), and the fake DNS answers each name: an
+    // empty LOCALDOMAIN removes the search list of a CI runner.
     let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
         .args(["--backend", "seccomp", "--map", "example.com=1.2.3.4", "-x"])
         .arg(format!("unix:{}", sock.display()))
         .arg("--")
         .arg(&program)
+        .env("LOCALDOMAIN", "")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
