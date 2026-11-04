@@ -39,23 +39,26 @@ state of the open work.
   `actions_run_trigger`). No comment has an attribution line (`CLAUDE.md`).
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
-* **Helper scripts** (in `scripts/agent/`):
+* **Helper scripts of the agent** (in `scripts/agent/`):
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push.
-  * `watch-issues.sh [STATE_DIR]`: one line for each new issue.
+  * `watch-issues.sh [STATE_DIR]`: one line for each new issue
+    (`new-issues.py` reads the issue list).
   * `watch-runs.sh FULL_SHA [MIN_RUNS]`: each run of a commit when it ends,
-    with the failed jobs and steps. Give the full SHA (`git rev-parse
-    HEAD`): the API does not match a short SHA. A push to `main` starts
-    four runs (`ci`, `live`, `deny`, `secrets`): `MIN_RUNS` 4.
+    with the failed jobs and steps (`runs.py` reads the run list). Give the
+    full SHA (`git rev-parse HEAD`): the API does not match a short SHA. A
+    push to `main` starts four runs (`ci`, `live`, `deny`, `secrets`):
+    `MIN_RUNS` 4.
+* **Other scripts** (in `scripts/`):
   * `v6only/up.sh BINARY`, `v6only/run.sh CMD`, `v6only/acceptance.sh
     BINARY`, `v6only/down.sh`: an IPv6-only host on a runner (issue 163).
+    They need root, `ip`, `iptables` and `ip6tables`; they cannot run in
+    this sandbox (no IPv6 in its kernel).
   * `live-batch2.sh BINARY`: the live checks of warp exit, scan, the rules,
     forward, a nested session and export (issues 132 to 159).
   * `rebuild.sh TAG [TARGET]`: rebuild the binaries of a release and
     compare them with its SHA256SUMS (issue 162).
   * `quic-vn.py HOST PORT`: the QUIC versions of a UDP endpoint (Version
     Negotiation; issue 157).
-    It needs root, `ip`, `iptables` and `ip6tables`; it cannot run in this
-    sandbox (no IPv6 in its kernel).
   * Run the two watchers under the Monitor tool (a monitor stops after
     30 min: start it again when it ends).
 

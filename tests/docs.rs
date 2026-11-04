@@ -38,7 +38,63 @@ fn each_new_release_note_has_a_breaking_section() {
         }
         checked += 1;
     }
-    let _ = checked;
+    assert!(checked > 0, "no release note after v0.3.0-beta.6 was checked");
+}
+
+/// Each repository path in backticks in the documents exists (podssh: a
+/// document named scripts in the wrong directory).
+#[test]
+fn each_path_in_the_documents_exists() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let documents = [
+        "README.md",
+        "SECURITY.md",
+        "docs/maintenance.md",
+        "docs/protocol.md",
+        "docs/virtual-network.md",
+        "docs/target-environment.md",
+    ];
+    let prefixes = ["scripts/", "docs/", "src/", "tests/", "crates/", ".github/", "fuzz/"];
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for document in documents {
+        let text = std::fs::read_to_string(root.join(document)).unwrap();
+        for (i, part) in text.split('`').enumerate() {
+            // The odd parts are in backticks.
+            if i % 2 == 0 || !prefixes.iter().any(|p| part.starts_with(p)) {
+                continue;
+            }
+            let path = part.trim_end_matches(['.', ',', ':']);
+            let plain = path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_./-".contains(c));
+            // A template (vX.Y.Z) or a path with arguments is not a path.
+            if !plain || path.contains("X.Y.Z") {
+                continue;
+            }
+            seen += 1;
+            if !root.join(path).exists() {
+                missing.push(format!("{document}: {path}"));
+            }
+        }
+    }
+    assert!(seen > 20, "the test found only {seen} paths");
+    assert!(missing.is_empty(), "missing paths: {missing:#?}");
+}
+
+/// The known gaps of SECURITY.md say what is true now: no "not done yet"
+/// for work that is done, and no "yet" for a platform that the project
+/// does not build for.
+#[test]
+fn the_security_gaps_have_no_stale_yet() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("SECURITY.md")).unwrap();
+    let gaps = &text[text.find("## Known gaps").expect("a Known gaps section")..];
+    let flat = gaps.split_whitespace().collect::<Vec<_>>().join(" ");
+    for stale in ["not done yet", "for them yet", "Windows or macOS yet"] {
+        assert!(!flat.contains(stale), "SECURITY.md: {stale:?}");
+    }
+    assert!(root.join("fuzz").is_dir(), "SECURITY.md names fuzz/");
 }
 
 /// Issue 176: a flag of `cfrs warp` is not a global flag of cfrs. The

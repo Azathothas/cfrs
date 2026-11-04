@@ -129,10 +129,11 @@ ESC, BEL, CR and C1 controls through the error path.
 
 * No third party has audited cfrs.
 * The Cap'n Proto encoding, the RPC subset, the HTTP/2 edge transport, the
-  MASQUE client and the YAML reader are written for cfrs. The fuzz tests of
-  issue #5 are not done yet.
-* cfrs does not read the certificate stores of Windows or macOS: no release
-  is built for them yet (issue #1).
+  MASQUE client and the YAML reader are written for cfrs. Each parser of
+  bytes from the network has a libFuzzer target in `fuzz/`
+  (`.github/workflows/fuzz.yml`), but fuzzing finds only some defects.
+* cfrs is for Linux only. It does not read the certificate stores of
+  Windows or macOS, and no release is built for them.
 * The `/tmp` paths of the Unix sockets are known to each user. Another user
   can make the path first. Then the bind fails; cfrs does not use the file of
   the other user. Use `--listen unix:` with a path in a private directory.
