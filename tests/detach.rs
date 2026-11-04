@@ -645,3 +645,57 @@ fn wait_for_a_name_that_never_existed_says_so() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no instance nosuch"), "{err}");
 }
+
+/// The names of the files in `dir`, sorted.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+// Issue 260: logs, stop and wait check the name before they make a path. A
+// name with a slash or a dot cannot read, lock or remove a file outside the
+// run directory.
+#[test]
+fn logs_stop_and_wait_refuse_a_name_that_leaves_the_run_directory() {
+    let env = Env::new();
+    std::fs::create_dir_all(&env.run).unwrap();
+    let outer = env.run.parent().unwrap().join("outer");
+    std::fs::create_dir(&outer).unwrap();
+    std::fs::write(outer.join("secret.log"), "SECRET\n").unwrap();
+    std::fs::write(outer.join("v.json"), "{}").unwrap();
+    std::fs::write(outer.join("v.lock"), "").unwrap();
+    let before = listing(&outer);
+    let abs = format!("{}/v", outer.display());
+    for name in [
+        "../outer/secret",
+        "../outer/v",
+        "../outer/w",
+        abs.as_str(),
+        "a/b",
+        ".hidden",
+    ] {
+        for args in [
+            vec!["logs", name],
+            vec!["stop", name, "--timeout", "1"],
+            vec!["wait", name, "--timeout", "1"],
+        ] {
+            let out = env.run(&args);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(64), "{args:?}: {stderr}");
+            assert!(stderr.contains("instance name"), "{args:?}: {stderr}");
+            assert!(
+                !String::from_utf8_lossy(&out.stdout).contains("SECRET"),
+                "{args:?}"
+            );
+        }
+    }
+    assert_eq!(listing(&outer), before, "the outer directory is unchanged");
+    assert!(listing(&env.run).is_empty(), "{:?}", listing(&env.run));
+}

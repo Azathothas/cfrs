@@ -106,14 +106,18 @@ pub struct Paths {
     pub log: PathBuf,
 }
 
-pub fn paths(dir: &Path, name: &str) -> Paths {
-    Paths {
+/// The files of `name` in `dir`. The name is checked first
+/// ([`check_name`]): a name such as `../x` or `/x` must not give a path
+/// outside `dir` (issue 260).
+pub fn paths(dir: &Path, name: &str) -> Result<Paths> {
+    check_name(name)?;
+    Ok(Paths {
         record: dir.join(format!("{name}.json")),
         lock: dir.join(format!("{name}.lock")),
         child_lock: dir.join(format!("{name}.child.lock")),
         start: dir.join(format!("{name}.start")),
         log: dir.join(format!("{name}.log")),
-    }
+    })
 }
 
 /// The record of an instance.
@@ -150,14 +154,14 @@ pub struct Record {
 
 /// Read the record of `name`, if there is one that parses.
 pub fn read(dir: &Path, name: &str) -> Option<Record> {
-    let text = std::fs::read_to_string(paths(dir, name).record).ok()?;
+    let text = std::fs::read_to_string(paths(dir, name).ok()?.record).ok()?;
     serde_json::from_str(&text).ok()
 }
 
 /// Write the record (mode 0600) with a rename, so a reader never sees half.
 pub fn write(dir: &Path, record: &Record) -> Result<()> {
     use std::io::Write as _;
-    let path = paths(dir, &record.name).record;
+    let path = paths(dir, &record.name)?.record;
     let tmp = dir.join(format!(".{}.json.{}", record.name, std::process::id()));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -231,7 +235,9 @@ pub fn lock(path: &Path) -> Result<Held> {
 /// supervisor, or the lock of its child (a child goes on when its
 /// supervisor is killed).
 pub fn is_alive(dir: &Path, name: &str) -> bool {
-    let p = paths(dir, name);
+    let Ok(p) = paths(dir, name) else {
+        return false;
+    };
     [p.lock, p.child_lock]
         .iter()
         .any(|lock| matches!(try_lock(lock), Ok(None)))
@@ -239,7 +245,9 @@ pub fn is_alive(dir: &Path, name: &str) -> bool {
 
 /// Remove the files of `name` (not the log, which can tell why it ended).
 pub fn remove(dir: &Path, name: &str) {
-    let p = paths(dir, name);
+    let Ok(p) = paths(dir, name) else {
+        return;
+    };
     let _ = std::fs::remove_file(p.record);
     let _ = std::fs::remove_file(p.lock);
     let _ = std::fs::remove_file(p.child_lock);
@@ -326,6 +334,26 @@ mod tests {
     }
 
     #[test]
+    fn a_name_that_leaves_the_directory_gives_no_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("run");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(dir.path().join("x.json"), "{}").unwrap();
+        for bad in ["../x", "/abs/x", "a/b", ".hidden", ""] {
+            assert!(paths(&inner, bad).is_err(), "{bad}");
+            assert!(read(&inner, bad).is_none(), "{bad}");
+            assert!(!is_alive(&inner, bad), "{bad}");
+            remove(&inner, bad);
+        }
+        assert!(
+            dir.path().join("x.json").exists(),
+            "remove left the outer file"
+        );
+        assert!(!dir.path().join("x.lock").exists());
+        assert!(std::fs::read_dir(&inner).unwrap().next().is_none());
+    }
+
+    #[test]
     fn a_held_lock_is_alive_and_a_free_lock_is_stale() {
         let dir = tempfile::tempdir().unwrap();
         let record = Record {
@@ -335,9 +363,13 @@ mod tests {
             ..Record::default()
         };
         write(dir.path(), &record).unwrap();
-        let held = try_lock(&paths(dir.path(), "t").lock).unwrap().unwrap();
+        let held = try_lock(&paths(dir.path(), "t").unwrap().lock)
+            .unwrap()
+            .unwrap();
         assert!(is_alive(dir.path(), "t"));
-        assert!(try_lock(&paths(dir.path(), "t").lock).unwrap().is_none());
+        assert!(try_lock(&paths(dir.path(), "t").unwrap().lock)
+            .unwrap()
+            .is_none());
         let listed = list(dir.path());
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].record, record);
@@ -380,7 +412,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mode = std::fs::metadata(paths(dir.path(), "p").record)
+        let mode = std::fs::metadata(paths(dir.path(), "p").unwrap().record)
             .unwrap()
             .permissions()
             .mode();

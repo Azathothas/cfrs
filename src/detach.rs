@@ -156,11 +156,11 @@ pub fn retry_after(secs: u64) {
 /// holds the lock, the error says so.
 pub fn child_begin() -> Result<()> {
     let name = std::env::var(NAME_VARIABLE).context("a detached child with no instance name")?;
-    instances::check_name(&name)?;
     let hash = std::env::var(HASH_VARIABLE).unwrap_or_default();
     let command = std::env::var(COMMAND_VARIABLE).unwrap_or_default();
+    instances::check_name(&name)?;
     let dir = instances::run_dir()?;
-    let paths = instances::paths(&dir, &name);
+    let paths = instances::paths(&dir, &name)?;
     let supervised = std::env::var_os(SUPERVISED_VARIABLE).is_some();
     let lock_path = if supervised {
         &paths.child_lock
@@ -222,7 +222,7 @@ pub fn child_begin() -> Result<()> {
 pub fn register(name: &str, command: &str) -> Result<()> {
     instances::check_name(name)?;
     let dir = instances::run_dir()?;
-    let paths = instances::paths(&dir, name);
+    let paths = instances::paths(&dir, name)?;
     let lock = instances::try_lock(&paths.lock)?
         .with_context(|| format!("the instance {name} runs already"))?;
     let record = Record {
@@ -462,8 +462,7 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
         Some(name) => name.clone(),
         None => default_name(command, &hash),
     };
-    instances::check_name(&name).map_err(|e| fault(Fault::Usage, e))?;
-    let paths = instances::paths(&dir, &name);
+    let paths = instances::paths(&dir, &name).map_err(|e| fault(Fault::Usage, e))?;
     // One start at a time for each name.
     let _start = instances::lock(&paths.start)?;
     if instances::is_alive(&dir, &name) {
@@ -671,7 +670,7 @@ pub fn stop(dir: &Path, name: &str, timeout: Duration) -> Result<()> {
     }
     // A pid gets a signal only while its process holds its lock: a pid of
     // the record can belong to another process after a crash.
-    let p = instances::paths(dir, name);
+    let p = instances::paths(dir, name)?;
     let held = |lock: &Path| matches!(instances::try_lock(lock), Ok(None));
     let targets = || -> Vec<u32> {
         match record.supervisor {
@@ -779,7 +778,7 @@ mod supervise {
         let name = std::env::var(NAME_VARIABLE).context("a supervisor with no instance name")?;
         instances::check_name(&name)?;
         let dir = instances::run_dir()?;
-        let paths = instances::paths(&dir, &name);
+        let paths = instances::paths(&dir, &name)?;
         let _lock = instances::try_lock(&paths.lock)?
             .with_context(|| format!("the instance {name} runs already"))?;
         // SAFETY: a handler that only stores to an atomic.
@@ -1097,7 +1096,7 @@ mod tests {
     #[test]
     fn wait_at_its_limit_exits_124() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = instances::paths(dir.path(), "slow");
+        let paths = instances::paths(dir.path(), "slow").unwrap();
         let _lock = instances::try_lock(&paths.lock).unwrap().unwrap();
         let record = Record {
             name: "slow".into(),

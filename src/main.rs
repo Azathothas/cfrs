@@ -1879,6 +1879,7 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
             .collect()
     } else {
         let name = name.unwrap_or_default();
+        cfrs::instances::check_name(&name).map_err(|e| cfrs::exit::fault(Fault::Usage, e))?;
         if cfrs::instances::read(&dir, &name).is_none() || !cfrs::instances::is_alive(&dir, &name) {
             cfrs::instances::remove(&dir, &name);
             return Err(cfrs::exit::fault(
@@ -1899,7 +1900,9 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
 async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Result<()> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
     let dir = cfrs::instances::lookup_dir();
-    let path = cfrs::instances::paths(&dir, name).log;
+    let path = cfrs::instances::paths(&dir, name)
+        .map_err(|e| cfrs::exit::fault(Fault::Usage, e))?
+        .log;
     let text = std::fs::read(&path).map_err(|e| {
         cfrs::exit::fault(
             Fault::Unavailable,
@@ -2441,6 +2444,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             lines,
         } => instances_logs(&name, follow, lines).await,
         Command::Wait { name, timeout } => {
+            cfrs::instances::check_name(&name).map_err(|e| cfrs::exit::fault(Fault::Usage, e))?;
             let dir = cfrs::instances::lookup_dir();
             let doc = cfrs::detach::wait_ready_record(
                 &dir,
