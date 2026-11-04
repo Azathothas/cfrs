@@ -30,6 +30,7 @@ pub const TARGETS: &[(&str, Target)] = &[
     ("config_yaml", config_yaml),
     ("h2_header_block", h2_header_block),
     ("vnet_frame", vnet_frame),
+    ("request_head", request_head),
 ];
 
 /// Visit each pointer of a struct, to the depth `depth`.
@@ -186,6 +187,60 @@ pub fn h2_header_block(data: &[u8]) {
     }
 }
 
+/// The HTTP/1.1 head to the origin, from the fields of a `ConnectRequest`
+/// of the edge (issue 272): the fields are split at the 0 bytes (the
+/// method, the destination, the host, then header names and values). A
+/// head that is built has one empty line, at its end, and each line ends
+/// with CR LF.
+pub fn request_head(data: &[u8]) {
+    use crate::cloudflare::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
+    let fields: Vec<String> = data
+        .split(|b| *b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect();
+    let field = |i: usize| fields.get(i).cloned().unwrap_or_default();
+    let mut metadata = vec![
+        (HTTP_METHOD_KEY.to_string(), field(0)),
+        (HTTP_HOST_KEY.to_string(), field(2)),
+    ];
+    for pair in fields.get(3..).unwrap_or_default().chunks(2) {
+        let value = pair.get(1).cloned().unwrap_or_default();
+        metadata.push((format!("{HTTP_HEADER_KEY}:{}", pair[0]), value));
+    }
+    let request = crate::cloudflare::stream::ConnectRequest {
+        dest: field(1),
+        conn_type: crate::cloudflare::stream::ConnectionType::Http,
+        metadata,
+    };
+    let options = crate::ingress::OriginOptions::default();
+    for upgrade in [false, true] {
+        if let Ok(head) = crate::proxy::build_request_head(&request, &options, upgrade) {
+            assert!(head.ends_with("\r\n\r\n"), "{head:?}");
+            assert_eq!(head.matches("\r\n\r\n").count(), 1, "{head:?}");
+            let crlf = head.matches("\r\n").count();
+            assert_eq!(head.matches('\r').count(), crlf, "{head:?}");
+            assert_eq!(head.matches('\n').count(), crlf, "{head:?}");
+            // Each header line is a pair of the input, or a line that cfrs
+            // writes: no field makes a line of its own.
+            let pairs: Vec<String> = fields
+                .get(3..)
+                .unwrap_or_default()
+                .chunks(2)
+                .map(|p| format!("{}: {}", p[0], p.get(1).cloned().unwrap_or_default()))
+                .collect();
+            for line in head.trim_end().split("\r\n").skip(1) {
+                assert!(
+                    pairs.iter().any(|p| p == line)
+                        || ["Host: ", "Connection: ", "Upgrade: "]
+                            .iter()
+                            .any(|own| line.starts_with(own)),
+                    "{line:?} in {head:?}"
+                );
+            }
+        }
+    }
+}
+
 /// A frame of the virtual network.
 pub fn vnet_frame(data: &[u8]) {
     let mut reader = data;
@@ -248,6 +303,11 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
         ]),
         "h2_header_block" => s(&["Q29udGVudC1UeXBl:dGV4dC9wbGFpbg;WC1B:Yg"]),
         "vnet_frame" => vec![vec![0x00, 0x03, 1, 2, 3], vec![0x80, 0x01, 9]],
+        "request_head" => s(&[
+            "GET\0https://x.example/a?b=1\0x.example\0Accept\0*/*\0Cookie\0a=b",
+            "POST\0https://x/u\0x\0Transfer-Encoding\0chunked\0Connection\0close, X-Hop\0X-Hop\0one",
+            "GET\0https://x/ws\0x\0Upgrade\0websocket\0X-A\0a\r\nInjected: 1",
+        ]),
         _ => Vec::new(),
     }
 }

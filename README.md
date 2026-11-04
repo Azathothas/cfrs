@@ -1269,7 +1269,8 @@ The `LD_PRELOAD` shims need a C compiler at run time (`cc`, `gcc` or
 
 `fuzz/` has a libFuzzer target for each parser of bytes from the network
 (Cap'n Proto, the RPC of the edge, capsules, proxy URLs and answers, SRV
-and DoH, ACL rules, ingress rules, YAML, HTTP/2 headers, vnet frames). It
+and DoH, ACL rules, ingress rules, YAML, HTTP/2 headers, vnet frames, the
+request head to the origin). It
 needs a nightly toolchain and glibc. `.github/workflows/fuzz.yml` runs each
 target each week. A crash input becomes a unit test before the fix.
 

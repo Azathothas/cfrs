@@ -135,3 +135,10 @@ path = "fuzz_targets/vnet_frame.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "request_head"
+path = "fuzz_targets/request_head.rs"
+test = false
+doc = false
+bench = false

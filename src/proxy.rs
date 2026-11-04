@@ -839,7 +839,7 @@ pub(crate) async fn write_response_meta(
 /// the headers that `Connection` names stay on their hop (issue 235), but
 /// `Transfer-Encoding` stays: a chunked request body goes to the origin as
 /// it is.
-fn build_request_head(
+pub(crate) fn build_request_head(
     request: &cqstream::ConnectRequest,
     options: &OriginOptions,
     upgrade: bool,
