@@ -28,7 +28,8 @@ ignore = []
 version = 2
 confidence-threshold = 0.93
 # The same list as about.toml. LGPL and GPL are not allowed: the release
-# binaries are static.
+# binaries are static. An entry that no crate uses now (BSD-2-Clause, #245)
+# stays allowed for a later dependency; cargo deny only warns.
 allow = [
   "0BSD",
   "Apache-2.0",

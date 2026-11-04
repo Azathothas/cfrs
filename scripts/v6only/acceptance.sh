@@ -44,6 +44,9 @@ printf '%s\n' "$saved" | sudo tee /etc/netns/v6only/resolv.conf > /dev/null
 [ "$status" -eq 0 ]
 
 say "warp tun --default-route with the IPv6 front door"
+# The files of the redirect belong to this user, not to root (SC2024 is
+# the wanted behaviour here).
+# shellcheck disable=SC2024
 sudo ip netns exec v6only env CFRS_STATE_DIR=none RUST_LOG=cfrs=info \
     timeout 60 "$bin" warp --ephemeral --masque-endpoint '[2606:4700:103::2]:443' \
     tun --default-route --interface cfrs1 > v6tun.out 2> v6tun.err &

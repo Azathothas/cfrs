@@ -157,6 +157,29 @@ jobs:
           persist-credentials: false
       - name: The rules of the workflows
         run: python3 scripts/check-workflows.py
+      # #246: the shell scripts have no shellcheck warning.
+      - name: shellcheck
+        run: |
+          set -eu
+          shellcheck --version | head -2
+          shellcheck -S warning scripts/*.sh scripts/*/*.sh
+
+  # #214: clippy of the newest stable Rust. A new lint of a new Rust does
+  # not stop a release (the pinned toolchain decides); this job shows it.
+  clippy-stable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install stable --profile minimal -c clippy
+          rustup default stable
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # Each check must be able to fail. A planted fault, in a scratch copy, must
   # make its check fail; the job fails when a check passes on its plant.

@@ -298,8 +298,10 @@ fn split_segments(bytes: &[u8]) -> Result<Option<(Vec<Vec<u64>>, usize)>> {
     let mut at = header;
     for size in sizes {
         let words = bytes[at..at + size * 8]
-            .chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect();
         segments.push(words);
         at += size * 8;

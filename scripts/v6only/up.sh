@@ -53,6 +53,8 @@ fi
 # families. The proxy variables of the runner do not reach the namespace.
 if ! sudo ip netns exec "$up" ip -6 route | grep -q '^::/1 dev cfrs0'; then
     say "cfrs warp tun --default-route in $up"
+    # The log belongs to this user, not to root (SC2024 is wanted).
+    # shellcheck disable=SC2024
     sudo ip netns exec "$up" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
         -u ALL_PROXY -u all_proxy CFRS_STATE_DIR=none RUST_LOG=cfrs=info \
         setsid "$bin" warp --ephemeral tun --default-route --interface cfrs0 > "$log" 2>&1 &

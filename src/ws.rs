@@ -475,7 +475,7 @@ mod bench {
     const SIZE: usize = 16 << 20;
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore]
+    #[ignore = "a measure: it prints the throughput through a delay line and asserts nothing (cargo test -- --ignored throughput)"]
     async fn throughput() {
         let delay = Duration::from_millis(25);
         // Raw TCP through the delay line.

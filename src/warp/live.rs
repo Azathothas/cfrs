@@ -309,10 +309,23 @@ mod tests {
                 let opens = opens.clone();
                 let failures_left = failures_left.clone();
                 Box::pin(async move {
-                    if failures_left
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                        .is_ok()
-                    {
+                    // #214: no fetch_update (deprecated in a later Rust).
+                    let mut left = failures_left.load(Ordering::SeqCst);
+                    let took = loop {
+                        if left == 0 {
+                            break false;
+                        }
+                        match failures_left.compare_exchange_weak(
+                            left,
+                            left - 1,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break true,
+                            Err(now) => left = now,
+                        }
+                    };
+                    if took {
                         bail!("the front door does not answer");
                     }
                     let id = opens.fetch_add(1, Ordering::SeqCst) + 2;

@@ -1,47 +1,71 @@
 //! Rules for the documents of the repository.
 
-/// Issue 126: each release note after v0.3.0-beta.6 has a heading
-/// "## Breaking", after "## Check a download" and before "## Changes for a
-/// tester". `release.yml` checks the same before a release.
-#[test]
-fn each_new_release_note_has_a_breaking_section() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/releases");
+/// The release notes made before the rule of issue 126.
+const PREDATES_RULE: &[&str] = &[
+    "v0.3.0-beta.1.md",
+    "v0.3.0-beta.2.md",
+    "v0.3.0-beta.3.md",
+    "v0.3.0-beta.4.md",
+    "v0.3.0-beta.5.md",
+    "v0.3.0-beta.6.md",
+];
+
+/// The release notes of `dir` that break the rule of issue 126, and the
+/// number of notes checked.
+fn notes_without_breaking(dir: &std::path::Path) -> (Vec<String>, usize) {
+    let mut bad = Vec::new();
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
+    for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let Some(n) = name
-            .strip_prefix("v0.3.0-beta.")
-            .and_then(|r| r.strip_suffix(".md"))
-            .and_then(|n| n.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        if n <= 6 {
+        if !name.starts_with('v')
+            || !name.ends_with(".md")
+            || PREDATES_RULE.contains(&name.as_str())
+        {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         let at = |h: &str| lines.iter().position(|l| *l == h);
-        let breaking = at("## Breaking").unwrap_or_else(|| panic!("{name}: no ## Breaking"));
-        if let Some(check) = at("## Check a download") {
-            assert!(
-                check < breaking,
-                "{name}: ## Breaking is before ## Check a download"
-            );
-        }
-        if let Some(changes) = at("## Changes for a tester") {
-            assert!(
-                breaking < changes,
-                "{name}: ## Breaking is after the changes"
-            );
-        }
         checked += 1;
+        let Some(breaking) = at("## Breaking") else {
+            bad.push(format!("{name}: no ## Breaking"));
+            continue;
+        };
+        if at("## Check a download").is_some_and(|check| check > breaking) {
+            bad.push(format!("{name}: ## Breaking is before ## Check a download"));
+        }
+        if at("## Changes for a tester").is_some_and(|changes| breaking > changes) {
+            bad.push(format!("{name}: ## Breaking is after the changes"));
+        }
     }
+    (bad, checked)
+}
+
+/// Issue 126: each release note after v0.3.0-beta.6 has a heading
+/// "## Breaking", after "## Check a download" and before "## Changes for a
+/// tester". `release.yml` checks the same before a release. #216: each
+/// note is checked (a stable note too), except the list PREDATES_RULE.
+#[test]
+fn each_new_release_note_has_a_breaking_section() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/releases");
+    let (bad, checked) = notes_without_breaking(&dir);
     assert!(
         checked > 0,
         "no release note after v0.3.0-beta.6 was checked"
     );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// #216: a stable note (no -beta) is checked, not skipped.
+#[test]
+fn a_stable_release_note_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("v0.3.0.md"), "# v0.3.0\n\nno heading\n").unwrap();
+    std::fs::write(dir.path().join("v0.3.0-beta.1.md"), "old\n").unwrap();
+    let (bad, checked) = notes_without_breaking(dir.path());
+    assert_eq!(checked, 1);
+    assert_eq!(bad, ["v0.3.0.md: no ## Breaking"]);
 }
 
 /// Each repository path in backticks in the documents exists (podssh: a

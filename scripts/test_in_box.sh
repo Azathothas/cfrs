@@ -33,7 +33,7 @@ chmod 777 "$work"
 # runner may not be readable to other users.
 cp -r "$here" "$work/scripts"
 here=$work/scripts
-cd "$work"
+cd "$work" || exit 1
 pass=0 fail=0 skip=0
 
 cleanup() {
@@ -41,7 +41,7 @@ cleanup() {
     sudo iptables -F CFRSBOX 2> /dev/null
     sudo iptables -X CFRSBOX 2> /dev/null
     sudo ip6tables -D OUTPUT -m owner --uid-owner "$box" -j REJECT 2> /dev/null
-    kill $(jobs -p) 2> /dev/null
+    jobs -p | xargs -r kill 2> /dev/null
 }
 trap cleanup EXIT
 

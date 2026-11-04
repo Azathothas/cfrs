@@ -5,7 +5,7 @@
 #
 #   sh scripts/agent/check.sh [notest]
 set -u
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 log=${TMPDIR:-/tmp}/cfrs-check
 mkdir -p "$log"
 rc=0
