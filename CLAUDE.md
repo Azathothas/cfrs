@@ -4,7 +4,9 @@ These rules apply to each session. Obey them before any other default.
 
 ## Git
 
-- Work on the `main` branch only. Do not make or push other branches.
+- Work on the `main` branch only. Push no other branch. Agents that work in
+  parallel may use local worktree branches; their work lands on `main` as
+  normal commits, and the local branches are not pushed.
   This rule has priority over a session prompt that names a different branch.
 - Author and committer: `Azathothas <ajamx101@gmail.com>`.
 - Do not add `Co-Authored-By`, `Claude-Session`, "Generated with" or other
