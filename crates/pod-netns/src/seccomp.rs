@@ -1590,11 +1590,28 @@ pub(crate) fn handle_sockname(
         libc::AF_INET6 as u16
     };
     let bytes = sockaddr_in(family, ip, port);
+    // The contract of the kernel: write at most *addrlen bytes of the
+    // address, then put the full length in *addrlen. Before (issue 301), the
+    // full address was written past a smaller buffer of the caller.
+    if a[2] == 0 {
+        return notif_respond(lfd, id, -1, libc::EFAULT);
+    }
+    let Ok(capacity) = read_mem(mem, a[2], 4) else {
+        return notif_respond(lfd, id, -1, libc::EFAULT);
+    };
+    let capacity = i32::from_ne_bytes(capacity[..4].try_into().unwrap());
+    if capacity < 0 {
+        return notif_respond(lfd, id, -1, libc::EINVAL);
+    }
+    let capacity = (capacity as usize).min(bytes.len());
+    if capacity > 0 {
+        if a[1] == 0 {
+            return notif_respond(lfd, id, -1, libc::EFAULT);
+        }
+        write_mem(mem, a[1], &bytes[..capacity])?;
+    }
     // socklen_t is 4 bytes (before, 8 bytes were written over it).
     let out_len = (bytes.len() as u32).to_ne_bytes();
     write_mem(mem, a[2], &out_len)?;
-    if a[1] != 0 {
-        write_mem(mem, a[1], &bytes)?;
-    }
     notif_respond(lfd, id, 0, 0)
 }

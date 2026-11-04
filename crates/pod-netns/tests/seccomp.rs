@@ -1476,6 +1476,90 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const SHORT_SOCKNAME_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+static void hex(const unsigned char *b, int n) { for (int i = 0; i < n; i++) printf("%02x", b[i]); }
+int main(void) {
+    alarm(10);
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in d; memset(&d, 0, sizeof d);
+    d.sin_family = AF_INET; d.sin_port = htons(123);
+    inet_pton(AF_INET, "162.159.200.1", &d.sin_addr);
+    if (connect(s, (struct sockaddr *)&d, sizeof d) < 0) { perror("connect"); return 1; }
+    /* An 8-byte buffer with a guard after it. */
+    struct { unsigned char buf[8]; unsigned char guard[8]; } p;
+    memset(p.buf, 0, 8); memset(p.guard, 0xbb, 8);
+    socklen_t len = 8;
+    int r = getpeername(s, (struct sockaddr *)p.buf, &len);
+    printf("SHORT:%d:%u:", r, (unsigned)len); hex(p.buf, 8); printf(":"); hex(p.guard, 8); printf("\n");
+    /* An 8-byte buffer at the end of a page; the next page is not mapped. */
+    long page = sysconf(_SC_PAGESIZE);
+    unsigned char *m = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED || mprotect(m + page, page, PROT_NONE) != 0) { perror("mmap"); return 1; }
+    unsigned char *edge = m + page - 8;
+    len = 8;
+    r = getpeername(s, (struct sockaddr *)edge, &len);
+    printf("EDGE:%d:%s:%u:", r, r < 0 ? strerror(errno) : "ok", (unsigned)len); hex(edge, 8); printf("\n");
+    /* The length query: no buffer, length 0. */
+    len = 0;
+    r = getsockname(s, NULL, &len);
+    printf("QUERY:%d:%u\n", r, (unsigned)len);
+    return 0;
+}
+"#;
+
+/// Issue 301: getsockname and getpeername write at most the length of the
+/// caller, and give the full length back, as the kernel does. Before, the
+/// supervisor wrote all 16 bytes past an 8-byte buffer.
+#[test]
+fn getpeername_does_not_write_past_the_buffer_of_the_caller() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-shortname-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let _listener = UnixListener::bind(&sock).unwrap();
+    let program = build_program(&dir, "shortname", SHORT_SOCKNAME_CLIENT, false);
+    // AF_INET, port 123, 162.159.200.1: the first 8 bytes of sockaddr_in.
+    // sin_family (2) is in the byte order of the host.
+    let family = if cfg!(target_endian = "little") {
+        "0200"
+    } else {
+        "0002"
+    };
+    let head = format!("{family}007ba29fc801");
+    for hook in ["", "no-fd"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+            .args(["--backend", "seccomp", "-x"])
+            .arg(format!("unix:{}", sock.display()))
+            .arg("--")
+            .arg(&program)
+            .env("POD_NETNS_TEST_MEM", hook)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            out.contains(&format!("SHORT:0:16:{head}:bbbbbbbbbbbbbbbb")),
+            "{hook:?}: {out:?} {err:?}"
+        );
+        assert!(
+            out.contains(&format!("EDGE:0:ok:16:{head}")),
+            "{hook:?}: {out:?} {err:?}"
+        );
+        assert!(out.contains("QUERY:0:16"), "{hook:?}: {out:?} {err:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 const UNSPEC_CLIENT: &str = r#"
 #include <stdio.h>
 #include <string.h>

@@ -103,7 +103,8 @@ see it. Use a unix socket for it (`-L unix:///path`).
   the filter.
 * `getsockname` and `getpeername` give the logical address. The supervisor
   writes it into the child memory through `/proc/<pid>/mem`, else with
-  `process_vm_writev`. When the host refuses both, the calls fail with
+  `process_vm_writev`. As the kernel does, it writes at most the length that
+  the caller gives, and it sets the length to the full size of the address. When the host refuses both, the calls fail with
   `EOPNOTSUPP` (not the `AF_UNIX` address of the socketpair), the pod prints
   a warning once, and `pod doctor` shows the row `write program memory` as
   `no`. A QUIC client (`curl --http3`) then fails; `curl --http3` falls back
