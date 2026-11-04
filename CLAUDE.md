@@ -54,6 +54,7 @@ These rules apply to each session. Obey them before any other default.
   disk is full.
 - Documents: `README.md`, `docs/protocol.md`, `docs/virtual-network.md`,
   `docs/target-environment.md`, `docs/maintenance.md`, `docs/decisions.md`,
+  `docs/development.md`,
   `crates/pod-netns/README.md`, `docs/releases/`.
 - At the start of a session, read `docs/maintenance.md`: the procedures,
   the tools (`scripts/agent/`), the workflows, the release steps and the
