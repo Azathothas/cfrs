@@ -157,19 +157,38 @@ pub fn save(pair: &Pair, dir: &Path) -> Result<PathBuf> {
 
 /// Read the pair `name` from `dir`; with no name, the pair that has the
 /// most time left.
+/// The class of each error (issue 249): a bad name is 64, no pair is 69, a
+/// pair file that cannot be read or does not parse is 78.
 pub fn load(dir: &Path, name: Option<&str>) -> Result<Pair> {
+    use crate::exit::{fault, Fault};
     let read = |path: &Path| -> Result<Pair> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("{} is not a pair", path.display()))
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("no pair at {} (cfrs relay pair)", path.display()),
+                ))
+            }
+            Err(err) => {
+                return Err(fault(
+                    Fault::Config,
+                    anyhow::anyhow!("reading {}: {err}", path.display()),
+                ))
+            }
+        };
+        serde_json::from_str(&text)
+            .with_context(|| format!("{} is not a pair", path.display()))
+            .map_err(|e| fault(Fault::Config, e))
     };
     if let Some(name) = name {
-        check_name(name)?;
+        check_name(name).map_err(|e| fault(Fault::Usage, e))?;
         return read(&dir.join(format!("{name}.json")));
     }
     let mut best: Option<Pair> = None;
     for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("no pair in {} (cfrs relay pair)", dir.display()))?
+        .with_context(|| format!("no pair in {} (cfrs relay pair)", dir.display()))
+        .map_err(|e| fault(Fault::Unavailable, e))?
         .flatten()
     {
         let path = entry.path();
@@ -182,7 +201,12 @@ pub fn load(dir: &Path, name: Option<&str>) -> Result<Pair> {
             }
         }
     }
-    best.with_context(|| format!("no pair in {} (cfrs relay pair)", dir.display()))
+    best.ok_or_else(|| {
+        fault(
+            Fault::Unavailable,
+            anyhow::anyhow!("no pair in {} (cfrs relay pair)", dir.display()),
+        )
+    })
 }
 
 /// Stop the node of `pair` and its sessions at the relay

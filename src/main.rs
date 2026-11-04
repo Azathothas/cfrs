@@ -899,6 +899,10 @@ fn main() {
         // Issue 209: --name with no --detach registers this process.
         match &detach.name {
             Some(name) => {
+                if let Err(err) = cfrs::instances::check_name(name) {
+                    eprintln!("cfrs: --name: {err:#}");
+                    std::process::exit(cfrs::exit::USAGE);
+                }
                 if let Err(err) =
                     cfrs::detach::register(name, command.as_deref().unwrap_or_default())
                 {
@@ -2433,6 +2437,19 @@ async fn async_main(cli: Cli) -> Result<()> {
         }
         Command::Update(args) => {
             use cfrs::update::Outcome;
+            // Issue 249: an empty tag asked the network, then exit 69.
+            if let Some(tag) = args.version.as_deref() {
+                let good = !tag.is_empty()
+                    && tag
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b));
+                if !good {
+                    return Err(cfrs::exit::fault(
+                        Fault::Usage,
+                        anyhow::anyhow!("--version {tag:?}: give a tag like v0.3.0-beta.12"),
+                    ));
+                }
+            }
             match cfrs::update::run(args.version.as_deref(), args.check, args.force)
                 .await
                 .fault(Fault::Unavailable)?
@@ -2927,7 +2944,12 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     }
     let mut locals = Vec::new();
     for raw in &args.locals {
-        locals.push(LocalSpec::parse(raw)?);
+        // Issue 249: a bad --local was exit 1.
+        locals.push(
+            LocalSpec::parse(raw)
+                .with_context(|| format!("--local {raw}"))
+                .fault(Fault::Usage)?,
+        );
     }
     // Issue 205: the credential of a tunnel with --auth-user.
     let auth: Option<Arc<str>> = match (&args.auth_user, &args.auth_password_file) {
@@ -3532,7 +3554,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
             // With no pair name, the node takes the next stored pair at
             // the expiry.
             let follow = pair.is_none().then_some(dir.as_path());
-            let pair = reverse::load(&dir, pair.as_deref()).fault(Fault::Usage)?;
+            let pair = reverse::load(&dir, pair.as_deref())?;
             cfrs::report::hide(&pair.node_token);
             cfrs::ws_relay::Relay::single(&pair.relay, None).fault(Fault::Config)?;
             tokio::select! {
@@ -3550,8 +3572,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
                 Some(token) => (token, relay),
                 None => {
                     let pair = reverse::load(&dir, Some(&name))
-                        .context("no --token and no local pair file")
-                        .fault(Fault::Usage)?;
+                        .context("no --token and no local pair file")?;
                     let relay =
                         cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
                     (pair.connect_token, relay)
@@ -3620,7 +3641,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
             }
         }
         RelayCommand::Stop { name } => {
-            let pair = reverse::load(&dir, Some(&name)).fault(Fault::Usage)?;
+            let pair = reverse::load(&dir, Some(&name))?;
             // Issue 119: the local node of the pair stops first, so that it
             // does not connect again.
             if let Ok(run) = cfrs::instances::run_dir() {

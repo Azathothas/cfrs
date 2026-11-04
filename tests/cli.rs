@@ -1352,10 +1352,45 @@ fn exit_codes_of_flags_and_configuration() {
             78,
         ),
         (&["autostart", "add", "bad name", "--", "tunnel"], &[], 64),
+        // Issue 249.
+        (&["tunnel", "--hello-world", "--name", ""], &[], 64),
+        (&["tunnel", "--hello-world", "--name", "a b"], &[], 64),
+        (
+            &["connect", "--local", "tcp://abc", "wss://x.example/y"],
+            &[],
+            64,
+        ),
+        (
+            &["connect", "--local", "tcp://99999", "wss://x.example/y"],
+            &[],
+            64,
+        ),
+        (&["update", "--version", ""], &[], 64),
+        (&["update", "--version", "v1 x"], &[], 64),
     ] {
         let (code, err) = run(args, env);
         assert_eq!(code, Some(want), "{args:?}: {err}");
     }
+    // Issue 249: no pair is 69, a pair file that does not parse is 78, a
+    // --file that is not there is 78.
+    let state = tempfile::tempdir().unwrap();
+    let st = state.path().to_str().unwrap();
+    let env = [("CFRS_STATE_DIR", st)];
+    for args in [
+        &["relay", "connect", "nosuchpair"][..],
+        &["relay", "stop", "nosuchpair"],
+    ] {
+        let (code, err) = run(args, &env);
+        assert_eq!(code, Some(69), "{args:?}: {err}");
+    }
+    std::fs::create_dir_all(state.path().join("relay")).unwrap();
+    std::fs::write(state.path().join("relay/bad.json"), "{").unwrap();
+    for args in [&["relay", "connect", "bad"][..], &["relay", "stop", "bad"]] {
+        let (code, err) = run(args, &env);
+        assert_eq!(code, Some(78), "{args:?}: {err}");
+    }
+    let (code, err) = run(&["share", "--file", "/nonexistent/f"], &[]);
+    assert_eq!(code, Some(78), "{err}");
 }
 
 /// Issue 204: share --mode proxy takes a unix socket origin.

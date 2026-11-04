@@ -256,8 +256,19 @@ impl ShareApp {
         if let Some(file) = &config.file {
             match std::fs::metadata(file) {
                 Ok(meta) if meta.is_file() => {}
-                Ok(_) => bail!("--file {}: not a regular file", file.display()),
-                Err(err) => bail!("--file {}: {err}", file.display()),
+                // Issue 249: exit 78, not 1.
+                Ok(_) => {
+                    return Err(crate::exit::fault(
+                        crate::exit::Fault::Config,
+                        anyhow::anyhow!("--file {}: not a regular file", file.display()),
+                    ))
+                }
+                Err(err) => {
+                    return Err(crate::exit::fault(
+                        crate::exit::Fault::Config,
+                        anyhow::anyhow!("--file {}: {err}", file.display()),
+                    ))
+                }
             }
         }
         let control = Arc::new(ShareControl::default());
