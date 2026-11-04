@@ -357,6 +357,36 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for GoawayScan<T> {
 /// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
 /// One task accepts the streams, gives the control stream to the caller,
 /// and sends a PING each `keepalive.interval`.
+/// The window of each stream that cfrs gives the edge.
+pub const STREAM_WINDOW: u32 = 1 << 20;
+/// The window of the connection.
+pub const CONNECTION_WINDOW: u32 = 1 << 24;
+/// The smallest DATA frame of a visitor: a WebSocket frame with no
+/// payload, a header of 2 bytes and a mask of 4 (RFC 6455, section 5.2).
+const SMALLEST_FRAME: usize = 6;
+/// h2's budget of small DATA frames that wait unread. h2 counts, for each
+/// frame under 256 bytes, 256 bytes less its size until the reader takes
+/// it, and past the budget it ends the connection with ENHANCE_YOUR_CALM,
+/// and each visitor's stream with it. Its default (half the connection
+/// window, 8 MiB) is about 43,000 unread frames of 60 bytes: a few visitors
+/// whose origin reads slowly ended the connection of all visitors. This
+/// budget holds the whole window in the smallest frames, so the windows
+/// stop the edge first (podssh T-408).
+pub const DATA_FRAME_BUDGET: usize =
+    CONNECTION_WINDOW as usize / SMALLEST_FRAME * (256 - SMALLEST_FRAME);
+const _: () = assert!(DATA_FRAME_BUDGET >= CONNECTION_WINDOW as usize / 60 * (256 - 60));
+
+/// HTTP/2 as cfrs serves its connection to the edge.
+pub fn server_builder() -> h2::server::Builder {
+    let mut builder = h2::server::Builder::new();
+    builder
+        .max_concurrent_streams(u32::MAX)
+        .initial_window_size(STREAM_WINDOW)
+        .initial_connection_window_size(CONNECTION_WINDOW)
+        .data_frame_budget(DATA_FRAME_BUDGET);
+    builder
+}
+
 pub async fn serve_connection<T>(
     io: T,
     runtime: Arc<ServiceRuntime>,
@@ -372,10 +402,7 @@ where
         scan: FrameScan::new(),
         seen: Some(goaway.clone()),
     };
-    let mut conn = h2::server::Builder::new()
-        .max_concurrent_streams(u32::MAX)
-        .initial_window_size(1 << 20)
-        .initial_connection_window_size(1 << 24)
+    let mut conn = server_builder()
         .handshake::<_, Bytes>(io)
         .await
         .context("HTTP/2 handshake with the edge")?;
@@ -948,6 +975,104 @@ mod tests {
         assert!(decoded.contains(&("X-Thing".to_string(), "v".to_string())));
         let (status, _) = edge_response("origin down", &[]);
         assert_eq!(status, 502);
+    }
+
+    /// Visitors whose origin reads nothing send small WebSocket frames until
+    /// the windows stop the edge. The connection must stay up and serve a
+    /// new visitor (before: ENHANCE_YOUR_CALM ended it, and each visitor).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn small_frames_of_slow_visitors_do_not_end_the_connection() {
+        use crate::ingress::{ForwardTarget, IngressRule, OriginOptions, Service};
+        // A forward target that accepts and never reads.
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("t.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Ok((s, _)) = listener.accept().await {
+                kept.push(s);
+            }
+        });
+        let ingress = Arc::new(
+            Ingress::new()
+                .rule_with(IngressRule {
+                    hostname: None,
+                    path: Some("/__cfrs/ws".into()),
+                    service: Service::Forward(ForwardTarget::Unix(sock.clone())),
+                    origin: OriginOptions::default(),
+                })
+                .catch_all(Service::HelloWorld),
+        );
+        let runtime =
+            Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 20);
+        let client = tokio::spawn(
+            h2::client::Builder::new()
+                .max_concurrent_streams(1000)
+                .handshake::<_, Bytes>(edge_side),
+        );
+        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default())
+            .await
+            .unwrap();
+        let (mut send, conn) = client.await.unwrap().unwrap();
+        let conn = tokio::spawn(conn);
+        // A masked WebSocket binary frame of 60 bytes.
+        let mut frame = vec![0x82u8, 0x80 | 54, 1, 2, 3, 4];
+        frame.extend(std::iter::repeat_n(0u8, 54));
+        let frame = Bytes::from(frame);
+        let mut streams = Vec::new();
+        for _ in 0..16 {
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("https://x.example/__cfrs/ws")
+                .header(CONTROL_STREAM_HEADER, WEBSOCKET_VALUE)
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .body(())
+                .unwrap();
+            send = send.ready().await.unwrap();
+            let (_response, mut body) = send.send_request(request, false).unwrap();
+            let frame = frame.clone();
+            streams.push(tokio::spawn(async move {
+                // Send until the window stops the edge (no capacity for 2 s).
+                loop {
+                    body.reserve_capacity(frame.len());
+                    match tokio::time::timeout(
+                        Duration::from_secs(2),
+                        futures::future::poll_fn(|cx| body.poll_capacity(cx)),
+                    )
+                    .await
+                    {
+                        Ok(Some(Ok(n))) if n >= frame.len() => {
+                            if body.send_data(frame.clone(), false).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(Some(Ok(_))) => continue,
+                        _ => return,
+                    }
+                }
+            }));
+        }
+        for s in streams {
+            let _ = s.await;
+        }
+        // A new visitor still gets its answer on the same connection.
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("https://x.example/")
+            .body(())
+            .unwrap();
+        let mut send = tokio::time::timeout(Duration::from_secs(5), send.ready())
+            .await
+            .expect("the connection takes a new stream")
+            .expect("the connection is up");
+        let (response, _) = send.send_request(request, true).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("an answer")
+            .expect("no ENHANCE_YOUR_CALM");
+        assert_eq!(response.status(), 200);
+        assert!(!conn.is_finished(), "the connection ended");
     }
 
     fn service() -> (Arc<ServiceRuntime>, Arc<Ingress>) {
