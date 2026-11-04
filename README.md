@@ -985,7 +985,9 @@ or a container that kills each process of its run also ends it.
   foreground `--name` (no `--detach`) has no secret either.
 * The files are in `$XDG_RUNTIME_DIR/cfrs/run/` (else `run` in the state
   directory, or `CFRS_RUN_DIR`), mode 0700: `NAME.json` (0600), `NAME.lock`
-  (held while the instance runs) and `NAME.log` (0600, cut at 1 MiB; the
+  (held while the instance runs), `NAME.secrets` (0600, only when the
+  instance has a token or a proxy password: the variables that hold them)
+  and `NAME.log` (0600, cut at 1 MiB; the
   part before goes to `NAME.log.1`). Each start writes a line
   `cfrs: ---- start TIME pid PID name NAME ----`, then its log lines from
   the start (also the lines before the ready, which the start shows too).
@@ -1007,7 +1009,8 @@ or a container that kills each process of its run also ends it.
   with the state `unknown`, and `cfrs stop` exits 69 and removes nothing.
   `cfrs stop --all` goes on to the next instance after a failure.
 * `cfrs autostart add NAME --from INSTANCE` makes a detached instance start
-  at boot too.
+  at boot too. It copies the arguments of the record and the secrets of
+  `INSTANCE.secrets`.
 * `cfrs status` lists the instances.
 * `--name NAME` with no `--detach` registers the process in the foreground
   (for a program that runs cfrs as its child): it is not forked and not
@@ -1034,7 +1037,11 @@ cfrs autostart remove web
   `TUNNEL_TOKEN` and `CFRS_PROXY`. The unit, the crontab line and the
   command line of the process hold no secret.
 * The unit and the line run this binary by its absolute path. A binary in
-  a temporary directory is refused.
+  a temporary directory is refused. The unit quotes for systemd (`%` and
+  `$` are escaped), the crontab line for `sh`.
+* An entry runs in the foreground under its service manager: `add`
+  removes `--detach`, `--name`, `--ready-timeout` and `--no-restart`, and
+  says so.
 * A systemd user manager stops at logout unless linger is on:
   `loginctl enable-linger`.
 * `remove` deletes only what `add` wrote (a marker line in the unit, a

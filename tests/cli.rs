@@ -1772,3 +1772,92 @@ fn ssh_config_refuses_a_host_with_a_newline_or_a_space() {
         "Host box\n    User me\n"
     );
 }
+
+// Issue 265: autostart add --from NAME copies the secrets of the instance
+// (its record has none), and explicit arguments lose the options of a
+// detached start.
+#[test]
+fn autostart_from_an_instance_keeps_its_secrets_and_drops_detach_options() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let run_dir = dir.path().join("run");
+    // No systemctl and no crontab: add writes the entry, then exits 69.
+    let empty = dir.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let listen = format!("unix:{}", dir.path().join("s.sock").display());
+    let cfrs = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("PATH", &empty)
+            .env("HOME", dir.path())
+            .env("CFRS_STATE_DIR", &state)
+            .env("CFRS_RUN_DIR", &run_dir)
+            .env_remove("TUNNEL_TOKEN")
+            .env_remove("CFRS_PROXY")
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("RUST_LOG")
+            .output()
+            .unwrap()
+    };
+    let start = cfrs(&[
+        "--proxy",
+        "http://u:pw265@127.0.0.1:9",
+        "net",
+        "switch",
+        "--listen",
+        &listen,
+        "--detach",
+        "--name",
+        "src",
+    ]);
+    assert!(start.status.success(), "{}", stderr(&start));
+    let out = cfrs(&["autostart", "add", "x", "--from", "src"]);
+    let stopped = cfrs(&["stop", "src", "--timeout", "5"]);
+    assert!(stopped.status.success(), "{}", stderr(&stopped));
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    let entry = state.join("autostart");
+    let env = std::fs::read_to_string(entry.join("x.env")).unwrap();
+    assert!(
+        env.contains("CFRS_PROXY=http://u:pw265@127.0.0.1:9"),
+        "{env}"
+    );
+    let mode = std::fs::metadata(entry.join("x.env"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let args = std::fs::read_to_string(entry.join("x.args")).unwrap();
+    assert!(!args.contains("pw265"), "{args}");
+    assert!(args.contains("switch"), "{args}");
+    assert!(
+        !args.contains("--detach") && !args.contains("--name"),
+        "{args}"
+    );
+    assert!(
+        !run_dir.join("src.secrets").exists(),
+        "stop removes the secrets"
+    );
+
+    let out = cfrs(&[
+        "autostart",
+        "add",
+        "y",
+        "--",
+        "net",
+        "switch",
+        "--listen",
+        &listen,
+        "--detach",
+        "--name",
+        "inner",
+    ]);
+    assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
+    assert!(stderr(&out).contains("are removed"), "{}", stderr(&out));
+    let args = std::fs::read_to_string(entry.join("y.args")).unwrap();
+    assert!(
+        !args.contains("--detach") && !args.contains("inner"),
+        "{args}"
+    );
+}

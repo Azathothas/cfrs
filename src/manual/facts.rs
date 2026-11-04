@@ -100,7 +100,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["CFRS_RUN_DIR"],
         used_by: "--detach, ps, stop, logs, wait",
-        meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",
+        meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each, and NAME.secrets (mode 0600) for an instance with a token or a proxy password. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",
     },
     EnvVar {
         names: &["CFRS_DETACH_NAME", "CFRS_DETACH_HASH", "CFRS_DETACH_COMMAND", "CFRS_DETACH_SUPERVISED", "CFRS_DETACH_READY_TIMEOUT"],

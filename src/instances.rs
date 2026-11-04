@@ -12,6 +12,11 @@
 //!   name NAME ----`), the log lines of the instance from its start, and
 //!   stdout and stderr after it is ready.
 //!
+//! `NAME.secrets` (mode 0600), when the instance has a secret (`--token`, a
+//! `--proxy` with a user part, or `TUNNEL_TOKEN`): the secret variables, in
+//! the text of an autostart env file. `autostart add --from NAME` copies
+//! them (issue 265). The record and `ps` never show them (issue 262).
+//!
 //! `NAME.start` is a second lock: one start at a time for each name, so
 //! two starts at the same time give one instance.
 
@@ -104,6 +109,8 @@ pub struct Paths {
     pub child_lock: PathBuf,
     pub start: PathBuf,
     pub log: PathBuf,
+    /// The secret variables (issue 265).
+    pub secrets: PathBuf,
 }
 
 /// The files of `name` in `dir`. The name is checked first
@@ -117,6 +124,7 @@ pub fn paths(dir: &Path, name: &str) -> Result<Paths> {
         child_lock: dir.join(format!("{name}.child.lock")),
         start: dir.join(format!("{name}.start")),
         log: dir.join(format!("{name}.log")),
+        secrets: dir.join(format!("{name}.secrets")),
     })
 }
 
@@ -199,6 +207,38 @@ fn id_of(file: &File) -> Option<(u64, u64)> {
 
 fn own() -> std::sync::MutexGuard<'static, Vec<(u64, u64)>> {
     OWN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Write the secret variables of `name` to `NAME.secrets` (mode 0600, with a
+/// rename). With no secret, remove the file.
+pub fn write_secrets(dir: &Path, name: &str, secrets: &[(String, String)]) -> Result<()> {
+    use std::io::Write as _;
+    let path = paths(dir, name)?.secrets;
+    if secrets.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    let text = crate::autostart::env_text(secrets)?;
+    let tmp = dir.join(format!(".{name}.secrets.{}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    file.write_all(text.as_bytes())?;
+    drop(file);
+    std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+}
+
+/// The secret variables of `name`; empty when it has none.
+pub fn read_secrets(dir: &Path, name: &str) -> Vec<(String, String)> {
+    paths(dir, name)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p.secrets).ok())
+        .map(|text| secrets_of(&crate::autostart::parse_env(&text)))
+        .unwrap_or_default()
 }
 
 /// An exclusive `flock` that this process holds until the value is dropped
@@ -332,6 +372,7 @@ pub fn remove(dir: &Path, name: &str) -> bool {
         }
     }
     let _ = std::fs::remove_file(&p.record);
+    let _ = std::fs::remove_file(&p.secrets);
     // Each lock is removed while this process holds it.
     for (lock, _held) in &free {
         let _ = std::fs::remove_file(lock);

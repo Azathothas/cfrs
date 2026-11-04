@@ -229,6 +229,7 @@ pub fn register(name: &str, command: &str) -> Result<()> {
     // was in ps --json).
     let (args, vars) = split_args();
     let secrets = instances::secrets_of(&vars);
+    instances::write_secrets(&dir, name, &secrets)?;
     let record = Record {
         name: name.to_string(),
         pid: std::process::id(),
@@ -260,7 +261,8 @@ pub fn register(name: &str, command: &str) -> Result<()> {
 /// The arguments of this process with the secrets moved out (issues 262
 /// and 265): `--token` and a `--proxy` with a user part go to the
 /// variables. The record, `ps --json` and the command line of a child get
-/// the arguments; the secret variables go to the environment of a child.
+/// the arguments; the secret variables go to the environment of a child
+/// and to `NAME.secrets`.
 pub fn split_args() -> (Vec<String>, crate::autostart::Vars) {
     let typed: Vec<String> = std::env::args_os()
         .skip(1)
@@ -493,6 +495,8 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
     } else {
         instances::remove(&dir, &name);
     }
+    // Issue 265: autostart add --from NAME copies the secrets from here.
+    instances::write_secrets(&dir, &name, &secrets).map_err(|e| fault(Fault::Config, e))?;
     let mut tried = Vec::new();
     for program in binaries() {
         let mut cmd = Command::new(&program);
@@ -526,18 +530,35 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
 }
 
 /// The arguments with no `--detach`, `--name`, `--ready-timeout`,
-/// `--replace` or `--no-restart` (and their values).
+/// `--replace` or `--no-restart` (and their values). The words after `--`
+/// (a program and its arguments) stay.
 pub fn without_detach_options(args: &[String]) -> Vec<String> {
+    strip(args, &["--detach", "--replace", "--no-restart"])
+}
+
+/// The arguments for an autostart entry (issue 265): no `--detach`,
+/// `--name`, `--ready-timeout` or `--no-restart`. The entry runs in the
+/// foreground under its service manager. `--replace` stays: `connect`
+/// uses it for its own socket.
+pub fn without_start_options(args: &[String]) -> Vec<String> {
+    strip(args, &["--detach", "--no-restart"])
+}
+
+fn strip(args: &[String], flags: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip = false;
-    for arg in args {
+    for (i, arg) in args.iter().enumerate() {
         if skip {
             skip = false;
             continue;
         }
+        if arg == "--" {
+            out.extend(args[i..].iter().cloned());
+            break;
+        }
         let flag = arg.split('=').next().unwrap_or("");
         match flag {
-            "--detach" | "--replace" | "--no-restart" => {}
+            f if flags.contains(&f) => {}
             "--name" | "--ready-timeout" => skip = !arg.contains('='),
             _ => out.push(arg.clone()),
         }

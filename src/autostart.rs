@@ -94,13 +94,34 @@ pub fn run_limited(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("starting {program}"))?;
-    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
-        let _ = stdin.write_all(text.as_bytes());
+    // Issue 265: the pipes are read while the program runs. Before, a
+    // program that wrote more than a pipe holds blocked until the limit.
+    fn drain(
+        pipe: Option<impl std::io::Read + Send + 'static>,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut out);
+            }
+            out
+        })
     }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let writer = match (input, child.stdin.take()) {
+        (Some(text), Some(mut stdin)) => {
+            let text = text.to_string();
+            Some(std::thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            }))
+        }
+        _ => None,
+    };
     let start = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
         if start.elapsed() > limit {
             let _ = child.kill();
@@ -112,12 +133,16 @@ pub fn run_limited(
             );
         }
         std::thread::sleep(Duration::from_millis(20));
+    };
+    if let Some(writer) = writer {
+        let _ = writer.join();
     }
-    let out = child.wait_with_output()?;
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
     Ok(Ran {
-        code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
@@ -238,13 +263,44 @@ pub fn marker(name: &str) -> String {
     format!("# cfrs autostart {name}")
 }
 
-/// The command that the unit and the cron line run.
+/// The command that the cron line runs (words quoted for `sh`).
 pub fn run_line(exe: &Path, name: &str, dir: &Path) -> String {
     format!(
         "{} autostart run {name} --dir {}",
         quote(&exe.display().to_string()),
         quote(&dir.display().to_string())
     )
+}
+
+/// The command of `ExecStart=` (issue 265): words quoted for systemd. In
+/// a unit, `%` starts a specifier and `$` a variable; the quotes of `sh`
+/// are not the quotes of systemd.
+pub fn unit_line(exe: &Path, name: &str, dir: &Path) -> String {
+    format!(
+        "{} autostart run {name} --dir {}",
+        systemd_quote(&exe.display().to_string()),
+        systemd_quote(&dir.display().to_string())
+    )
+}
+
+fn systemd_quote(s: &str) -> String {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b))
+    {
+        return s.to_string();
+    }
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '%' => out.push_str("%%"),
+            '$' => out.push_str("$$"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn quote(s: &str) -> String {
@@ -326,8 +382,15 @@ pub struct Added {
     pub detail: String,
 }
 
-/// Add the entry `name` that runs `cfrs ARGS`.
-pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
+/// Add the entry `name` that runs `cfrs ARGS`. The variables of `extra`
+/// (the secrets of an instance, for `--from`) replace those of the
+/// environment.
+pub fn add(
+    name: &str,
+    args: &[String],
+    extra: &[(String, String)],
+    limit: Duration,
+) -> Result<Added> {
     // Issue 173: a bad name, command or place of the binary is a usage
     // error (64); a failed write stays an error (1).
     let usage = |err: anyhow::Error| crate::exit::fault(crate::exit::Fault::Usage, err);
@@ -356,7 +419,11 @@ pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
         }
     }
     let dir = dir()?;
-    let (kept, vars) = split_secrets(args, &|k| std::env::var(k).ok());
+    let (kept, mut vars) = split_secrets(args, &|k| std::env::var(k).ok());
+    for (key, value) in extra {
+        vars.retain(|(k, _)| k != key);
+        vars.push((key.clone(), value.clone()));
+    }
     write_private(
         &dir.join(format!("{name}.args")),
         &serde_json::to_string(&kept)?,
@@ -384,7 +451,7 @@ pub fn add(name: &str, args: &[String], limit: Duration) -> Result<Added> {
             if unit.exists() && !is_ours(&unit, name) {
                 bail!("{} exists and cfrs did not write it", unit.display());
             }
-            std::fs::write(&unit, unit_text(name, &line))
+            std::fs::write(&unit, unit_text(name, &unit_line(&exe, name, &dir)))
                 .with_context(|| format!("writing {}", unit.display()))?;
             let service = format!("cfrs-{name}.service");
             ok(run_limited(
@@ -639,6 +706,42 @@ mod tests {
         assert!(unit.contains("\nRestartPreventExitStatus=64 78\n"));
         assert!(unit.contains("\nStartLimitIntervalSec=0\n"));
         assert!(!unit.contains(TOKEN));
+    }
+
+    // Issue 265: a unit takes % and $ as its own specifiers.
+    #[test]
+    fn the_unit_line_quotes_for_systemd() {
+        let line = unit_line(
+            Path::new("/opt/c f/cfrs"),
+            "web",
+            Path::new("/tmp/%h/$X/a\"b"),
+        );
+        assert_eq!(
+            line,
+            r#""/opt/c f/cfrs" autostart run web --dir "/tmp/%%h/$$X/a\"b""#
+        );
+        let plain = unit_line(Path::new("/b/cfrs"), "web", Path::new("/d"));
+        assert_eq!(plain, "/b/cfrs autostart run web --dir /d");
+        let unit = unit_text("web", &line);
+        assert!(unit.contains(&format!("\nExecStart={line}\n")), "{unit}");
+    }
+
+    // Issue 265: a program that writes more than a pipe holds ends in time.
+    #[test]
+    fn run_limited_reads_a_large_output() {
+        let ran = run_limited(
+            "sh",
+            &[
+                "-c",
+                "head -c 300000 /dev/zero; head -c 200000 /dev/zero >&2",
+            ],
+            None,
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert_eq!(ran.code, Some(0));
+        assert_eq!(ran.stdout.len(), 300000);
+        assert_eq!(ran.stderr.len(), 200000);
     }
 
     #[test]

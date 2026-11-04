@@ -2736,6 +2736,13 @@ fn autostart_args(mut args: Vec<String>) -> Result<Vec<String>> {
     if args.first().is_some_and(|a| is_cfrs(a)) {
         args.remove(0);
     }
+    // Issue 265: an entry with --detach forked at each boot, and its
+    // service manager saw the parent end.
+    let kept = cfrs::detach::without_start_options(&args);
+    if kept != args {
+        eprintln!("cfrs: autostart add: --detach, --name, --ready-timeout and --no-restart are removed; the entry runs in the foreground");
+        args = kept;
+    }
     if let Err(err) = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(args.clone())) {
         let first = err.to_string();
         let first = first
@@ -2758,7 +2765,7 @@ fn autostart(command: AutostartCommand) -> Result<()> {
     use cfrs::autostart;
     match command {
         AutostartCommand::Add { name, args, from } => {
-            let args = match from {
+            let (args, secrets) = match from {
                 Some(instance) => {
                     let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
                     let record = cfrs::instances::read(&dir, &instance).ok_or_else(|| {
@@ -2767,12 +2774,13 @@ fn autostart(command: AutostartCommand) -> Result<()> {
                             anyhow::anyhow!("no detached instance {instance} (cfrs ps)"),
                         )
                     })?;
-                    cfrs::detach::without_detach_options(&record.args)
+                    // Issue 265: the record has no secret; NAME.secrets has them.
+                    (record.args, cfrs::instances::read_secrets(&dir, &instance))
                 }
-                None => args,
+                None => (args, Vec::new()),
             };
             let args = autostart_args(args)?;
-            let added = autostart::add(&name, &args, autostart::PROGRAM_LIMIT)?;
+            let added = autostart::add(&name, &args, &secrets, autostart::PROGRAM_LIMIT)?;
             println!(
                 "cfrs: autostart {name} added ({}): {}",
                 added.way.name(),
