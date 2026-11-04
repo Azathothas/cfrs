@@ -379,18 +379,22 @@ async fn read_chunked<S: AsyncRead + Unpin>(
         if size == 0 {
             return Ok(body);
         }
-        if body.len() + size > max_body {
-            bail!("the body is larger than {max_body} bytes");
+        // A size from the server can be near usize::MAX: each sum is checked.
+        let too_large = || anyhow::anyhow!("the body is larger than {max_body} bytes");
+        if body.len().checked_add(size).is_none_or(|t| t > max_body) {
+            return Err(too_large());
         }
-        while buf.len() < pos + size + 2 {
+        let end = pos.checked_add(size).ok_or_else(too_large)?;
+        let next = end.checked_add(2).ok_or_else(too_large)?;
+        while buf.len() < next {
             let n = read_some(io, &mut chunk).await?;
             if n == 0 {
                 bail!("the chunked body ends early");
             }
             buf.extend_from_slice(&chunk[..n]);
         }
-        body.extend_from_slice(&buf[pos..pos + size]);
-        pos += size + 2;
+        body.extend_from_slice(&buf[pos..end]);
+        pos = next;
     }
 }
 
@@ -439,6 +443,17 @@ mod tests {
         let request = Request::new("GET", "https://example.com/");
         assert_eq!(request.max_body, MAX_BODY);
         assert_eq!(request.max_body(1 << 30).max_body, 1 << 30);
+    }
+
+    #[tokio::test]
+    async fn a_chunk_size_that_overflows_is_an_error() {
+        for size in ["ffffffffffffffff", "fffffffffffffffe", "fffffffffffffff0"] {
+            let raw = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n{size}\r\n"
+            );
+            let err = parse(raw.as_bytes()).await.unwrap_err();
+            assert!(format!("{err:#}").contains("larger than"), "{err:#}");
+        }
     }
 
     #[tokio::test]
