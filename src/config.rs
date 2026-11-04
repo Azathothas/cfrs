@@ -476,16 +476,11 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
                 }
             }
         }
-        // Issue 269: cloudflared reads path: as a regular expression; cfrs
-        // reads it as a literal prefix. A path that looks like a regular
-        // expression is an error, not a rule that never matches.
+        // Issue 269: path: is a regular expression, as in cloudflared. A
+        // path that does not compile is an error at load.
         if let Some(path) = rule.get("path").and_then(|v| v.as_str()) {
-            if let Some(c) = path.chars().find(|c| REGEX_CHARS.contains(*c)) {
-                bail!(
-                    "{}: {place}: path: {path:?} has {c:?}; path is a literal prefix in cfrs, a regular expression is not supported (for example `path: /api/`)",
-                    file.display()
-                );
-            }
+            crate::ingress::PathPattern::regex(path)
+                .map_err(|e| anyhow::anyhow!("{}: {place}: {e}", file.display()))?;
         }
         let mut origin = match rule.remove("originRequest") {
             None | Some(serde_json::Value::Null) => serde_json::Map::new(),
@@ -513,10 +508,6 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
     }
     Ok(())
 }
-
-/// The characters of a regular expression that a literal path prefix does
-/// not have.
-const REGEX_CHARS: &str = "^$*+?()[]{}|\\";
 
 /// The types of the values of `originRequest` that cfrs reads (issue 172):
 /// a time needs a unit, a flag is true or false.
@@ -933,8 +924,7 @@ mod tests {
     }
 
     // Issue 269: url: and hello-world: give a catch-all rule; with ingress:
-    // they are an error. A path that looks like a regular expression is an
-    // error.
+    // they are an error.
     #[test]
     fn url_and_hello_world_make_a_catch_all_rule() {
         let dir = tempfile::tempdir().unwrap();
@@ -968,15 +958,43 @@ mod tests {
         assert!(err.contains("give one"), "{err}");
         let err = load("hello-world: yes please\n").unwrap_err();
         assert!(err.contains("hello-world: give true or false"), "{err}");
+    }
 
-        let err = load(
-            "ingress:\n  - path: ^/api/.*$\n    service: http://127.0.0.1:1\n  - service: http_status:404\n",
-        )
-        .unwrap_err();
+    // Issue 269 (#289 item 3): path: is a regular expression, as in
+    // cloudflared. A path that does not compile is an error that names the
+    // file and the rule.
+    #[test]
+    fn a_path_is_a_regular_expression() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yml");
+        let load = |rule_path: &str| {
+            let text = format!(
+                "ingress:\n  - service: http_status:404\n    path: {rule_path}\n  - path: '{rule_path}'\n    service: http://127.0.0.1:1\n  - service: http_status:503\n"
+            );
+            std::fs::write(&path, text).unwrap();
+            load_file(&path).map_err(|e| format!("{e:#}"))
+        };
+        let config = load("^/api/.*$").unwrap();
+        let ingress = &config.ingress;
+        assert_eq!(ingress.resolve_index("h", "/api/x"), Some(0));
+        assert_eq!(ingress.resolve_index("h", "/api/x?q=1"), Some(0));
+        assert_eq!(ingress.resolve_index("h", "/x/api/y"), Some(2));
+        assert_eq!(ingress.resolve_index("h", "/apix"), Some(2));
+        assert_eq!(
+            ingress.rules[0].path.as_ref().unwrap().as_str(),
+            "^/api/.*$"
+        );
+        // Unanchored, as in cloudflared: /api also matches /x/api.
+        let config = load("/api").unwrap();
+        assert_eq!(config.ingress.resolve_index("h", "/x/api"), Some(0));
+        assert_eq!(config.ingress.resolve_index("h", "/ap"), Some(2));
+        // An unclosed group is an error with the file and the rule.
+        let err = load("^/api/(").unwrap_err();
+        assert!(err.contains(&path.display().to_string()), "{err}");
         assert!(err.contains("ingress rule 1: path:"), "{err}");
-        assert!(err.contains("literal prefix"), "{err}");
-        load("ingress:\n  - path: /api/v1.2/\n    service: http://127.0.0.1:1\n  - service: http_status:404\n")
-            .unwrap();
+        assert!(err.contains("not a valid regular expression"), "{err}");
+        assert!(err.contains("unclosed group"), "{err}");
+        assert!(!err.contains('\n'), "{err}");
     }
 
     /// The field names that serde reads for `T`. The deserializer stops at

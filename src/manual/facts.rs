@@ -332,7 +332,7 @@ pub const FILES: &[FileEntry] = &[
     },
     FileEntry {
         path: "config.yml (--config)",
-        meaning: "A cloudflared configuration file: tunnel, credentials-file, ha-connections, protocol, ingress.",
+        meaning: "A cloudflared configuration file: tunnel, credentials-file, ha-connections, protocol, ingress. The path: of an ingress rule is a regular expression, as in cloudflared; it matches a part of the request path (^/api/ for a prefix).",
     },
     FileEntry {
         path: "~/.cloudflared/<tunnel-id>.json (--credentials-file)",

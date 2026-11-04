@@ -167,10 +167,102 @@ pub struct OriginOptions {
     pub strip_accept_encoding: bool,
 }
 
+/// The `path:` of a rule (issue 269). As in cloudflared, it is a regular
+/// expression that can match any part of the request path: `/api` also
+/// matches `/x/api`, and `^/api/` matches only paths that start with
+/// `/api/`. The syntax is that of the `regex` crate, which is close to Go
+/// RE2. The query (from `?`) is not part of the path; `%XX` is not decoded.
+#[derive(Clone, Debug)]
+pub struct PathPattern {
+    text: String,
+    regex: regex::Regex,
+    /// True for [`PathPattern::prefix`]: `text` is literal text.
+    prefix: bool,
+}
+
+impl PathPattern {
+    /// Compile the regular expression `text`.
+    pub fn regex(text: &str) -> Result<Self> {
+        let regex = regex::Regex::new(text).map_err(|e| {
+            // A syntax error has lines that point at the character; the
+            // last line names the error.
+            let text_of_error = e.to_string();
+            let reason = text_of_error
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .trim_start_matches("error: ")
+                .to_string();
+            anyhow::anyhow!("path: {text:?} is not a valid regular expression: {reason}")
+        })?;
+        Ok(Self {
+            text: text.to_string(),
+            regex,
+            prefix: false,
+        })
+    }
+
+    /// A pattern that matches each path that starts with `prefix` (no
+    /// character of `prefix` is special).
+    pub fn prefix(prefix: &str) -> Self {
+        let regex = regex::Regex::new(&format!("^{}", regex::escape(prefix)))
+            .expect("an escaped prefix is a valid regular expression");
+        Self {
+            text: prefix.to_string(),
+            regex,
+            prefix: true,
+        }
+    }
+
+    /// The text of the pattern, as given.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// True when the pattern matches a part of the path of `path` (the
+    /// query is not part of it).
+    pub fn is_match(&self, path: &str) -> bool {
+        let path = path.split_once('?').map_or(path, |(p, _)| p);
+        self.regex.is_match(path)
+    }
+
+    /// The one path that the pattern names, for a URL: a prefix, or a
+    /// regular expression of literal text with an optional `^` and `$`.
+    /// `None` for a regular expression with a special character.
+    pub fn literal_path(&self) -> Option<String> {
+        if self.prefix {
+            return Some(self.text.clone());
+        }
+        let text = self.text.strip_prefix('^').unwrap_or(&self.text);
+        let text = text.strip_suffix('$').unwrap_or(text);
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some(e) if e.is_ascii_punctuation() => out.push(e),
+                    _ => return None,
+                },
+                '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' => {
+                    return None
+                }
+                c => out.push(c),
+            }
+        }
+        Some(out)
+    }
+}
+
+impl std::fmt::Display for PathPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct IngressRule {
     pub hostname: Option<String>,
-    pub path: Option<String>,
+    pub path: Option<PathPattern>,
     pub service: Service,
     pub origin: OriginOptions,
 }
@@ -191,8 +283,8 @@ impl IngressRule {
                 return false;
             }
         }
-        if let Some(prefix) = &self.path {
-            if !path.starts_with(prefix.as_str()) {
+        if let Some(pattern) = &self.path {
+            if !pattern.is_match(path) {
                 return false;
             }
         }
@@ -234,6 +326,9 @@ impl Ingress {
         Self::default()
     }
 
+    /// Add a rule for `hostname`. `path` is a literal prefix of the request
+    /// path ([`PathPattern::prefix`]); for a regular expression, give
+    /// [`PathPattern::regex`] to [`Ingress::rule_with`].
     pub fn rule(
         mut self,
         hostname: impl Into<String>,
@@ -242,7 +337,7 @@ impl Ingress {
     ) -> Self {
         self.rules.push(IngressRule {
             hostname: Some(hostname.into()),
-            path: path.map(str::to_string),
+            path: path.map(PathPattern::prefix),
             service,
             origin: OriginOptions::default(),
         });
@@ -360,9 +455,15 @@ pub(crate) fn ingress_from_raw(rules: Vec<RawIngress>) -> Result<Ingress> {
             .as_deref()
             .with_context(|| format!("ingress rule {}: service: is missing", i + 1))
             .and_then(|s| Service::parse(s).with_context(|| format!("ingress rule {}", i + 1)))?;
+        let path = raw
+            .path
+            .as_deref()
+            .map(PathPattern::regex)
+            .transpose()
+            .with_context(|| format!("ingress rule {}", i + 1))?;
         ingress.rules.push(IngressRule {
             hostname: raw.hostname,
-            path: raw.path,
+            path,
             service,
             origin: raw.origin_request.into_options(),
         });
@@ -437,6 +538,36 @@ mod tests {
             ingress.resolve("other.example.com", "/").unwrap().service,
             Service::Status(503)
         ));
+    }
+
+    // Issue 269: a path: is a regular expression, unanchored, as in
+    // cloudflared. A prefix of the builder has no special character.
+    #[test]
+    fn a_path_pattern_is_a_regular_expression() {
+        let re = PathPattern::regex("^/api/v[0-9]+/").unwrap();
+        assert!(re.is_match("/api/v12/x"));
+        assert!(!re.is_match("/api/vx/"));
+        assert!(!re.is_match("/x/api/v1/"));
+        let dot = PathPattern::regex("/a.b").unwrap();
+        assert!(dot.is_match("/aXb"));
+        assert!(dot.is_match("/x/a.b/y"));
+        let end = PathPattern::regex("^/ws$").unwrap();
+        assert!(end.is_match("/ws?token=1"));
+        assert!(!end.is_match("/ws/x"));
+        let err = PathPattern::regex("[").unwrap_err().to_string();
+        assert!(err.contains("not a valid regular expression"), "{err}");
+
+        let prefix = PathPattern::prefix("/a.b");
+        assert!(prefix.is_match("/a.b/c"));
+        assert!(!prefix.is_match("/aXb"));
+        assert!(!prefix.is_match("/x/a.b"));
+        assert_eq!(prefix.as_str(), "/a.b");
+
+        assert_eq!(prefix.literal_path().as_deref(), Some("/a.b"));
+        let literal = PathPattern::regex(r"^/v1\.2/ws$").unwrap();
+        assert_eq!(literal.literal_path().as_deref(), Some("/v1.2/ws"));
+        assert_eq!(re.literal_path(), None);
+        assert_eq!(dot.literal_path(), None);
     }
 
     #[test]

@@ -32,16 +32,17 @@ const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 pub const DEFAULT_PATH: &str = "/__cfrs/ws";
 
 /// The path of the first `--forward` rule of `ingress` (issue 203).
+/// `None` also when the `path:` of the rule is a regular expression with a
+/// special character: it names no one URL (issue 269).
 pub fn forward_path(ingress: &crate::ingress::Ingress) -> Option<String> {
-    ingress
+    let rule = ingress
         .rules
         .iter()
-        .find(|rule| matches!(rule.service, Service::Forward(_)))
-        .map(|rule| {
-            rule.path
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PATH.to_string())
-        })
+        .find(|rule| matches!(rule.service, Service::Forward(_)))?;
+    match &rule.path {
+        None => Some(DEFAULT_PATH.to_string()),
+        Some(pattern) => pattern.literal_path(),
+    }
 }
 
 /// The wss:// URL of the forward endpoint at `path` of the public URL `url`.
@@ -584,7 +585,7 @@ mod forward_tests {
         assert_eq!(forward_url("ftp://h", "/x"), None);
         let ingress = crate::ingress::Ingress::new().rule_with(crate::ingress::IngressRule {
             hostname: None,
-            path: Some(DEFAULT_PATH.into()),
+            path: Some(crate::ingress::PathPattern::prefix(DEFAULT_PATH)),
             service: Service::Forward(ForwardTarget::Tcp("127.0.0.1:22".into())),
             origin: OriginOptions::default(),
         });

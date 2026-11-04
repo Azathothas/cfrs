@@ -285,7 +285,7 @@ pub async fn check(config: &Config) -> Report {
         let name = format!("origin {}", i + 1);
         ingress.push(json!({
             "hostname": rule.hostname,
-            "path": rule.path,
+            "path": rule.path.as_ref().map(|p| p.as_str()),
             "service": crate::net::origin_label(&rule.service),
         }));
         files.extend(service_files(&rule.service));

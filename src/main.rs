@@ -2717,7 +2717,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
             let target = ForwardTarget::parse(forward).fault(Fault::Usage)?;
             ingress = ingress.rule_with(IngressRule {
                 hostname: None,
-                path: Some(cfrs::ws::DEFAULT_PATH.to_string()),
+                path: Some(cfrs::ingress::PathPattern::prefix(cfrs::ws::DEFAULT_PATH)),
                 service: Service::Forward(target),
                 origin: OriginOptions::default(),
             });

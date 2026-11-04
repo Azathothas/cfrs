@@ -1251,7 +1251,7 @@ mod tests {
             Ingress::new()
                 .rule_with(IngressRule {
                     hostname: None,
-                    path: Some("/__cfrs/ws".into()),
+                    path: Some(crate::ingress::PathPattern::prefix("/__cfrs/ws")),
                     service: Service::Forward(ForwardTarget::Unix(sock.clone())),
                     origin: OriginOptions::default(),
                 })
