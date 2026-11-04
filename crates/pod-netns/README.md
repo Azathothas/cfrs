@@ -81,7 +81,9 @@ see it. Use a unix socket for it (`-L unix:///path`).
 * `connect` is answered after the supervisor dials the upstream. The
   supervisor reads the address from `/proc/<pid>/mem` of the calling task. It
   opens that file again for each notification, and it checks the notification
-  with `SECCOMP_IOCTL_NOTIF_ID_VALID` after the open.
+  with `SECCOMP_IOCTL_NOTIF_ID_VALID` after the open. A connect that fails
+  gives `ECONNREFUSED`. Then `getsockopt(SO_ERROR)` gives `ECONNREFUSED`
+  one time, and 0 after that, as the kernel does.
 * `bind`, `listen` and `accept` make a unix listener in `--inbound-dir`. The
   listener fd of the program is readable while a connection waits, so
   `poll`, `select` and `epoll` wake for it. A non-blocking `accept` with no

@@ -1560,6 +1560,55 @@ fn getpeername_does_not_write_past_the_buffer_of_the_caller() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const SO_ERROR_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+int main(void) {
+    alarm(10);
+    int s = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    struct sockaddr_in a; memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET; a.sin_port = htons(9999);
+    inet_pton(AF_INET, "10.66.0.1", &a.sin_addr);
+    int r = connect(s, (struct sockaddr *)&a, sizeof a);
+    printf("CONNECT:%d:%d\n", r, r < 0 ? errno : 0);
+    for (int i = 0; i < 2; i++) {
+        int err = -1; socklen_t len = sizeof err;
+        r = getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &len);
+        printf("SOERROR%d:%d:%d:%u\n", i, r, err, (unsigned)len);
+    }
+    return 0;
+}
+"#;
+
+/// Issue 302: after a refused connect, SO_ERROR gives the error once
+/// (ECONNREFUSED), then 0, as the kernel does. Before, it gave 0.
+#[test]
+fn so_error_gives_the_error_of_a_failed_connect() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-soerror-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = build_program(&dir, "soerror", SO_ERROR_CLIENT, false);
+    let stdout = run(&dir, &[&dir.join("nobody.sock")], &program);
+    let refused = libc::ECONNREFUSED;
+    assert!(
+        stdout.contains(&format!("CONNECT:-1:{refused}\n")),
+        "{stdout:?}"
+    );
+    assert!(
+        stdout.contains(&format!("SOERROR0:0:{refused}:4\n")),
+        "{stdout:?}"
+    );
+    assert!(stdout.contains("SOERROR1:0:0:4\n"), "{stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 const UNSPEC_CLIENT: &str = r#"
 #include <stdio.h>
 #include <string.h>

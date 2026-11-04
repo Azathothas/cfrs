@@ -534,6 +534,9 @@ pub(crate) enum Sock {
         pair: tokio::net::UnixStream,
         bound: Option<(IpAddr, u16)>,
         inbound: Option<Inbound>,
+        /// The pending error of the socket (`SO_ERROR`): the errno of the
+        /// last failed connect, 0 when none. A read of `SO_ERROR` clears it.
+        error: i32,
     },
     Datagram {
         pair: Arc<tokio::net::UnixDatagram>,
@@ -923,6 +926,7 @@ pub(crate) fn handle_socket(
                 pair: tokio::net::UnixStream::from_std(ours)?,
                 bound: None,
                 inbound: None,
+                error: 0,
             },
         );
     } else {
@@ -1004,6 +1008,10 @@ pub(crate) async fn handle_connect(
         Err(e) => {
             if verbose {
                 eprintln!("pod-netns: upstream for {target} failed: {e:#}");
+            }
+            // Keep the error for SO_ERROR, as the kernel does (issue 302).
+            if let Some(Sock::Stream { error, .. }) = map.get_mut(&fd) {
+                *error = libc::ECONNREFUSED;
             }
             notif_respond(lfd, id, -1, libc::ECONNREFUSED)?;
         }
@@ -1536,7 +1544,7 @@ pub(crate) fn handle_getsockopt(
     let optname = a[2] as i32;
     let optval = a[3];
     let optlen_ptr = a[4];
-    let Some(entry) = map.get(&fd) else {
+    let Some(entry) = map.get_mut(&fd) else {
         return notif_continue(lfd, id);
     };
     if !writable || optval == 0 || optlen_ptr == 0 {
@@ -1547,16 +1555,32 @@ pub(crate) fn handle_getsockopt(
     if len == 0 || len > 256 {
         return notif_continue(lfd, id);
     }
-    let mut val = vec![0u8; len];
-    if level == libc::SOL_SOCKET && optname == libc::SO_TYPE {
-        let ty = match entry {
+    // An int option of SOL_SOCKET: the kernel writes at most the length of
+    // the caller, and puts the length that it wrote in *optlen.
+    let int_option = if level != libc::SOL_SOCKET {
+        None
+    } else if optname == libc::SO_TYPE {
+        Some(match entry {
             Sock::Stream { .. } => libc::SOCK_STREAM,
             Sock::Datagram { .. } => libc::SOCK_DGRAM,
-        };
-        let b = (ty as u32).to_ne_bytes();
-        val[..4].copy_from_slice(&b);
+        })
+    } else if optname == libc::SO_ERROR {
+        // Issue 302: the error of a failed connect, once; then 0.
+        Some(match entry {
+            Sock::Stream { error, .. } => std::mem::take(error),
+            Sock::Datagram { .. } => 0,
+        })
+    } else {
+        None
+    };
+    if let Some(value) = int_option {
+        let bytes = value.to_ne_bytes();
+        let out = len.min(bytes.len());
+        write_mem(mem, optval, &bytes[..out])?;
+        write_mem(mem, optlen_ptr, &(out as u32).to_ne_bytes())?;
+        return notif_respond(lfd, id, 0, 0);
     }
-    write_mem(mem, optval, &val)?;
+    write_mem(mem, optval, &vec![0u8; len])?;
     notif_respond(lfd, id, 0, 0)
 }
 
