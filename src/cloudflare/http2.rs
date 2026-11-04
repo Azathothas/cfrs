@@ -480,6 +480,31 @@ pub fn is_hop_by_hop(name: &str) -> bool {
     )
 }
 
+/// The header names that the `Connection` values in `values` list (RFC
+/// 9110 section 7.6.1), in lower case. These headers are also hop-by-hop.
+/// The tokens `close`, `keep-alive` and `upgrade` are ignored, and the
+/// framing headers `host`, `content-length` and `transfer-encoding` are
+/// never named.
+pub fn connection_named<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    values
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| {
+            !token.is_empty()
+                && !matches!(
+                    token.as_str(),
+                    "close"
+                        | "keep-alive"
+                        | "upgrade"
+                        | "host"
+                        | "content-length"
+                        | "transfer-encoding"
+                )
+        })
+        .collect()
+}
+
 /// Which headers belong to the visitor rather than to the edge connection.
 ///
 /// Anything with a `:` prefix is HTTP/2 pseudo-headers, and the `cf-` families
@@ -956,9 +981,19 @@ mod protocol_tests {
         ] {
             assert!(is_hop_by_hop(name), "{} is hop-by-hop", name);
         }
-        for name in ["content-length", "cf-proxy-x", "accept"] {
+        for name in ["content-length", "cf-proxy-x", "accept", "trailers"] {
             assert!(!is_hop_by_hop(name), "{} is not hop-by-hop", name);
         }
+    }
+
+    /// Issue 235: the names in Connection are hop-by-hop too.
+    #[test]
+    fn connection_names_its_hop_by_hop_headers() {
+        assert_eq!(
+            connection_named(["close, X-Hop", " Upgrade ,keep-alive,x-other", ""]),
+            vec!["x-hop".to_string(), "x-other".to_string()]
+        );
+        assert!(connection_named(["Host, Content-Length, Transfer-Encoding"]).is_empty());
     }
 
     #[test]

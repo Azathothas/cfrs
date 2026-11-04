@@ -6,6 +6,7 @@
 //! routers called directly, so multipart, directory serving and file transfer
 //! work without an external process.
 
+use crate::cloudflare::http2::{connection_named, is_hop_by_hop};
 use crate::cloudflare::stream as cqstream;
 use crate::cloudflare::stream::{HTTP_HEADER_KEY, HTTP_HOST_KEY, HTTP_METHOD_KEY};
 use anyhow::{anyhow, bail, Context, Result};
@@ -280,11 +281,23 @@ async fn forward_http(
     mut writer: EdgeWriter,
     metrics: &Metrics,
 ) -> Result<()> {
-    let mut io = net::dial(service, options).await?;
     // The QUIC leg marks a WebSocket by the connection type and may keep no
     // Upgrade header (issue 56): is_websocket checks both.
     let upgrade = is_websocket(request);
-    let head = build_request_head(request, options, upgrade);
+    let head = match build_request_head(request, options, upgrade) {
+        Ok(head) => head,
+        Err(err) => {
+            write_simple_response(
+                &mut writer,
+                400,
+                "text/plain; charset=utf-8",
+                b"cfrs: the request is not valid HTTP/1.1\n",
+            )
+            .await?;
+            return Err(err);
+        }
+    };
+    let mut io = net::dial(service, options).await?;
     tokio::io::AsyncWriteExt::write_all(&mut io, head.as_bytes()).await?;
 
     if upgrade || is_chunked(request) {
@@ -418,11 +431,22 @@ async fn dispatch_axum(
     let builder = Request::builder().method(method).uri(uri);
 
     let mut headers = HeaderMap::new();
+    let named = connection_named(
+        request
+            .metadata
+            .iter()
+            .filter(|(key, _)| {
+                key.strip_prefix(&format!("{HTTP_HEADER_KEY}:"))
+                    .is_some_and(|name| name.eq_ignore_ascii_case("connection"))
+            })
+            .map(|(_, value)| value.as_str()),
+    );
     for (key, value) in &request.metadata {
         let Some(name) = key.strip_prefix(&format!("{HTTP_HEADER_KEY}:")) else {
             continue;
         };
-        if is_hop_by_hop(name) {
+        let lower = name.to_ascii_lowercase();
+        if is_hop_by_hop(&lower) || named.contains(&lower) {
             continue;
         }
         if let (Ok(name), Ok(value)) = (
@@ -801,19 +825,52 @@ pub(crate) async fn write_response_meta(
 
 // ── Request head ────────────────────────────────────────────────────────────
 
+/// The HTTP/1.1 head of the request to the origin.
+///
+/// The method, the target and the host come from the edge (the QUIC leg has
+/// no HTTP parser before this) or from `httpHostHeader`: each one with a
+/// control character, a space or a line break is an error (issue 226). A
+/// header with a bad name or value is dropped. The hop-by-hop headers and
+/// the headers that `Connection` names stay on their hop (issue 235), but
+/// `Transfer-Encoding` stays: a chunked request body goes to the origin as
+/// it is.
 fn build_request_head(
     request: &cqstream::ConnectRequest,
     options: &OriginOptions,
     upgrade: bool,
-) -> String {
+) -> Result<String> {
     let method = request.meta(HTTP_METHOD_KEY).unwrap_or("GET");
+    if axum::http::Method::from_bytes(method.as_bytes()).is_err() {
+        bail!("the request method {method:?} is not a token");
+    }
     let path = request_path(&request.dest);
-    let host = options
-        .http_host_header
-        .clone()
-        .or_else(|| request.meta(HTTP_HOST_KEY).map(str::to_string))
-        .unwrap_or_default();
+    if !path.bytes().all(|b| b > b' ' && b != 0x7f) {
+        bail!("the request target {path:?} has a space or a control character");
+    }
+    let host = match &options.http_host_header {
+        Some(host) => host.clone(),
+        None => request.meta(HTTP_HOST_KEY).unwrap_or_default().to_string(),
+    };
+    if HeaderValue::from_bytes(host.as_bytes()).is_err() {
+        let from = if options.http_host_header.is_some() {
+            "httpHostHeader"
+        } else {
+            "the request"
+        };
+        bail!("the Host {host:?} of {from} has a control character");
+    }
     let prefix = format!("{HTTP_HEADER_KEY}:");
+    let headers = || {
+        request
+            .metadata
+            .iter()
+            .filter_map(|(key, value)| Some((key.strip_prefix(&prefix)?, value.as_str())))
+    };
+    let named = connection_named(
+        headers()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+            .map(|(_, value)| value),
+    );
 
     let mut head = String::with_capacity(256);
     head.push_str(method);
@@ -825,27 +882,25 @@ fn build_request_head(
         head.push_str(&host);
         head.push_str("\r\n");
     }
-    let mut saw_connection = false;
     let mut saw_upgrade = false;
-    for (key, value) in &request.metadata {
-        let Some(name) = key.strip_prefix(&prefix) else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("host") {
+    for (name, value) in headers() {
+        let lower = name.to_ascii_lowercase();
+        if lower == "host" {
             continue;
         }
-        if options.strip_accept_encoding && name.eq_ignore_ascii_case("accept-encoding") {
+        if options.strip_accept_encoding && lower == "accept-encoding" {
             continue;
         }
-        if name.eq_ignore_ascii_case("connection") {
-            // An upgrade always says Connection: Upgrade (below).
-            if upgrade {
-                continue;
-            }
-            saw_connection = true;
-        }
-        if name.eq_ignore_ascii_case("upgrade") {
+        if lower == "upgrade" && upgrade {
             saw_upgrade = true;
+        } else if drop_for_origin(&lower, &named) {
+            continue;
+        }
+        if HeaderName::from_bytes(name.as_bytes()).is_err()
+            || HeaderValue::from_bytes(value.as_bytes()).is_err()
+        {
+            tracing::warn!(header = %name.escape_debug(), "a request header is not valid HTTP; it is dropped");
+            continue;
         }
         head.push_str(name);
         head.push_str(": ");
@@ -857,11 +912,18 @@ fn build_request_head(
             head.push_str("Upgrade: websocket\r\n");
         }
         head.push_str("Connection: Upgrade\r\n");
-    } else if !saw_connection {
+    } else {
         head.push_str("Connection: close\r\n");
     }
     head.push_str("\r\n");
-    head
+    Ok(head)
+}
+
+/// Whether the request header `lower` (in lower case) stays out of the head
+/// to the origin: a hop-by-hop header but `Transfer-Encoding`, or a header
+/// that `Connection` names.
+fn drop_for_origin(lower: &str, named: &[String]) -> bool {
+    (is_hop_by_hop(lower) && lower != "transfer-encoding") || named.iter().any(|n| n == lower)
 }
 
 fn request_path(dest: &str) -> String {
@@ -901,20 +963,6 @@ fn is_upgrade(request: &cqstream::ConnectRequest) -> bool {
 /// `Upgrade`/`Connection` headers in the metadata, so check both.
 fn is_websocket(request: &cqstream::ConnectRequest) -> bool {
     request.conn_type == cqstream::ConnectionType::Websocket || is_upgrade(request)
-}
-
-fn is_hop_by_hop(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-    )
 }
 
 // ── Response head ───────────────────────────────────────────────────────────
@@ -1596,7 +1644,7 @@ mod tests {
             ],
         );
         assert_eq!(content_length(&request), Some(5));
-        let head = build_request_head(&request, &OriginOptions::default(), false);
+        let head = build_request_head(&request, &OriginOptions::default(), false).unwrap();
         assert!(head.starts_with("POST /a HTTP/1.1\r\n"));
         assert!(head.contains("Connection: close\r\n"));
     }
@@ -1615,7 +1663,7 @@ mod tests {
         );
         ws.conn_type = cqstream::ConnectionType::Websocket;
         assert!(!is_upgrade(&ws) && is_websocket(&ws));
-        let head = build_request_head(&ws, &OriginOptions::default(), is_websocket(&ws));
+        let head = build_request_head(&ws, &OriginOptions::default(), is_websocket(&ws)).unwrap();
         assert!(head.contains("Upgrade: websocket\r\n"), "{head}");
         assert!(head.contains("Connection: Upgrade\r\n"), "{head}");
         assert!(
@@ -1628,8 +1676,91 @@ mod tests {
         );
         // With an Upgrade header, it is not doubled.
         let with = req("https://x/ws", vec![("HttpHeader:Upgrade", "websocket")]);
-        let head = build_request_head(&with, &OriginOptions::default(), true);
+        let head = build_request_head(&with, &OriginOptions::default(), true).unwrap();
         assert_eq!(head.matches("pgrade: websocket").count(), 1, "{head}");
+    }
+
+    /// Issue 226: a line break in a field of the edge does not reach the
+    /// origin as a new header line.
+    #[test]
+    fn a_line_break_does_not_make_a_header_line() {
+        let request = req(
+            "https://x/a",
+            vec![
+                (HTTP_HOST_KEY, "x"),
+                ("HttpHeader:X-A", "a\r\nInjected: 1"),
+                ("HttpHeader:Bad Name", "b"),
+                ("HttpHeader:X-Name\r\nInjected", "c"),
+                ("HttpHeader:Cookie", "name=caf\u{e9}"),
+            ],
+        );
+        let head = build_request_head(&request, &OriginOptions::default(), false).unwrap();
+        assert!(!head.contains("Injected"), "{head}");
+        assert!(!head.contains("Bad Name"), "{head}");
+        assert!(head.contains("Cookie: name=caf\u{e9}\r\n"), "{head}");
+        assert_eq!(head.matches("\r\n\r\n").count(), 1, "{head}");
+        assert!(head.ends_with("\r\n\r\n"), "{head}");
+        assert_eq!(head.matches('\n').count(), head.matches("\r\n").count());
+
+        let bad = [
+            req(
+                "https://x/a",
+                vec![(HTTP_METHOD_KEY, "GET /x HTTP/1.1\r\n")],
+            ),
+            req("https://x/a\r\nInjected: 1", vec![]),
+            req("https://x/a b", vec![]),
+            req("https://x/a", vec![(HTTP_HOST_KEY, "x\nInjected: 1")]),
+        ];
+        for request in &bad {
+            assert!(
+                build_request_head(request, &OriginOptions::default(), false).is_err(),
+                "{request:?}"
+            );
+        }
+        let options = OriginOptions {
+            http_host_header: Some("x\r\nInjected: 1".into()),
+            ..OriginOptions::default()
+        };
+        let err = build_request_head(&req("https://x/", vec![]), &options, false).unwrap_err();
+        assert!(err.to_string().contains("httpHostHeader"), "{err}");
+    }
+
+    /// Issue 235: the hop-by-hop headers and the headers that Connection
+    /// names do not go to the origin. Transfer-Encoding stays for a chunked
+    /// body.
+    #[test]
+    fn hop_by_hop_headers_stay_on_their_hop() {
+        let request = req(
+            "https://x/u",
+            vec![
+                (HTTP_METHOD_KEY, "POST"),
+                ("HttpHeader:Keep-Alive", "timeout=5"),
+                ("HttpHeader:Te", "trailers"),
+                ("HttpHeader:Trailer", "X-Sum"),
+                ("HttpHeader:Proxy-Authorization", "Basic YTpi"),
+                ("HttpHeader:Connection", "close, X-Hop"),
+                ("HttpHeader:X-Hop", "1"),
+                ("HttpHeader:X-Keep", "2"),
+                ("HttpHeader:Transfer-Encoding", "chunked"),
+            ],
+        );
+        let head = build_request_head(&request, &OriginOptions::default(), false).unwrap();
+        for gone in [
+            "Keep-Alive",
+            "Te:",
+            "Trailer",
+            "Proxy-Authorization",
+            "X-Hop",
+        ] {
+            assert!(!head.contains(gone), "{gone} in {head}");
+        }
+        assert!(head.contains("X-Keep: 2\r\n"), "{head}");
+        assert!(head.contains("Transfer-Encoding: chunked\r\n"), "{head}");
+        assert_eq!(head.matches("Connection:").count(), 1, "{head}");
+        assert!(head.contains("Connection: close\r\n"), "{head}");
+        let sized = req("https://x/u", vec![("HttpHeader:Content-Length", "5")]);
+        let head = build_request_head(&sized, &OriginOptions::default(), false).unwrap();
+        assert!(head.contains("Content-Length: 5\r\n"), "{head}");
     }
 
     #[test]
@@ -1657,14 +1788,14 @@ mod tests {
             "https://x/",
             vec![("HttpHeader:Accept-Encoding", "gzip, br")],
         );
-        let head = build_request_head(&request, &OriginOptions::default(), false);
+        let head = build_request_head(&request, &OriginOptions::default(), false).unwrap();
         assert!(head.contains("Accept-Encoding: gzip, br"));
 
         let options = OriginOptions {
             strip_accept_encoding: true,
             ..OriginOptions::default()
         };
-        let head = build_request_head(&request, &options, false);
+        let head = build_request_head(&request, &options, false).unwrap();
         assert!(!head.to_ascii_lowercase().contains("accept-encoding"));
     }
 
