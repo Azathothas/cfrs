@@ -52,12 +52,15 @@ jobs:
       - name: Package lists
         run: |
           set -eu
-          for p in cfrs pod-netns; do cargo package --locked --list -p "$p" > "pkg-$p.txt"; done
+          # The lists go outside the checkout: a new file there makes the
+          # next cargo package refuse a dirty tree.
+          out="$RUNNER_TEMP"
+          for p in cfrs pod-netns; do cargo package --locked --list -p "$p" > "$out/pkg-$p.txt"; done
           for f in LICENSE README.md Cargo.toml; do
-            grep -qx "$f" pkg-cfrs.txt && grep -qx "$f" pkg-pod-netns.txt
+            grep -qx "$f" "$out/pkg-cfrs.txt" && grep -qx "$f" "$out/pkg-pod-netns.txt"
           done
-          grep -qx 'shim/cfrsnet.c' pkg-cfrs.txt
-          if grep -E '^(\.github|\.claude|docs|scripts|fuzz)/|^err\.txt$' pkg-cfrs.txt; then
+          grep -qx 'shim/cfrsnet.c' "$out/pkg-cfrs.txt"
+          if grep -E '^(\.github|\.claude|docs|scripts|fuzz)/|^(err\.txt|CLAUDE\.md)$' "$out/pkg-cfrs.txt"; then
             echo "files of the repository in the package"; exit 1
           fi
       - name: The man page renders with groff and mandoc
