@@ -24,6 +24,10 @@ use crate::share::ShareControl;
 use crate::util::path_and_query;
 
 const MAX_HEAD_BYTES: usize = 32 * 1024;
+/// The longest line of the trailer of a chunked answer of the origin.
+const MAX_TRAILER_LINE: usize = 8192;
+/// The largest trailer of a chunked answer of the origin.
+const MAX_TRAILER_BYTES: usize = 64 * 1024;
 
 /// The visitor side of one edge stream: the request body (after the
 /// `ConnectRequest`) for reading, the `ConnectResponse` and body for writing.
@@ -1134,14 +1138,30 @@ where
         let size = u64::from_str_radix(hex, 16)
             .with_context(|| format!("a bad chunk size {hex:?} from the origin"))?;
         if size == 0 {
-            // The trailer: header lines up to an empty line.
+            // The trailer: header lines up to an empty line, at most
+            // MAX_TRAILER_LINE bytes each and MAX_TRAILER_BYTES in all
+            // (issue 244). cfrs does not send the trailer on.
+            let mut total = 0;
             loop {
                 line.clear();
-                let n = tokio::io::AsyncReadExt::take(&mut *src, 8192)
+                let n = tokio::io::AsyncReadExt::take(&mut *src, MAX_TRAILER_LINE as u64)
                     .read_until(b'\n', &mut line)
                     .await?;
                 if n == 0 || line == b"\r\n" || line == b"\n" {
                     return Ok(());
+                }
+                if !line.ends_with(b"\n") {
+                    bail!(
+                        "a trailer line of the origin is longer than {} KiB",
+                        MAX_TRAILER_LINE / 1024
+                    );
+                }
+                total += n;
+                if total > MAX_TRAILER_BYTES {
+                    bail!(
+                        "the trailer of the origin is larger than {} KiB",
+                        MAX_TRAILER_BYTES / 1024
+                    );
                 }
             }
         }
@@ -1449,6 +1469,36 @@ mod tests {
     /// The payload of each chunk, with no framing; an extension and a
     /// trailer are dropped; the last chunk ends the body while the origin
     /// keeps the connection open.
+    /// Issue 244: the trailer of a chunked answer has a cap, in all and
+    /// for each line.
+    #[tokio::test]
+    async fn the_trailer_of_the_origin_has_a_cap() {
+        let mut many = b"1\r\na\r\n0\r\n".to_vec();
+        for _ in 0..20_000 {
+            many.extend_from_slice(b"X: y\r\n");
+        }
+        many.extend_from_slice(b"\r\n");
+        let mut long = b"0\r\n".to_vec();
+        long.extend(std::iter::repeat_n(b'a', 20_000));
+        long.extend_from_slice(b"\r\n\r\n");
+        for (raw, want) in [(&many, "larger than 64 KiB"), (&long, "longer than 8 KiB")] {
+            let mut source = tokio::io::BufReader::new(&raw[..]);
+            let mut out = futures::io::Cursor::new(Vec::new());
+            let err = copy_chunked_to_futures(&mut source, &mut out, &Metrics::new())
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains(want), "{err:#}");
+        }
+        // A small trailer is read and dropped.
+        let raw = b"1\r\na\r\n0\r\nX-Sum: 1\r\n\r\n";
+        let mut source = tokio::io::BufReader::new(&raw[..]);
+        let mut out = futures::io::Cursor::new(Vec::new());
+        copy_chunked_to_futures(&mut source, &mut out, &Metrics::new())
+            .await
+            .unwrap();
+        assert_eq!(out.into_inner(), b"a");
+    }
+
     #[tokio::test]
     async fn a_chunked_body_is_decoded() {
         let (mut origin, cfrs_side) = tokio::io::duplex(1 << 16);
