@@ -42,7 +42,11 @@ state of the open work.
 * **Helper scripts of the agent** (in `scripts/agent/`):
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push.
   * `watch-issues.sh [STATE_DIR]`: one line for each new issue
-    (`new-issues.py` reads the issue list).
+    (`new-issues.py` reads the issue list). It keeps a copy of each issue
+    in `STATE_DIR/issues/NUMBER.json`. GitHub deletes the issues of a
+    suspended account; then read the copy, or the `IssuesEvent` and
+    `IssueCommentEvent` payloads of `repos/Azathothas/cfrs/events` (the
+    last 300 events), and add the text to `docs/reports/`.
   * `watch-runs.sh FULL_SHA [MIN_RUNS]`: each run of a commit when it ends,
     with the failed jobs and steps (`runs.py` reads the run list). Give the
     full SHA (`git rev-parse HEAD`): the API does not match a short SHA. A
