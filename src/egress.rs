@@ -265,6 +265,16 @@ impl Proxy {
         self.kind
     }
 
+    /// The kind of the proxy as cfrs dials it: the scheme, with `+unix` or
+    /// `+exec` for a proxy that is not on TCP.
+    pub fn kind_text(&self) -> String {
+        match &self.via {
+            Carrier::Tcp => self.scheme().to_string(),
+            Carrier::Unix(_) => format!("{}+unix", self.scheme()),
+            Carrier::Exec(_) => format!("{}+exec", self.scheme()),
+        }
+    }
+
     /// `http`, `socks5` or `socks5h`.
     pub fn scheme(&self) -> &'static str {
         match self.kind {

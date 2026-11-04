@@ -1638,3 +1638,37 @@ fn a_token_comes_from_a_file() {
     let out = run(&["tunnel", "--token", "x", "--token-file", path], None);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
+
+/// E11: status gives the kind of the proxy that cfrs dials (before, each
+/// proxy was "http"), and its source.
+#[test]
+fn status_names_the_kind_and_the_source_of_the_proxy() {
+    let status = |args: &[&str], proxy: Option<&str>| -> serde_json::Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(args).arg("status");
+        for key in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "CFRS_PROXY",
+        ] {
+            cmd.env_remove(key);
+        }
+        if let Some(proxy) = proxy {
+            cmd.env("HTTPS_PROXY", proxy);
+        }
+        let out = cmd.output().unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let doc = status(&[], Some("socks5h://u:p@127.0.0.1:1080"));
+    assert_eq!(doc["proxy"]["kind"], "socks5h");
+    assert_eq!(doc["proxy"]["source"], "HTTPS_PROXY");
+    assert_eq!(doc["proxy"]["credentials"], true);
+    assert!(!doc.to_string().contains("u:p@"), "{doc}");
+    let doc = status(&["--no-proxy"], Some("http://127.0.0.1:3128"));
+    assert_eq!(doc["proxy"]["kind"], "direct");
+    let doc = status(&["--proxy", "socks5h+unix:/tmp/x.sock"], None);
+    assert_eq!(doc["proxy"]["kind"], "socks5h+unix");
+    assert_eq!(doc["proxy"]["source"], "--proxy");
+}

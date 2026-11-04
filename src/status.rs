@@ -9,7 +9,30 @@ use serde_json::{json, Value};
 /// The variables of the proxy, in the order that cfrs reads them.
 const PROXY_VARIABLES: &[&str] = &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
 
+/// The proxy that cfrs uses, by the choice of the dial: `--no-proxy`,
+/// `--proxy` (or `CFRS_PROXY`), else the first proxy variable that is set.
 fn proxy() -> Value {
+    use crate::egress::{Carrier, Proxy, ProxyChoice};
+    let no_proxy = ["NO_PROXY", "no_proxy"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
+    let describe = |p: &Proxy, source: &str| {
+        json!({
+            "source": source,
+            "address": match p.carrier() {
+                Carrier::Tcp => format!("{}:{}", p.address().0, p.address().1),
+                _ => p.to_string(),
+            },
+            "kind": p.kind_text(),
+            "credentials": p.has_credentials(),
+            "no_proxy": no_proxy,
+        })
+    };
+    match crate::egress::choice() {
+        ProxyChoice::Direct => return json!({ "source": "--no-proxy", "kind": "direct" }),
+        ProxyChoice::Via(p) => return describe(&p, "--proxy"),
+        ProxyChoice::FromEnvironment => {}
+    }
     for key in PROXY_VARIABLES {
         let Ok(value) = std::env::var(key) else {
             continue;
@@ -17,17 +40,14 @@ fn proxy() -> Value {
         if value.trim().is_empty() {
             continue;
         }
-        return match crate::egress::Proxy::parse(&value) {
-            Ok(p) => json!({
-                "variable": key,
-                "address": match p.carrier() {
-                    crate::egress::Carrier::Tcp => format!("{}:{}", p.address().0, p.address().1),
-                    _ => p.to_string(),
-                },
-                "kind": "http",
-                "credentials": p.has_credentials(),
-            }),
-            Err(err) => json!({ "variable": key, "error": err.to_string() }),
+        return match Proxy::parse(&value) {
+            Ok(p) => {
+                let mut doc = describe(&p, key);
+                // The key of beta.11 and before.
+                doc["variable"] = json!(key);
+                doc
+            }
+            Err(err) => json!({ "variable": key, "source": key, "error": err.to_string() }),
         };
     }
     Value::Null
