@@ -179,38 +179,36 @@ Rules that the tests check:
 
 ## Open work
 
-* **Read `docs/HANDOFF.md` first**: the state of batch 5, the QA
-  archive, the agent branches and the next steps.
-* **Batch 4 (the podssh study) and batch 5 are on `main`, not released.**
-  The next release is `v0.3.0-beta.12`, unattended when green
-  (`docs/decisions.md`). Its note must list these breaking changes under
-  `## Breaking`, and each "Breaking:" line of the commit bodies since
-  `v0.3.0-beta.11` (`git log v0.3.0-beta.11..main --grep Breaking`):
-  * `cfrs doctor` says `fail` where it said `refused` (text and
-    `--json`); the JSON key is `status`, and `verdict` has the same value
-    for one release. `cfrs net doctor` says `ok`, `fail`, `unknown` in
-    place of `OK`, `FAIL`, `?`.
-  * `cfrs wait` exits 124 at its time limit; the socket rule (69 for a
-    live socket, 64 for a file that is not a socket); root with the `HOME`
-    of another user writes no file there (`CFRS_FOREIGN_HOME=allow`).
-  * `status`: `proxy.kind` is the real kind (it was `http` for each
-    proxy).
-  * Batch 5 (#228 to #276): a bare `cfrs share` exits 64 (give
-    `--mode upload` or `--dir`); uploads have mode 0600; the PIN cookie
-    has `Secure` (unlock over https only); a `path:` with a character of
-    a regular expression is a config error; `--check` fails a config with
-    no rule; the library `StaticDir` refuses dotfiles, and a
-    `ResponseWriter` can get more than one `body()` call
-    (`body_reader`).
-* **#269 item 3**: `path:` is a literal prefix. A real regular expression
-  (as cloudflared) needs a decision on a `regex` dependency.
-* **Issues #212 to #278 (batch 5)**: fixed on `main` except #217, #218,
-  #273 item 2 and #269 item 3; none is closed on GitHub
-  yet (`docs/HANDOFF.md`). GitHub deleted #259 to #278 (and the closed
-  #165 to #207) with the account `aerrand-agent`: their text is in
-  `docs/reports/aerrand-agent.md`. The QA findings #259 to #289 are filed
-  again as GitHub #279 to #309 (QA number + 20).
+* **Read `docs/HANDOFF.md` first** when it exists: the state of the
+  release of `v0.3.0-beta.12` and of the issue closes.
+* **All of batch 4, batch 5 and QA #279 to #309 are on `main`.** The
+  next release is `v0.3.0-beta.12`. Its note lists each "Breaking:" line
+  of the commit bodies since `v0.3.0-beta.11`
+  (`git log v0.3.0-beta.11..main --grep Breaking`).
+* **Issue numbers of the QA archive**: GitHub deleted #259 to #278 (and
+  the closed #165 to #207) with the account `aerrand-agent`; their text
+  is in `docs/reports/aerrand-agent.md`. They are filed again as GitHub
+  #279 to #298 (QA number + 20). The commits of batch 5 name the QA
+  number (for example #276 for GitHub #296). QA #279 to #289 are GitHub
+  #299 to #309, and their commits name the GitHub number.
+* **Shallow clone**: a cloud session starts with 50 commits of history.
+  Run `git fetch --unshallow origin main` before a `git log` over a
+  release range.
 * **Questions for the owner**: none open (`docs/decisions.md`).
+* **pod seccomp**: `recvmmsg` is not intercepted (the ruling names
+  `recvfrom` and `recvmsg`); a `recvmmsg` read gets the `AF_UNIX`
+  source. A blocking `connect` dial still stops the supervisor for the
+  other calls of the program. `wrap_udp_name` cuts a UDP target name
+  over 255 bytes.
+* **vnet shim UDP**: a datagram socket of the shim has no same-user
+  check (`docs/virtual-network.md`).
+* **#217**: no CI job runs the tests with the loopback down
+  (`unshare -n` needs user namespaces, which ubuntu-24.04 restricts);
+  `docs/development.md` has the local command. The job
+  `restricted-host` refuses `bind(AF_INET)`. Each new test that binds
+  127.0.0.1 starts with `need_loopback!()`.
+* **`path:`** is a regular expression with no anchor (#289). The match
+  does not decode `%XX` (cloudflared does).
 * **`cfrs pod doctor`** (crate `pod-netns`) keeps its own words (`ok`,
   `no`, `available`) and has no `schema` key.
 
@@ -242,6 +240,7 @@ Rules that the tests check:
   an ECH config.
 * **#89**: the tracking issue of the owner (dev work in a sandbox with basic
   networking). Leave it open.
-* **`try_update`**: `src/share.rs` uses a loop of `compare_exchange_weak`
-  (macro `update_atomic!`) in place of the deprecated `fetch_update`
-  (#214). Use `try_update` when the MSRV has it as a stable API.
+* **`try_update`**: `src/lib.rs` has the macro `update_atomic!` (a loop
+  of `compare_exchange_weak`) in place of the deprecated `fetch_update`
+  (#214); `src/share.rs` and `src/gate.rs` use it. Use `try_update` when
+  the MSRV has it as a stable API.
