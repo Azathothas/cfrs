@@ -581,6 +581,8 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
     if args.proxies.is_empty() {
         bail!("the seccomp backend needs -x (there is no direct mode)");
     }
+    // Issue 306: the inbound directory is private before the program runs.
+    crate::listen::private_dir(&args.inbound_dir)?;
     // A seccomp filter is per-thread unless TSYNC is used. Install it on a
     // helper thread and fork there: the child inherits the filter, and the
     // listener fd stays in this process's fd table, so no SCM_RIGHTS handshake
@@ -1532,7 +1534,7 @@ pub(crate) async fn handle_listen(
         return notif_continue(lfd, id);
     };
     let port = *port;
-    std::fs::create_dir_all(inbound_dir)?;
+    crate::listen::private_dir(inbound_dir)?;
     let path = inbound_dir.join(format!("{port}.sock"));
     let _ = std::fs::remove_file(&path);
     let listener = crate::listen::bind_private(&path)

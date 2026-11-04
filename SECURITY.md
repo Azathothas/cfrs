@@ -86,7 +86,7 @@ edge; it does not listen. The commands below listen:
 | `cfrs net tailscale` | `unix:/tmp/cfrssocks.sock` | The owner only (socket mode 0600). |
 | `cfrs connect -L` | no default | `tcp://port` binds `127.0.0.1`. A Unix socket has mode 0600. |
 | `pod-netns --serve` | no default | A Unix socket has mode 0600. A TCP address is open to each user who can reach it. |
-| `cfrs pod`, `cfrs warp run` (seccomp backend) | `/tmp/pod-netns-inbound/<port>.sock` | The owner only (socket mode 0600). One socket for each port that the program listens on. |
+| `cfrs pod`, `cfrs warp run` (seccomp backend) | `$XDG_RUNTIME_DIR/pod-netns-inbound/<port>.sock`, else `$TMPDIR/pod-netns-inbound-<uid>/<port>.sock` | The owner only (socket mode 0600, directory of the user, mode 0700). One socket for each port that the program listens on. cfrs refuses a directory of another user, and a directory that the group or others can write. |
 
 A TCP address that is not a loopback address is open to the network. cfrs
 does not refuse it, because some hosts permit no other listener.

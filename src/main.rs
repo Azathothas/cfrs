@@ -4521,7 +4521,10 @@ enum WarpCommand {
         #[arg(long)]
         keep_proxy_env: bool,
         /// Where a port that the program listens on is a unix socket
-        /// (seccomp backend).
+        /// (seccomp backend). The directory must be of this user and not
+        /// writable by the group or others [default:
+        /// $XDG_RUNTIME_DIR/pod-netns-inbound, else
+        /// $TMPDIR/pod-netns-inbound-UID].
         #[arg(long, value_name = "DIR")]
         inbound_dir: Option<PathBuf>,
         /// The program and its arguments.

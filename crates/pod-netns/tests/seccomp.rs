@@ -803,6 +803,56 @@ fn seccomp_backend_accepts_inbound() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue 306: with no --inbound-dir, the listener is in
+/// `$XDG_RUNTIME_DIR/pod-netns-inbound`, a directory of mode 0700, not in
+/// a shared name in /tmp.
+#[test]
+fn the_default_inbound_directory_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("run");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let proxy = dir.path().join("socks.sock");
+    let listener = UnixListener::bind(&proxy).unwrap();
+    let (tx, _rx) = mpsc::channel();
+    std::thread::spawn(move || socks5_proxy(listener, tx, false));
+
+    let server = build_program(dir.path(), "server", SERVER, false);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "-x"])
+        .arg(format!("unix:{}", proxy.display()))
+        .arg("--")
+        .arg(&server)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let inbound = runtime.join("pod-netns-inbound");
+    let sockpath = inbound.join("8080.sock");
+    let mut conn = None;
+    for _ in 0..100 {
+        if let Ok(c) = UnixStream::connect(&sockpath) {
+            conn = Some(c);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mut c = conn.expect("the inbound listener is not in $XDG_RUNTIME_DIR");
+    let mode = std::fs::metadata(&inbound).unwrap().permissions().mode() & 0o777;
+    c.write_all(b"PING\n").unwrap();
+    let mut buf = [0u8; 16];
+    let _ = c.read(&mut buf);
+    drop(c);
+    let _ = child.wait();
+    assert_eq!(mode, 0o700, "the mode of {}", inbound.display());
+}
+
 #[test]
 fn pod_netns_serves_a_front_door_and_chains_with_itself() {
     if !have_compiler() || !seccomp_available() {

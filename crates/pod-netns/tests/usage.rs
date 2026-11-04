@@ -40,6 +40,29 @@ fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
     }
 }
 
+/// Issue 306: the seccomp backend refuses an inbound directory that the
+/// group or others can write, before the program runs.
+#[test]
+fn an_inbound_directory_that_others_can_write_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let open = dir.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let marker = dir.path().join("ran");
+    let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "--inbound-dir"])
+        .arg(&open)
+        .args(["-x", "socks5://127.0.0.1:9", "--", "touch"])
+        .arg(&marker)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("writable by the group or by others"), "{err}");
+    assert!(!marker.exists(), "the program ran");
+}
+
 /// Issue 300: `--serve tcp://127.0.0.1:0` prints the port that the kernel
 /// chose, and a client connects to it.
 #[test]

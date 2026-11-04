@@ -26,7 +26,7 @@ pod-netns doctor --json
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
 | `--prefer-udp` | With `auto`: `seccomp` first when it works, because it carries all UDP (`netns` carries DNS only). `cfrs warp run` sets it. |
 | `--keep-proxy-env` | Keep `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case forms for the program. By default the program does not get them: the pod is its egress, and a program that used them would send to a host proxy that it cannot reach. |
-| `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
+| `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). The default is `$XDG_RUNTIME_DIR/pod-netns-inbound` when that directory is of the user, else `$TMPDIR/pod-netns-inbound-<uid>`. A new directory gets mode 0700. A directory of another user, a symbolic link, or a directory that the group or others can write is refused (exit 3). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
 | `--serve LISTEN` | Serve SOCKS5, HTTP `CONNECT` and UDP ASSOCIATE on `unix:/path` or `tcp://host:port`, through the `-x` chain. |
 | `-v, --verbose` | Log each flow. |
 

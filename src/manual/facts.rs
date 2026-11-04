@@ -350,8 +350,8 @@ pub const FILES: &[FileEntry] = &[
         meaning: "The proxy socket of cfrs warp run, for the life of the command.",
     },
     FileEntry {
-        path: "/tmp/pod-netns-inbound/<port>.sock",
-        meaning: "A port that a program under cfrs pod listens on (--inbound-dir).",
+        path: "$XDG_RUNTIME_DIR/pod-netns-inbound/<port>.sock, else $TMPDIR/pod-netns-inbound-<uid>/<port>.sock",
+        meaning: "A port that a program under cfrs pod listens on (--inbound-dir). The directory has mode 0700; a directory of another user, or one that the group or others can write, is refused.",
     },
     FileEntry {
         path: "$TMPDIR/cfrsnet, $TMPDIR/cfrssocks, $TMPDIR/cfrs-ts-shims",

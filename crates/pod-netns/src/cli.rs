@@ -88,8 +88,11 @@ Options:
       --prefer-udp         With auto: seccomp first when it works (all UDP
                            goes through; netns carries DNS only)
       --inbound-dir <DIR>  Where a bound port is exposed as a unix socket
-                           (seccomp backend only)
-                           [default: /tmp/pod-netns-inbound]
+                           (seccomp backend only). The directory must be of
+                           this user and not writable by the group or by
+                           others; a new one gets mode 0700
+                           [default: $XDG_RUNTIME_DIR/pod-netns-inbound,
+                           else $TMPDIR/pod-netns-inbound-UID]
       --serve <LISTEN>     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
                            unix:/path or tcp://host:port, forwarding through
                            the -x chain
@@ -114,7 +117,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
     let mut maps: Vec<(String, IpAddr)> = Vec::new();
     let mut backend = BackendKind::Auto;
     let mut prefer_udp = false;
-    let mut inbound_dir = std::path::PathBuf::from("/tmp/pod-netns-inbound");
+    let mut inbound_dir = crate::listen::default_inbound_dir();
     let mut inbound_dir_given = false;
     let mut keep_proxy_env = false;
     let mut serve: Option<crate::listen::ProxyListen> = None;
