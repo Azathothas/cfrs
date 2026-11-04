@@ -17,7 +17,9 @@
 //!    address at the other).
 //!
 //! A dial through a proxy gives the name to the proxy and resolves nothing
-//! here.
+//! here. The host of the proxy itself, and each name that a DoH query
+//! resolves, use steps 1 to 3 only: a DoH query can go through the proxy
+//! (issue 259).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -205,6 +207,25 @@ pub fn resolve(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>
     Box::pin(resolve_chain(host))
 }
 
+tokio::task_local! {
+    /// Set while a DoH query or a proxy host is resolved. In this scope the
+    /// chain does not ask DoH: a DoH query dials, maybe through a proxy,
+    /// and the dial of a proxy resolves its host. Without the stop, a host
+    /// that no step resolves makes an endless recursion (issue 259).
+    static NO_DOH: ();
+}
+
+/// Resolve `host` with the pins and the system resolver only, not DoH.
+/// For the host of a proxy: a DoH query can need the same proxy.
+pub fn resolve_no_doh(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>> {
+    Box::pin(NO_DOH.scope((), resolve_chain(host)))
+}
+
+/// True when the chain can ask DoH in this task.
+fn doh_allowed() -> bool {
+    NO_DOH.try_with(|_| ()).is_err()
+}
+
 async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -233,6 +254,11 @@ async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
             "system resolver: no answer in {} s",
             STEP_TIMEOUT.as_secs()
         )),
+    }
+    if !doh_allowed() {
+        crate::decisions::count("dns", "fail");
+        failures.push("DNS over HTTPS: not asked for this name".to_string());
+        bail!("resolving {host}: {}", failures.join("; "));
     }
     match doh_addresses(&name).await {
         Ok((ips, server)) => {
@@ -387,8 +413,9 @@ async fn doh_query_at(server: &DohServer, name: &str, rtype: &str) -> Result<Doh
     let request = crate::fetch::Request::new("GET", url)
         .header("Accept", "application/dns-json")
         .timeout(STEP_TIMEOUT);
-    // The DoH server is an IP address, so this dial resolves no name.
-    let response = request.send().await?;
+    // The DoH server is an IP address, or a name that the proxy resolves.
+    // The dial of a proxy can resolve the proxy host: not by DoH again.
+    let response = NO_DOH.scope((), request.send()).await?;
     if !response.is_success() {
         bail!("HTTP {}", response.status);
     }
@@ -398,6 +425,19 @@ async fn doh_query_at(server: &DohServer, name: &str, rtype: &str) -> Result<Doh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_name_in_the_no_doh_scope_does_not_ask_doh() {
+        assert!(doh_allowed());
+        let err = resolve_no_doh("cfrs-test.invalid").await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("DNS over HTTPS: not asked"),
+            "{err:#}"
+        );
+        assert!(doh_allowed());
+        // An IP address needs no step.
+        assert_eq!(resolve_no_doh("[::1]").await.unwrap().len(), 1);
+    }
 
     #[test]
     fn pins() {

@@ -361,3 +361,17 @@ fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
     );
     assert!(text.contains("cfrs: the proxy hop failed; "), "{text}");
 }
+
+/// Issue 259: a proxy host that does not resolve. The DoH query of the
+/// chain went through the same proxy, whose dial resolved the host again:
+/// the stack overflowed (SIGABRT). Now the run exits 69 and names the
+/// proxy host.
+#[test]
+fn a_proxy_host_that_does_not_resolve_is_an_error_not_a_crash() {
+    let (code, text) = cfrs(
+        &["update", "--check"],
+        &[("HTTPS_PROXY", "http://cfrs-proxy.invalid:8080")],
+    );
+    assert_eq!(code, Some(69), "{text}");
+    assert!(text.contains("the proxy host cfrs-proxy.invalid"), "{text}");
+}

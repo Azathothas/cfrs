@@ -249,7 +249,13 @@ impl Proxy {
     /// Open the byte stream to the proxy.
     async fn open(&self, timeout: Duration) -> Result<BoxedIo> {
         match &self.via {
-            Carrier::Tcp => Ok(Box::new(dial_direct(&self.host, self.port, timeout).await?)),
+            // The proxy host is resolved with no DoH: a DoH query can go
+            // through this proxy (issue 259).
+            Carrier::Tcp => Ok(Box::new(
+                dial_resolved(&self.host, self.port, timeout, false)
+                    .await
+                    .with_context(|| format!("the proxy host {}", self.host))?,
+            )),
             Carrier::Unix(path) => {
                 let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(path))
                     .await
@@ -988,8 +994,18 @@ pub async fn dial(
 /// Connect to `host:port` with no proxy: each address of the name, with
 /// [`ATTEMPT_DELAY`] between the starts.
 pub async fn dial_direct(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
+    dial_resolved(host, port, timeout, true).await
+}
+
+/// [`dial_direct`]; with `doh` false, the chain does not ask DoH.
+async fn dial_resolved(host: &str, port: u16, timeout: Duration, doh: bool) -> Result<TcpStream> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs: Vec<SocketAddr> = tokio::time::timeout(timeout, crate::resolve::resolve(host))
+    let lookup = if doh {
+        crate::resolve::resolve(host)
+    } else {
+        crate::resolve::resolve_no_doh(host)
+    };
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(timeout, lookup)
         .await
         .with_context(|| {
             format!(
