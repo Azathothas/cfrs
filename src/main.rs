@@ -2490,7 +2490,7 @@ async fn async_main(cli: Cli) -> Result<()> {
                 if !good {
                     return Err(cfrs::exit::fault(
                         Fault::Usage,
-                        anyhow::anyhow!("--version {tag:?}: give a tag like v0.3.0-beta.12"),
+                        anyhow::anyhow!("--version {tag:?}: give a tag like v0.3.0-beta.11"),
                     ));
                 }
             }
