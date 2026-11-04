@@ -437,7 +437,25 @@ discovery.
 ```sh
 cfrs serve --dir ./public
 cfrs serve --dir ./app --spa          # send index.html for unknown paths
+cfrs serve --dir ./public --local 127.0.0.1:8080      # this host only, no tunnel
+cfrs serve --dir ./public --local unix:/run/site.sock # a unix socket, no tunnel
 ```
+
+With no `--local`, `cfrs serve` makes a public quick tunnel (or the named
+tunnel of `--token`). `--local ADDR` serves the same files on a local
+listener and makes no tunnel:
+
+* `ADDR` is `HOST:PORT`, `tcp://HOST:PORT` or `unix:PATH`.
+* Port 0 takes a free port. cfrs prints the bound address
+  (`cfrs: serve DIR on http://127.0.0.1:PORT/`). With `--json`, the
+  `ready` line has `url` and `listen`.
+* A unix socket has mode 0600. A socket that answers is refused (exit
+  69; `--replace` takes it over). A stale socket is removed. A file that
+  is not a socket is refused (exit 64). cfrs removes its socket at the
+  end.
+* An address in use is refused (exit 69).
+* `--auth-user` and `--check` are refused with `--local`. The other
+  tunnel flags have no effect.
 
 `cfrs serve` serves only the files in `--dir`:
 

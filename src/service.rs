@@ -105,7 +105,9 @@ impl ServiceRuntime {
     }
 }
 
-fn static_router(root: &Path, spa: bool) -> Result<Router> {
+/// The router of a `static:` or `spa:` origin: the guard of the root and the
+/// files of `root`. A missing directory is a usage error (exit 64).
+pub fn static_router(root: &Path, spa: bool) -> Result<Router> {
     // Issue 95: a bad --dir is a usage mistake (exit 64), and the text
     // says which mistake.
     if !root.is_dir() {

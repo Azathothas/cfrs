@@ -50,8 +50,6 @@ Still open, not started:
   needs an owner decision before a change.
 * #269 item 3 (a regex `path:` as in cloudflared): needs a decision on a
   `regex` dependency; now a regex-like `path:` is a config error.
-* #287 (QA, GitHub #307): `cfrs serve --local ADDR` (owner ruling: add
-  it).
 * #222, #224: at the stable release.
 
 ## The QA archive (findings #259 to #289)
@@ -99,7 +97,7 @@ tests: 108 bytes).
 
 1. Merge what is left of the branches above (or redo it), with green
    checks.
-2. Do #217, #218, #287 (`serve --local`).
+2. Do #217, #218.
 3. Close each fixed issue on GitHub with its commit and the CI run.
 4. Write `docs/releases/v0.3.0-beta.12.md`. Its `## Breaking` lists the
    lines "Breaking:" of the commit bodies since `v0.3.0-beta.11`

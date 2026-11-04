@@ -438,6 +438,14 @@ pub const EXAMPLES: &[Example] = &[
         meaning: "Serve a directory.",
     },
     Example {
+        command: "cfrs serve --dir ./public --local 127.0.0.1:8080",
+        meaning: "Serve a directory to this host only, on a local listener. No tunnel.",
+    },
+    Example {
+        command: "cfrs serve --dir ./public --local unix:/run/site.sock",
+        meaning: "Serve a directory on a unix socket. No tunnel.",
+    },
+    Example {
         command: "cfrs share --mode upload --password",
         meaning: "Receive files, with a PIN.",
     },

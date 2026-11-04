@@ -635,6 +635,14 @@ struct ServeArgs {
     /// Single-page-app fallback to index.html.
     #[arg(long)]
     spa: bool,
+    /// Serve the files on this local listener and make no tunnel:
+    /// HOST:PORT (or tcp://HOST:PORT), or unix:PATH (mode 0600). Port 0
+    /// takes a free port; cfrs prints the bound address. A unix socket
+    /// that answers is refused (exit 69, --replace takes it over), a
+    /// stale socket is removed, a file that is not a socket is refused
+    /// (exit 64). The tunnel flags have no effect.
+    #[arg(long, value_name = "ADDR", conflicts_with = "check")]
+    local: Option<String>,
     /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
     /// --token-file: other users of the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
@@ -3177,6 +3185,9 @@ async fn accept_unix(listener: tokio::net::UnixListener, remote: String, auth: O
 }
 
 async fn serve(args: ServeArgs) -> Result<()> {
+    if let Some(local) = &args.local {
+        return serve_local(&args, local).await;
+    }
     let mut config = Config::default();
     if let Some(token) = &args.token {
         cfrs::report::hide(token);
@@ -3191,6 +3202,90 @@ async fn serve(args: ServeArgs) -> Result<()> {
         return preflight(&config, args.common.show()).await;
     }
     run_tunnel(config, args.common.show(), args.common.run_for, vec![]).await
+}
+
+/// `serve --local ADDR` (issue 307): serve the static files on a local
+/// listener, with the router of the tunnel, and provision no tunnel.
+async fn serve_local(args: &ServeArgs, local: &str) -> Result<()> {
+    let usage = |msg: String| cfrs::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
+    if args.common.auth_user.is_some() {
+        return Err(usage(
+            "serve --local: --auth-user works only through a tunnel; a local listener checks no visitor"
+                .to_string(),
+        ));
+    }
+    let router = cfrs::service::static_router(&args.dir, args.spa)?;
+    let show = args.common.show();
+    let (url, listen, server, _file) = if local.starts_with("unix:") {
+        #[cfg(unix)]
+        {
+            let path = match cfrs::vnet::proxy::ProxyListen::parse(local) {
+                Ok(cfrs::vnet::proxy::ProxyListen::Unix(path)) => path,
+                Ok(_) => unreachable!("a unix: address is a unix socket"),
+                Err(err) => return Err(usage(format!("--local {local}: {err:#}"))),
+            };
+            let (listener, file) = unix_listener(&path, args.common.detach.replace)?;
+            let name = format!("unix:{}", path.display());
+            let server = tokio::spawn(async move { axum::serve(listener, router).await });
+            (name.clone(), name, server, Some(file))
+        }
+        #[cfg(not(unix))]
+        bail!("unix sockets are not supported on this platform: {local}");
+    } else {
+        let addr = local.strip_prefix("tcp://").unwrap_or(local);
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(err) if !addr.contains(':') || err.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(usage(format!(
+                    "--local {local}: give HOST:PORT (for example 127.0.0.1:8080) or unix:PATH ({err})"
+                )));
+            }
+            // An address in use, or an address of no interface: exit 69.
+            Err(err) => {
+                return Err(cfrs::exit::fault(
+                    Fault::Unavailable,
+                    anyhow::anyhow!("--local {local}: binding {addr}: {err}"),
+                ));
+            }
+        };
+        let bound = listener.local_addr()?;
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        (
+            format!("http://{bound}/"),
+            format!("tcp://{bound}"),
+            server,
+            None,
+        )
+    };
+    cfrs::detach::arm_stop();
+    if show.json {
+        let doc = serde_json::json!({
+            "event": "ready",
+            "url": url,
+            "listen": listen,
+            "dir": args.dir.display().to_string(),
+        });
+        println!("{}", cfrs::status::stamped(doc));
+    } else {
+        println!(
+            "cfrs: serve  {}  on {url}  (local, no tunnel)",
+            args.dir.display()
+        );
+    }
+    // A QR code of a unix socket has no use.
+    if show.qr && url.starts_with("http://") {
+        print!("{}", cfrs::qr::render_terminal(&url)?);
+    }
+    cfrs::detach::ready(serde_json::json!({ "url": url, "listen": listen }));
+    tokio::select! {
+        _ = sleep_or_signal(args.common.run_for) => {}
+        ended = server => {
+            ended
+                .context("the local server stopped")?
+                .context("the local server stopped")?;
+        }
+    }
+    Ok(())
 }
 
 /// The mode of `share` (issue 118): `--mode`, else the mode of the flags
