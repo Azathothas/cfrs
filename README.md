@@ -240,7 +240,9 @@ prerelease.
 
 * `--version TAG` uses no request to the GitHub API: the URLs of the files
   follow from the tag. A tag with no release exits 69 ("no release has the
-  tag").
+  tag"). A text that is not a tag (a `/`, a `..`, a character other than
+  `0-9 A-Z a-z . + -`) exits 64. cfrs skips such a tag in the API and in
+  `releases.atom` too.
 * With no `--version`, cfrs reads the GitHub API, else `releases.atom` (the
   API answers 403 on a shared address; the feed has no quota).
 * `--version` of the installed version says so and exits 0; `--force`

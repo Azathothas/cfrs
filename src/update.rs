@@ -156,7 +156,21 @@ pub async fn releases() -> Result<Vec<Release>> {
     serde_json::from_slice(&body).context("decoding the list of releases")
 }
 
-/// The tags of a releases.atom feed, newest first.
+/// True when `tag` can be a release tag: 1 to 64 characters of
+/// `0-9 A-Z a-z . + -`, the first `v` or a digit, and no `..`. Issue 227: a
+/// tag goes into the URLs of the files and into the identity of the
+/// signature, so a `/` or a `..` must not pass.
+pub fn valid_tag(tag: &str) -> bool {
+    (1..=64).contains(&tag.len())
+        && tag.starts_with(|c: char| c == 'v' || c.is_ascii_digit())
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
+        && !tag.contains("..")
+}
+
+/// The tags of a releases.atom feed, newest first. A text that is not a
+/// [`valid_tag`] is skipped.
 pub fn atom_tags(feed: &str) -> Vec<String> {
     let mut tags = Vec::new();
     for part in feed.split("/releases/tag/").skip(1) {
@@ -164,7 +178,7 @@ pub fn atom_tags(feed: &str) -> Vec<String> {
             .chars()
             .take_while(|c| !matches!(c, '"' | '<' | '\'' | ' '))
             .collect();
-        if !tag.is_empty() && !tags.contains(&tag) {
+        if valid_tag(&tag) && !tags.contains(&tag) {
             tags.push(tag);
         }
     }
@@ -252,7 +266,7 @@ pub fn choose<'a>(
     let pre = current.contains('-');
     releases
         .iter()
-        .filter(|r| !r.draft && (pre || !r.prerelease))
+        .filter(|r| !r.draft && (pre || !r.prerelease) && valid_tag(&r.tag_name))
         .max_by(|a, b| version_order(&a.tag_name, &b.tag_name))
         .context("no release found")
 }
@@ -493,6 +507,9 @@ pub async fn run(tag: Option<&str>, check: bool, force: bool) -> Result<Outcome>
         tracing::warn!("{warning}");
     }
     let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+    if let Some(tag) = tag.filter(|tag| !valid_tag(tag)) {
+        bail!("not a release tag: {tag:?}");
+    }
     // Issue 166: a pinned tag needs no list of the releases.
     let release = match tag {
         Some(tag) => Release::pinned(tag),
@@ -916,6 +933,48 @@ mod tests {
         }
         assert!(r.asset("SHA256SUMS.sigstore.json").is_ok());
         assert!(r.asset(&format!("cfrs-{}", asset_target(TARGET))).is_ok());
+    }
+
+    // Issue 227: a tag with a path is not a tag.
+    #[test]
+    fn atom_tags_refuses_a_path_in_a_tag() {
+        let feed = r#"<link href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0-beta.9/../../x"/>
+<link href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0-beta.8"/>"#;
+        assert_eq!(atom_tags(feed), ["v0.3.0-beta.8"]);
+        assert_eq!(
+            newest_in_atom(feed, "v0.3.0-beta.1").as_deref(),
+            Some("v0.3.0-beta.8")
+        );
+    }
+
+    // Issue 227: the form of a tag.
+    #[test]
+    fn a_tag_must_be_a_tag() {
+        for good in ["v0.3.0-beta.9", "v1.0.0", "0.3.0", "v1.0.0+build.1"] {
+            assert!(valid_tag(good), "{good}");
+        }
+        let long = format!("v{}", "1".repeat(64));
+        for bad in [
+            "",
+            "v1/../x",
+            "v1..2",
+            "../v1",
+            "x1.0",
+            "v1 2",
+            "v1%2f",
+            "v1?x",
+            long.as_str(),
+        ] {
+            assert!(!valid_tag(bad), "{bad}");
+        }
+        let r = |tag: &str| Release {
+            tag_name: tag.into(),
+            prerelease: false,
+            draft: false,
+            assets: Vec::new(),
+        };
+        let list = vec![r("v9.0.0/../x"), r("v1.0.0")];
+        assert_eq!(choose(&list, None, "v0.1.0").unwrap().tag_name, "v1.0.0");
     }
 
     // Issue 166: the newest tag of releases.atom.

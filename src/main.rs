@@ -325,7 +325,7 @@ struct UpdateArgs {
     check: bool,
     /// The tag to install, for example v0.3.0-beta.11. Default: the newest
     /// release (a prerelease only when this binary is a prerelease).
-    #[arg(long, value_name = "TAG")]
+    #[arg(long, value_name = "TAG", value_parser = parse_release_tag)]
     version: Option<String>,
     /// Put the binary before the last update (cfrs.prev) back, with no
     /// network. A second --rollback goes forward again.
@@ -335,6 +335,15 @@ struct UpdateArgs {
     /// Without it, cfrs says that the version is installed and exits 0.
     #[arg(long)]
     force: bool,
+}
+
+/// A `--version` of `cfrs update`: a release tag (issue 227).
+fn parse_release_tag(value: &str) -> Result<String, String> {
+    if cfrs::update::valid_tag(value) {
+        Ok(value.to_string())
+    } else {
+        Err("not a release tag (for example v0.3.0-beta.9)".to_string())
+    }
 }
 
 #[derive(Args, Clone, Debug)]

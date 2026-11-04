@@ -934,6 +934,24 @@ fn ts_shims_skips_a_directory_open_to_others() {
     assert_eq!(std::fs::read_dir(&hostile).unwrap().count(), 0);
 }
 
+/// Issue 227: `update --version` with a path is a usage error, and cfrs
+/// sends no request.
+#[test]
+fn update_refuses_a_tag_with_a_path() {
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["update", "--version", "v1/../x", "--check"])
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("CFRS_STATE_DIR", "none")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("not a release tag"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// Issue 57: no panic on a bad argument or a closed pipe; a missing
 /// subcommand and a missing origin are usage errors; --json is accepted.
 #[test]
