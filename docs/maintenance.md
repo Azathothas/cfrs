@@ -179,12 +179,11 @@ Rules that the tests check:
 
 ## Open work
 
-* **Read `docs/HANDOFF.md` first** when it exists: the state of the
-  release of `v0.3.0-beta.12` and of the issue closes.
-* **All of batch 4, batch 5 and QA #279 to #309 are on `main`.** The
-  next release is `v0.3.0-beta.12`. Its note lists each "Breaking:" line
-  of the commit bodies since `v0.3.0-beta.11`
-  (`git log v0.3.0-beta.11..main --grep Breaking`).
+* **Read `docs/HANDOFF.md` first** when it exists: the state of
+  unfinished work.
+* **Next release**: `v0.3.0-beta.13`, unattended when a batch of fixes is
+  green. Its note lists each "Breaking:" line of
+  `git log v0.3.0-beta.12..main --grep Breaking`.
 * **Issue numbers of the QA archive**: GitHub deleted #259 to #278 (and
   the closed #165 to #207) with the account `aerrand-agent`; their text
   is in `docs/reports/aerrand-agent.md`. They are filed again as GitHub
@@ -212,13 +211,12 @@ Rules that the tests check:
 * **`cfrs pod doctor`** (crate `pod-netns`) keeps its own words (`ok`,
   `no`, `available`) and has no `schema` key.
 
-* **v0.3.0-beta.11** is published (release run 41740989773, release-proofs
-  41742427708 with the rebuild of x86_64 and aarch64). It fixes the choice
-  of the newest release in `cfrs update` and `install.sh` (the API lists by
-  tag name). beta.10 (release run 41718791581, release-proofs 41720532960)
-  has the batch of issues 164 to 210; all are closed. From beta.9 and
-  beta.10, the update needs `--version v0.3.0-beta.11` (checked: beta.10 to
-  beta.11, signature and SHA-256). The testers test beta.11.
+* **v0.3.0-beta.12** is published (release run 41858039866 on 3b6e173,
+  dry run 41854606516, release-proofs 41859986797). It has batch 4,
+  batch 5 and the QA findings #279 to #309; the issues are closed with
+  their commits, the CI run 41852788682 and the live run 41852788642.
+  Checked: `cfrs update` of beta.11 with no `--version` finds beta.12 and
+  installs it (signature and SHA-256 checked). The testers test beta.12.
 * **#206**: `scripts/live-throughput.sh` prints the median time of small
   requests over the URL and over `cfrs connect`. Read it in `live`; a code
   fix waits for a gap that the numbers show.
