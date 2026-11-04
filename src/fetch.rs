@@ -250,6 +250,9 @@ where
     read_response(&mut io, request.method == "HEAD", request.max_body).await
 }
 
+/// The most interim (1xx) answers before the answer (issue 237).
+const MAX_INTERIM: usize = 5;
+
 /// Read one answer from `io`.
 async fn read_response<S: AsyncRead + Unpin>(
     io: &mut S,
@@ -258,6 +261,7 @@ async fn read_response<S: AsyncRead + Unpin>(
 ) -> Result<Response> {
     let mut buf = Vec::with_capacity(4096);
     let mut chunk = [0u8; 8192];
+    let mut interim = 0;
     let (status, headers, start) = loop {
         if !buf.windows(4).any(|w| w == b"\r\n\r\n") {
             let n = read_some(io, &mut chunk).await?;
@@ -273,6 +277,10 @@ async fn read_response<S: AsyncRead + Unpin>(
                 let status = parsed.code.context("the answer has no status")?;
                 // 1xx answers come before the real one.
                 if (100..200).contains(&status) && status != 101 {
+                    interim += 1;
+                    if interim > MAX_INTERIM {
+                        bail!("the server sent more than {MAX_INTERIM} interim answers");
+                    }
                     buf.drain(..len);
                     continue;
                 }
@@ -455,6 +463,19 @@ mod tests {
         raw.extend_from_slice(b"\r\nok");
         let r = parse(&raw).await.unwrap();
         assert_eq!((r.headers.len(), r.body.as_slice()), (101, &b"ok"[..]));
+    }
+
+    /// Issue 237: a few interim answers pass; an endless row of them is
+    /// an error.
+    #[tokio::test]
+    async fn interim_answers_have_a_limit() {
+        let three = "HTTP/1.1 100 Continue\r\n\r\n".repeat(3)
+            + "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n";
+        assert_eq!(parse(three.as_bytes()).await.unwrap().status, 201);
+        let many = "HTTP/1.1 100 Continue\r\n\r\n".repeat(10)
+            + "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n";
+        let err = parse(many.as_bytes()).await.unwrap_err();
+        assert!(err.to_string().contains("interim"), "{err:#}");
     }
 
     #[tokio::test]
