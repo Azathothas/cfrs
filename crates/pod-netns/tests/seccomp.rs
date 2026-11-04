@@ -1715,6 +1715,16 @@ int main(void) {
     n = recvmsg(s, &m, 0);
     show("MSG", &src, m.msg_namelen, b, n);
     printf("MSGFLAGS:%d\n", m.msg_flags);
+    /* recv with no source buffer: the kernel runs it, and the source of
+       the next datagram is still right. */
+    if (sendto(s, "FOUR", 4, 0, (struct sockaddr *)&d, sizeof d) < 0) { perror("sendto"); return 1; }
+    struct sockaddr_in e = d; e.sin_port = htons(7779);
+    if (sendto(s, "FIVE", 4, 0, (struct sockaddr *)&e, sizeof e) < 0) { perror("sendto"); return 1; }
+    n = recv(s, b, sizeof b, 0);
+    printf("RECV:%d:%.*s\n", n, n > 0 ? n : 0, b);
+    memset(&src, 0, sizeof src); len = sizeof src;
+    n = recvfrom(s, b, sizeof b, 0, (struct sockaddr *)&src, &len);
+    show("AFTER", &src, len, b, n);
     /* A short buffer: the datagram is cut, MSG_TRUNC gives its length. */
     if (sendto(s, "THREE", 5, 0, (struct sockaddr *)&d, sizeof d) < 0) { perror("sendto"); return 1; }
     memset(b, 0, sizeof b);
@@ -1806,6 +1816,8 @@ fn an_unconnected_udp_reader_sees_the_source_address() {
             format!("FROM:2:{sent}:7777:16:ECHO:ONE"),
             "MSG:2:10.66.0.1:7778:16:ECHO:TWO".to_string(),
             "MSGFLAGS:0".to_string(),
+            "RECV:9:ECHO:FOUR".to_string(),
+            "AFTER:2:10.66.0.1:7779:16:ECHO:FIVE".to_string(),
             "TRUNC:10:ECHO:1".to_string(),
         ];
         for line in want {

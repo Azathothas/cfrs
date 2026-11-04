@@ -159,6 +159,8 @@ pub(crate) fn install_notif_filter() -> Result<RawFd> {
     const RET_ERRNO: u32 = 0x0005_0000;
     // seccomp_data: nr at offset 0, arch at offset 4.
     const OFFSET_ARCH: u32 = 4;
+    // seccomp_data: args[] (u64 each) at offset 16.
+    const OFFSET_ARG4: u32 = 16 + 4 * 8;
 
     // An unprivileged task can install a filter only with no_new_privs set.
     // The flag is inherited by the child and kept across execve.
@@ -210,6 +212,36 @@ pub(crate) fn install_notif_filter() -> Result<RawFd> {
         filter.push(stmt(BPF_RET_K, RET_ERRNO | libc::ENOSYS as u32));
     }
     for syscall in intercepted_syscalls() {
+        if syscall == libc::SYS_recvfrom {
+            // A recvfrom with no source buffer (recv(2), the reads of a TCP
+            // program) needs no source address: the kernel runs it, as a
+            // read(2). The inbox keeps the order of the sources across such
+            // a read (issue 305). The pointer is args[4]; the targets are
+            // little-endian, so its low word is first.
+            filter.push(libc::sock_filter {
+                code: BPF_JEQ_K,
+                jt: 0,
+                jf: 6,
+                k: syscall as u32,
+            });
+            filter.push(stmt(BPF_LD_ABS_W, OFFSET_ARG4));
+            filter.push(libc::sock_filter {
+                code: BPF_JEQ_K,
+                jt: 0,
+                jf: 3,
+                k: 0,
+            });
+            filter.push(stmt(BPF_LD_ABS_W, OFFSET_ARG4 + 4));
+            filter.push(libc::sock_filter {
+                code: BPF_JEQ_K,
+                jt: 0,
+                jf: 1,
+                k: 0,
+            });
+            filter.push(stmt(BPF_RET_K, RET_ALLOW));
+            filter.push(stmt(BPF_RET_K, RET_USER_NOTIF));
+            continue;
+        }
         filter.push(libc::sock_filter {
             code: BPF_JEQ_K,
             jt: 0,

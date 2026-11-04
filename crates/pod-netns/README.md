@@ -113,9 +113,11 @@ see it. Use a unix socket for it (`-L unix:///path`).
   blocking read waits without stopping the other system calls of the
   program. These reads stay direct: a read of a connected socket, a read of
   a socket that is not of the pod, `read`, `recvmmsg`, and each read when
-  the host refuses writes to the memory of the program. Each `recvfrom` and
-  `recvmsg` of the program goes through the supervisor, also a read of a TCP
-  socket, which the supervisor passes on at once.
+  the host refuses writes to the memory of the program. A `recvfrom` with
+  no source buffer (`recv`, the usual read of a TCP program) does not go
+  through the supervisor: the kernel runs it. Each other `recvfrom` and each
+  `recvmsg` goes through the supervisor, also a read of a TCP socket, which
+  the supervisor passes on at once.
 * With a proxy on a unix socket, UDP goes on the control connection first
   (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
   kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A
