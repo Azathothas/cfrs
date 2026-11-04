@@ -596,7 +596,9 @@ fn wait_ready_child(
                     let _ = out.flush();
                     return 0;
                 }
-                let _ = writeln!(out, "{line}");
+                // Issue 263: stdout has the ready document only; the
+                // lines of the child before it go to stderr.
+                eprintln!("{line}");
             }
             Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

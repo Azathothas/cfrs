@@ -969,7 +969,8 @@ cfrs stop web                                  # or: cfrs stop --all
 is ready: until the public URL answers, or until the listener is bound.
 Then it leaves the terminal (`setsid`, SIGHUP ignored, stdin to
 `/dev/null`, stdout and stderr to its log), and the start prints one JSON
-document as its last line: `name`, `pid`, `log`, and `url` or `listen`.
+document on stdout: `name`, `pid`, `log`, and `url` or `listen`. The lines
+of the instance before the ready go to stderr.
 The instance keeps running when the shell or the terminal closes. A sandbox
 or a container that kills each process of its run also ends it.
 

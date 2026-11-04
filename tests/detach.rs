@@ -785,3 +785,25 @@ fn stop_keeps_the_locks_of_a_live_instance_with_a_bad_record() {
     );
     wait_until("the instance ends", || !alive(pid));
 }
+
+// Issue 263: stdout of --detach is one JSON document; the human lines of the
+// child go to stderr.
+#[test]
+fn detach_prints_only_the_ready_document_on_stdout() {
+    let env = Env::new();
+    let switch = env.switch();
+    let start = env.run(&[
+        "net", "switch", "--listen", &switch, "--detach", "--name", "j1",
+    ]);
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&start.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+    serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    let stderr = String::from_utf8_lossy(&start.stderr);
+    assert!(stderr.contains("cfrs: switch"), "{stderr}");
+}
