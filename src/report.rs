@@ -143,8 +143,10 @@ pub fn error_line(err: &anyhow::Error) -> String {
 }
 
 /// Hide the credentials in `line`: `user:pass@` of each URL, the value of
-/// each proxy variable that has a user part, and each value given to
-/// [`hide`].
+/// each proxy variable that has a user part, each value given to
+/// [`hide`], the value of an `Authorization:` or `Proxy-Authorization:`
+/// header (the scheme word stays), the word after `Bearer`, and each run
+/// of 32 or more hexadecimal characters (issue 267).
 pub fn mask(line: &str) -> String {
     let mut out = line.to_string();
     let mut values: Vec<String> = secrets().lock().unwrap().clone();
@@ -188,7 +190,96 @@ pub fn mask(line: &str) -> String {
         rest = &tail[end..];
     }
     result.push_str(rest);
-    result
+    hide_hex(&hide_bearer(&hide_authorization(&result)))
+}
+
+const HIDDEN: &str = "<hidden>";
+
+/// `Authorization: Basic abc` -> `Authorization: Basic <hidden>`, to the
+/// end of the line. `Proxy-Authorization` has the same suffix.
+fn hide_authorization(line: &str) -> String {
+    const KEY: &str = "authorization:";
+    let lower = line.to_ascii_lowercase();
+    let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    while let Some(i) = lower[at..].find(KEY) {
+        let value_start = at + i + KEY.len();
+        out.push_str(&line[at..value_start]);
+        let end = line[value_start..]
+            .find(['\n', '\r'])
+            .map_or(line.len(), |n| value_start + n);
+        let value = &line[value_start..end];
+        let trimmed = value.trim_start();
+        out.push_str(&value[..value.len() - trimmed.len()]);
+        // The scheme word stays when a credential comes after it.
+        match trimmed.split_once(' ') {
+            Some((scheme, rest)) if !rest.trim().is_empty() => {
+                out.push_str(scheme);
+                out.push(' ');
+                out.push_str(HIDDEN);
+            }
+            _ if trimmed.is_empty() => {}
+            _ => out.push_str(HIDDEN),
+        }
+        at = end;
+    }
+    out.push_str(&line[at..]);
+    out
+}
+
+/// `Bearer abc` -> `Bearer <hidden>`.
+fn hide_bearer(line: &str) -> String {
+    const KEY: &str = "bearer ";
+    let lower = line.to_ascii_lowercase();
+    let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    while let Some(i) = lower[at..].find(KEY) {
+        let start = at + i;
+        let word_start = start + KEY.len();
+        // Only the word "bearer", not the end of a longer word.
+        let boundary = start == 0 || !line.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let end = line[word_start..]
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
+            .map_or(line.len(), |n| word_start + n);
+        out.push_str(&line[at..word_start]);
+        let word = &line[word_start..end];
+        if boundary && !word.is_empty() && word != HIDDEN {
+            out.push_str(HIDDEN);
+        } else {
+            out.push_str(word);
+        }
+        at = end;
+    }
+    out.push_str(&line[at..]);
+    out
+}
+
+/// Each run of 32 or more hexadecimal characters that is a whole word (a
+/// key, a token, an account id) -> `<hidden>`. A shorter run stays.
+fn hide_hex(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() && (i == 0 || !word(bytes[i - 1])) {
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j - i >= 32 && (j == bytes.len() || !word(bytes[j])) {
+                out.push_str(&line[at..i]);
+                out.push_str(HIDDEN);
+                at = j;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&line[at..]);
+    out
 }
 
 /// Keep `line` for the report.
@@ -423,6 +514,33 @@ mod tests {
         let line = error_line(&err);
         assert!(line.contains("could not reach the destination"), "{line}");
         assert!(!line.contains("allow-list"), "{line}");
+    }
+
+    // Issue 267: the lines of the issue, and the limits of each rule.
+    #[test]
+    fn mask_hides_authorization_values_and_hex_tokens() {
+        assert_eq!(
+            mask("auth Authorization: Basic dXNlcjpwYXNzd29yZA=="),
+            "auth Authorization: Basic <hidden>"
+        );
+        assert_eq!(
+            mask("proxy-authorization:Bearer abc.def"),
+            "proxy-authorization:Bearer <hidden>"
+        );
+        assert_eq!(mask("authorization: tok"), "authorization: <hidden>");
+        assert_eq!(
+            mask("sent header Bearer eyJabc, then"),
+            "sent header Bearer <hidden>, then"
+        );
+        assert_eq!(
+            mask("account 0123456789abcdef0123456789abcdef and api 0123456789abcdef0123456789abcdef01234567"),
+            "account <hidden> and api <hidden>"
+        );
+        let short = "id 0123456789abcdef0123456789abcde";
+        assert_eq!(mask(short), short, "31 hex characters stay");
+        let word = "x0123456789abcdef0123456789abcdef";
+        assert_eq!(mask(word), word, "part of a longer word");
+        assert_eq!(mask("hash 1a2b3c4d5e6f7a8b"), "hash 1a2b3c4d5e6f7a8b");
     }
 
     #[test]

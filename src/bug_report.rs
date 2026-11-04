@@ -5,7 +5,8 @@
 //! instances, the last lines of the log of each instance, and the names of
 //! the variables of cfrs and of the proxies that are set (not their values).
 //! Each line goes through [`scrub`]: the credentials of [`crate::report`],
-//! UUIDs (device ids, tunnel ids), tokens (`eyJ...`, `t.` tokens) and the
+//! UUIDs (device ids, tunnel ids), tokens (`eyJ...`, `t.` tokens, runs of 32
+//! or more hex characters, `Authorization` values) and the
 //! names of quick tunnels are replaced.
 
 /// The lines of the log of each instance in the report.
