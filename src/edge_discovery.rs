@@ -68,7 +68,12 @@ pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
         None
     };
     match reason {
-        None => targets,
+        None => {
+            // A stable order: region1 is region 0 at each lookup.
+            let mut targets = targets;
+            targets.sort();
+            targets
+        }
         Some(reason) => {
             tracing::warn!(
                 "the SRV answer of {EDGE_SRV} has an unexpected shape: {reason}; cfrs uses region1 and region2.v2.argotunnel.com on port 7844"
@@ -135,12 +140,12 @@ pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
         })
         .collect();
     let mut edges = Vec::new();
-    for (target, port) in checked_targets(targets) {
+    for (region, (target, port)) in (0u8..).zip(checked_targets(targets)) {
         let Ok(ips) = resolver.lookup_ip(target.as_str()).await else {
             continue;
         };
         for ip in ips.iter() {
-            let edge = EdgeAddr::new(std::net::SocketAddr::new(ip, port));
+            let edge = EdgeAddr::new(std::net::SocketAddr::new(ip, port)).in_region(region);
             if filter.allows(edge.version) && !edges.contains(&edge) {
                 edges.push(edge);
             }
@@ -165,7 +170,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
     let targets = checked_targets(targets);
 
     let mut edges = Vec::new();
-    for (target, port) in targets {
+    for (region, (target, port)) in (0u8..).zip(targets) {
         let records: &[(&str, u16)] = match filter {
             IpVersionFilter::V4Only => &[("A", 1)],
             IpVersionFilter::V6Only => &[("AAAA", 28)],
@@ -194,6 +199,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
                     } else {
                         EdgeIpVersion::V6
                     },
+                    region,
                 });
             }
         }
@@ -243,6 +249,8 @@ fn static_edges(filter: IpVersionFilter) -> Vec<EdgeAddr> {
                 ip,
                 port: STATIC_EDGE_PORT,
                 version,
+                // The first two are in region1, the others in region2.
+                region: u8::from(!text.starts_with("198.41.192.")),
             });
         }
     }

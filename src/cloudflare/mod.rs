@@ -150,10 +150,13 @@ pub struct EdgeAddr {
     pub ip: std::net::IpAddr,
     pub port: u16,
     pub version: EdgeIpVersion,
+    /// The index of the SRV target (region1 is 0, region2 is 1); 0 when
+    /// unknown.
+    pub region: u8,
 }
 
 impl EdgeAddr {
-    /// Make an address from a socket address.
+    /// Make an address from a socket address (region 0).
     pub fn new(socket: SocketAddr) -> Self {
         Self {
             ip: socket.ip(),
@@ -163,12 +166,43 @@ impl EdgeAddr {
             } else {
                 EdgeIpVersion::V6
             },
+            region: 0,
         }
+    }
+
+    /// The same address in region `region`.
+    pub fn in_region(self, region: u8) -> Self {
+        Self { region, ..self }
     }
 
     pub fn socket(&self) -> SocketAddr {
         SocketAddr::new(self.ip, self.port)
     }
+}
+
+/// The order of `edges` for the connection `conn_index`: the regions turn
+/// by the index, so connection 1 (and 3) dials region2 first, as
+/// cloudflared does. A fault of one region then does not hit each
+/// connection. The order of the IP versions and the order in a region stay.
+pub fn for_connection(edges: &[EdgeAddr], conn_index: u8) -> Vec<EdgeAddr> {
+    let mut regions: Vec<u8> = edges.iter().map(|e| e.region).collect();
+    regions.sort_unstable();
+    regions.dedup();
+    let mut versions: Vec<EdgeIpVersion> = Vec::new();
+    for e in edges {
+        if !versions.contains(&e.version) {
+            versions.push(e.version);
+        }
+    }
+    let count = regions.len().max(1);
+    let shift = usize::from(conn_index) % count;
+    let mut out = edges.to_vec();
+    out.sort_by_key(|e| {
+        let version = versions.iter().position(|v| *v == e.version);
+        let region = regions.iter().position(|r| *r == e.region).unwrap_or(0);
+        (version, (region + count - shift) % count)
+    });
+    out
 }
 
 /// Credentials for one tunnel, as returned by the provisioning API.
@@ -247,6 +281,54 @@ pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// podssh, cloudflared: connection 0 starts at region1, connection 1 at
+    /// region2. IPv4 stays before IPv6.
+    #[test]
+    fn each_connection_starts_at_another_region() {
+        let at = |text: &str, region: u8| EdgeAddr::new(text.parse().unwrap()).in_region(region);
+        let edges = vec![
+            at("198.41.192.1:7844", 0),
+            at("198.41.192.2:7844", 0),
+            at("198.41.200.1:7844", 1),
+            at("198.41.200.2:7844", 1),
+            at("[2606:4700:a0::1]:7844", 0),
+            at("[2606:4700:a8::1]:7844", 1),
+        ];
+        let ips = |index: u8| -> Vec<String> {
+            for_connection(&edges, index)
+                .iter()
+                .map(|e| e.ip.to_string())
+                .collect()
+        };
+        assert_eq!(
+            ips(0),
+            [
+                "198.41.192.1",
+                "198.41.192.2",
+                "198.41.200.1",
+                "198.41.200.2",
+                "2606:4700:a0::1",
+                "2606:4700:a8::1"
+            ]
+        );
+        assert_eq!(
+            ips(1),
+            [
+                "198.41.200.1",
+                "198.41.200.2",
+                "198.41.192.1",
+                "198.41.192.2",
+                "2606:4700:a8::1",
+                "2606:4700:a0::1"
+            ]
+        );
+        assert_eq!(ips(2), ips(0));
+        assert_eq!(ips(3), ips(1));
+        // One region (CFRS_EDGE): the order stays.
+        let one: Vec<EdgeAddr> = edges.iter().map(|e| e.in_region(0)).collect();
+        assert_eq!(for_connection(&one, 1), one);
+    }
 
     #[test]
     fn speaks_names_the_tag_of_the_pin() {

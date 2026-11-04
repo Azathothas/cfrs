@@ -759,15 +759,7 @@ pub(crate) fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
             .parse()
             .with_context(|| format!("CFRS_EDGE entry {item:?} is not host:port"))
             .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
-        overridden.push(edge::EdgeAddr {
-            ip: socket.ip(),
-            port: socket.port(),
-            version: if socket.is_ipv4() {
-                edge::EdgeIpVersion::V4
-            } else {
-                edge::EdgeIpVersion::V6
-            },
-        });
+        overridden.push(edge::EdgeAddr::new(socket));
     }
     Ok((!overridden.is_empty()).then_some(overridden))
 }
@@ -888,6 +880,7 @@ async fn connect_once(
     if edges.is_empty() {
         bail!("no edge addresses to dial");
     }
+    let edges = edge::for_connection(edges, conn_index);
     let candidates = edges.len().min(5);
     let conn = quic_dial::dial_any(endpoint, &edges[..candidates])
         .await

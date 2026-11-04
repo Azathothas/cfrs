@@ -639,7 +639,7 @@ pub async fn connect(
     if edges.is_empty() {
         bail!("no edge addresses to dial");
     }
-    let mut remaining: Vec<SocketAddr> = edges
+    let mut remaining: Vec<SocketAddr> = crate::cloudflare::for_connection(edges, conn_index)
         .iter()
         .take(5)
         .map(|e| SocketAddr::new(e.ip, e.port))
