@@ -179,9 +179,13 @@ Rules that the tests check:
 
 ## Open work
 
-* **Batch 4 (the podssh study) is on `main`, not released.** No release
-  until the owner says go (`docs/decisions.md`). The next release note
-  must list these breaking changes under `## Breaking`:
+* **Read `docs/HANDOFF.md` first**: the state of batch 5, the QA
+  archive, the agent branches and the next steps.
+* **Batch 4 (the podssh study) and batch 5 are on `main`, not released.**
+  The next release is `v0.3.0-beta.12`, unattended when green
+  (`docs/decisions.md`). Its note must list these breaking changes under
+  `## Breaking`, and each "Breaking:" line of the commit bodies since
+  `v0.3.0-beta.11` (`git log v0.3.0-beta.11..main --grep Breaking`):
   * `cfrs doctor` says `fail` where it said `refused` (text and
     `--json`); the JSON key is `status`, and `verdict` has the same value
     for one release. `cfrs net doctor` says `ok`, `fail`, `unknown` in
@@ -203,14 +207,13 @@ Rules that the tests check:
   `StaticServer` needs a response type with a reader.
 * **#269 item 3**: `path:` is a literal prefix. A real regular expression
   (as cloudflared) needs a decision on a `regex` dependency.
-* **Issues #212 to #278** came in during batch 4. They wait for the go of
-  the owner: then triage and plan them as one batch. GitHub deleted #259
-  to #278 (and the closed #165 to #207) with the account `aerrand-agent`:
-  their text and comments are in `docs/reports/aerrand-agent.md`. Read
-  them there; a fix names the number of the archive.
-* **Questions for the owner**: `docs/decisions.md` (a crates.io name, a
-  live check of the second WARP API host, MASQUE through the relay at
-  64 MiB).
+* **Issues #212 to #278 (batch 5)**: fixed on `main` except #217, #218,
+  #273 item 2, #269 item 3 and #276 (library); none is closed on GitHub
+  yet (`docs/HANDOFF.md`). GitHub deleted #259 to #278 (and the closed
+  #165 to #207) with the account `aerrand-agent`: their text is in
+  `docs/reports/aerrand-agent.md`. The QA findings #259 to #289 are filed
+  again as GitHub #279 to #309 (QA number + 20).
+* **Questions for the owner**: none open (`docs/decisions.md`).
 * **`cfrs pod doctor`** (crate `pod-netns`) keeps its own words (`ok`,
   `no`, `available`) and has no `schema` key.
 
