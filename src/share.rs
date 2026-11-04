@@ -633,9 +633,12 @@ async fn upload_receive(
             ".cfrs-upload-{}.part",
             &crate::util::random_token()[..16]
         ));
+        // Issue 233: an upload is for the operator only (mode 0600). The
+        // rename keeps the mode of the part file.
         let mut file = match tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&part)
             .await
         {
@@ -1016,6 +1019,7 @@ async fn create_unique(
         match tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&candidate)
             .await
         {
@@ -1151,6 +1155,39 @@ mod tests {
             std::fs::metadata(dir.path().join("a.txt")).unwrap().len(),
             10
         );
+    }
+
+    // Issue 233: an uploaded file has mode 0600, with each umask.
+    #[tokio::test]
+    async fn an_upload_has_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = ShareConfig::upload(dir.path());
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        for _ in 0..2 {
+            let response = app
+                .router()
+                .oneshot(upload_request(
+                    &token,
+                    axum::body::Body::from(multipart(&[("a.txt", 5)])),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        assert_eq!(files_in(dir.path()), ["a-1.txt", "a.txt"]);
+        for name in ["a.txt", "a-1.txt"] {
+            let mode = std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}: {mode:o}");
+        }
+        let (_, file) = create_unique(dir.path(), "b.txt").await.unwrap();
+        let mode = file.metadata().await.unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
 
     /// A body in chunks of 1000 bytes that counts the bytes read.
