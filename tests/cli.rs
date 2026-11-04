@@ -688,10 +688,10 @@ fn doctor_tells_listen_from_bind() {
         ("bind(AF_INET, 127.0.0.1:0)", "listen(AF_INET, 127.0.0.1:0)"),
         ("bind(AF_UNIX, path)", "listen(AF_UNIX, path)"),
     ] {
-        assert!(line(bind).contains("OK   allowed"), "{text}");
-        assert!(line(listen).contains("FAIL EPERM"), "{text}");
+        assert!(line(bind).contains("ok       allowed"), "{text}");
+        assert!(line(listen).contains("fail     EPERM"), "{text}");
     }
-    assert!(line("UDP egress").contains("FAIL refused"), "{text}");
+    assert!(line("UDP egress").contains("fail     refused"), "{text}");
 }
 
 /// `cfrs autostart` with a fake systemctl (no user manager) and a fake

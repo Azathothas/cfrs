@@ -117,9 +117,9 @@ else
 fi
 
 if inbox sh "$here/live-run.sh" doctor "$home/cfrs" doctor --samples 3 --json; then
-    if jq -e '(.legs[] | select(.leg == "quic+warp") | .verdict == "ok")
-        and (.legs[] | select(.leg == "http2") | .verdict == "refused")
-        and (.legs[] | select(.leg == "quic") | .verdict == "refused")' doctor.out > /dev/null; then
+    if jq -e '(.legs[] | select(.leg == "quic+warp") | .status == "ok")
+        and (.legs[] | select(.leg == "http2") | .status == "fail")
+        and (.legs[] | select(.leg == "quic") | .status == "fail")' doctor.out > /dev/null; then
         verdict doctor ok "quic and http2 refused, quic+warp ok"
     else
         verdict doctor FAIL "the legs are not quic refused, http2 refused, quic+warp ok"

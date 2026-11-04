@@ -30,7 +30,7 @@ say "doctor: the IPv6 front door and the leg quic+warp"
 $run "$bin" doctor --json --samples 3 > v6doctor.json || true
 jq -c '.paths[] | select(.id == "masque" or .id == "masque-v6") | {id, verdict}' v6doctor.json
 jq -c '.legs[] | {leg, verdict}' v6doctor.json
-jq -e '.legs[] | select(.leg == "quic+warp") | .verdict == "ok"' v6doctor.json
+jq -e '.legs[] | select(.leg == "quic+warp") | .status == "ok"' v6doctor.json
 
 say "a quick tunnel with the built-in origin"
 $live v6demo $run "$bin" demo --exit-on-verify

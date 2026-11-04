@@ -28,10 +28,10 @@ impl ProbeResult {
 
     pub fn render(&self) -> String {
         match self {
-            Self::Ok(value) => format!("OK   {value}"),
-            Self::Fail(value) => format!("FAIL {value}"),
-            Self::Unknown(value) => format!("?    {value}"),
-            Self::Unsupported => "n/a  unsupported on this platform".to_string(),
+            Self::Ok(value) => format!("ok       {value}"),
+            Self::Fail(value) => format!("fail     {value}"),
+            Self::Unknown(value) => format!("unknown  {value}"),
+            Self::Unsupported => "n/a      unsupported on this platform".to_string(),
         }
     }
 }
@@ -73,7 +73,7 @@ pub fn render(probes: &[Probe]) -> String {
 }
 
 /// The UDP egress probe (QUIC to the edge on 7844) as a probe line:
-/// answered is OK, refused is FAIL, no answer is `?`.
+/// answered is ok, refused is fail, no answer is unknown.
 pub fn udp_probe(target: std::net::SocketAddr) -> Probe {
     use crate::udp::Egress;
     let result = match crate::udp::probe(target, crate::udp::DOCTOR_DEADLINE) {

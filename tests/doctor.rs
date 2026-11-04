@@ -169,16 +169,17 @@ fn a_proxy_that_refuses_7844_and_terminates_tls() {
     assert_eq!(doc["ok"], false);
     assert_eq!(doc["proxy"]["credentials"], true);
     let http2 = leg(&doc, "http2");
-    assert_eq!(http2["verdict"], "refused", "{all}");
+    assert_eq!(http2["verdict"], "fail", "{all}");
+    assert_eq!(http2["status"], "fail", "{all}");
     assert!(
         http2["reason"].as_str().unwrap().contains("proxy 403"),
         "{all}"
     );
-    assert_eq!(leg(&doc, "quic")["verdict"], "refused");
+    assert_eq!(leg(&doc, "quic")["verdict"], "fail");
     // The TLS issuer of the proxy is named.
     let api = path(&doc, "api");
     assert_eq!(api["verdict"], "ok", "{all}");
-    assert_eq!(api["tls"]["verdict"], "refused", "{all}");
+    assert_eq!(api["tls"]["verdict"], "fail", "{all}");
     assert!(api["tls"]["issuer"]
         .as_str()
         .unwrap()
@@ -212,7 +213,7 @@ fn a_proxy_that_allows_names_and_refuses_addresses() {
         "{all}"
     );
     assert_eq!(path(&doc, "edge-name")["verdict"], "ok");
-    assert_eq!(path(&doc, "edge-address")["verdict"], "refused");
+    assert_eq!(path(&doc, "edge-address")["verdict"], "fail");
 }
 
 #[test]

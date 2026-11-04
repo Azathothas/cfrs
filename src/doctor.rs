@@ -67,7 +67,7 @@ impl Verdict {
     pub fn name(self) -> &'static str {
         match self {
             Verdict::Ok => "ok",
-            Verdict::Refused => "refused",
+            Verdict::Refused => "fail",
             Verdict::Unknown => "unknown",
         }
     }
@@ -305,10 +305,12 @@ impl Report {
             "roads": self.roads().iter().map(|(road, verdict, reason)| json!({
                 "road": road,
                 "verdict": verdict.name(),
+                "status": verdict.name(),
                 "reason": reason,
             })).collect::<Vec<_>>(),
             "clock": {
                 "verdict": self.clock.verdict.name(),
+                "status": self.clock.verdict.name(),
                 "skew_s": self.clock.skew,
                 "detail": self.clock.detail,
             },
@@ -318,6 +320,7 @@ impl Report {
                 "target": p.target.authority(),
                 "via": p.via,
                 "verdict": p.verdict.name(),
+                "status": p.verdict.name(),
                 "detail": p.detail,
                 "samples": {
                     "sent": p.sent,
@@ -330,6 +333,7 @@ impl Report {
                 },
                 "tls": p.tls.as_ref().map(|t| json!({
                     "verdict": t.verdict.name(),
+                    "status": t.verdict.name(),
                     "issuer": t.issuer,
                     "detail": t.detail,
                 })),
@@ -344,6 +348,11 @@ impl Report {
             "udp": {
                 "target": self.udp.0.to_string(),
                 "verdict": self.udp.1.name(),
+                "status": match self.udp.1 {
+                    Egress::Answered(_) => "ok",
+                    Egress::Refused(_) => "fail",
+                    Egress::Unknown(_) => "unknown",
+                },
                 "detail": self.udp.1.detail(),
             },
             "names": self.names,
@@ -351,6 +360,7 @@ impl Report {
             "legs": self.legs.iter().map(|l| json!({
                 "leg": l.name,
                 "verdict": l.verdict.name(),
+                "status": l.verdict.name(),
                 "reason": l.reason,
             })).collect::<Vec<_>>(),
         }))

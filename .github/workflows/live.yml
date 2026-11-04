@@ -82,14 +82,14 @@ jobs:
           target/release/cfrs doctor
           target/release/cfrs doctor --json > doctor.json
           for leg in quic http2 quic+warp; do
-            jq -e --arg leg "$leg" '.legs[] | select(.leg == $leg) | .verdict == "ok"' doctor.json
+            jq -e --arg leg "$leg" '.legs[] | select(.leg == $leg) | .status == "ok"' doctor.json
           done
           # Issue 128: the roads, the clock and the DNS answers.
-          jq -c '.roads[] | {road, verdict}' doctor.json
+          jq -c '.roads[] | {road, status}' doctor.json
           for road in direct warp relay; do
-            jq -e --arg road "$road" '.roads[] | select(.road == $road) | .verdict == "ok"' doctor.json
+            jq -e --arg road "$road" '.roads[] | select(.road == $road) | .status == "ok"' doctor.json
           done
-          jq -e '.clock.verdict == "ok"' doctor.json
+          jq -e '.clock.status == "ok"' doctor.json
           jq -e '.paths[] | select(.id == "api") | .dns.addresses | length > 0' doctor.json
       - name: Quick tunnel, QUIC (UDP 7844)
         timeout-minutes: 4
@@ -190,7 +190,7 @@ jobs:
           grep -E '^UDP egress .* OK +answered' doctor.out
           sudo iptables -I OUTPUT -p udp --dport 7844 -j REJECT
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j REJECT' EXIT
-          target/release/cfrs net doctor | grep -E '^UDP egress .* FAIL +refused'
+          target/release/cfrs net doctor | grep -E '^UDP egress .* fail +refused'
           sh scripts/live-run.sh udpreject target/release/cfrs demo --exit-on-verify
           grep 'the UDP probe was refused' udpreject.err
           grep -q 'leg=http2' udpreject.err
@@ -365,9 +365,9 @@ jobs:
           # The doctor names the legs that cannot work, and quic+warp can.
           target/release/cfrs doctor --samples 3 || true
           target/release/cfrs doctor --samples 3 --json > doctor-drop.json || true
-          jq -e '.legs[] | select(.leg == "quic+warp") | .verdict == "ok"' doctor-drop.json
-          jq -e '.legs[] | select(.leg == "http2") | .verdict != "ok"' doctor-drop.json
-          jq -e '.legs[] | select(.leg == "quic") | .verdict != "ok"' doctor-drop.json
+          jq -e '.legs[] | select(.leg == "quic+warp") | .status == "ok"' doctor-drop.json
+          jq -e '.legs[] | select(.leg == "http2") | .status != "ok"' doctor-drop.json
+          jq -e '.legs[] | select(.leg == "quic") | .status != "ok"' doctor-drop.json
           sh scripts/live-run.sh race timeout 240 target/release/cfrs demo --exit-on-verify ||
             { tail -40 race.err; exit 1; }
           grep 'the leg won the race' race.err

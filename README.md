@@ -1021,7 +1021,9 @@ cfrs autostart remove web
 ## Doctor
 
 `cfrs doctor` tests the path from this host to the edge, and gives `ok`,
-`refused` or `unknown` for each hop:
+`fail` or `unknown` for each hop (the words of `cfrs net doctor` and
+`cfrs doctor --agent` too). In `--json`, the key is `status`; the old key
+`verdict` has the same value for one release:
 
 * the proxy of each target (the password is never printed), and the
   targets that `NO_PROXY` sends direct;
@@ -1038,7 +1040,7 @@ cfrs autostart remove web
 * names and addresses: if the proxy allows one and refuses the other;
 * UDP 7844: one QUIC packet (answered, refused or unknown);
 * the clock: this host against the `Date` of the first API that answers
-  TLS. More than 300 s off is `refused` (certificates and tokens fail).
+  TLS. More than 300 s off is `fail` (certificates and tokens fail).
 
 Then a table of the legs `quic`, `http2`, `quic+warp` and `http2+relay`
 (TCP and TLS to the relay; the relay protocol is not tried), with the
