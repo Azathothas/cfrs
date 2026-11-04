@@ -1667,6 +1667,170 @@ fn a_huge_datagram_length_gets_emsgsize() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const UDP_SOURCE_CLIENT: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+static void show(const char *tag, struct sockaddr_in *a, socklen_t len, const char *b, int n) {
+    char ip[32] = {0};
+    inet_ntop(AF_INET, &a->sin_addr, ip, sizeof ip);
+    printf("%s:%d:%s:%d:%u:%.*s\n", tag, a->sin_family, ip, ntohs(a->sin_port), (unsigned)len, n > 0 ? n : 0, b);
+}
+int main(void) {
+    alarm(10);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo("echo.example", "7777", &hints, &res) != 0) { printf("GAI\n"); return 1; }
+    char sent[32] = {0};
+    inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, sent, sizeof sent);
+    printf("SENT:%s\n", sent);
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    char b[128];
+    struct sockaddr_in src; socklen_t len;
+    int n = recvfrom(s, b, sizeof b, MSG_DONTWAIT, (struct sockaddr *)&src, &len);
+    printf("AGAIN:%d:%d\n", n, n < 0 ? errno : 0);
+    /* A name: the proxy answers from the address of the host. */
+    if (sendto(s, "ONE", 3, 0, res->ai_addr, res->ai_addrlen) < 0) { perror("sendto"); return 1; }
+    memset(&src, 0, sizeof src); len = sizeof src;
+    n = recvfrom(s, b, sizeof b, MSG_PEEK, (struct sockaddr *)&src, &len);
+    show("PEEK", &src, len, b, n);
+    memset(&src, 0, sizeof src); len = sizeof src;
+    n = recvfrom(s, b, sizeof b, 0, (struct sockaddr *)&src, &len);
+    show("FROM", &src, len, b, n);
+    /* An address, with recvmsg. */
+    struct sockaddr_in d; memset(&d, 0, sizeof d);
+    d.sin_family = AF_INET; d.sin_port = htons(7778);
+    inet_pton(AF_INET, "10.66.0.1", &d.sin_addr);
+    if (sendto(s, "TWO", 3, 0, (struct sockaddr *)&d, sizeof d) < 0) { perror("sendto"); return 1; }
+    struct iovec iov = { b, sizeof b };
+    struct msghdr m; memset(&m, 0, sizeof m);
+    memset(&src, 0, sizeof src);
+    m.msg_name = &src; m.msg_namelen = sizeof src; m.msg_iov = &iov; m.msg_iovlen = 1;
+    n = recvmsg(s, &m, 0);
+    show("MSG", &src, m.msg_namelen, b, n);
+    printf("MSGFLAGS:%d\n", m.msg_flags);
+    /* A short buffer: the datagram is cut, MSG_TRUNC gives its length. */
+    if (sendto(s, "THREE", 5, 0, (struct sockaddr *)&d, sizeof d) < 0) { perror("sendto"); return 1; }
+    memset(b, 0, sizeof b);
+    iov.iov_len = 4; m.msg_namelen = sizeof src;
+    n = recvmsg(s, &m, MSG_TRUNC);
+    printf("TRUNC:%d:%.4s:%d\n", n, b, (m.msg_flags & MSG_TRUNC) != 0);
+    return 0;
+}
+"#;
+
+/// Issue 305: recvfrom and recvmsg on an unconnected UDP socket give the
+/// address that the program sent to as the source, not the AF_UNIX
+/// address of the socketpair. A proxy that answers for a name from the
+/// address of the host gives the fake IP of the name.
+#[test]
+fn an_unconnected_udp_reader_sees_the_source_address() {
+    if !have_compiler() || !seccomp_available() {
+        eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("pod-netns-udp-source-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("socks.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { break };
+            std::thread::spawn(move || {
+                let Some((cmd, _, _)) = read_request(&mut c) else {
+                    return;
+                };
+                if cmd != 0x83 {
+                    let _ = c.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
+                    return;
+                }
+                let _ = c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+                loop {
+                    let mut len = [0u8; 2];
+                    if c.read_exact(&mut len).is_err() {
+                        return;
+                    }
+                    let mut d = vec![0u8; u16::from_be_bytes(len) as usize];
+                    if c.read_exact(&mut d).is_err() {
+                        return;
+                    }
+                    let header = match d[3] {
+                        1 => 10,
+                        3 => 7 + d[4] as usize,
+                        _ => continue,
+                    };
+                    // A name gets an answer from the address of the host.
+                    let mut answer = if d[3] == 3 {
+                        let mut a = vec![0, 0, 0, 1, 93, 184, 216, 34];
+                        a.extend_from_slice(&d[header - 2..header]);
+                        a
+                    } else {
+                        d[..header].to_vec()
+                    };
+                    answer.extend_from_slice(b"ECHO:");
+                    answer.extend_from_slice(&d[header..]);
+                    let mut frame = (answer.len() as u16).to_be_bytes().to_vec();
+                    frame.extend_from_slice(&answer);
+                    if c.write_all(&frame).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let program = build_program(&dir, "udp-source", UDP_SOURCE_CLIENT, false);
+    for hook in ["", "no-fd"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+            .args(["--backend", "seccomp", "-x"])
+            .arg(format!("unix:{}", sock.display()))
+            .arg("--")
+            .arg(&program)
+            .env("POD_NETNS_TEST_MEM", hook)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        let err = String::from_utf8_lossy(&output.stderr);
+        let sent = out
+            .lines()
+            .find_map(|l| l.strip_prefix("SENT:"))
+            .unwrap_or_else(|| panic!("{hook:?}: {out:?} {err:?}"));
+        let want = [
+            format!("AGAIN:-1:{}", libc::EAGAIN),
+            format!("PEEK:2:{sent}:7777:16:ECHO:ONE"),
+            format!("FROM:2:{sent}:7777:16:ECHO:ONE"),
+            "MSG:2:10.66.0.1:7778:16:ECHO:TWO".to_string(),
+            "MSGFLAGS:0".to_string(),
+            "TRUNC:10:ECHO:1".to_string(),
+        ];
+        for line in want {
+            assert!(
+                out.lines().any(|l| l == line),
+                "{hook:?}: no {line:?} in {out:?} {err:?}"
+            );
+        }
+    }
+    // With no write to the memory of the program, the read stays direct
+    // and the datagram still arrives.
+    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--backend", "seccomp", "-x"])
+        .arg(format!("unix:{}", sock.display()))
+        .arg("--")
+        .arg(&program)
+        .env("POD_NETNS_TEST_MEM", "none")
+        .env("POD_NETNS_QUIET", "1")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains(":ECHO:ONE\n"), "{out:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 const UNSPEC_CLIENT: &str = r#"
 #include <stdio.h>
 #include <string.h>

@@ -71,9 +71,9 @@ see it. Use a unix socket for it (`-L unix:///path`).
 * A helper thread sets `no_new_privs`, installs a `SECCOMP_RET_USER_NOTIF`
   filter, and forks the child. Thus the supervisor threads have no filter.
 * The filter stops: `socket`, `connect`, `bind`, `listen`, `accept`, `accept4`,
-  `sendto`, `sendmsg`, `sendmmsg`, `setsockopt`, `getsockopt`, `getsockname`,
-  `getpeername`, `close`, `io_uring_setup`, `io_uring_enter`,
-  `io_uring_register`. A system call of a foreign ABI (i386 or x32 on x86_64)
+  `sendto`, `sendmsg`, `sendmmsg`, `recvfrom`, `recvmsg`, `setsockopt`,
+  `getsockopt`, `getsockname`, `getpeername`, `close`, `io_uring_setup`,
+  `io_uring_enter`, `io_uring_register`. A system call of a foreign ABI (i386 or x32 on x86_64)
   gets `ENOSYS`.
 * `socket(AF_INET | AF_INET6)` gets one end of a socketpair, installed with
   `SECCOMP_IOCTL_NOTIF_ADDFD`. Thus `read`, `write`, `poll` and `epoll` work on
@@ -103,6 +103,19 @@ see it. Use a unix socket for it (`-L unix:///path`).
   the kernel gives for a datagram that is too large. A `msghdr` with more
   than 1024 iovecs also gets `EMSGSIZE`. A buffer that cannot be read gets
   `EFAULT`.
+* `recvfrom` and `recvmsg` on an unconnected UDP socket give the source
+  address of the datagram, not the `AF_UNIX` address of the socketpair. The
+  source is the address that the program sent to: the fake IP of a name
+  also when the proxy answers from the address of the host, and the address
+  of the resolver for a DNS answer. The supervisor reads the datagram from
+  the socketpair and writes the data, the address and its length into the
+  memory of the program. `MSG_PEEK`, `MSG_TRUNC` and `MSG_DONTWAIT` work. A
+  blocking read waits without stopping the other system calls of the
+  program. These reads stay direct: a read of a connected socket, a read of
+  a socket that is not of the pod, `read`, `recvmmsg`, and each read when
+  the host refuses writes to the memory of the program. Each `recvfrom` and
+  `recvmsg` of the program goes through the supervisor, also a read of a TCP
+  socket, which the supervisor passes on at once.
 * With a proxy on a unix socket, UDP goes on the control connection first
   (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
   kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A

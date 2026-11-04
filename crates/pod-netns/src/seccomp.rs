@@ -58,9 +58,11 @@ pub(crate) struct SeccompNotifAddfd {
 }
 
 /// The syscalls the filter stops. Everything else is allowed untouched.
-pub(crate) fn intercepted_syscalls() -> [libc::c_long; 17] {
+pub(crate) fn intercepted_syscalls() -> [libc::c_long; 19] {
     [
         libc::SYS_socket,
+        libc::SYS_recvfrom,
+        libc::SYS_recvmsg,
         libc::SYS_connect,
         libc::SYS_sendto,
         libc::SYS_sendmsg,
@@ -278,6 +280,17 @@ static MEM_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// `process_vm_writev` (issue 98: a host can refuse the write open of the
 /// file and allow the system call).
 pub(crate) fn write_mem(mem: RawFd, addr: u64, data: &[u8]) -> Result<()> {
+    write_mem_to(
+        mem,
+        MEM_PID.load(std::sync::atomic::Ordering::Relaxed),
+        addr,
+        data,
+    )
+}
+
+/// [`write_mem`] for the task `pid`: for a write from a task that does not
+/// handle the notification of now (a blocking read).
+pub(crate) fn write_mem_to(mem: RawFd, pid: u32, addr: u64, data: &[u8]) -> Result<()> {
     let mut off = 0;
     while off < data.len() {
         let n = if mem >= 0 {
@@ -295,7 +308,6 @@ pub(crate) fn write_mem(mem: RawFd, addr: u64, data: &[u8]) -> Result<()> {
         let n = if n > 0 {
             n
         } else {
-            let pid = MEM_PID.load(std::sync::atomic::Ordering::Relaxed);
             let local = libc::iovec {
                 iov_base: data[off..].as_ptr() as *mut _,
                 iov_len: data.len() - off,
@@ -500,20 +512,6 @@ pub(crate) enum UdpRelay {
     },
 }
 
-/// The offset of the payload in a SOCKS5 UDP datagram, if it is whole.
-fn udp_payload_offset(datagram: &[u8]) -> Option<usize> {
-    if datagram.len() < 4 {
-        return None;
-    }
-    let off = match datagram[3] {
-        0x01 => 10,
-        0x03 => 4 + 1 + *datagram.get(4)? as usize + 2,
-        0x04 => 22,
-        _ => return None,
-    };
-    (datagram.len() >= off).then_some(off)
-}
-
 /// A listening socket inside the sandbox. Connections arrive on a unix
 /// listener (the only bind a sealed host permits) and are handed to the child's
 /// `accept` as injected socketpair ends.
@@ -542,6 +540,8 @@ pub(crate) enum Sock {
         pair: Arc<tokio::net::UnixDatagram>,
         dest: Option<(IpAddr, u16)>,
         relay: Option<UdpRelay>,
+        /// The receive side: the sources of the datagrams (issue 305).
+        inbox: Arc<crate::inbox::Inbox>,
     },
 }
 
@@ -769,6 +769,17 @@ pub(crate) async fn supervise_seccomp(
                 req.pid,
             )
             .await
+        } else if nr == libc::SYS_recvfrom as i32 || nr == libc::SYS_recvmsg as i32 {
+            handle_recv(
+                lfd,
+                id,
+                a,
+                mem,
+                mem_writable,
+                &map,
+                nr == libc::SYS_recvmsg as i32,
+                req.pid,
+            )
         } else if nr == libc::SYS_getsockname as i32 || nr == libc::SYS_getpeername as i32 {
             handle_sockname(lfd, id, a, mem, mem_writable, &mut map)
         } else {
@@ -814,6 +825,15 @@ pub(crate) const SECCOMP_IOCTL_NOTIF_ID_VALID: libc::c_ulong = 0x4008_2102;
 /// writable.
 pub(crate) fn open_mem(pid: u32) -> (RawFd, bool) {
     MEM_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+    let (fd, writable) = open_mem_of(pid);
+    if !writable {
+        warn_no_mem_write();
+    }
+    (fd, writable)
+}
+
+/// [`open_mem`] with no change of the pid of now and no warning.
+pub(crate) fn open_mem_of(pid: u32) -> (RawFd, bool) {
     let Ok(path) = CString::new(format!("/proc/{pid}/mem")) else {
         return (-1, false);
     };
@@ -828,9 +848,6 @@ pub(crate) fn open_mem(pid: u32) -> (RawFd, bool) {
     // A read-only descriptor: writes go through process_vm_writev, when the
     // host allows it (issue 98).
     let writable = hook != "none" && process_vm_writable(pid);
-    if !writable {
-        warn_no_mem_write();
-    }
     (fd, writable)
 }
 
@@ -935,6 +952,8 @@ pub(crate) fn handle_socket(
         if nonblocking {
             set_nonblocking(theirs.as_raw_fd())?;
         }
+        // A copy of the end of the program, for intercepted reads.
+        let copy = theirs.try_clone()?;
         let child_fd = notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
         drop(theirs);
         map.insert(
@@ -943,6 +962,7 @@ pub(crate) fn handle_socket(
                 pair: Arc::new(tokio::net::UnixDatagram::from_std(ours)?),
                 dest: None,
                 relay: None,
+                inbox: Arc::new(crate::inbox::Inbox::new(copy, domain == libc::AF_INET6)),
             },
         );
     }
@@ -1070,8 +1090,10 @@ pub(crate) async fn handle_sendto(
     let len = a[2] as usize;
     let name = a[4];
     let namelen = a[5] as usize;
-    let (recorded, pair) = match map.get(&fd) {
-        Some(Sock::Datagram { dest, pair, .. }) => (*dest, pair.clone()),
+    let (recorded, pair, inbox) = match map.get(&fd) {
+        Some(Sock::Datagram {
+            dest, pair, inbox, ..
+        }) => (*dest, pair.clone(), inbox.clone()),
         _ => return notif_continue(lfd, id),
     };
     let target = if name != 0 && namelen >= 4 {
@@ -1096,14 +1118,26 @@ pub(crate) async fn handle_sendto(
             return notif_respond(lfd, id, -1, libc::EINVAL);
         };
         let reply = dns.answer(&parsed);
-        let _ = pair.send(&reply).await;
+        let source = crate::inbox::WireSource::Ip(SocketAddr::new(ip, port));
+        inbox.deliver(&pair, source, &reply).await;
         return notif_respond(lfd, id, len as i64, 0);
     }
     let name = dns.name_for_ip(ip).map(str::to_string);
     if !fits_relay(len, ip, name.as_deref()) {
         return notif_respond(lfd, id, -1, libc::EMSGSIZE);
     }
-    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
+    match relay_datagram(
+        map,
+        fd,
+        &proxies[0],
+        (pair, inbox),
+        &payload,
+        ip,
+        name,
+        port,
+    )
+    .await
+    {
         Ok(()) => notif_respond(lfd, id, len as i64, 0),
         Err(e) => {
             let _ = notif_respond(lfd, id, -1, libc::ENETUNREACH);
@@ -1195,8 +1229,10 @@ pub(crate) async fn send_msghdr(
     dns: &mut FakeDns,
     proxies: &[Proxy],
 ) -> Result<Option<std::result::Result<usize, i32>>> {
-    let (recorded, pair) = match map.get(&fd) {
-        Some(Sock::Datagram { dest, pair, .. }) => (*dest, pair.clone()),
+    let (recorded, pair, inbox) = match map.get(&fd) {
+        Some(Sock::Datagram {
+            dest, pair, inbox, ..
+        }) => (*dest, pair.clone(), inbox.clone()),
         _ => return Ok(None),
     };
     // struct msghdr on x86_64: name, namelen, iov, iovlen, control, controllen, flags.
@@ -1260,14 +1296,26 @@ pub(crate) async fn send_msghdr(
             return Ok(Some(Err(libc::EINVAL)));
         };
         let reply = dns.answer(&parsed);
-        let _ = pair.send(&reply).await;
+        let source = crate::inbox::WireSource::Ip(SocketAddr::new(ip, port));
+        inbox.deliver(&pair, source, &reply).await;
         return Ok(Some(Ok(payload.len())));
     }
     let name = dns.name_for_ip(ip).map(str::to_string);
     if !fits_relay(payload.len(), ip, name.as_deref()) {
         return Ok(Some(Err(libc::EMSGSIZE)));
     }
-    match relay_datagram(map, fd, &proxies[0], pair, &payload, ip, name, port).await {
+    match relay_datagram(
+        map,
+        fd,
+        &proxies[0],
+        (pair, inbox),
+        &payload,
+        ip,
+        name,
+        port,
+    )
+    .await
+    {
         Ok(()) => Ok(Some(Ok(payload.len()))),
         Err(_) => Ok(Some(Err(libc::ENETUNREACH))),
     }
@@ -1278,6 +1326,7 @@ pub(crate) async fn ensure_udp_relay(
     fd: i32,
     proxy: &Proxy,
     pair: Arc<tokio::net::UnixDatagram>,
+    inbox: Arc<crate::inbox::Inbox>,
 ) -> Result<()> {
     if matches!(map.get(&fd), Some(Sock::Datagram { relay: Some(_), .. })) {
         return Ok(());
@@ -1315,8 +1364,8 @@ pub(crate) async fn ensure_udp_relay(
                 tokio::spawn(async move {
                     while let Ok(Some(datagram)) = crate::upstream::read_udp_frame(&mut read).await
                     {
-                        if let Some(off) = udp_payload_offset(&datagram) {
-                            let _ = pair.send(&datagram[off..]).await;
+                        if let Some((source, off)) = crate::inbox::udp_source(&datagram) {
+                            inbox.deliver(&pair, source, &datagram[off..]).await;
                         }
                     }
                 });
@@ -1338,8 +1387,8 @@ pub(crate) async fn ensure_udp_relay(
             let Ok((n, _)) = reader.recv_from(&mut buf).await else {
                 break;
             };
-            if let Some(off) = udp_payload_offset(&buf[..n]) {
-                let _ = pair.send(&buf[off..n]).await;
+            if let Some((source, off)) = crate::inbox::udp_source(&buf[..n]) {
+                inbox.deliver(&pair, source, &buf[off..n]).await;
             }
         }
     });
@@ -1362,16 +1411,24 @@ pub(crate) async fn relay_datagram(
     map: &mut HashMap<i32, Sock>,
     fd: i32,
     proxy: &Proxy,
-    pair: Arc<tokio::net::UnixDatagram>,
+    (pair, inbox): (Arc<tokio::net::UnixDatagram>, Arc<crate::inbox::Inbox>),
     payload: &[u8],
     ip: IpAddr,
     name: Option<String>,
     port: u16,
 ) -> Result<()> {
-    ensure_udp_relay(map, fd, proxy, pair).await?;
+    ensure_udp_relay(map, fd, proxy, pair, inbox.clone()).await?;
     let wrapped = match name {
-        Some(name) => crate::upstream::wrap_udp_name(payload, &name, port),
-        None => wrap_udp(payload, ip, port),
+        Some(name) => {
+            let wire = crate::inbox::WireSource::Name(name.clone(), port);
+            inbox.remember(wire, ip, port);
+            crate::upstream::wrap_udp_name(payload, &name, port)
+        }
+        None => {
+            let wire = crate::inbox::WireSource::Ip(SocketAddr::new(ip, port));
+            inbox.remember(wire, ip, port);
+            wrap_udp(payload, ip, port)
+        }
     };
     match map.get(&fd) {
         Some(Sock::Datagram {
@@ -1697,4 +1754,113 @@ pub(crate) fn handle_sockname(
     let out_len = (bytes.len() as u32).to_ne_bytes();
     write_mem(mem, a[2], &out_len)?;
     notif_respond(lfd, id, 0, 0)
+}
+
+/// `recvfrom` and `recvmsg` (issue 305): on an unconnected datagram socket of
+/// the program, the supervisor reads the datagram and writes the data and its
+/// logical source address into the memory of the program. Another read
+/// stays direct: a socket that is not ours, a connected socket, or a host
+/// that refuses writes to the memory of the program (the source is then the
+/// `AF_UNIX` address of the socketpair).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_recv(
+    lfd: RawFd,
+    id: u64,
+    a: [u64; 6],
+    mem: RawFd,
+    writable: bool,
+    map: &HashMap<i32, Sock>,
+    recvmsg: bool,
+    pid: u32,
+) -> Result<()> {
+    let fd = a[0] as i32;
+    let inbox = match map.get(&fd) {
+        Some(Sock::Datagram {
+            dest: None, inbox, ..
+        }) if writable => inbox.clone(),
+        _ => return notif_continue(lfd, id),
+    };
+    let flags = if recvmsg { a[2] } else { a[3] } as i32;
+    if flags & libc::MSG_ERRQUEUE != 0 {
+        return notif_continue(lfd, id);
+    }
+    if flags & libc::MSG_OOB != 0 {
+        return notif_respond(lfd, id, -1, libc::EOPNOTSUPP);
+    }
+    let (target, flags) = match crate::inbox::read_target(mem, recvmsg, a) {
+        Ok(t) => t,
+        Err(errno) => return notif_respond(lfd, id, -1, errno),
+    };
+    let peek = flags & libc::MSG_PEEK != 0;
+    match inbox.take(peek) {
+        Ok(Some((data, source))) => {
+            let addr = inbox.address(source);
+            match crate::inbox::complete(mem, pid, &target, flags, &data, &addr) {
+                Ok(value) => notif_respond(lfd, id, value, 0),
+                Err(errno) => notif_respond(lfd, id, -1, errno),
+            }
+        }
+        Ok(None) => {
+            let nonblocking = flags & libc::MSG_DONTWAIT != 0
+                || child_fd_flags(pid, fd).is_some_and(|f| f & libc::O_NONBLOCK != 0);
+            if nonblocking {
+                return notif_respond(lfd, id, -1, libc::EAGAIN);
+            }
+            // A blocking read waits in its own task: the other system calls
+            // of the program go on.
+            tokio::spawn(wait_recv(lfd, id, pid, inbox, target, flags));
+            Ok(())
+        }
+        Err(e) => notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO)),
+    }
+}
+
+/// Wait for a datagram for the blocking read `id`, then answer it. Stop when
+/// the read ends without an answer (a signal, or the exit of the program).
+async fn wait_recv(
+    lfd: RawFd,
+    id: u64,
+    pid: u32,
+    inbox: Arc<crate::inbox::Inbox>,
+    target: crate::inbox::RecvTarget,
+    flags: i32,
+) {
+    let peek = flags & libc::MSG_PEEK != 0;
+    let Ok(ready) = crate::readable_copy(inbox.raw_fd()) else {
+        let _ = notif_respond(lfd, id, -1, libc::EIO);
+        return;
+    };
+    loop {
+        let guard = tokio::select! {
+            guard = ready.readable() => guard.ok(),
+            _ = tokio::time::sleep(Duration::from_millis(200)) => None,
+        };
+        if !notif_id_valid(lfd, id) {
+            return;
+        }
+        match inbox.take(peek) {
+            Ok(Some((data, source))) => {
+                let addr = inbox.address(source);
+                let (mem, _) = open_mem_of(pid);
+                let answer = crate::inbox::complete(mem, pid, &target, flags, &data, &addr);
+                if mem >= 0 {
+                    unsafe { libc::close(mem) };
+                }
+                let _ = match answer {
+                    Ok(value) => notif_respond(lfd, id, value, 0),
+                    Err(errno) => notif_respond(lfd, id, -1, errno),
+                };
+                return;
+            }
+            Ok(None) => {
+                if let Some(mut guard) = guard {
+                    guard.clear_ready();
+                }
+            }
+            Err(e) => {
+                let _ = notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO));
+                return;
+            }
+        }
+    }
 }

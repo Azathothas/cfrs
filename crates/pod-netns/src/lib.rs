@@ -41,6 +41,7 @@ mod cli;
 mod doctor;
 mod fakedns;
 mod frontdoor;
+mod inbox;
 mod netns;
 mod seccomp;
 
