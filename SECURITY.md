@@ -98,7 +98,7 @@ defaults in this table against `cfrs man --json`.
 
 | Secret | Where cfrs keeps it |
 | --- | --- |
-| Named-tunnel token and secret | In memory only. Give it in `TUNNEL_TOKEN`, a config file or a cloudflared credentials file. `--token` also works, but other users of the host can read a command line. |
+| Named-tunnel token and secret | In memory only. Give it in `TUNNEL_TOKEN`, a file (`--token-file`, `TUNNEL_TOKEN_FILE`), a config file or a cloudflared credentials file. `--token` also works, but other users of the host can read a command line. |
 | WARP device token, MASQUE private key, WARP+ license | The identity file (`cfrs man files`), mode 0600, in a directory with mode 0700. cfrs writes it to a new file and then renames it. cfrs refuses an identity file that belongs to another user, or that the group or other users can read. |
 | Proxy user and password | In the proxy variables or `-x`. |
 | Relay token | `CFRS_RELAY_TOKEN`, or a minted token in `relay-token-HOST.json` (mode 0600) in the state directory. cfrs does not use a cache file that is a link, of another user, readable by others or over 64 KiB. |

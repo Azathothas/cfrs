@@ -336,11 +336,15 @@ A named tunnel uses a Cloudflare account and a hostname from the dashboard.
 
 ```sh
 TUNNEL_TOKEN=<token> cfrs tunnel --url http://127.0.0.1:8080
+cfrs tunnel --token-file /run/secrets/tunnel-token --url http://127.0.0.1:8080
 cfrs tunnel --credentials-file ~/.cloudflared/<id>.json --url http://127.0.0.1:8080
 ```
 
 `--token <token>` also works. Other users of the host can read a command
-line, so `TUNNEL_TOKEN` is safer.
+line, so `TUNNEL_TOKEN` or a file is safer. `--token-file PATH` (or
+`TUNNEL_TOKEN_FILE`) reads the token from a file; white space at the ends
+is removed. `cfrs relay connect --token-file PATH` reads a connect token,
+and `cfrs warp license -` reads the license key from stdin.
 
 ### Edge protocol and transport
 

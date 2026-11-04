@@ -1584,3 +1584,57 @@ fn the_read_commands_make_no_run_directory() {
         );
     }
 }
+
+/// E4: --token-file and TUNNEL_TOKEN_FILE read the token; it is not on the
+/// command line. An empty file, or a token flag and a file, exit 64.
+#[test]
+fn a_token_comes_from_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("token");
+    std::fs::write(&file, "  bad*token*value\n").unwrap();
+    let path = file.to_str().unwrap();
+    let run = |args: &[&str], env: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        cmd.args(args)
+            .env_remove("TUNNEL_TOKEN")
+            .env_remove("TUNNEL_TOKEN_FILE")
+            .env("CFRS_STATE_DIR", "none");
+        if let Some(env) = env {
+            cmd.env("TUNNEL_TOKEN_FILE", env);
+        }
+        cmd.output().unwrap()
+    };
+    for out in [
+        run(
+            &[
+                "tunnel",
+                "--token-file",
+                path,
+                "--url",
+                "http://127.0.0.1:1",
+            ],
+            None,
+        ),
+        run(
+            &[
+                "tunnel",
+                &format!("--token-file={path}"),
+                "--url",
+                "http://127.0.0.1:1",
+            ],
+            None,
+        ),
+        run(&["tunnel", "--url", "http://127.0.0.1:1"], Some(path)),
+    ] {
+        let err = stderr(&out);
+        // The token of the file was read: it is not a valid token.
+        assert!(err.contains("not valid base64"), "{err}");
+        assert!(!err.contains("bad*token*value"), "{err}");
+    }
+    std::fs::write(&file, " \n").unwrap();
+    let out = run(&["tunnel", "--token-file", path], None);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    assert!(stderr(&out).contains("is empty"));
+    let out = run(&["tunnel", "--token", "x", "--token-file", path], None);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+}

@@ -577,10 +577,14 @@ struct TunnelArgs {
     /// cloudflared-style YAML config with ingress rules.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
-    /// the host can read a command line.
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
+    /// --token-file: other users of the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Read the named-tunnel token from this file (for example a secret
+    /// of a container). The token is not on the command line.
+    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    token_file: Option<PathBuf>,
     /// cloudflared credentials JSON file.
     #[arg(long)]
     credentials_file: Option<PathBuf>,
@@ -605,10 +609,14 @@ struct ServeArgs {
     /// Single-page-app fallback to index.html.
     #[arg(long)]
     spa: bool,
-    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
-    /// the host can read a command line.
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
+    /// --token-file: other users of the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Read the named-tunnel token from this file (for example a secret
+    /// of a container). The token is not on the command line.
+    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -653,10 +661,14 @@ struct ShareArgs {
     /// Cloudflare takes at most 100 MB in one request.
     #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST, value_parser = clap::value_parser!(u64).range(1..))]
     max_request: u64,
-    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
-    /// the host can read a command line.
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
+    /// --token-file: other users of the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Read the named-tunnel token from this file (for example a secret
+    /// of a container). The token is not on the command line.
+    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    token_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -695,10 +707,14 @@ enum RelayCommand {
     Connect {
         /// The pair name.
         name: String,
-        /// The connect token. Prefer the variable: other users of the host
-        /// can read a command line. Default: the local pair file.
+        /// The connect token. Prefer the variable or --token-file: other
+        /// users of the host can read a command line. Default: the local
+        /// pair file.
         #[arg(long, env = "CFRS_RELAY_CONNECT_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Read the connect token from this file.
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
         /// Accept local connections here (tcp://[bind:]port or unix:/path),
         /// one session for each, in place of stdin and stdout.
         #[arg(long, value_name = "LISTEN")]
@@ -764,10 +780,14 @@ struct DemoArgs {
     /// Exit as soon as the public URL has been fetched.
     #[arg(long)]
     exit_on_verify: bool,
-    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN: other users of
-    /// the host can read a command line.
+    /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
+    /// --token-file: other users of the host can read a command line.
     #[arg(long, env = "TUNNEL_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Read the named-tunnel token from this file (for example a secret
+    /// of a container). The token is not on the command line.
+    #[arg(long, value_name = "PATH", env = "TUNNEL_TOKEN_FILE")]
+    token_file: Option<PathBuf>,
 }
 
 fn main() {
@@ -782,6 +802,10 @@ fn main() {
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    if let Err(err) = apply_token_files(&argv) {
+        eprintln!("cfrs: {err:#}");
+        std::process::exit(cfrs::exit::USAGE);
+    }
     if argv.get(1).map(String::as_str) == Some("pod") {
         pod_netns::set_program_name("cfrs pod");
         std::process::exit(pod_netns::main_with_args(&argv[2..]));
@@ -994,6 +1018,71 @@ fn main() {
 
 /// `--log-format json` (issue 181): the last error line is JSON too.
 static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The token of a file (E4): the text with no white space at the ends; an
+/// error for an empty or a large file.
+fn read_token_file(path: &std::path::Path) -> Result<String> {
+    let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    if meta.len() > 64 * 1024 {
+        bail!(
+            "{} is not a token file: it has {} bytes",
+            path.display(),
+            meta.len()
+        );
+    }
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let token = text.trim();
+    if token.is_empty() {
+        bail!("the token file {} is empty", path.display());
+    }
+    Ok(token.to_string())
+}
+
+/// Read the token of --token-file (or of TUNNEL_TOKEN_FILE) into the token
+/// variable of the command, before the parse: the token is then not on a
+/// command line, and each user of the token reads it as before. A token
+/// flag together with a token file is an error.
+fn apply_token_files(argv: &[String]) -> Result<()> {
+    let relay_connect = command_name(argv).as_deref() == Some("relay connect");
+    let variable = if relay_connect {
+        cfrs::relay_reverse::CONNECT_TOKEN_VARIABLE
+    } else {
+        "TUNNEL_TOKEN"
+    };
+    let mut path = None;
+    let mut words = argv.iter().skip(1);
+    while let Some(word) = words.next() {
+        if word == "--" {
+            break;
+        }
+        if (word == "--token" || word.starts_with("--token="))
+            && argv
+                .iter()
+                .any(|w| w == "--token-file" || w.starts_with("--token-file="))
+        {
+            bail!("--token and --token-file: give one of them");
+        }
+        if let Some(value) = word.strip_prefix("--token-file=") {
+            path = Some(PathBuf::from(value));
+        } else if word == "--token-file" {
+            path = words.next().map(PathBuf::from);
+        }
+    }
+    if path.is_none() && !relay_connect && std::env::var_os("TUNNEL_TOKEN").is_none() {
+        path = std::env::var_os("TUNNEL_TOKEN_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+    }
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let token = read_token_file(&path)?;
+    cfrs::report::hide(&token);
+    // SAFETY: one thread: the runtime does not exist yet.
+    unsafe { std::env::set_var(variable, token) };
+    Ok(())
+}
 
 /// Whether stdin and stderr are both no terminal (an agent, a pipe, a
 /// service).
@@ -3244,6 +3333,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
             name,
             token,
             listen,
+            ..
         } => {
             let (token, relay) = match token {
                 Some(token) => (token, relay),
@@ -3676,7 +3766,8 @@ enum WarpCommand {
     },
     /// Attach a WARP+ license key to the device.
     License {
-        /// The license key.
+        /// The license key, or - to read it from stdin (it is then not on
+        /// the command line).
         #[arg(value_parser = non_empty_key)]
         key: String,
     },
@@ -4484,6 +4575,25 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             println!("quota       {}", field("quota"));
         }
         WarpCommand::License { key } => {
+            let key = if key == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(
+                    &mut std::io::Read::take(std::io::stdin(), 4096),
+                    &mut text,
+                )
+                .context("reading the license key from stdin")
+                .fault(Fault::Usage)?;
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return Err(cfrs::exit::fault(
+                        Fault::Usage,
+                        anyhow::anyhow!("no license key on stdin"),
+                    ));
+                }
+                text
+            } else {
+                key
+            };
             cfrs::report::hide(&key);
             let account = client
                 .set_license(&key)

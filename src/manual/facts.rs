@@ -43,6 +43,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The named-tunnel token, in place of --token. Other users of the host can read a command line, but not the environment of a process of another user.",
     },
     EnvVar {
+        names: &["TUNNEL_TOKEN_FILE"],
+        used_by: "tunnel, serve, share, demo",
+        meaning: "A file with the named-tunnel token, in place of --token-file. TUNNEL_TOKEN wins when both are set. An empty file is a usage error (exit 64).",
+    },
+    EnvVar {
         names: &["SSL_CERT_FILE"],
         used_by: "all commands",
         meaning: "The only file of TLS roots (PEM), when --ca-file is not given. Without both, cfrs trusts cfrs-ca.pem beside the binary, the first system bundle that it can read, and the roots compiled into cfrs.",
