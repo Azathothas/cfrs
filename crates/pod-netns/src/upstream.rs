@@ -144,6 +144,9 @@ impl Proxy {
         let (host, port) = hostport
             .rsplit_once(':')
             .with_context(|| format!("proxy {spec:?} needs host:port"))?;
+        if kind == ProxyKind::Socks5 {
+            check_socks5_credentials(user.as_deref(), pass.as_deref())?;
+        }
         Ok(Self {
             kind,
             host: host.to_string(),
@@ -415,11 +418,32 @@ pub async fn connect_upstream_async(chain: &[Proxy], target: &str) -> Result<Ups
     }
 }
 
+/// The longest user and password of the SOCKS5 user/password method
+/// (RFC 1929): each has a one-byte length.
+pub const SOCKS5_CREDENTIAL_MAX: usize = 255;
+
+/// Refuse a SOCKS5 user or password that RFC 1929 cannot carry. Before
+/// (issue 304), the length byte was truncated and the auth stream lost
+/// its frames.
+fn check_socks5_credentials(user: Option<&str>, pass: Option<&str>) -> Result<()> {
+    for (what, value) in [("user", user), ("password", pass)] {
+        if value.is_some_and(|v| v.len() > SOCKS5_CREDENTIAL_MAX) {
+            bail!(
+                "the {what} of the SOCKS5 proxy is longer than {SOCKS5_CREDENTIAL_MAX} bytes \
+                 (the limit of RFC 1929)"
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn socks5_handshake<S>(mut stream: S, proxy: &Proxy) -> Result<S>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A Proxy of the library can have fields that parse did not check.
+    check_socks5_credentials(proxy.user.as_deref(), proxy.pass.as_deref())?;
     let methods: &[u8] = if proxy.user.is_some() {
         &[0x00, 0x02]
     } else {
@@ -495,7 +519,6 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
-    let mut stream = socks5_handshake(stream, proxy).await?;
     // A chained hop is addressed as `unix:<path>`; there is no host:port, so
     // the whole string goes as a domain and the port is 0. The hop resolves it.
     let (host, port) = if target.starts_with("unix:") {
@@ -503,8 +526,13 @@ where
     } else {
         split_target(target)?
     };
-    let mut req = vec![0x05, 0x01, 0x00];
+    // ATYP 3 has a one-byte length (issue 304: it was truncated).
     let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<IpAddr>().is_err() && host.len() > 255 {
+        bail!("the target name {host:?} is longer than 255 bytes (the limit of SOCKS5)");
+    }
+    let mut stream = socks5_handshake(stream, proxy).await?;
+    let mut req = vec![0x05, 0x01, 0x00];
     if let Ok(ip) = bare.parse::<Ipv4Addr>() {
         req.push(0x01);
         req.extend_from_slice(&ip.octets());
@@ -830,6 +858,79 @@ mod tests {
     }
 
     use super::*;
+
+    /// Issue 304: a SOCKS5 user or password over 255 bytes is refused at
+    /// parse time; RFC 1929 cannot carry it. HTTP Basic has no such limit.
+    #[test]
+    fn a_socks5_credential_over_255_bytes_is_refused() {
+        let long = "u".repeat(300);
+        let err = Proxy::parse(&format!("socks5://{long}:p@127.0.0.1:1080")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("the user of the SOCKS5 proxy is longer than 255 bytes"),
+            "{err:#}"
+        );
+        let err = Proxy::parse(&format!("socks5://u:{long}@127.0.0.1:1080")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("the password of the SOCKS5 proxy is longer than 255"),
+            "{err:#}"
+        );
+        assert!(Proxy::parse(&format!("http://{long}:p@127.0.0.1:8080")).is_ok());
+        let edge = "u".repeat(255);
+        assert!(Proxy::parse(&format!("socks5://{edge}:{edge}@127.0.0.1:1080")).is_ok());
+    }
+
+    /// Issue 304: a user and a password of 255 bytes go in whole frames
+    /// with the right length bytes. A Proxy with a longer user, made with
+    /// no parse, sends no auth frame, and a target name over 255 bytes is
+    /// refused.
+    #[tokio::test]
+    async fn the_socks5_auth_frame_keeps_its_length() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let edge = "u".repeat(255);
+        let pass = "p".repeat(255);
+        let proxy = Proxy::parse(&format!("socks5://{edge}:{pass}@127.0.0.1:1080")).unwrap();
+        let (client, mut server) = tokio::io::duplex(4096);
+        let script = tokio::spawn(async move {
+            let mut greeting = [0u8; 4];
+            server.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 2, 0, 2]);
+            server.write_all(&[5, 2]).await.unwrap();
+            let mut head = [0u8; 2];
+            server.read_exact(&mut head).await.unwrap();
+            assert_eq!(head, [1, 255]);
+            let mut user = vec![0u8; head[1] as usize];
+            server.read_exact(&mut user).await.unwrap();
+            let mut len = [0u8; 1];
+            server.read_exact(&mut len).await.unwrap();
+            let mut pass = vec![0u8; len[0] as usize];
+            server.read_exact(&mut pass).await.unwrap();
+            server.write_all(&[1, 0]).await.unwrap();
+            (user, pass)
+        });
+        socks5_handshake(client, &proxy).await.unwrap();
+        let (user, got_pass) = script.await.unwrap();
+        assert_eq!(user, edge.as_bytes());
+        assert_eq!(got_pass, pass.as_bytes());
+
+        let mut long = proxy.clone();
+        long.user = Some("u".repeat(300));
+        let (client, mut server) = tokio::io::duplex(4096);
+        // Before the fix, the handshake waits for an answer to a broken frame.
+        let err = tokio::time::timeout(Duration::from_secs(5), socks5_handshake(client, &long))
+            .await
+            .expect("the handshake must fail at once")
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("longer than 255"), "{err:#}");
+        let mut sent = Vec::new();
+        server.read_to_end(&mut sent).await.unwrap();
+        assert!(sent.is_empty(), "{sent:?}");
+
+        let plain = Proxy::parse("socks5://127.0.0.1:1080").unwrap();
+        let (client, _server) = tokio::io::duplex(4096);
+        let target = format!("{}.example:80", "n".repeat(300));
+        let err = socks5_connect(client, &plain, &target).await.unwrap_err();
+        assert!(format!("{err:#}").contains("longer than 255"), "{err:#}");
+    }
 
     #[test]
     fn parses_proxy_specs() {

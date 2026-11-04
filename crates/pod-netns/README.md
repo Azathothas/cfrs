@@ -20,7 +20,7 @@ pod-netns doctor --json
 
 | Option | Function |
 | --- | --- |
-| `-x, --proxy SPEC` | An upstream. Repeat it to make a chain. Forms: `socks5://[user:pass@]host:port`, `http://[user:pass@]host:port`, `socks5://unix:/path`, `http://unix:/path`, `tailscale:/path/to/tailscaled.sock`. Default: `$ALL_PROXY`, `$HTTPS_PROXY` or `$HTTP_PROXY`. |
+| `-x, --proxy SPEC` | An upstream. Repeat it to make a chain. Forms: `socks5://[user:pass@]host:port`, `http://[user:pass@]host:port`, `socks5://unix:/path`, `http://unix:/path`, `tailscale:/path/to/tailscaled.sock`. Default: `$ALL_PROXY`, `$HTTPS_PROXY` or `$HTTP_PROXY`. A SOCKS5 user or password longer than 255 bytes is an error (the limit of RFC 1929). A SOCKS5 target name longer than 255 bytes is refused. |
 | `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY`, `domain:.NAME=PROXY` (the name and each name under it) `cidr:ADDR/PREFIX=PROXY` (IPv4 or IPv6) or `cidr:@FILE=PROXY` (one prefix on each line of FILE; `#` starts a comment). PROXY can be `direct` (TCP from pod-netns, no proxy). The first rule that matches is used. |
 | `--map NAME=ADDR` | Resolve `NAME` to `ADDR`, with no upstream. |
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
