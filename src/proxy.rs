@@ -24,6 +24,10 @@ use crate::share::ShareControl;
 use crate::util::path_and_query;
 
 const MAX_HEAD_BYTES: usize = 32 * 1024;
+/// The most header lines of an origin answer (issue 238: 64 was too few
+/// for an answer with many Set-Cookie lines). MAX_HEAD_BYTES limits the
+/// head too.
+pub(crate) const MAX_HEADERS: usize = 256;
 /// The longest line of the trailer of a chunked answer of the origin.
 const MAX_TRAILER_LINE: usize = 8192;
 /// The largest trailer of a chunked answer of the origin.
@@ -315,6 +319,7 @@ async fn forward_http(
     }
 
     let (status, headers, leftover) = read_response_head(&mut io).await?;
+    let resp_len = response_length(&headers)?;
     write_response_meta(&mut writer, status, &headers).await?;
     // A chunked body: the edge frames the body itself, so send only the
     // payload of the chunks. The last chunk ends the body, also when the
@@ -332,7 +337,6 @@ async fn forward_http(
         futures::io::AsyncWriteExt::flush(&mut writer).await?;
         metrics.add_out(leftover.len() as u64);
     }
-    let resp_len = headers_value(&headers, "content-length").and_then(|v| v.parse::<u64>().ok());
     match resp_len {
         Some(total) => {
             let remaining = total.saturating_sub(leftover.len() as u64);
@@ -971,6 +975,44 @@ fn is_websocket(request: &cqstream::ConnectRequest) -> bool {
 
 // ── Response head ───────────────────────────────────────────────────────────
 
+/// The Content-Length of an origin answer, after a check of its framing
+/// (issue 238). Each Content-Length value (also each item of a list) must
+/// be the same number (RFC 9110 section 8.6). A Content-Length together
+/// with a Transfer-Encoding that is not chunked is an error. With a chunked
+/// Transfer-Encoding, the chunks frame the body (RFC 9112 section 6.3).
+fn response_length(headers: &[(String, String)]) -> Result<Option<u64>> {
+    let mut length = None;
+    for (_, value) in headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+    {
+        for item in value.split(',') {
+            let item = item.trim();
+            let n = item
+                .parse::<u64>()
+                .ok()
+                .filter(|_| item.bytes().all(|b| b.is_ascii_digit()))
+                .with_context(|| format!("the origin answer has a bad Content-Length {item:?}"))?;
+            if length.is_some_and(|l| l != n) {
+                bail!("the origin answer has conflicting framing: two Content-Length values");
+            }
+            length = Some(n);
+        }
+    }
+    let encodings: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+        .map(|(_, value)| value.to_ascii_lowercase())
+        .collect();
+    if length.is_some() && !encodings.is_empty() {
+        if encodings.iter().any(|v| v.contains("chunked")) {
+            return Ok(None);
+        }
+        bail!("the origin answer has conflicting framing: Content-Length and Transfer-Encoding");
+    }
+    Ok(length)
+}
+
 async fn read_response_head<R>(io: &mut R) -> Result<(u16, Vec<(String, String)>, Vec<u8>)>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -987,7 +1029,7 @@ where
             bail!("origin response head exceeds {MAX_HEAD_BYTES} bytes");
         }
         let parsed = {
-            let mut headers = [httparse::EMPTY_HEADER; 64];
+            let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut response = httparse::Response::new(&mut headers);
             match response.parse(&buf)? {
                 httparse::Status::Complete(consumed) => {
@@ -1469,6 +1511,55 @@ mod tests {
     /// The payload of each chunk, with no framing; an extension and a
     /// trailer are dropped; the last chunk ends the body while the origin
     /// keeps the connection open.
+    /// Issue 238: an answer with more than 64 headers passes.
+    #[tokio::test]
+    async fn an_origin_answer_with_many_headers_passes() {
+        let mut raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n".to_vec();
+        for i in 0..100 {
+            raw.extend_from_slice(format!("Set-Cookie: c{i}=v\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"\r\nok");
+        let (status, headers, leftover) = read_response_head(&mut &raw[..]).await.unwrap();
+        assert_eq!(
+            (status, headers.len(), leftover.as_slice()),
+            (200, 101, &b"ok"[..])
+        );
+    }
+
+    /// Issue 238: two different Content-Length values, or Content-Length
+    /// with a Transfer-Encoding that is not chunked, are an error.
+    #[test]
+    fn the_framing_of_an_origin_answer_is_checked() {
+        let h = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let cl = "Content-Length";
+        let te = "Transfer-Encoding";
+        assert_eq!(response_length(&h(&[(cl, "5")])).unwrap(), Some(5));
+        assert_eq!(
+            response_length(&h(&[(cl, "5"), (cl, "5")])).unwrap(),
+            Some(5)
+        );
+        assert_eq!(response_length(&h(&[(cl, "5, 5")])).unwrap(), Some(5));
+        assert_eq!(response_length(&h(&[])).unwrap(), None);
+        assert_eq!(
+            response_length(&h(&[(cl, "5"), (te, "chunked")])).unwrap(),
+            None
+        );
+        for bad in [
+            h(&[(cl, "5"), (cl, "6")]),
+            h(&[(cl, "5, 6")]),
+            h(&[(cl, "x")]),
+            h(&[(cl, "+5")]),
+            h(&[(cl, "5"), (te, "gzip")]),
+        ] {
+            assert!(response_length(&bad).is_err(), "{bad:?}");
+        }
+    }
+
     /// Issue 244: the trailer of a chunked answer has a cap, in all and
     /// for each line.
     #[tokio::test]

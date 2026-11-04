@@ -266,7 +266,7 @@ async fn read_response<S: AsyncRead + Unpin>(
             }
             buf.extend_from_slice(&chunk[..n]);
         }
-        let mut slots = [httparse::EMPTY_HEADER; 64];
+        let mut slots = [httparse::EMPTY_HEADER; crate::proxy::MAX_HEADERS];
         let mut parsed = httparse::Response::new(&mut slots);
         match parsed.parse(&buf).context("the answer is not HTTP")? {
             httparse::Status::Complete(len) => {
@@ -443,6 +443,18 @@ mod tests {
         let request = Request::new("GET", "https://example.com/");
         assert_eq!(request.max_body, MAX_BODY);
         assert_eq!(request.max_body(1 << 30).max_body, 1 << 30);
+    }
+
+    /// Issue 238: an answer with more than 64 headers passes.
+    #[tokio::test]
+    async fn an_answer_with_many_headers_passes() {
+        let mut raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n".to_vec();
+        for i in 0..100 {
+            raw.extend_from_slice(format!("X-H{i}: v\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"\r\nok");
+        let r = parse(&raw).await.unwrap();
+        assert_eq!((r.headers.len(), r.body.as_slice()), (101, &b"ok"[..]));
     }
 
     #[tokio::test]
