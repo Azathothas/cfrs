@@ -839,8 +839,200 @@ impl crate::util::http::ResponseWriter for BufferedResponse {
 }
 
 /// The largest body that a [`BufferedResponse`] keeps (issue 276). A larger
-/// file of a [`StaticServer`] gets 413.
+/// body given to [`ResponseWriter::body_reader`] is an error.
 pub const MAX_BUFFERED_BODY: u64 = 64 * 1024 * 1024;
+
+/// The body of a [`StaticResponse`]: bytes in memory (a short text), or an
+/// open file that is read when the body is read (issue 296).
+///
+/// A file body keeps no copy of the file in memory: each
+/// [`io::Read::read`] reads the file. A file of any size is sent with a
+/// buffer of the size that the reader gives.
+#[derive(Debug)]
+pub struct StaticBody {
+    inner: BodySource,
+    len: u64,
+}
+
+#[derive(Debug)]
+enum BodySource {
+    Bytes(io::Cursor<Vec<u8>>),
+    File(io::Take<std::fs::File>),
+}
+
+impl StaticBody {
+    /// A body of bytes in memory.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        let bytes = bytes.into();
+        Self {
+            len: bytes.len() as u64,
+            inner: BodySource::Bytes(io::Cursor::new(bytes)),
+        }
+    }
+
+    /// A body of `len` bytes of `file`, from its current offset.
+    pub fn from_file(file: std::fs::File, len: u64) -> Self {
+        Self {
+            inner: BodySource::File(io::Read::take(file, len)),
+            len,
+        }
+    }
+
+    /// The length of the whole body (the value of `Content-Length`), also
+    /// after a part of it was read.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// True when the body has no bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// True when the body is read from a file.
+    pub fn is_file(&self) -> bool {
+        matches!(self.inner, BodySource::File(_))
+    }
+
+    /// Add bytes to a body in memory. A file body is replaced.
+    fn push(&mut self, bytes: &[u8]) {
+        match &mut self.inner {
+            BodySource::Bytes(cursor) => cursor.get_mut().extend_from_slice(bytes),
+            BodySource::File(_) => {
+                self.inner = BodySource::Bytes(io::Cursor::new(bytes.to_vec()));
+                self.len = 0;
+            }
+        }
+        self.len += bytes.len() as u64;
+    }
+}
+
+impl Default for StaticBody {
+    fn default() -> Self {
+        Self::from_bytes(Vec::new())
+    }
+}
+
+impl io::Read for StaticBody {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &mut self.inner {
+            BodySource::Bytes(cursor) => io::Read::read(cursor, buf),
+            BodySource::File(file) => {
+                let n = io::Read::read(file, buf)?;
+                // The file became shorter after the open: the declared
+                // length cannot be sent.
+                if n == 0 && !buf.is_empty() && file.limit() > 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                Ok(n)
+            }
+        }
+    }
+}
+
+/// A response of a [`StaticServer`]: the status, the headers and a body
+/// reader (issue 296).
+///
+/// The body of a file is not in memory: read it from
+/// [`StaticResponse::body`] (it implements [`io::Read`]), or write the
+/// whole response with [`StaticResponse::write_to`].
+#[derive(Debug, Default)]
+pub struct StaticResponse {
+    /// The status code.
+    pub status: u16,
+    /// Header name to value, in the order they were added. A
+    /// `Content-Length` here is not sent: [`StaticResponse::head_bytes`]
+    /// writes the length of the body.
+    pub headers: Vec<(String, String)>,
+    /// The body.
+    pub body: StaticBody,
+}
+
+impl StaticResponse {
+    /// An empty response. The status starts at 0.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Case-insensitive header lookup.
+    pub fn header_value(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The HTTP/1.1 head: the status line, the headers, `Content-Length`
+    /// (the length of the body) and the empty line.
+    pub fn head_bytes(&self) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {} {}\r\n",
+            self.status,
+            crate::origin::static_files::http_phrase(self.status)
+        );
+        for (k, v) in &self.headers {
+            if !k.eq_ignore_ascii_case("content-length") {
+                out.push_str(&format!("{k}: {v}\r\n"));
+            }
+        }
+        out.push_str(&format!("Content-Length: {}\r\n\r\n", self.body.len()));
+        out.into_bytes()
+    }
+
+    /// Write the head and the body to `out`, the body in chunks of at most
+    /// [`crate::util::http::BODY_CHUNK`] bytes. Gives the number of body
+    /// bytes. A body that ends before its length is an `UnexpectedEof`
+    /// error.
+    pub fn write_to<W: io::Write>(mut self, out: &mut W) -> io::Result<u64> {
+        out.write_all(&self.head_bytes())?;
+        let len = self.body.len();
+        let mut buf = vec![0u8; crate::util::http::BODY_CHUNK.min(len as usize)];
+        let mut sent = 0u64;
+        while sent < len {
+            let n = match io::Read::read(&mut self.body, &mut buf) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            out.write_all(&buf[..n])?;
+            sent += n as u64;
+        }
+        out.flush()?;
+        Ok(sent)
+    }
+}
+
+impl crate::util::http::ResponseWriter for StaticResponse {
+    fn status(&mut self, code: u16) -> &mut Self {
+        self.status = code;
+        self
+    }
+
+    fn header(&mut self, name: &str, value: &str) -> &mut Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    fn body(&mut self, body: &[u8]) -> io::Result<()> {
+        self.body.push(body);
+        Ok(())
+    }
+
+    /// Keep the open file: the body is read from it when the body is read.
+    fn body_file(&mut self, len: u64, file: std::fs::File) -> io::Result<()> {
+        self.body = StaticBody::from_file(file, len);
+        Ok(())
+    }
+
+    /// A head with no body: the status and the headers.
+    fn raw_head(&mut self, code: u16, _phrase: &str, extra: &[(String, String)]) -> io::Result<()> {
+        self.status = code;
+        self.headers.extend(extra.iter().cloned());
+        self.body = StaticBody::default();
+        Ok(())
+    }
+}
 
 /// Serves a `static:` or `spa:` origin in process, with the headers a
 /// tunnelled site needs.
@@ -913,8 +1105,12 @@ impl StaticServer {
     }
 
     /// Answer one request.
-    pub fn respond(&self, req: &RequestHead) -> io::Result<BufferedResponse> {
-        let mut out = BufferedResponse::new();
+    ///
+    /// The body of a file is not read here: the response keeps the open
+    /// file, and [`StaticResponse::body`] reads it (issue 296). A file of
+    /// any size is served with a bounded memory.
+    pub fn respond(&self, req: &RequestHead) -> io::Result<StaticResponse> {
+        let mut out = StaticResponse::new();
         for (name, value) in Self::security_headers() {
             out.header(name, value);
         }
@@ -929,7 +1125,7 @@ impl StaticServer {
                 out.status(405);
                 out.header("Content-Type", "text/plain; charset=utf-8");
                 out.header("Allow", "GET, HEAD");
-                out.body = format!("405 method not allowed: {other}\n").into_bytes();
+                out.body = StaticBody::from_bytes(format!("405 method not allowed: {other}\n"));
                 return Ok(out);
             }
         }
@@ -941,21 +1137,12 @@ impl StaticServer {
         }
 
         // `StaticDir::respond` writes through the ResponseWriter trait, so it
-        // fills the same buffer. Its own status and headers take precedence
-        // because it knows which file it found; the headers added above stay.
-        match self.inner.respond(req, &mut out) {
-            Ok(()) => Ok(out),
-            Err(e) if e.kind() == io::ErrorKind::FileTooLarge => {
-                let mut out = BufferedResponse::new();
-                for (name, value) in Self::security_headers() {
-                    out.header(name, value);
-                }
-                out.status(413);
-                out.text("413 the file is too large for this server\n")?;
-                Ok(out)
-            }
-            Err(e) => Err(e),
-        }
+        // fills the same response. Its own status and headers take
+        // precedence because it knows which file it found; the headers added
+        // above stay. A file is given with `body_file`: the response keeps
+        // the open handle.
+        self.inner.respond(req, &mut out)?;
+        Ok(out)
     }
 }
 
@@ -1568,7 +1755,6 @@ mod tests {
 
         let resp = server.respond(&req("GET", "/")).expect("respond");
         assert_eq!(resp.status, 200);
-        assert_eq!(resp.body, b"<h1>hello</h1>");
         assert_eq!(resp.header_value("x-content-type-options"), Some("nosniff"));
         assert_eq!(resp.header_value("x-frame-options"), Some("SAMEORIGIN"));
         assert!(resp
@@ -1576,18 +1762,115 @@ mod tests {
             .expect("type")
             .starts_with("text/html"));
 
-        // The buffered response must render as a real HTTP response.
-        let bytes = String::from_utf8(resp.to_bytes()).expect("utf8");
+        // The response must render as a real HTTP response.
+        let mut wire = Vec::new();
+        assert_eq!(resp.write_to(&mut wire).expect("write"), 14);
+        let bytes = String::from_utf8(wire).expect("utf8");
         assert!(bytes.starts_with("HTTP/1.1 200 OK\r\n"), "{bytes}");
         // The declared length must match the body actually sent, or a client
         // either hangs or truncates.
         let body = "<h1>hello</h1>";
-        assert_eq!(resp.body, body.as_bytes());
         assert!(
-            bytes.contains(&format!("Content-Length: {}\r\n", body.len())),
+            bytes.ends_with(&format!("Content-Length: {}\r\n\r\n{body}", body.len())),
             "declared length must match the {} byte body: {bytes}",
             body.len()
         );
+    }
+
+    /// The whole body of a response.
+    fn body_of(resp: StaticResponse) -> Vec<u8> {
+        let mut body = resp.body;
+        let mut out = Vec::new();
+        io::Read::read_to_end(&mut body, &mut out).expect("read the body");
+        out
+    }
+
+    // Issue 296: a file of any size is streamed. The response keeps the
+    // open file, and the body is read from the file when it is read: a
+    // byte written after `respond` is in the body. Each read gives at most
+    // the buffer of the reader.
+    #[test]
+    fn a_large_file_is_streamed_completely() {
+        use std::io::{Read, Seek, Write};
+        let d = tmpdir("static-big");
+        let size: u64 = 200 * 1024 * 1024;
+        let mut big = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(d.join("big.bin"))
+            .expect("create");
+        big.set_len(size).expect("set_len");
+        let origin =
+            crate::origin::Origin::parse(&format!("static:{}", d.display())).expect("parse");
+        let server = StaticServer::from_origin(&origin).expect("from origin");
+        let mut resp = server.respond(&req("GET", "/big.bin")).expect("respond");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.len(), size);
+        assert!(resp.body.is_file());
+        assert_eq!(resp.header_value("x-content-type-options"), Some("nosniff"));
+        let head = String::from_utf8(resp.head_bytes()).expect("utf8");
+        assert!(
+            head.contains(&format!("Content-Length: {size}\r\n")),
+            "{head}"
+        );
+        // A response that holds a copy of the file does not see this byte.
+        big.seek(std::io::SeekFrom::Start(size - 1)).expect("seek");
+        big.write_all(b"Z").expect("write the last byte");
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        let mut last = 0u8;
+        loop {
+            let n = resp.body.read(&mut buf).expect("read");
+            if n == 0 {
+                break;
+            }
+            assert!(n <= buf.len());
+            total += n as u64;
+            last = buf[n - 1];
+        }
+        assert_eq!(total, size);
+        assert_eq!(last, b'Z', "the body was not read from the file");
+
+        // write_to sends the head and the whole body.
+        struct Count(u64);
+        impl std::io::Write for Count {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                assert!(b.len() <= crate::util::http::BODY_CHUNK);
+                self.0 += b.len() as u64;
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let resp = server.respond(&req("GET", "/big.bin")).expect("respond");
+        let head = resp.head_bytes().len() as u64;
+        let mut count = Count(0);
+        assert_eq!(resp.write_to(&mut count).expect("write"), size);
+        assert_eq!(count.0, head + size);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // A file that becomes shorter after `respond` gives an error, not a
+    // short body with a long Content-Length.
+    #[test]
+    fn a_file_that_shrinks_is_an_error() {
+        let d = tmpdir("static-shrink");
+        std::fs::write(d.join("a.bin"), vec![1u8; 1000]).expect("write");
+        let origin =
+            crate::origin::Origin::parse(&format!("static:{}", d.display())).expect("parse");
+        let server = StaticServer::from_origin(&origin).expect("from origin");
+        let resp = server.respond(&req("GET", "/a.bin")).expect("respond");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(d.join("a.bin"))
+            .expect("open")
+            .set_len(10)
+            .expect("truncate");
+        let err = resp.write_to(&mut Vec::new()).expect_err("short file");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
@@ -1622,31 +1905,38 @@ mod tests {
             let resp = server.respond(&req("GET", attack)).expect("respond");
             assert_eq!(resp.status, 404, "{attack} must not be served");
             assert!(
-                !String::from_utf8_lossy(&resp.body).contains("SECRET"),
+                !String::from_utf8_lossy(&body_of(resp)).contains("SECRET"),
                 "{attack} leaked content"
             );
         }
         let _ = std::fs::remove_file(&secret);
     }
 
-    // Issue 276: a file over the buffer limit gets 413; the file is not
-    // read into memory.
+    // A conditional request that matches gets 304 with no body and one
+    // Content-Length.
     #[test]
-    fn a_file_over_the_buffer_limit_gets_413() {
-        let d = tmpdir("static-big");
-        let big = std::fs::File::create(d.join("big.bin")).expect("create");
-        big.set_len(MAX_BUFFERED_BODY + 1).expect("set_len");
-        std::fs::write(d.join("small.txt"), b"small").expect("write");
+    fn a_matched_etag_gets_304_with_no_body() {
+        let d = tmpdir("static-304");
+        std::fs::write(d.join("a.txt"), b"small").expect("write");
         let origin =
             crate::origin::Origin::parse(&format!("static:{}", d.display())).expect("parse");
         let server = StaticServer::from_origin(&origin).expect("from origin");
-        let resp = server.respond(&req("GET", "/big.bin")).expect("respond");
-        assert_eq!(resp.status, 413);
-        assert!(resp.body.len() < 100);
-        assert_eq!(resp.header_value("x-content-type-options"), Some("nosniff"));
-        let resp = server.respond(&req("GET", "/small.txt")).expect("respond");
-        assert_eq!(resp.status, 200);
-        assert_eq!(resp.body, b"small");
+        let mtime = std::fs::metadata(d.join("a.txt"))
+            .and_then(|m| m.modified())
+            .expect("mtime")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs();
+        let mut request = req("GET", "/a.txt");
+        request.set_header("If-None-Match", &format!("\"{mtime}\""));
+        let resp = server.respond(&request).expect("respond");
+        assert_eq!(resp.status, 304);
+        let mut wire = Vec::new();
+        assert_eq!(resp.write_to(&mut wire).expect("write"), 0);
+        let wire = String::from_utf8(wire).expect("utf8");
+        assert!(wire.starts_with("HTTP/1.1 304 Not Modified\r\n"), "{wire}");
+        assert_eq!(wire.matches("Content-Length").count(), 1, "{wire}");
+        assert!(wire.ends_with("Content-Length: 0\r\n\r\n"), "{wire}");
     }
 
     #[test]
@@ -1681,10 +1971,11 @@ mod tests {
 
         let resp = server.respond(&req("GET", "/deep/route")).expect("respond");
         assert_eq!(resp.status, 200);
-        assert_eq!(resp.body, b"shell");
+        assert_eq!(resp.body.len(), 5);
         // The shell is the same for every route, so caching it would pin a
         // visitor to an old build.
         assert_eq!(resp.header_value("cache-control"), Some("no-store"));
+        assert_eq!(body_of(resp), b"shell");
     }
 
     #[test]

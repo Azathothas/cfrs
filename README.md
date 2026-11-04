@@ -451,6 +451,10 @@ Each other path answers 404. With `--spa`, an unknown path answers the
 
 The library type `cfrs::origin::StaticDir` has the same rules. It also
 applies them to the directory index and to the SPA index.
+`cfrs::feature::StaticServer::respond` gives a `StaticResponse`. Its
+`body` is a reader (`std::io::Read`) that reads the file when you read
+it, and `write_to` writes the head and the body. A file of any size is
+served with a bounded memory.
 
 ### Share files
 

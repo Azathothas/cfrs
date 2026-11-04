@@ -168,6 +168,17 @@ pub trait ResponseWriter {
         Ok(())
     }
 
+    /// Finish with a body of `len` bytes of the open `file`, from its
+    /// current offset.
+    ///
+    /// The default copies the file with [`ResponseWriter::body_reader`]. A
+    /// writer that sends the body later can keep the file and read it then
+    /// (issue 296: [`crate::feature::StaticResponse`]).
+    fn body_file(&mut self, len: u64, file: std::fs::File) -> io::Result<()> {
+        let mut file = file;
+        self.body_reader(len, &mut file)
+    }
+
     /// Finish the head with no body.
     fn raw_head(&mut self, code: u16, phrase: &str, extra: &[(String, String)]) -> io::Result<()> {
         let mut out = format!("HTTP/1.1 {code} {phrase}\r\n");

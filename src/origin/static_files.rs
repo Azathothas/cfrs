@@ -197,12 +197,12 @@ fn send_file<W: ResponseWriter>(
     }
 
     // Issue 276: stream the file from the open handle. The whole file is
-    // not read into memory.
-    let mut file = file;
+    // not read into memory. Issue 296: the writer gets the handle, so a
+    // writer that sends the body later reads the file then.
     writer
         .status(200)
         .header("Content-Type", mime)
-        .body_reader(meta.len(), &mut file)
+        .body_file(meta.len(), file)
 }
 
 /// Guess a content type from the extension.

@@ -50,8 +50,6 @@ Still open, not started:
   needs an owner decision before a change.
 * #269 item 3 (a regex `path:` as in cloudflared): needs a decision on a
   `regex` dependency; now a regex-like `path:` is a config error.
-* #276: the library `StaticServer` still holds a response in memory
-  (capped at 64 MiB).
 * #287 (QA, GitHub #307): `cfrs serve --local ADDR` (owner ruling: add
   it).
 * #222, #224: at the stable release.

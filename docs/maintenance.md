@@ -202,13 +202,10 @@ Rules that the tests check:
     no rule; the library `StaticDir` refuses dotfiles, and a
     `ResponseWriter` can get more than one `body()` call
     (`body_reader`).
-* **#276 item 1 (library)**: `StaticServer` keeps a body of at most 64 MiB
-  in its `BufferedResponse`; a larger file gets 413. A streaming
-  `StaticServer` needs a response type with a reader.
 * **#269 item 3**: `path:` is a literal prefix. A real regular expression
   (as cloudflared) needs a decision on a `regex` dependency.
 * **Issues #212 to #278 (batch 5)**: fixed on `main` except #217, #218,
-  #273 item 2, #269 item 3 and #276 (library); none is closed on GitHub
+  #273 item 2 and #269 item 3; none is closed on GitHub
   yet (`docs/HANDOFF.md`). GitHub deleted #259 to #278 (and the closed
   #165 to #207) with the account `aerrand-agent`: their text is in
   `docs/reports/aerrand-agent.md`. The QA findings #259 to #289 are filed
