@@ -290,6 +290,45 @@ pub fn document(
     })
 }
 
+/// The variables that hold a secret of cfrs. The program of
+/// `CFRS_ERROR_PROGRAM` does not get them (podssh): it reads a report, not
+/// the credentials of the run.
+const SECRET_VARIABLES: &[&str] = &[
+    "TUNNEL_TOKEN",
+    "CFRS_RELAY_TOKEN",
+    "CFRS_RELAY_CONNECT_TOKEN",
+];
+
+/// The proxy variables, which hold a secret when they have a user part.
+const PROXY_VARIABLES: &[&str] = &[
+    "CFRS_PROXY",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+];
+
+/// The variables that the program of `CFRS_ERROR_PROGRAM` does not get:
+/// the secrets, and a proxy variable with a user and a password.
+pub fn withheld(env: &dyn Fn(&str) -> Option<String>) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = SECRET_VARIABLES.to_vec();
+    for key in PROXY_VARIABLES {
+        if env(key).is_some_and(|v| {
+            v.split("://")
+                .nth(1)
+                .unwrap_or(&v)
+                .split('/')
+                .next()
+                .is_some_and(|authority| authority.contains('@'))
+        }) {
+            out.push(key);
+        }
+    }
+    out
+}
+
 /// Give the report to the program of `CFRS_ERROR_PROGRAM`, when it is set.
 /// Errors go to stderr as one line; they do not change the exit code.
 pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
@@ -304,8 +343,12 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
         .try_clone_to_owned()
         .map(std::process::Stdio::from)
         .unwrap_or_else(|_| std::process::Stdio::inherit());
-    let mut child = match std::process::Command::new(&program)
-        .env_remove(PROGRAM_VARIABLE)
+    let mut command = std::process::Command::new(&program);
+    command.env_remove(PROGRAM_VARIABLE);
+    for key in withheld(&|k| std::env::var(k).ok()) {
+        command.env_remove(key);
+    }
+    let mut child = match command
         .stdin(std::process::Stdio::piped())
         .stdout(stdout)
         .stderr(std::process::Stdio::inherit())
@@ -346,6 +389,28 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The program of CFRS_ERROR_PROGRAM gets no secret of cfrs.
+    #[test]
+    fn the_error_program_gets_no_secret() {
+        let env = |k: &str| match k {
+            "CFRS_PROXY" => Some("http://user:pw@proxy:3128".to_string()),
+            "HTTPS_PROXY" => Some("http://proxy:3128".to_string()),
+            "ALL_PROXY" => Some("socks5h://u:p@10.0.0.1:1080".to_string()),
+            _ => None,
+        };
+        let out = withheld(&env);
+        for key in [
+            "TUNNEL_TOKEN",
+            "CFRS_RELAY_TOKEN",
+            "CFRS_RELAY_CONNECT_TOKEN",
+            "CFRS_PROXY",
+            "ALL_PROXY",
+        ] {
+            assert!(out.contains(&key), "{key}: {out:?}");
+        }
+        assert!(!out.contains(&"HTTPS_PROXY"), "{out:?}");
+    }
 
     // Issue 178: a 502 of the proxy names the destination, not the proxy.
     #[test]

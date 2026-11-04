@@ -1426,3 +1426,32 @@ fn auth_user_flags() {
     let out = cfrs(&["tunnel", "--hello-world", "--auth-user", "u", "--check"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
+
+/// The program of CFRS_ERROR_PROGRAM gets the report, and no secret of
+/// cfrs in its environment (podssh).
+#[test]
+fn the_error_program_gets_no_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("report.sh");
+    let seen = dir.path().join("env.txt");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ncat > /dev/null\nenv > {}\n", seen.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["tunnel", "--bogus-flag"])
+        .env("CFRS_ERROR_PROGRAM", &program)
+        .env("TUNNEL_TOKEN", "secret-token")
+        .env("CFRS_RELAY_TOKEN", "secret-relay")
+        .env("CFRS_PROXY", "http://user:secret-pw@127.0.0.1:1")
+        .env("CFRS_SOMETHING", "kept")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    let env = std::fs::read_to_string(&seen).unwrap();
+    assert!(!env.contains("secret"), "{env}");
+    assert!(env.contains("CFRS_SOMETHING=kept"), "{env}");
+}

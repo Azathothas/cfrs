@@ -1166,7 +1166,9 @@ of them.
 
 `CFRS_ERROR_PROGRAM=/path/to/program` gives a JSON report of each failure
 (version, system, command, exit code, the last 64 log lines) to that program
-on its stdin. Credentials are masked. Use it to collect failures in tests.
+on its stdin. Credentials are masked. The program does not get
+`TUNNEL_TOKEN`, the relay tokens, or a proxy variable with a user and a
+password in its environment. Use it to collect failures in tests.
 
 ## Library
 

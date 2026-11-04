@@ -220,7 +220,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["CFRS_ERROR_PROGRAM"],
         used_by: "all commands",
-        meaning: "A program that gets a JSON report on its stdin when cfrs fails (exit code not 0). It runs with no shell and no arguments, for at most 30 s. The report has the version, the system, the command, the exit code, the error (\"error\": the error and its causes, once) and the log lines before it (\"messages\": at most 64), with credentials masked. A usage error (exit 64) sends a report too.",
+        meaning: "A program that gets a JSON report on its stdin when cfrs fails (exit code not 0). It runs with no shell and no arguments, for at most 30 s. The report has the version, the system, the command, the exit code, the error (\"error\": the error and its causes, once) and the log lines before it (\"messages\": at most 64), with credentials masked. A usage error (exit 64) sends a report too. The program does not get TUNNEL_TOKEN, the relay tokens, or a proxy variable with a user and a password.",
     },
     EnvVar {
         names: &["RUST_LOG"],
