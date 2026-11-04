@@ -531,23 +531,19 @@ mod tests {
         let p = paths(dir.path(), "h").unwrap();
         std::fs::write(&p.record, "").unwrap();
         std::fs::write(&p.lock, "").unwrap();
-        // A lock of another process: a child that holds it.
-        let mut child = std::process::Command::new("flock")
-            .arg("-o")
-            .arg(&p.lock)
-            .args(["sleep", "30"])
-            .spawn()
-            .unwrap();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while try_lock(&p.lock).unwrap().is_some() {
-            assert!(std::time::Instant::now() < until, "the child holds no lock");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        // A lock of another holder: an open file description that is not
+        // a Held of this process (a flock of another process is the same
+        // for flock(2)).
+        let other = std::fs::File::open(&p.lock).unwrap();
+        // SAFETY: flock on a descriptor of this test.
+        assert_eq!(
+            unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
         assert!(!remove(dir.path(), "h"));
         assert!(p.lock.exists(), "a held lock stays");
         assert!(p.record.exists(), "the record of a live instance stays");
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(other);
         assert!(remove(dir.path(), "h"));
         assert!(!p.lock.exists());
         assert!(!p.record.exists());
