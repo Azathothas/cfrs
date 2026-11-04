@@ -55,7 +55,8 @@ These rules apply to each session. Obey them before any other default.
 - Documents: `README.md`, `docs/protocol.md`, `docs/virtual-network.md`,
   `docs/target-environment.md`, `docs/maintenance.md`, `docs/decisions.md`,
   `docs/development.md`,
-  `crates/pod-netns/README.md`, `docs/releases/`.
+  `crates/pod-netns/README.md`, `docs/releases/`, `docs/reports/` (the
+  text of issues that GitHub deleted).
 - At the start of a session, read `docs/maintenance.md`: the procedures,
   the tools (`scripts/agent/`), the workflows, the release steps and the
   open work. Keep its "Open work" section current.

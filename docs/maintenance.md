@@ -179,7 +179,10 @@ Rules that the tests check:
   * `status`: `proxy.kind` is the real kind (it was `http` for each
     proxy).
 * **Issues #212 to #278** came in during batch 4. They wait for the go of
-  the owner: then triage and plan them as one batch.
+  the owner: then triage and plan them as one batch. GitHub deleted #259
+  to #278 (and the closed #165 to #207) with the account `aerrand-agent`:
+  their text and comments are in `docs/reports/aerrand-agent.md`. Read
+  them there; a fix names the number of the archive.
 * **Questions for the owner**: `docs/decisions.md` (a crates.io name, a
   live check of the second WARP API host, MASQUE through the relay at
   64 MiB).
