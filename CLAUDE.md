@@ -68,9 +68,9 @@ These rules apply to each session. Obey them before any other default.
   commit. Do not merge the Dependabot branch.
 - Platforms: Linux only. No Windows or macOS builds. Build static Linux
   binaries for all major architectures with cargo-zigbuild (zig cc).
-- Releases: on hold since 2026-11-04. Make no release until the owner
-  says go; then triage and plan the new issues as one batch. After that:
-  dry run, then `publish=vX`, then check `release-proofs.yml`.
+- Releases: cut the next prerelease (`v0.3.0-beta.N`) unattended when a
+  batch of fixes is green: dry run, then `publish=vX`, then check
+  `release-proofs.yml`.
 - `docs/decisions.md` has each ruling with its date, and the questions
   for the owner.
 - `cfrs update`: check SHA256SUMS, and the certificate identity and the

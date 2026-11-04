@@ -23,7 +23,10 @@ form of the rulings that apply to each session.
 | 2026-11-04 | Doctor | One verdict vocabulary for each check. |
 | 2026-11-04 | State files | Root with the `HOME` of another user writes no file there by default (warning, or an error). `CFRS_FOREIGN_HOME=allow` allows it. |
 | 2026-11-04 | Relay | The alternates of the default relay are the hosts of the podssh seed until a pool of `/relays.json` is cached. |
-| 2026-11-04 | Releases | No release until the owner says go. Then triage and plan the issues that came in, as one batch. |
+| 2026-11-04 | Releases | Cut the next prerelease unattended when a batch is green: dry run, `publish=vX`, then `release-proofs.yml`. |
+| 2026-11-04 | crates.io | Publish nothing now, and choose no package name (`cfrs` is taken). Fix the packaging defects so that a publish can work. Decide again at the stable release. |
+| 2026-11-04 | WARP API | A live check registers a device through the second API host (`api.devices.cloudflare.com`) and deletes it, in each live run. |
+| 2026-11-04 | MASQUE through the relay | A planned replacement: at the byte or time budget of the relay, a new MASQUE session takes the new flows; the open flows end with the old session after a drain limit. |
 | 2026-11-04 | #140 | `warp proxy --l4` stays open. The work needs a captured request of an official client. |
 | 2026-11-04 | #151 | ECH stays deferred: no HPKE in ring, and no hop of cfrs publishes an ECH config. |
 | 2026-11-04 | #149 | Zero Trust enrolment is on hold until a captured exchange of the official client comes. |
@@ -34,20 +37,9 @@ form of the rulings that apply to each session.
 | Date | Ruling | Superseded by |
 | --- | --- | --- |
 | 2026-11-01 | Releases: cut the next prerelease unattended when a batch of fixes is green. | 2026-11-04, Releases: no release until the owner says go. |
+| 2026-11-04 | Releases: no release until the owner says go. | 2026-11-04, Releases: unattended again. |
 
 ## Questions for the owner
 
-Each question blocks a part of the work. Write the answer as a ruling
-above, and remove the question.
-
-1. **A package name for crates.io** (#161, #224): the name `cfrs` is taken
-   by another project. Which name do the two crates get?
-2. **A live check of the second WARP API host**: a `live.yml` step that
-   registers a device through `api.devices.cloudflare.com` registers one
-   device for each run. Is that acceptable, or does a read-only check
-   (`GET /reg/{id}` of a saved device) do?
-3. **MASQUE through the relay**: the relay ends a session at 64 MiB. The
-   HTTP/2 edge leg now moves to a new connection before that. A MASQUE
-   session through the relay (`warp` with the relay first) has its TCP
-   flows and its egress address in one session. Is a cut at 64 MiB
-   acceptable there, or do you want a planned replacement (the flows end)?
+None now. Write each new question here, with the part of the work that it
+blocks.
