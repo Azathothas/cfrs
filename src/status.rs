@@ -65,6 +65,11 @@ fn edge_override() -> Value {
                 .iter()
                 .filter(|i| i.parse::<std::net::SocketAddr>().is_err())
                 .collect();
+            // Issue 252: tunnel and doctor exit 78 on it; status is a
+            // report, so it warns and exits 0.
+            for item in &bad {
+                eprintln!("cfrs: warning: CFRS_EDGE entry {item:?} is not IP:PORT; tunnel and doctor refuse it");
+            }
             json!({ "addresses": items, "valid": bad.is_empty() })
         }
         _ => Value::Null,

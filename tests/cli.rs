@@ -1950,3 +1950,39 @@ fn warp_env_with_no_proxy_variables_exits_69() {
         stderr(&out)
     );
 }
+
+// Issue 252: invalid values are errors, not silent.
+#[test]
+fn invalid_values_are_refused() {
+    for args in [
+        &["warp", "scan", "--timeout-ms", "0"][..],
+        &["warp", "scan", "--timeout-ms", "999999"],
+    ] {
+        let out = cfrs(args);
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["ports"])
+        .env("CFRS_RESOLVE", "bad")
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
+    assert!(stderr(&out).contains("CFRS_RESOLVE"), "{}", stderr(&out));
+    let out = cfrs(&["--resolve", "bad", "ports"]);
+    assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
+    let state = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["status"])
+        .env("CFRS_EDGE", "zz")
+        .env("CFRS_STATE_DIR", state.path())
+        .env_remove("CFRS_ERROR_PROGRAM")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("CFRS_EDGE entry \"zz\""),
+        "{}",
+        stderr(&out)
+    );
+}

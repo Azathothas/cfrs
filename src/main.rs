@@ -933,7 +933,12 @@ fn main() {
         }
     }
     if let Err(err) = network_options(&cli) {
-        let err = cfrs::exit::fault(cfrs::exit::Fault::Usage, err);
+        // A flag is a usage error; a variable (CFRS_RESOLVE) has its class.
+        let err = if cfrs::exit::code_of(&err) == cfrs::exit::FAILURE {
+            cfrs::exit::fault(cfrs::exit::Fault::Usage, err)
+        } else {
+            err
+        };
         print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
         let code = cfrs::exit::code_of(&err);
         cfrs::report::send(command.as_deref(), code, Some(&err));
@@ -2342,6 +2347,12 @@ fn network_options(cli: &Cli) -> Result<()> {
     }
     if let Some(list) = &cli.resolve {
         cfrs::resolve::set_pins(list).context("--resolve")?;
+    } else if let Ok(list) = std::env::var(cfrs::resolve::PINS_VARIABLE) {
+        // Issue 252: a bad CFRS_RESOLVE was a warning at the first dial
+        // (and none for a command with no dial).
+        cfrs::resolve::parse_pins(&list)
+            .context(cfrs::resolve::PINS_VARIABLE)
+            .fault(Fault::Config)?;
     }
     Ok(())
 }
@@ -4067,8 +4078,10 @@ enum WarpCommand {
         /// address with a port is in brackets. Repeatable.
         #[arg(long, value_name = "IP[:PORT]", value_delimiter = ',')]
         candidate: Vec<String>,
-        /// The time limit of each front door, in milliseconds.
-        #[arg(long, value_name = "MS", default_value_t = 3000)]
+        /// The time limit of each front door, in milliseconds (100 to
+        /// 60000).
+        #[arg(long, value_name = "MS", default_value_t = 3000,
+              value_parser = clap::value_parser!(u64).range(100..=60_000))]
         timeout_ms: u64,
         /// Print one JSON document.
         #[arg(long)]
@@ -4874,7 +4887,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .map(|c| parse_door(c))
                 .collect::<Result<Vec<_>>>()
                 .fault(Fault::Usage)?;
-            let timeout = std::time::Duration::from_millis(timeout_ms.clamp(100, 60_000));
+            let timeout = std::time::Duration::from_millis(timeout_ms);
             let results = client
                 .scan(&candidates, timeout)
                 .await

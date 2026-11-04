@@ -42,12 +42,13 @@ pub const DEFAULT_SIZE: (usize, usize) = (64, 160);
 
 impl Split {
     /// `mode` is `off`, `record` or `sni` (`off` gives `None`); `size` is
-    /// `N` or `MIN-MAX`, each 16 to 4096.
+    /// `N` or `MIN-MAX`, each 16 to 4096. A bad size is an error also with
+    /// `off` (issue 252: `--fragment-size abc` was ignored).
     pub fn parse(mode: &str, size: Option<&str>) -> Result<Option<Self>> {
         let mode = match mode.trim().to_ascii_lowercase().as_str() {
-            "" | "off" => return Ok(None),
-            "record" => Mode::Record,
-            "sni" => Mode::Sni,
+            "" | "off" => None,
+            "record" => Some(Mode::Record),
+            "sni" => Some(Mode::Sni),
             other => bail!("--fragment-client-hello={other:?}: give off, record or sni"),
         };
         let (min, max) = match size.map(str::trim).filter(|s| !s.is_empty()) {
@@ -67,7 +68,7 @@ impl Split {
                 (a, b)
             }
         };
-        Ok(Some(Split { mode, min, max }))
+        Ok(mode.map(|mode| Split { mode, min, max }))
     }
 }
 
@@ -361,6 +362,8 @@ mod tests {
         assert!(fragment_with(&[0x17, 3, 3, 0, 1, 0], &split, random_in).is_none());
         assert!(fragment_with(&[0x16, 3, 1, 0, 2, 2, 0], &split, random_in).is_none());
         assert_eq!(Split::parse("off", Some("64")).unwrap(), None);
+        assert!(Split::parse("off", Some("abc")).is_err());
+        assert!(Split::parse("", Some("15")).is_err());
         for (mode, size) in [
             ("fast", None),
             ("record", Some("4-9000")),

@@ -154,7 +154,10 @@ static PINS: OnceLock<HashMap<String, Vec<IpAddr>>> = OnceLock::new();
 pub fn set_pins(list: &str) -> Result<()> {
     let mut pins = parse_pins(list)?;
     if let Ok(env) = std::env::var(PINS_VARIABLE) {
-        for (host, ips) in parse_pins(&env).context(PINS_VARIABLE)? {
+        let parsed = parse_pins(&env)
+            .context(PINS_VARIABLE)
+            .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
+        for (host, ips) in parsed {
             pins.entry(host).or_default().extend(ips);
         }
     }

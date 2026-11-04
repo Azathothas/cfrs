@@ -30,7 +30,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["CFRS_RESOLVE"],
         used_by: "all commands",
-        meaning: "Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. --resolve adds to it. Without a pin, cfrs asks the system resolver, then DNS over HTTPS at 1.1.1.1, 1.0.0.1, 8.8.8.8 and 8.8.4.4.",
+        meaning: "Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. --resolve adds to it. Without a pin, cfrs asks the system resolver, then DNS over HTTPS at 1.1.1.1, 1.0.0.1, 8.8.8.8 and 8.8.4.4. A bad value is a configuration error (exit 78) for each command.",
     },
     EnvVar {
         names: &["HTTP_PROXY", "http_proxy"],
