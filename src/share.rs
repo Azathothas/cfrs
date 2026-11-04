@@ -545,6 +545,16 @@ impl Staging<'_> {
     }
 }
 
+/// Issue 234: an error of the file system goes to the log of the operator.
+/// The visitor gets a fixed text, with no error detail of the host.
+fn save_failed(what: &str, err: &std::io::Error) -> Response {
+    tracing::warn!(error = %err, "upload: {what}");
+    refuse(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the server cannot save the upload".to_string(),
+    )
+}
+
 fn refuse(status: StatusCode, message: String) -> Response {
     (
         status,
@@ -704,12 +714,7 @@ async fn upload_receive(
             .await
         {
             Ok(file) => file,
-            Err(err) => {
-                return refuse(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("cannot create file: {err}"),
-                )
-            }
+            Err(err) => return save_failed("cannot create a part file", &err),
         };
         staging.parts.push((part, name, 0));
         let index = staging.parts.len() - 1;
@@ -746,17 +751,11 @@ async fn upload_receive(
                 );
             }
             if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
-                return refuse(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("write failed: {err}"),
-                );
+                return save_failed("cannot write a part file", &err);
             }
         }
         if let Err(err) = tokio::io::AsyncWriteExt::flush(&mut file).await {
-            return refuse(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write failed: {err}"),
-            );
+            return save_failed("cannot write a part file", &err);
         }
         staging.parts[index].2 = written;
     }
@@ -781,12 +780,7 @@ async fn upload_receive(
     }
     let saved = match staging.commit().await {
         Ok(saved) => saved,
-        Err(err) => {
-            return refuse(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("cannot save a file: {err}"),
-            )
-        }
+        Err(err) => return save_failed("cannot move a part file to its name", &err),
     };
     let total: u64 = saved.iter().map(|(_, size)| size).sum();
     if state.stop_after {
@@ -926,7 +920,9 @@ async fn download_file(
     {
         Ok(file) => file,
         Err(err) => {
-            return (StatusCode::NOT_FOUND, format!("cannot open file: {err}")).into_response()
+            // Issue 234: the error detail goes to the log, not to the visitor.
+            tracing::warn!(error = %err, file = %state.file.display(), "download: cannot open the shared file");
+            return (StatusCode::NOT_FOUND, "the shared file is not available").into_response();
         }
     };
     let meta = file.metadata().await.ok();
@@ -1054,22 +1050,39 @@ fn parse_range(value: &str, len: u64) -> std::result::Result<Option<(u64, u64)>,
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+/// The numbered names that [`create_unique`] tries before random names.
+const NUMBERED_NAMES: u32 = 100;
+/// The random names that [`create_unique`] tries after the numbered names.
+const RANDOM_NAMES: u32 = 16;
+
 /// Make a new file for `name` in `dir`: `name`, else `stem-1.ext`,
-/// `stem-2.ext` and so on. Each try uses `create_new`, so two uploads at
-/// the same time never get the same file.
+/// `stem-2.ext` and so on, up to [`NUMBERED_NAMES`] names. After that,
+/// `stem-<8 random hex digits>.ext` (issue 234: before, the stem was full
+/// after 10 000 names, and each upload tried each name). Each try uses
+/// `create_new`, so two uploads at the same time never get the same file.
 async fn create_unique(
     dir: &std::path::Path,
     name: &str,
+) -> std::io::Result<(PathBuf, tokio::fs::File)> {
+    create_unique_with(dir, name, NUMBERED_NAMES).await
+}
+
+async fn create_unique_with(
+    dir: &std::path::Path,
+    name: &str,
+    numbered: u32,
 ) -> std::io::Result<(PathBuf, tokio::fs::File)> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
         _ => (name.to_string(), String::new()),
     };
-    for index in 0..10_000u32 {
+    for index in 0..numbered + RANDOM_NAMES {
         let candidate = if index == 0 {
             dir.join(name)
-        } else {
+        } else if index < numbered {
             dir.join(format!("{stem}-{index}{ext}"))
+        } else {
+            dir.join(format!("{stem}-{}{ext}", &crate::util::random_token()[..8]))
         };
         match tokio::fs::OpenOptions::new()
             .write(true)
@@ -1583,6 +1596,52 @@ mod tests {
             control.stop_requested(),
             "the end of the file ends the session"
         );
+    }
+
+    // Issue 234: after the numbered names, a random name; the stem is never
+    // full.
+    #[tokio::test]
+    async fn a_full_stem_gets_a_random_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "a-1.txt", "a-2.txt"] {
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+        let (path, _) = create_unique_with(dir.path(), "a.txt", 3).await.unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name.starts_with("a-") && name.ends_with(".txt"), "{name}");
+        assert_eq!(name.len(), "a-12345678.txt".len(), "{name}");
+        assert_eq!(files_in(dir.path()).len(), 4);
+    }
+
+    // Issue 234: a download error has no error detail of the host.
+    #[tokio::test]
+    async fn a_download_error_has_no_host_detail() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gone.bin");
+        std::fs::write(&file, b"data").unwrap();
+        let config = ShareConfig::download(&file);
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        let response = app
+            .router()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/s/{token}/file"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("os error"), "{body}");
+        assert!(!body.contains(dir.path().to_str().unwrap()), "{body}");
+        assert!(body.contains("not available"), "{body}");
     }
 
     /// Twelve uploads of one name at the same time: twelve files, each with
