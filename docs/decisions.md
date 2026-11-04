@@ -31,6 +31,10 @@ form of the rulings that apply to each session.
 | 2026-11-04 | #151 | ECH stays deferred: no HPKE in ring, and no hop of cfrs publishes an ECH config. |
 | 2026-11-04 | #149 | Zero Trust enrolment is on hold until a captured exchange of the official client comes. |
 | 2026-11-04 | WARP devices | Do not register WARP devices when it is not necessary (the service limits new devices for each address). |
+| 2026-11-04 | `serve --local` (#287) | `cfrs serve --local ADDR` serves the static files on a local listener (TCP or `unix:PATH`) and provisions no tunnel. |
+| 2026-11-04 | pod seccomp UDP (#285) | The seccomp backend intercepts `recvfrom` and `recvmsg` on its sockets, so a UDP reader sees the real source address. A read of a connected socket stays direct. |
+| 2026-11-04 | vnet sockets (#288, #289) | The unix sockets of the shim and the switch take the same user only (`SO_PEERCRED`, `SO_PASSCRED`). The switch drops a frame whose source address is not of its peer. The TCP listener of the switch needs a shared token (`CFRS_SWITCH_TOKEN` or a file). Breaking for a TCP switch with no token. |
+| 2026-11-04 | QA findings | File each valid finding of the QA archive on GitHub; close the ones that are fixed on `main` at once, with the commit as evidence. |
 
 ## Superseded
 
