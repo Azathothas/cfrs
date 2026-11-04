@@ -468,9 +468,12 @@ impl Routes {
 
     /// The default routes on the TUN (the session is up).
     pub fn up(&mut self) -> Result<()> {
-        for (dst, prefix) in HALVES4 {
-            route4(true, dst, prefix, None, &self.tun)?;
-        }
+        // #278: a failure after one half removes the half that is in; the
+        // host never runs with half of the default routes on the TUN.
+        let tun = self.tun.clone();
+        install_all(&HALVES4, |(dst, prefix), add| {
+            route4(add, *dst, *prefix, None, &tun)
+        })?;
         if self.ipv6 {
             for (dst, prefix) in HALVES6 {
                 if let Err(err) = route6(true, dst, prefix, None, &self.tun) {
@@ -582,15 +585,93 @@ fn set_dns(tun: &str) -> Result<Dns> {
     }
     let link = std::fs::read_link(RESOLV).ok();
     let backup = std::fs::read_to_string(RESOLV).unwrap_or_default();
-    let _ = std::fs::remove_file(RESOLV);
-    std::fs::write(RESOLV, resolv_text(&nameservers()))
-        .with_context(|| format!("writing {RESOLV}"))?;
+    replace_file(std::path::Path::new(RESOLV), &resolv_text(&nameservers()))?;
     Ok(Dns::File { backup, link })
+}
+
+/// Add each item with `apply(item, true)`. When one fails, remove the
+/// items that are in (`apply(item, false)`, in the reverse order) and
+/// give the error.
+fn install_all<T>(items: &[T], mut apply: impl FnMut(&T, bool) -> Result<()>) -> Result<()> {
+    for (i, item) in items.iter().enumerate() {
+        if let Err(err) = apply(item, true) {
+            for done in items[..i].iter().rev() {
+                let _ = apply(done, false);
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Write `text` as the file `path` (#278). A new file in the same
+/// directory is renamed over the old one: a failure keeps the old file,
+/// and a symbolic link is replaced, not written through. Where a rename
+/// over the file is not possible (a bind mount: EBUSY, EXDEV), the file is
+/// written in place.
+fn replace_file(path: &std::path::Path, text: &str) -> Result<()> {
+    let temp = path.with_extension(format!("cfrs-{}", std::process::id()));
+    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
+    match std::fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&temp);
+            tracing::debug!(error = %err, path = %path.display(), "no rename over the file; it is written in place");
+            std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #278: a failed second route removes the first; no half stays.
+    #[test]
+    fn a_failed_route_removes_the_routes_before_it() {
+        let mut log = Vec::new();
+        let err = install_all(&[1, 2, 3], |item, add| {
+            log.push((*item, add));
+            if *item == 2 && add {
+                anyhow::bail!("no route");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("no route"));
+        assert_eq!(log, [(1, true), (2, true), (1, false)]);
+    }
+
+    /// #278: the file is replaced by a rename: a link is replaced, not
+    /// written through, and a failed write keeps the old file.
+    #[test]
+    fn the_resolv_conf_is_replaced_and_never_removed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("stub.conf");
+        std::fs::write(&target, "nameserver 127.0.0.53\n").unwrap();
+        let path = dir.path().join("resolv.conf");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        replace_file(&path, "nameserver 1.1.1.1\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "nameserver 1.1.1.1\n"
+        );
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "nameserver 127.0.0.53\n"
+        );
+        // A directory that can not take the new file: the old file stays.
+        let missing = dir.path().join("no-such-dir").join("resolv.conf");
+        assert!(replace_file(&missing, "x").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "nameserver 1.1.1.1\n"
+        );
+    }
 
     #[test]
     fn the_resolv_conf_text() {

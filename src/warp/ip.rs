@@ -138,6 +138,9 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 const BATCH_BYTES: usize = 16 * 1024;
 /// The most packets in the outbound queue of the tunnel device.
 const OUTBOUND_PACKETS: usize = 512;
+/// The packets from the session that wait for the stack (#278): about
+/// 5 MB at the MTU. A full queue drops, so the peer sends again.
+const INBOUND_PACKETS: usize = 4096;
 
 /// The counters of the links of the WARP stacks of this process (issue
 /// 134): each session adds to them.
@@ -449,6 +452,7 @@ impl WarpStack {
         let burst = tcp_burst()?;
         tracing::debug!(segments = ?burst, "the TCP window of the userspace stack");
         let mut device = LinkDevice::tunnel_bounded(config.mtu, OUTBOUND_PACKETS)
+            .with_inbound_limit(INBOUND_PACKETS)
             .with_max_burst(burst)
             .with_stats(LINK_STATS.clone());
         let inbound = device.inbound();
@@ -523,7 +527,11 @@ impl WarpStack {
                     }
                     let why = match packet {
                         Ok(Some(packet)) => {
-                            inbound.push(packet.to_vec());
+                            if !inbound.push(packet.to_vec()) {
+                                LINK_STATS
+                                    .rx_dropped
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
                             notify.notify_one();
                             continue;
                         }

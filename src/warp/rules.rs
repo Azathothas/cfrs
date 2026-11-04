@@ -298,9 +298,37 @@ pub async fn decide(
     })
 }
 
+/// The action for `host` with no lookup of a name (`warp proxy --l4`: no
+/// resolver in the tunnel, #140). A name that only an address rule can
+/// decide gets the default.
+pub fn decide_static(table: &Table, host: &ProxyHost) -> Action {
+    match host {
+        ProxyHost::Ip(ip) => table.for_ip(*ip),
+        ProxyHost::Domain(name) => table.for_name(name).unwrap_or(table.default),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #140: the rules of --l4 need no lookup; the built-in rules apply.
+    #[test]
+    fn a_static_decision_uses_the_rules_and_the_builtins() {
+        let t = table(
+            &["domain:ads.example=reject", "cidr:10.0.0.0/8=direct"],
+            Action::Tunnel,
+        );
+        let name = |n: &str| ProxyHost::Domain(n.into());
+        let ip = |i: &str| ProxyHost::Ip(i.parse().unwrap());
+        assert_eq!(decide_static(&t, &name("ads.example")), Action::Reject);
+        assert_eq!(decide_static(&t, &name("localhost")), Action::Reject);
+        assert_eq!(decide_static(&t, &ip("10.1.2.3")), Action::Direct);
+        assert_eq!(decide_static(&t, &ip("127.0.0.1")), Action::Reject);
+        assert_eq!(decide_static(&t, &name("example.org")), Action::Tunnel);
+        let direct = table(&[], Action::Direct);
+        assert_eq!(decide_static(&direct, &name("example.org")), Action::Direct);
+    }
 
     fn table(specs: &[&str], default: Action) -> Table {
         let specs: Vec<String> = specs.iter().map(|s| s.to_string()).collect();

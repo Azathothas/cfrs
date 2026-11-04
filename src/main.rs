@@ -4094,7 +4094,9 @@ enum WarpCommand {
         )]
         rules: Vec<String>,
         /// Serve each TCP client on its own HTTP/3 CONNECT stream to the L4
-        /// door of WARP (UDP 443), with no IP stack. UDP is not served.
+        /// door of WARP (UDP 443), with no IP stack. UDP is not served. The
+        /// rules (-r, --rules-file, --rule-default) apply; an address rule
+        /// (cidr:) decides an address, not a name, as no name is resolved.
         #[arg(long, env = "CFRS_WARP_L4", conflicts_with_all = ["dns", "listen_identity"])]
         l4: bool,
         /// The TLS name of the L4 door.
@@ -5357,7 +5359,13 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     if let Some(routes) = routes_ref {
                         let up = routes.lock().unwrap_or_else(|e| e.into_inner()).up();
                         if let Err(err) = up {
-                            tracing::warn!(error = %format!("{err:#}"), "the default routes on the TUN");
+                            // #278: no session with half of the default
+                            // routes; up() removed the half that was in.
+                            tracing::error!(error = %format!("{err:#}"), next_try_s = delay.as_secs(), "no default routes on the TUN; cfrs tries again");
+                            drop(current);
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(std::time::Duration::from_secs(30));
+                            continue;
                         }
                     }
                     if let Err(err) = cfrs::warp::tun::run(tun_ref, current).await {

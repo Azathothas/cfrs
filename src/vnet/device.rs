@@ -256,6 +256,14 @@ impl LinkDevice {
         device
     }
 
+    /// The inbound queue holds at most `packets` (#278): a peer that sends
+    /// faster than the stack reads loses packets (TCP sends them again), and
+    /// the heap does not grow without a limit.
+    pub fn with_inbound_limit(mut self, packets: usize) -> Self {
+        self.rx = PacketQueue::bounded(packets);
+        self
+    }
+
     /// Count in `stats` (shared with other devices) in place of counters
     /// of this device only.
     pub fn with_stats(mut self, stats: Arc<DeviceStats>) -> Self {
@@ -599,6 +607,17 @@ mod tests {
         assert!(!queue.push(b"3".to_vec()));
         assert_eq!(queue.dropped(), 1);
         assert_eq!(queue.len(), 2);
+    }
+
+    /// #278: the inbound queue of a tunnel has a limit.
+    #[test]
+    fn the_inbound_queue_of_a_tunnel_has_a_limit() {
+        let device = LinkDevice::tunnel_bounded(1280, 4).with_inbound_limit(2);
+        let inbound = device.inbound();
+        assert!(inbound.push(b"1".to_vec()));
+        assert!(inbound.push(b"2".to_vec()));
+        assert!(!inbound.push(b"3".to_vec()), "the third packet is dropped");
+        assert_eq!(inbound.dropped(), 1);
     }
 
     #[tokio::test]

@@ -509,8 +509,26 @@ pub fn run_l4(l4: Arc<super::l4::L4>, bound: Bound) -> WarpProxy {
         tokio::spawn(async move {
             let _admitted = admitted;
             let dial = move |host: ProxyHost, port: u16| async move {
-                crate::decisions::count("rule", "l4");
-                l4.dial(&host.to_string(), port).await
+                // #140: the rules apply to --l4 too (with no name lookup).
+                let table = super::rules::current();
+                let action = super::rules::decide_static(&table, &host);
+                super::rules::COUNTERS.count(action);
+                match action {
+                    super::rules::Action::Reject => {
+                        crate::decisions::count("rule", action.name());
+                        Err(anyhow::Error::new(super::rules::Refused(format!(
+                            "{host}:{port}"
+                        ))))
+                    }
+                    super::rules::Action::Direct => {
+                        crate::decisions::count("rule", action.name());
+                        direct(&host, port).await
+                    }
+                    super::rules::Action::Tunnel => {
+                        crate::decisions::count("rule", "l4");
+                        l4.dial(&host.to_string(), port).await
+                    }
+                }
             };
             if let Err(err) = handle_client_auth(stream, dial, None, CREDENTIALS.get()).await {
                 warn!(error = %format!("{err:#}"), "WARP proxy client (L4) failed");
@@ -630,7 +648,9 @@ where
         match command {
             0x01 => request,
             0x03 => match udp {
-                Some(stack) => return udp_associate(stream, stack).await,
+                Some(stack) => {
+                    return udp_associate_from(stream, stack, UdpClient::of(&request)).await
+                }
                 None => {
                     socks::socks5_reply(&mut stream, 0x07, None).await?;
                     bail!("UDP ASSOCIATE is not available");
@@ -731,7 +751,59 @@ where
 /// client. Each datagram goes through a UDP socket of the stack. Each answer
 /// gets a SOCKS5 UDP header and goes back to the client. The association ends
 /// when the control connection closes.
-async fn udp_associate<S>(mut control: S, stack: Arc<WarpStack>) -> Result<()>
+/// The client of a UDP association (#278): the address that the request
+/// names (RFC 1928: the address and port the client sends from; zero is
+/// any), then the first sender that matches it. A datagram of any other
+/// address is dropped: another local process can not take the replies, or
+/// send through the tunnel with no credentials of the proxy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct UdpClient {
+    ip: Option<IpAddr>,
+    port: u16,
+    fixed: Option<SocketAddr>,
+}
+
+impl UdpClient {
+    fn of(request: &ProxyRequest) -> Self {
+        let ip = match &request.host {
+            ProxyHost::Ip(ip) if !ip.is_unspecified() => Some(*ip),
+            _ => None,
+        };
+        Self {
+            ip,
+            port: request.port,
+            fixed: None,
+        }
+    }
+
+    /// Whether a datagram of `from` is of the client. The first match
+    /// fixes the client.
+    fn accept(&mut self, from: SocketAddr) -> bool {
+        if let Some(fixed) = self.fixed {
+            return fixed == from;
+        }
+        let ip_ok = self.ip.is_none_or(|ip| ip == from.ip());
+        let port_ok = self.port == 0 || self.port == from.port();
+        if ip_ok && port_ok {
+            self.fixed = Some(from);
+        }
+        ip_ok && port_ok
+    }
+}
+
+#[cfg(test)]
+async fn udp_associate<S>(control: S, stack: Arc<WarpStack>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    udp_associate_from(control, stack, UdpClient::default()).await
+}
+
+async fn udp_associate_from<S>(
+    mut control: S,
+    stack: Arc<WarpStack>,
+    client_of: UdpClient,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -753,7 +825,7 @@ where
     };
     socks::socks5_reply(&mut control, 0x00, Some(local.local_addr()?)).await?;
     debug!(relay = %local.local_addr()?, "a UDP ASSOCIATE");
-    let client: Arc<std::sync::Mutex<Option<SocketAddr>>> = Arc::default();
+    let client: Arc<std::sync::Mutex<UdpClient>> = Arc::new(std::sync::Mutex::new(client_of));
 
     let to_tunnel = {
         let local = local.clone();
@@ -767,7 +839,14 @@ where
                 let Ok((n, from)) = local.recv_from(&mut buf).await else {
                     return;
                 };
-                *client.lock().unwrap() = Some(from);
+                if !client
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .accept(from)
+                {
+                    debug!(%from, "a UDP datagram of another sender is dropped");
+                    continue;
+                }
                 let Some((host, port, payload)) = socks::socks5_udp_unwrap(&buf[..n]) else {
                     continue;
                 };
@@ -787,7 +866,7 @@ where
                 let Ok((data, from)) = tunnel.recv_from(65_536).await else {
                     return;
                 };
-                let target = *client.lock().unwrap();
+                let target = client.lock().unwrap_or_else(|e| e.into_inner()).fixed;
                 if let Some(target) = target {
                     let framed = pod_netns::upstream::wrap_udp(&data, from.ip(), from.port());
                     let _ = local.send_to(&framed, target).await;
@@ -890,23 +969,25 @@ pub async fn route(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<
                 "{host}:{port}"
             ))))
         }
-        super::rules::Action::Direct => {
-            debug!(%host, port, "WARP proxy: direct by the rules");
-            // No proxy of cfrs (it can be this proxy): the host connects.
-            let stream =
-                crate::egress::dial_direct(&host.to_string(), port, CONNECT_TIMEOUT).await?;
-            let (local, mut remote) = tokio::io::duplex(4 * CHUNK);
-            tokio::spawn(async move {
-                let mut stream = stream;
-                let _ = tokio::io::copy_bidirectional(&mut stream, &mut remote).await;
-            });
-            Ok(local)
-        }
+        super::rules::Action::Direct => direct(&host, port).await,
         super::rules::Action::Tunnel => match addresses {
             Some(addresses) => dial_ips(&stack, addresses, port).await,
             None => dial(stack, host, port).await,
         },
     }
+}
+
+/// Connect to `host:port` from the host, not through the tunnel (the
+/// rule `direct`). No proxy of cfrs: it can be this proxy.
+async fn direct(host: &ProxyHost, port: u16) -> Result<DuplexStream> {
+    debug!(%host, port, "WARP proxy: direct by the rules");
+    let stream = crate::egress::dial_direct(&host.to_string(), port, CONNECT_TIMEOUT).await?;
+    let (local, mut remote) = tokio::io::duplex(4 * CHUNK);
+    tokio::spawn(async move {
+        let mut stream = stream;
+        let _ = tokio::io::copy_bidirectional(&mut stream, &mut remote).await;
+    });
+    Ok(local)
 }
 
 /// Connect to the first of `addresses` that answers on `port` through the
@@ -1460,6 +1541,66 @@ mod tests {
         assert_eq!(ips, vec!["192.0.2.44".parse::<IpAddr>().unwrap()]);
         assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert!(start.elapsed() < DNS_TIMEOUT, "{:?}", start.elapsed());
+    }
+
+    /// #278: the first sender (or the address of the request) is the
+    /// client; another sender gets no reply and sends nothing.
+    #[test]
+    fn the_udp_client_is_fixed_by_the_first_sender() {
+        let a: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let mut any = UdpClient::default();
+        assert!(any.accept(a));
+        assert!(!any.accept(b), "another sender is dropped");
+        assert!(any.accept(a));
+        let named = |host: &str, port| ProxyRequest {
+            host: ProxyHost::Ip(host.parse().unwrap()),
+            port,
+        };
+        let mut by_port = UdpClient::of(&named("0.0.0.0", 5000));
+        assert!(!by_port.accept(a), "the port of the request");
+        assert!(by_port.accept(b));
+        let mut by_ip = UdpClient::of(&named("127.0.0.2", 0));
+        assert!(!by_ip.accept(a));
+        assert!(by_ip.accept("127.0.0.2:9".parse().unwrap()));
+    }
+
+    /// #278: a second local socket can not take the replies of the client.
+    #[tokio::test]
+    async fn another_local_sender_can_not_take_the_udp_association() {
+        let (stack, _) = stack_with_dns(0);
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(udp_associate(server, stack.clone()));
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await.unwrap();
+        let relay = SocketAddr::new(
+            IpAddr::from([reply[4], reply[5], reply[6], reply[7]]),
+            u16::from_be_bytes([reply[8], reply[9]]),
+        );
+        let owner = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let other = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let query = pod_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
+        let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+        owner.send_to(&v4, relay).await.unwrap();
+        let mut buf = [0u8; 1024];
+        tokio::time::timeout(Duration::from_secs(5), owner.recv_from(&mut buf))
+            .await
+            .expect("the owner gets its answer")
+            .unwrap();
+        // The other socket sends: it gets no answer, and the owner keeps the
+        // association.
+        let query = pod_netns::dns::build_query(0x5151, "example.com", 1).unwrap();
+        let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+        other.send_to(&v4, relay).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_millis(500), other.recv_from(&mut buf)).await;
+        assert!(got.is_err(), "another sender gets no answer");
+        let got = tokio::time::timeout(Duration::from_millis(500), owner.recv_from(&mut buf)).await;
+        assert!(
+            got.is_err(),
+            "the datagram of the other sender went nowhere"
+        );
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
     }
 
     // Issues 112 and 114: through a UDP ASSOCIATE, a datagram to IPv6 on a
