@@ -670,9 +670,59 @@ pub fn install(path: &Path, binary: &[u8], tag: &str) -> Result<()> {
     install_with(path, binary, tag, TRIAL_LIMIT)
 }
 
+/// The identity of a file: its device and its inode.
+type FileId = (u64, u64);
+
+/// Check that `path` is still the file `id` of the trial: a regular file
+/// (not a symlink) of this user that other users cannot write (issue 236).
+/// A check by the path leaves a short window before the rename; a process
+/// that can write the directory can also rename its own file over the
+/// binary, so the check is for a file of this user in a shared directory.
+fn same_file(path: &Path, id: FileId) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    let uid = unsafe { libc::geteuid() };
+    if !meta.file_type().is_file()
+        || (meta.dev(), meta.ino()) != id
+        || meta.uid() != uid
+        || meta.mode() & 0o022 != 0
+    {
+        bail!(
+            "{} changed after its trial run; it is not installed",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// The identity of the file at `path` (not of a symlink target).
+fn file_id(path: &Path) -> Result<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test hook: it runs after the trial and before the rename.
+    static AFTER_TRIAL: std::cell::Cell<Option<fn(&Path)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn after_trial(path: &Path) {
+    if let Some(hook) = AFTER_TRIAL.with(|h| h.get()) {
+        hook(path);
+    }
+}
+
+#[cfg(not(test))]
+fn after_trial(_path: &Path) {}
+
 fn install_with(path: &Path, binary: &[u8], tag: &str, limit: Duration) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let dir = path.parent().context("the binary has no directory")?;
     let tmp = dir.join(format!(".cfrs-update-{}", std::process::id()));
     let result = (|| {
@@ -683,10 +733,17 @@ fn install_with(path: &Path, binary: &[u8], tag: &str, limit: Duration) -> Resul
             .open(&tmp)
             .with_context(|| format!("writing in {} (no write permission?)", dir.display()))?;
         file.write_all(binary)?;
+        // Issue 270: the umask masks the mode of the open; 0755 also with
+        // a restrictive umask.
+        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
         file.sync_all()?;
+        let meta = file.metadata()?;
+        let id = (meta.dev(), meta.ino());
         drop(file);
         let want = format!("cfrs {} ", tag.trim_start_matches('v'));
         trial(&tmp, &want, limit).context("the new binary")?;
+        after_trial(&tmp);
+        same_file(&tmp, id).context("the new binary")?;
         keep(path, &previous_of(path))?;
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
         sync_dir(dir);
@@ -714,7 +771,10 @@ fn rollback_with(path: &Path, limit: Duration) -> Result<String> {
             previous.display()
         );
     }
+    let id = file_id(&previous)?;
     trial(&previous, "cfrs ", limit).context("the kept binary")?;
+    after_trial(&previous);
+    same_file(&previous, id).context("the kept binary")?;
     let dir = path.parent().context("the binary has no directory")?;
     let held = dir.join(format!(".cfrs-rollback-{}", std::process::id()));
     let _ = std::fs::remove_file(&held);
@@ -807,6 +867,42 @@ mod tests {
             assert!(!previous_of(&path).exists());
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         }
+    }
+
+    /// Issue 236: a file that is replaced after the trial run is not
+    /// installed, and the binary in place does not change.
+    #[test]
+    fn a_file_swapped_after_the_trial_is_not_installed() {
+        fn swap(path: &Path) {
+            let other = path.with_file_name("swapped");
+            put(&other, &fake("cfrs 0.3.0-beta.5 (swapped)", ""));
+            std::fs::rename(&other, path).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfrs");
+        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
+        AFTER_TRIAL.with(|h| h.set(Some(swap)));
+        let err = install(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""), "v0.3.0-beta.5")
+            .expect_err("a swapped file is refused");
+        AFTER_TRIAL.with(|h| h.set(None));
+        assert!(
+            format!("{err:#}").contains("changed after its trial"),
+            "{err:#}"
+        );
+        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
+        assert!(!previous_of(&path).exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        // The kept binary of a rollback is checked the same way.
+        put(&previous_of(&path), &fake("cfrs 0.3.0-beta.3 (kept)", ""));
+        AFTER_TRIAL.with(|h| h.set(Some(swap)));
+        let err = rollback(&path).expect_err("a swapped kept binary is refused");
+        AFTER_TRIAL.with(|h| h.set(None));
+        assert!(
+            format!("{err:#}").contains("changed after its trial"),
+            "{err:#}"
+        );
+        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
     }
 
     /// A rollback with no kept binary, or with a kept binary that fails its

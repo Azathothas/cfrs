@@ -229,9 +229,11 @@ of `SHA256SUMS.sigstore.json` chains to the Fulcio roots of Sigstore and
 names `release.yml` of this repository at the tag, the signature over
 `SHA256SUMS` is valid, the SHA-256 of the binary is its line in
 `SHA256SUMS`, and the new binary runs `--version` in 10 seconds, with no
-stdin, exits 0 and prints the version of the tag. Then the binary before
-is kept as `cfrs.prev` beside it, and a rename puts the new binary in
-place. `cfrs update --rollback` puts `cfrs.prev` back (it must pass the
+stdin, exits 0 and prints the version of the tag. After the run, the file
+must still be the same file (device and inode), a regular file of this
+user that other users cannot write; else cfrs stops. Then the binary before
+is kept as `cfrs.prev` beside it, and a rename puts the new binary (mode
+0755, also with a restrictive umask) in place. `cfrs update --rollback` puts `cfrs.prev` back (it must pass the
 same run first) and keeps the binary that was in place as `cfrs.prev`;
 it uses no network. cfrs does not check the inclusion proof of the Rekor
 log. A prerelease is
