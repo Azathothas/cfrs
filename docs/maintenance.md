@@ -179,8 +179,8 @@ Rules that the tests check:
 
 ## Open work
 
-* **Read `docs/HANDOFF.md` first** when it exists: the state of
-  unfinished work.
+* **A handoff file** (HANDOFF.md in `docs/`, when a session leaves one):
+  read it first. It has the state of unfinished work.
 * **Next release**: `v0.3.0-beta.13`, unattended when a batch of fixes is
   green. Its note lists each "Breaking:" line of
   `git log v0.3.0-beta.12..main --grep Breaking`.
