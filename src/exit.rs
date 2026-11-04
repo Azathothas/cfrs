@@ -27,6 +27,8 @@ pub enum Fault {
     /// A service refused for now and says when to try again (issue 210:
     /// a quick-tunnel provision with HTTP 429).
     TempFail,
+    /// A wait ended at its time limit (124, as timeout(1)).
+    Timeout,
 }
 
 impl Fault {
@@ -37,6 +39,7 @@ impl Fault {
             Fault::Unavailable => UNAVAILABLE,
             Fault::Config => CONFIG,
             Fault::TempFail => TEMPFAIL,
+            Fault::Timeout => TIMEOUT,
         }
     }
 }

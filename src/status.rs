@@ -52,9 +52,19 @@ fn edge_override() -> Value {
 }
 
 fn warp_identity() -> Value {
-    let path = match crate::warp::WarpClient::default_identity_path() {
+    // A read: the saved file where it exists, with no directory made
+    // (podssh; before, status made the state directory).
+    let Some(candidates) = crate::state::candidates(&|k| std::env::var_os(k)) else {
+        return json!({ "path": null, "reason": "CFRS_STATE_DIR=none" });
+    };
+    let path = match crate::state::find_existing("warp.json") {
         Ok(Some(path)) => path,
-        Ok(None) => return json!({ "path": null, "reason": "CFRS_STATE_DIR=none" }),
+        // No saved file: the path of the first candidate, where a
+        // registration would write it.
+        Ok(None) => {
+            let path = candidates.first().map(|(_, dir)| dir.join("warp.json"));
+            return json!({ "path": path, "exists": false });
+        }
         Err(err) => return json!({ "path": null, "error": format!("{err:#}") }),
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -101,28 +111,26 @@ pub fn document() -> Value {
 /// The detached instances (`--detach`): name, state, pid, and the URL or
 /// the listen address.
 fn instances() -> Value {
-    match crate::instances::run_dir() {
-        Ok(dir) => Value::Array(
-            crate::instances::list(&dir)
-                .into_iter()
-                .map(|e| {
-                    let at = e.record.ready.as_ref().and_then(|d| {
-                        d.get("url")
-                            .filter(|u| !u.is_null())
-                            .or_else(|| d.get("listen"))
-                            .cloned()
-                    });
-                    json!({
-                        "name": e.record.name,
-                        "state": e.record.state,
-                        "pid": e.record.pid,
-                        "at": at,
-                    })
+    let dir = crate::instances::lookup_dir();
+    Value::Array(
+        crate::instances::list(&dir)
+            .into_iter()
+            .map(|e| {
+                let at = e.record.ready.as_ref().and_then(|d| {
+                    d.get("url")
+                        .filter(|u| !u.is_null())
+                        .or_else(|| d.get("listen"))
+                        .cloned()
+                });
+                json!({
+                    "name": e.record.name,
+                    "state": e.record.state,
+                    "pid": e.record.pid,
+                    "at": at,
                 })
-                .collect(),
-        ),
-        Err(err) => json!({ "error": format!("{err:#}") }),
-    }
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

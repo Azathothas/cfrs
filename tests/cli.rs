@@ -1546,3 +1546,41 @@ fn the_socket_rule_of_net_and_relay() {
         assert!(err.contains("served by another process"), "{err}");
     }
 }
+
+/// podssh: status, ps, stop, logs and wait read the run directory and make
+/// none.
+#[test]
+fn the_read_commands_make_no_run_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let state = dir.path().join("state");
+    for args in [
+        &["status"][..],
+        &["ps"],
+        &["ps", "--json"],
+        &["stop", "x"],
+        &["logs", "x"],
+        &["wait", "x", "--timeout", "1"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("XDG_STATE_HOME", &state)
+            .env("HOME", dir.path())
+            .env_remove("CFRS_RUN_DIR")
+            .env_remove("CFRS_STATE_DIR")
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .output()
+            .unwrap();
+        assert_ne!(out.status.code(), Some(101), "{args:?}: {}", stderr(&out));
+        assert!(
+            !runtime.join("cfrs").exists(),
+            "{args:?} made the run directory"
+        );
+        assert!(
+            !state.join("cfrs").exists(),
+            "{args:?} made the state directory"
+        );
+    }
+}

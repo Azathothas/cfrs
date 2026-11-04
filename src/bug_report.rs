@@ -128,9 +128,7 @@ pub fn text(doctor: Option<&serde_json::Value>) -> String {
         out.push_str(&format!("{name}\n"));
     }
     out.push_str("\n## detached instances\n\n");
-    let entries = crate::instances::run_dir()
-        .map(|dir| crate::instances::list(&dir))
-        .unwrap_or_default();
+    let entries = crate::instances::list(&crate::instances::lookup_dir());
     if entries.is_empty() {
         out.push_str("(none)\n");
     }

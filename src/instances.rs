@@ -68,6 +68,18 @@ pub fn existing_run_dir() -> Option<PathBuf> {
     candidates.into_iter().find(|d| d.is_dir())
 }
 
+/// The run directory to read (ps, stop, logs, wait, status): the one that
+/// exists, or a path that does not exist. A read makes no directory
+/// (podssh: status said "writes nothing" and made the run directory).
+pub fn lookup_dir() -> PathBuf {
+    existing_run_dir().unwrap_or_else(|| {
+        std::env::var_os(RUN_DIR_VARIABLE)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/nonexistent/cfrs-run"))
+    })
+}
+
 /// A name is 1 to 32 characters from `A-Z a-z 0-9 _ -`.
 pub fn check_name(name: &str) -> Result<()> {
     let good = !name.is_empty()

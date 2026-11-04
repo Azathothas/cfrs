@@ -644,9 +644,11 @@ pub fn wait_ready_record(dir: &Path, name: &str, timeout: Duration) -> Result<se
                 anyhow::anyhow!("the instance {name} ended before it was ready; see its log"),
             ));
         }
+        // podssh: the time limit of cfrs wait exits 124, as the ready
+        // timeout of --detach and timeout(1) do (before: 69).
         if Instant::now() >= deadline {
             return Err(fault(
-                Fault::Unavailable,
+                Fault::Timeout,
                 anyhow::anyhow!(
                     "the instance {name} was not ready in {} s",
                     timeout.as_secs()
@@ -1091,6 +1093,32 @@ mod tests {
 
     /// Issues 182 and 210: a Retry-After of the child is the wait when it is
     /// longer than the backoff, at most 1 h.
+    // podssh: cfrs wait at its time limit exits 124.
+    #[test]
+    fn wait_at_its_limit_exits_124() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = instances::paths(dir.path(), "slow");
+        let _lock = instances::try_lock(&paths.lock).unwrap().unwrap();
+        let record = Record {
+            name: "slow".into(),
+            pid: std::process::id(),
+            supervisor: None,
+            started: instances::now(),
+            command: "net switch".into(),
+            args: Vec::new(),
+            hash: String::new(),
+            cwd: String::new(),
+            state: "starting".into(),
+            ready: None,
+            log: paths.log.display().to_string(),
+            restarts: 0,
+            retry_after_s: None,
+        };
+        instances::write(dir.path(), &record).unwrap();
+        let err = wait_ready_record(dir.path(), "slow", Duration::from_millis(300)).unwrap_err();
+        assert_eq!(crate::exit::code_of(&err), 124, "{err:#}");
+    }
+
     // Issue 182: the first child does not wait past --ready-timeout.
     #[test]
     fn the_provision_budget_of_the_first_child() {

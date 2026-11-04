@@ -972,7 +972,7 @@ cfrs tunnel --port 3000 --detach --name web   # prints one JSON line, exits 0
 cfrs warp proxy --listen unix:/tmp/warp.sock --detach
 cfrs ps                                        # name, state, pid, URL or listen address
 cfrs logs web -f
-cfrs wait web                                  # the ready document again
+cfrs wait web                                  # the ready document again (exit 124 at --timeout)
 cfrs stop web                                  # or: cfrs stop --all
 ```
 

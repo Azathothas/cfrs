@@ -1297,7 +1297,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
             Ok(())
         }
         AgentCommand::Down => {
-            let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+            let dir = cfrs::instances::lookup_dir();
             for entry in cfrs::instances::list(&dir) {
                 if entry.record.name.starts_with("expose-") {
                     cfrs::detach::stop(&dir, &entry.record.name, Duration::from_secs(10))?;
@@ -1337,7 +1337,7 @@ fn exposes_failed(exposed: &serde_json::Value) -> usize {
 
 /// `cfrs ps`: the instances of the run directory.
 fn instances_ps(json: bool) -> Result<()> {
-    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let dir = cfrs::instances::lookup_dir();
     let list = cfrs::instances::list(&dir);
     if json {
         let items: Vec<serde_json::Value> = list
@@ -1401,7 +1401,7 @@ fn instances_ps(json: bool) -> Result<()> {
 
 /// `cfrs stop`.
 fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
-    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let dir = cfrs::instances::lookup_dir();
     let names: Vec<String> = if all {
         cfrs::instances::list(&dir)
             .into_iter()
@@ -1428,7 +1428,7 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
 /// `cfrs logs`.
 async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Result<()> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+    let dir = cfrs::instances::lookup_dir();
     let path = cfrs::instances::paths(&dir, name).log;
     let text = std::fs::read(&path).map_err(|e| {
         cfrs::exit::fault(
@@ -1971,7 +1971,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             lines,
         } => instances_logs(&name, follow, lines).await,
         Command::Wait { name, timeout } => {
-            let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
+            let dir = cfrs::instances::lookup_dir();
             let doc = cfrs::detach::wait_ready_record(
                 &dir,
                 &name,
