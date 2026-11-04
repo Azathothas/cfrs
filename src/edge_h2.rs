@@ -49,6 +49,12 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest time for the edge to open the control stream and for the
 /// registration to complete.
 pub const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+/// The budget of one try of the leg on one edge address: TCP, TLS and the
+/// HTTP/2 handshake ([`DIAL_TIMEOUT`] each), then the control stream and
+/// the registration ([`REGISTER_TIMEOUT`] each).
+pub const TRY_BUDGET: Duration = DIAL_TIMEOUT
+    .saturating_mul(3)
+    .saturating_add(REGISTER_TIMEOUT.saturating_mul(2));
 /// The time between two HTTP/2 PINGs to the edge.
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// The longest wait for the answer of a PING. No answer is a lost

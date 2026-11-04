@@ -150,8 +150,19 @@ WARP (section 5). The attempts are real registrations, in a staggered race
   gets the unregister call, and then its connection closes. The legs that
   still run are cancelled.
 
-`--leg-failover serial` starts a leg only after the one before failed, with
-a time limit of 8 seconds for each attempt when another leg can follow.
+`--leg-failover serial` starts a leg only after the one before failed. When
+another leg can follow, an attempt has the time limit of the budgets of its
+leg (`attempt_limit` in `src/tunnel.rs`): 3 tries of the registration, each
+with the limits of its steps, and 5 seconds at most between two tries.
+
+| Leg | One try | Time limit |
+| --- | --- | --- |
+| `quic` | QUIC handshake 10 s, registration 30 s | 130 s |
+| `http2`, `http2+relay` | TCP, TLS and HTTP/2 handshake 10 s each, control stream and registration 30 s each | 280 s |
+| `quic+warp` | | no limit |
+
+A try over more than one edge address can take longer than one try of the
+table. The time limit then stops it, and the next leg starts.
 
 UDP (`CFRS_UDP`, `src/udp.rs`): with `probe` (the default) and
 `--protocol auto`, cfrs sends one QUIC packet with a reserved version (RFC

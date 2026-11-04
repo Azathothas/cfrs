@@ -396,8 +396,9 @@ With the default values (`--protocol auto --transport auto`), `cfrs` tries the
 legs in the order of the table, in a staggered race: the next leg starts when
 the leg before has not registered in 2 seconds, or at once when it fails, and
 the first leg that registers stays (`docs/protocol.md` section 3.3).
-`--leg-failover serial` waits for each failure (8 seconds at most for each
-attempt). Other values:
+`--leg-failover serial` waits for each failure. The time limit of an attempt
+is the budget of its leg: 130 seconds for `quic`, 280 seconds for `http2`
+and `http2+relay` (`docs/protocol.md` section 3.3). Other values:
 
 | `--protocol` | `--transport` | Legs |
 | --- | --- | --- |

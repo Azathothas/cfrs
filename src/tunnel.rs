@@ -25,8 +25,6 @@ use crate::warp::WarpClient;
 
 pub const CLIENT_VERSION: &str = concat!("cfrs/", env!("CARGO_PKG_VERSION"));
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a direct attempt gets before `auto` falls back to WARP.
-const DIRECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Fluent builder for a [`Tunnel`].
@@ -223,6 +221,7 @@ impl Tunnel {
         let mut tasks = Vec::new();
         type Kept = Option<Arc<WarpLink>>;
         let limited = plan.len() > 1 && failover == crate::race::Failover::Serial;
+        let limit = |kind: LegKind| attempt_limit(kind).filter(|_| limited);
         let mut attempts: Vec<futures::future::BoxFuture<'_, Result<(First, Kept)>>> = Vec::new();
         for kind in &plan {
             let auth = &auth;
@@ -230,7 +229,7 @@ impl Tunnel {
             let ingress = ingress.clone();
             let warp_identity = warp_identity.clone();
             let attempt: futures::future::BoxFuture<'_, Result<(First, Kept)>> = match kind {
-                LegKind::QuicDirect => Box::pin(bounded(limited, async move {
+                LegKind::QuicDirect => Box::pin(bounded(limit(*kind), async move {
                     let edges = direct_targets().await?;
                     let endpoint = quic_dial::build_endpoint()?;
                     let (conn, control, location) = register_retrying(|| {
@@ -239,23 +238,26 @@ impl Tunnel {
                     .await?;
                     Ok((First::Quic(edges, endpoint, conn, control, location), None))
                 })),
-                LegKind::H2Direct | LegKind::H2Relay => Box::pin(bounded(limited, async move {
-                    let edges = direct_targets().await?;
-                    let options = rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
-                    let leg = register_retrying(|| {
-                        crate::edge_h2::connect(
-                            &edges,
-                            auth,
-                            tunnel_id,
-                            0,
-                            &options,
-                            runtime.clone(),
-                            ingress.clone(),
-                        )
-                    })
-                    .await?;
-                    Ok((First::H2(edges, leg), None))
-                })),
+                LegKind::H2Direct | LegKind::H2Relay => {
+                    Box::pin(bounded(limit(*kind), async move {
+                        let edges = direct_targets().await?;
+                        let options =
+                            rpc::ConnectionOptions::default_for_quick_tunnel(CLIENT_VERSION);
+                        let leg = register_retrying(|| {
+                            crate::edge_h2::connect(
+                                &edges,
+                                auth,
+                                tunnel_id,
+                                0,
+                                &options,
+                                runtime.clone(),
+                                ingress.clone(),
+                            )
+                        })
+                        .await?;
+                        Ok((First::H2(edges, leg), None))
+                    }))
+                }
                 LegKind::QuicWarp => Box::pin(async move {
                     let (edges, link, endpoint) = warp_targets(warp_identity.as_deref()).await?;
                     let (conn, control, location) = register_retrying(|| {
@@ -690,10 +692,36 @@ enum First {
     H2(Vec<edge::EdgeAddr>, crate::edge_h2::H2Leg),
 }
 
-/// Give `attempt` a time limit when another leg can follow it. A filtered
-/// port does not answer, so do not wait for the transport's own timeout.
 /// The tries of the first registration of a leg.
 const REGISTER_TRIES: u32 = 3;
+/// The shortest and the longest wait between two tries of a registration.
+const REGISTER_WAIT_MIN: Duration = Duration::from_secs(1);
+const REGISTER_WAIT_MAX: Duration = Duration::from_secs(5);
+
+/// The budget of a leg whose one try has the budget `one_try`:
+/// [`REGISTER_TRIES`] tries and the longest wait between two tries.
+const fn leg_budget(one_try: Duration) -> Duration {
+    one_try
+        .saturating_mul(REGISTER_TRIES)
+        .saturating_add(REGISTER_WAIT_MAX.saturating_mul(REGISTER_TRIES - 1))
+}
+
+/// The budget of one try of the QUIC leg on one edge address: the QUIC
+/// handshake and the registration.
+const QUIC_TRY_BUDGET: Duration = quic_dial::HANDSHAKE_TIMEOUT.saturating_add(REGISTER_TIMEOUT);
+
+/// The time limit of a leg attempt with `--leg-failover serial` when
+/// another leg can follow (issue 273): the budget of the leg, from the
+/// limits of its steps. A slow edge in these limits is not stopped. A try
+/// over more than one edge address can take longer; the limit then stops
+/// it, and the next leg starts. The WARP leg has no limit.
+fn attempt_limit(kind: LegKind) -> Option<Duration> {
+    match kind {
+        LegKind::QuicDirect => Some(leg_budget(QUIC_TRY_BUDGET)),
+        LegKind::H2Direct | LegKind::H2Relay => Some(leg_budget(crate::edge_h2::TRY_BUDGET)),
+        LegKind::QuicWarp => None,
+    }
+}
 
 /// Run `attempt` again when the edge refuses the registration and asks for
 /// a retry (`retry: yes`), at most [`REGISTER_TRIES`] times, after the wait
@@ -720,7 +748,7 @@ where
             Some(refused) if tries < REGISTER_TRIES => {
                 let wait = refused
                     .retry_after
-                    .clamp(Duration::from_secs(1), Duration::from_secs(5));
+                    .clamp(REGISTER_WAIT_MIN, REGISTER_WAIT_MAX);
                 info!(
                     cause = %refused.cause,
                     try_ = tries,
@@ -735,19 +763,19 @@ where
     }
 }
 
+/// Give `attempt` the time limit `limit` (see [`attempt_limit`]). A
+/// filtered port does not answer, so the next leg does not wait for the
+/// end of each timeout of the transport.
 async fn bounded<T>(
-    limited: bool,
+    limit: Option<Duration>,
     attempt: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
-    if !limited {
+    let Some(limit) = limit else {
         return attempt.await;
-    }
-    match tokio::time::timeout(DIRECT_ATTEMPT_TIMEOUT, attempt).await {
+    };
+    match tokio::time::timeout(limit, attempt).await {
         Ok(result) => result,
-        Err(_) => bail!(
-            "the attempt did not complete in {}s",
-            DIRECT_ATTEMPT_TIMEOUT.as_secs()
-        ),
+        Err(_) => bail!("the attempt did not complete in {}s", limit.as_secs()),
     }
 }
 
@@ -1364,6 +1392,55 @@ mod tests {
         })
         .await;
         assert_eq!(calls, REGISTER_TRIES);
+    }
+
+    // Issue 273: the limit of a serial leg attempt is at least the sum of
+    // the budgets of the steps of the leg, with the tries of the
+    // registration and the waits between them. It was 8 s for each leg.
+    #[test]
+    fn the_serial_limit_covers_the_budgets_of_each_leg() {
+        let waits = REGISTER_WAIT_MAX * (REGISTER_TRIES - 1);
+        let quic = (quic_dial::HANDSHAKE_TIMEOUT + REGISTER_TIMEOUT) * REGISTER_TRIES + waits;
+        let h2 = (crate::edge_h2::DIAL_TIMEOUT * 3 + crate::edge_h2::REGISTER_TIMEOUT * 2)
+            * REGISTER_TRIES
+            + waits;
+        let limit = |kind| attempt_limit(kind).expect("a limit");
+        assert!(limit(LegKind::QuicDirect) >= quic, "quic");
+        assert!(limit(LegKind::H2Direct) >= h2, "http2");
+        assert!(limit(LegKind::H2Relay) >= h2, "http2+relay");
+        assert_eq!(attempt_limit(LegKind::QuicWarp), None);
+        // README.md and docs/protocol.md section 3.3 give these values.
+        assert_eq!(limit(LegKind::QuicDirect).as_secs(), 130);
+        assert_eq!(limit(LegKind::H2Direct).as_secs(), 280);
+    }
+
+    // Issue 273: a registration that the edge refuses twice with retry: yes
+    // and a wait of 5 s completes in the serial limit.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_registration_completes_in_the_serial_limit() {
+        let mut calls = 0;
+        let got = bounded(
+            attempt_limit(LegKind::QuicDirect),
+            register_retrying(|| {
+                calls += 1;
+                let n = calls;
+                async move {
+                    tokio::time::sleep(quic_dial::HANDSHAKE_TIMEOUT / 2).await;
+                    if n < REGISTER_TRIES {
+                        Err(anyhow::Error::new(rpc::Refused {
+                            cause: "Unauthorized: Tunnel not found".into(),
+                            should_retry: true,
+                            retry_after: REGISTER_WAIT_MAX,
+                        }))
+                    } else {
+                        Ok(n)
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, REGISTER_TRIES);
     }
 
     /// A local HTTP origin: answer N of `statuses` gives the Nth status,

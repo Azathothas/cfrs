@@ -354,7 +354,7 @@ jobs:
         timeout-minutes: 5
         run: sh scripts/live-run.sh warpleg target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
       # UDP and TCP 7844 dropped with no answer: the staggered race starts
-      # WARP after two 2 s steps, not after two 8 s time limits.
+      # WARP after two 2 s steps, not after the serial time limits.
       - name: Quick tunnel with UDP and TCP 7844 dropped (staggered legs)
         timeout-minutes: 5
         run: |
