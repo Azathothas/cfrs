@@ -813,6 +813,7 @@ fn seccomp_backend_accepts_inbound() {
 /// a shared name in /tmp.
 #[test]
 fn the_default_inbound_directory_is_private() {
+    test_host::need_loopback!();
     use std::os::unix::fs::PermissionsExt;
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");

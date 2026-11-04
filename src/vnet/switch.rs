@@ -856,6 +856,7 @@ mod tests {
     /// gets "refused" and no packet; two stacks with the token talk.
     #[tokio::test]
     async fn a_tcp_switch_takes_peers_with_its_token_only() {
+        crate::test_host::need_loopback!();
         let listen = ProxyListen::parse("tcp://127.0.0.1:0").unwrap();
         let err = serve(listen.clone(), None).await.err().expect("no token");
         assert!(err.to_string().contains("token"), "{err}");

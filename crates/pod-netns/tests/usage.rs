@@ -3,6 +3,9 @@
 
 use std::process::Command;
 
+#[path = "../../../tests/test_host/mod.rs"]
+mod test_host;
+
 #[test]
 fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -67,6 +70,7 @@ fn an_inbound_directory_that_others_can_write_is_refused() {
 /// chose, and a client connects to it.
 #[test]
 fn a_port_0_front_door_prints_the_bound_port() {
+    test_host::need_loopback!();
     use std::io::BufRead;
     let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
         .args(["--serve", "tcp://127.0.0.1:0", "-x", "socks5://127.0.0.1:9"])

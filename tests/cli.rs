@@ -1684,6 +1684,7 @@ fn the_socket_rule_of_net_and_relay() {
 /// that the kernel chose, and a client connects to it.
 #[test]
 fn a_port_0_listener_prints_the_bound_port() {
+    test_host::need_loopback!();
     use std::io::BufRead;
     for (args, prefix) in [
         (&["net", "switch"][..], "cfrs: switch   tcp://"),
@@ -2228,6 +2229,7 @@ fn stop(mut child: std::process::Child) {
 /// TCP listener with no tunnel, and prints the bound port.
 #[test]
 fn serve_local_serves_files_on_tcp() {
+    test_host::need_loopback!();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "hello local").unwrap();
     std::fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
