@@ -957,6 +957,14 @@ fn main() {
     } else {
         builder.with_ansi(ansi).init();
     }
+    if let Some(line) = foreground_hint(
+        command.as_deref(),
+        &argv,
+        cfrs::detach::is_child(),
+        no_terminal(),
+    ) {
+        tracing::info!("{line}");
+    }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -986,6 +994,43 @@ fn main() {
 
 /// `--log-format json` (issue 181): the last error line is JSON too.
 static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether stdin and stderr are both no terminal (an agent, a pipe, a
+/// service).
+fn no_terminal() -> bool {
+    use std::io::IsTerminal as _;
+    !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
+}
+
+/// The commands that serve until a stop signal.
+const SERVER_COMMANDS: &[&str] = &["tunnel", "serve", "share", "connect", "relay node"];
+
+/// E12: one line for a server command in the foreground with no terminal
+/// (a tool call of an agent waits for its end): --detach or --run-for.
+fn foreground_hint(
+    command: Option<&str>,
+    argv: &[String],
+    child: bool,
+    no_terminal: bool,
+) -> Option<String> {
+    let command = command?;
+    if child || !no_terminal || !SERVER_COMMANDS.contains(&command) {
+        return None;
+    }
+    let given = |flag: &str| {
+        argv.iter()
+            .any(|a| a == flag || a.starts_with(&format!("{flag}=")))
+    };
+    if ["--detach", "--run-for", "--exit-on-verify", "--help", "-h"]
+        .iter()
+        .any(|f| given(f))
+    {
+        return None;
+    }
+    Some(format!(
+        "cfrs {command} runs in the foreground until a stop signal, and no terminal is attached: add --detach to run it in the background (cfrs ps, cfrs stop), or --run-for SECS"
+    ))
+}
 
 /// The commands of the top help, by purpose (E1). Each subcommand is in
 /// one group; a test checks it.
@@ -5854,6 +5899,36 @@ mod tests {
         assert!(!help.contains("(issue "), "{help}");
         assert_eq!(first_sentence("Test it: the proxy. More"), "Test it");
         assert_eq!(first_sentence("One command (issue 87): x"), "One command");
+    }
+
+    /// E12: a server command with no terminal names --detach.
+    #[test]
+    fn a_foreground_server_with_no_terminal_gets_one_line() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let tunnel = argv(&["cfrs", "tunnel", "--url", "http://localhost:1"]);
+        let line = foreground_hint(Some("tunnel"), &tunnel, false, true).unwrap();
+        assert!(
+            line.contains("--detach") && line.contains("--run-for"),
+            "{line}"
+        );
+        assert!(
+            foreground_hint(Some("tunnel"), &tunnel, false, false).is_none(),
+            "a terminal"
+        );
+        assert!(
+            foreground_hint(Some("tunnel"), &tunnel, true, true).is_none(),
+            "a detached child"
+        );
+        assert!(foreground_hint(Some("status"), &tunnel, false, true).is_none());
+        for flag in ["--detach", "--run-for=5", "--exit-on-verify"] {
+            let mut with = tunnel.clone();
+            with.push(flag.into());
+            assert!(
+                foreground_hint(Some("tunnel"), &with, false, true).is_none(),
+                "{flag}"
+            );
+        }
+        assert!(foreground_hint(Some("relay node"), &tunnel, false, true).is_some());
     }
 
     /// E8: a word that is no command names the command for it.
