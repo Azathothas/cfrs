@@ -435,6 +435,9 @@ cfrs serve --dir ./app --spa          # send index.html for unknown paths
 Each other path answers 404. With `--spa`, an unknown path answers the
 `index.html` with status 200.
 
+The library type `cfrs::origin::StaticDir` has the same rules. It also
+applies them to the directory index and to the SPA index.
+
 ### Share files
 
 ```sh

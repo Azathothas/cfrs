@@ -38,6 +38,10 @@ impl StaticDir {
     }
 
     /// Answer one request.
+    ///
+    /// Each file that is sent (the request path, a directory index and the
+    /// SPA index) goes through [`StaticDir::resolve`]: the root check, the
+    /// dotfile rule and the file-type check apply to each one.
     pub fn respond<W: ResponseWriter>(
         &self,
         req: &RequestHead,
@@ -51,27 +55,21 @@ impl StaticDir {
         };
 
         match self.resolve(rel) {
-            Some((path, is_dir)) => {
-                if is_dir {
-                    let index_path = path.join(&self.index);
-                    if index_path.is_file() {
-                        return send_file(req, &index_path, writer);
-                    }
-                } else {
+            Some((path, false)) => return send_file(req, &path, writer),
+            Some((_, true)) => {
+                let index = format!("{}/{}", rel.trim_end_matches('/'), self.index);
+                if let Some((path, false)) = self.resolve(&index) {
                     return send_file(req, &path, writer);
                 }
-                if self.spa {
-                    return send_file(req, &self.dir.join(&self.index), writer);
-                }
-                writer.status(404).text("404 not found")
             }
-            None => {
-                if self.spa {
-                    return send_file(req, &self.dir.join(&self.index), writer);
-                }
-                writer.status(404).text("404 not found")
+            None => {}
+        }
+        if self.spa {
+            if let Some((path, false)) = self.resolve(&self.index) {
+                return send_file(req, &path, writer);
             }
         }
+        writer.status(404).text("404 not found")
     }
 
     /// Resolve a relative path inside the root, refusing anything that escapes.
@@ -80,6 +78,9 @@ impl StaticDir {
     /// `../../etc/passwd` must not reach outside the served directory. Path
     /// components are checked lexically, and then the path is **canonicalised**,
     /// because a lexical check alone does not survive a symlink.
+    ///
+    /// A component that starts with a dot (`.env`, `.git`, `.well-known`) is
+    /// refused, as in `cfrs serve`: such names often hold secrets.
     fn resolve(&self, rel: &str) -> Option<(PathBuf, bool)> {
         let decoded = percent_decode(rel);
         let candidate = Path::new(&decoded);
@@ -87,7 +88,12 @@ impl StaticDir {
         let mut out = self.dir.clone();
         for component in candidate.components() {
             match component {
-                Component::Normal(part) => out.push(part),
+                Component::Normal(part) => {
+                    if part.as_encoded_bytes().starts_with(b".") {
+                        return None;
+                    }
+                    out.push(part)
+                }
                 // Reject ParentDir and RootDir outright rather than trying to
                 // normalise them away.
                 Component::ParentDir | Component::RootDir | Component::CurDir => {
@@ -153,14 +159,30 @@ fn send_file<W: ResponseWriter>(
     path: &Path,
     writer: &mut W,
 ) -> std::io::Result<()> {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
+    // Open first, then check the open handle: a FIFO that is put in place
+    // after resolve() does not block the open (O_NONBLOCK), and fstat
+    // refuses it. Each later read uses this handle, not the path.
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(f) => f,
         Err(_) => return writer.status(404).text("404 not found"),
     };
+    let meta = match file.metadata() {
+        Ok(m) if m.is_file() => m,
+        _ => return writer.status(404).text("404 not found"),
+    };
 
-    let body = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(_) => return writer.status(403).text("403 forbidden"),
+    let body = {
+        use std::io::Read;
+        let mut body = Vec::new();
+        match (&file).read_to_end(&mut body) {
+            Ok(_) => body,
+            Err(_) => return writer.status(403).text("403 forbidden"),
+        }
     };
 
     let mime = content_type(path);
@@ -311,6 +333,89 @@ mod tests {
         };
         assert!(site.resolve("a.txt").is_some());
         assert!(site.resolve("f").is_none());
+    }
+
+    // #276: a name that starts with a dot is not served.
+    #[test]
+    fn a_dotfile_is_not_served() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/config"), "SECRET").unwrap();
+        std::fs::write(dir.path().join("a.b"), "ok").unwrap();
+        let site = StaticDir::new(dir.path());
+        for path in ["/.env", "/.git/config", "/%2eenv", "/.git/"] {
+            let mut rec = Recorder::default();
+            site.respond(&req(path), &mut rec).unwrap();
+            assert_eq!(rec.status, 404, "{path}");
+            assert!(!String::from_utf8_lossy(&rec.body).contains("SECRET"));
+        }
+        let mut rec = Recorder::default();
+        site.respond(&req("/a.b"), &mut rec).unwrap();
+        assert_eq!(rec.status, 200);
+        assert_eq!(rec.body, b"ok");
+    }
+
+    // #276: the SPA index is resolved as each other file. A FIFO index does
+    // not block the request, and a link out of the root is not served.
+    #[test]
+    fn the_spa_index_goes_through_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = std::ffi::CString::new(dir.path().join("index.html").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let site = StaticDir::new(dir.path()).spa(true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = site.clone();
+        std::thread::spawn(move || {
+            let mut rec = Recorder::default();
+            worker.respond(&req("/deep/route"), &mut rec).unwrap();
+            let _ = tx.send(rec.status);
+        });
+        let status = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO index blocks the request");
+        assert_eq!(status, 404);
+
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.html"), "SECRET").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.html"),
+            root.path().join("index.html"),
+        )
+        .unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.html"),
+            root.path().join("sub/index.html"),
+        )
+        .unwrap();
+        let site = StaticDir::new(root.path()).spa(true);
+        for path in ["/", "/deep/route", "/sub/"] {
+            let mut rec = Recorder::default();
+            site.respond(&req(path), &mut rec).unwrap();
+            assert_eq!(rec.status, 404, "{path}");
+            assert!(!String::from_utf8_lossy(&rec.body).contains("SECRET"));
+        }
+    }
+
+    // #276: send_file checks the open handle, so a FIFO path does not block.
+    #[test]
+    fn send_file_refuses_a_fifo_without_a_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        let fifo = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rec = Recorder::default();
+            send_file(&req("/f"), &path, &mut rec).unwrap();
+            let _ = tx.send(rec.status);
+        });
+        let status = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO blocks send_file");
+        assert_eq!(status, 404);
     }
 
     fn req(path: &str) -> RequestHead {
