@@ -229,7 +229,24 @@ where
                 Message::Ping(payload) => {
                     let _ = control_tx.send(Message::Pong(payload)).await;
                 }
-                Message::Close(_) => break,
+                // podssh #17: the code and the reason of the close of the
+                // far end (a relay at its limit: 1009) are in the log.
+                Message::Close(frame) => {
+                    if let Some(frame) = frame {
+                        let code = u16::from(frame.code);
+                        if code != 1000 {
+                            tracing::warn!(
+                                code,
+                                reason = %frame.reason,
+                                "the far end closed the WebSocket{}",
+                                crate::relay_reverse::close_hint(code)
+                            );
+                        } else {
+                            tracing::debug!(code, reason = %frame.reason, "the WebSocket closed");
+                        }
+                    }
+                    break;
+                }
                 _ => {}
             }
         }

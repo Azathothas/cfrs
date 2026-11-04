@@ -517,7 +517,10 @@ pub fn instances_of_pair(records: &[crate::instances::Record], name: &str) -> Ve
         .collect()
 }
 
-pub const EOF_IDLE: Duration = Duration::from_secs(5);
+/// After the end of the input, the session ends when no data came for this
+/// time: the idle time of the relay (podssh #84; before, 5 s lost a slow
+/// answer).
+pub const EOF_IDLE: Duration = Duration::from_secs(15);
 
 pub async fn connect<R, W>(
     relay: &Relay,
@@ -596,7 +599,7 @@ where
     // target). The session ends when the target closes, or after EOF_IDLE
     // with no data from it.
     let mut last_data = tokio::time::Instant::now();
-    loop {
+    let ended = loop {
         tokio::select! {
             read = input.read(&mut buf), if input_open => match read {
                 Ok(0) | Err(_) => {
@@ -607,7 +610,7 @@ where
             },
             _ = tokio::time::sleep_until(last_data + EOF_IDLE), if !input_open => {
                 let _ = sink.send(Message::Close(None)).await;
-                break;
+                break Ok(());
             }
             message = stream.next() => match message {
                 Some(Ok(Message::Binary(data))) => {
@@ -625,25 +628,45 @@ where
                         bail!("the node {name} ended the session: {reason}");
                     }
                 }
+                // podssh #84: a close other than 1000 (for example 1009 at the
+                // cap of the relay) or a lost link ends the session with an
+                // error, also after the end of the input: the output can be
+                // cut. Before, it exited 0.
                 Some(Ok(Message::Close(frame))) => {
-                    if let Some(frame) = frame {
-                        let code = u16::from(frame.code);
-                        if code != 1000 && input_open {
-                            bail!("the session to {name} ended: {code} {}", frame.reason);
-                        }
-                    }
-                    break;
+                    break match frame {
+                        Some(frame) if u16::from(frame.code) != 1000 => Err(anyhow::anyhow!(
+                            "the session to {name} ended: {} {}{}",
+                            u16::from(frame.code),
+                            frame.reason,
+                            close_hint(u16::from(frame.code))
+                        )),
+                        _ => Ok(()),
+                    };
                 }
                 Some(Ok(_)) => {}
-                Some(Err(_)) | None => break,
+                Some(Err(err)) => {
+                    break Err(anyhow::anyhow!("the session to {name} was lost: {err}"))
+                }
+                None => break Err(anyhow::anyhow!("the session to {name} was lost (no close)")),
             },
             _ = ping.tick() => {
                 sink.send(Message::Ping(Vec::new().into())).await?;
             }
         }
-    }
+    };
     let _ = output.flush().await;
-    Ok(())
+    ended.map_err(|err| fault(Fault::Unavailable, err))
+}
+
+/// What a close code of the relay means, for the error line.
+pub fn close_hint(code: u16) -> &'static str {
+    match code {
+        1001 => " (the relay goes away; open a new session)",
+        1009 => " (the session passed the byte limit of the relay; open a new session)",
+        1011 => " (an error of the relay)",
+        1013 => " (the relay is busy; try again later)",
+        _ => "",
+    }
 }
 
 #[cfg(test)]

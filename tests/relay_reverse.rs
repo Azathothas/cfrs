@@ -390,3 +390,55 @@ async fn a_wrong_connect_token_is_a_config_error() {
         .unwrap_err();
     assert_eq!(cfrs::exit::code_of(&err), cfrs::exit::CONFIG);
 }
+
+/// A relay that sends ready, part of an answer, then the close `code`.
+async fn closing_relay(code: u16) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let Ok(mut ws) = tokio_tungstenite::accept_async(socket).await else {
+                    return;
+                };
+                let _ = ws.send(Message::text(r#"{"type":"ready"}"#)).await;
+                let _ = ws.send(Message::binary(b"part".to_vec())).await;
+                let _ = ws
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::from(code),
+                        reason: "limit".into(),
+                    })))
+                    .await;
+                while ws.next().await.is_some() {}
+            });
+        }
+    });
+    url
+}
+
+// podssh #84: a close other than 1000 after the end of the input is an
+// error (exit 69): the output can be cut. Before, it exited 0.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_close_with_an_error_code_after_the_input_ends_is_an_error() {
+    let url = closing_relay(1009).await;
+    let relay = Relay::new(&url, None).unwrap();
+    let mut out = Vec::new();
+    let err = tokio::time::timeout(
+        Duration::from_secs(20),
+        connect(&relay, NAME, "connect", &b""[..], &mut out),
+    )
+    .await
+    .expect("the session ends")
+    .unwrap_err();
+    assert_eq!(out, b"part");
+    assert_eq!(cfrs::exit::code_of(&err), 69, "{err:#}");
+    assert!(format!("{err:#}").contains("1009"), "{err:#}");
+    // A normal close is a success.
+    let url = closing_relay(1000).await;
+    let relay = Relay::new(&url, None).unwrap();
+    let mut out = Vec::new();
+    connect(&relay, NAME, "connect", &b""[..], &mut out)
+        .await
+        .unwrap();
+    assert_eq!(out, b"part");
+}

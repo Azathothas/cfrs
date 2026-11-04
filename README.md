@@ -951,7 +951,10 @@ cfrs relay stop NAME
   relay stop` ran), the node exits 78 and is not started again.
 * `cfrs relay connect NAME` waits for `ready`, then copies stdin and stdout.
   A refused session exits 69 with the cause from the node. A refused token
-  exits 78.
+  exits 78. After the end of stdin, the session ends when the node closes,
+  or 15 s (the idle time of the relay) after the last data. A close of the
+  relay other than 1000 (for example 1009 at its byte limit) or a lost link
+  exits 69, also after the end of stdin: the output can be cut.
 * The relay authenticates tokens, not persons. Give the connect token only
   over a channel that you trust. Check the host key of SSH as usual.
 * The relay sets its own limits; cfrs does not enforce them. Measured on
