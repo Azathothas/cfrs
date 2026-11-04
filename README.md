@@ -462,8 +462,9 @@ cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
   path with another token answers 404.
 * `--password` adds a 6-digit PIN. The host shows the PIN. The PIN check uses
   a constant-time compare. After 10 wrong codes, no code opens the session:
-  start a new one. After the unlock, the browser goes back to a path of the
-  same site only.
+  start a new one. Requests at the same time get at most 10 compares in
+  total. A correct code sets the count of wrong codes to 0. After the
+  unlock, the browser goes back to a path of the same site only.
 * A locked GET or HEAD gets the PIN page with 200 (for a browser). A locked
   request with another method (an upload POST, an API call) gets the page
   with 403, and nothing is done. A wrong PIN gets 403.

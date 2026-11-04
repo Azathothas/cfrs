@@ -31,6 +31,9 @@ pub struct Gate {
     session: String,
     /// The wrong codes so far, shared by each copy of the gate.
     failures: Arc<AtomicU32>,
+    /// The compares of a code, for the tests.
+    #[cfg(test)]
+    compares: Arc<AtomicU32>,
 }
 
 /// Compare two byte strings in a time that does not depend on where they
@@ -75,6 +78,8 @@ impl Gate {
             pin: String::new(),
             session: String::new(),
             failures: Arc::default(),
+            #[cfg(test)]
+            compares: Arc::default(),
         }
     }
 
@@ -85,6 +90,8 @@ impl Gate {
             pin,
             session: Uuid::new_v4().simple().to_string(),
             failures: Arc::default(),
+            #[cfg(test)]
+            compares: Arc::default(),
         }
     }
 
@@ -118,19 +125,31 @@ impl Gate {
 
     /// Check a submitted PIN. On success returns the `Set-Cookie` value.
     ///
-    /// After [`MAX_FAILURES`] wrong codes, no code opens the gate.
+    /// After [`MAX_FAILURES`] wrong codes, no code opens the gate. A correct
+    /// code sets the count of wrong codes to 0.
+    ///
+    /// Issue 228: each try takes a slot of the count before the compare.
+    /// Many tries at the same time get at most [`MAX_FAILURES`] compares.
     pub fn unlock(&self, password: &str) -> Option<String> {
         if !self.enabled() {
             return None;
         }
-        if self.locked_out() {
+        let slot = self
+            .failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_FAILURES).then_some(n + 1)
+            });
+        let Ok(before) = slot else {
             tracing::warn!(
                 "the PIN gate is locked after {MAX_FAILURES} wrong codes; start a new session"
             );
             return None;
-        }
+        };
+        #[cfg(test)]
+        self.compares.fetch_add(1, Ordering::SeqCst);
         if !constant_time_eq(password.trim().as_bytes(), self.pin.as_bytes()) {
-            let n = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
+            // A wrong code keeps its slot.
+            let n = before + 1;
             tracing::warn!(failures = n, "a wrong PIN");
             if n >= MAX_FAILURES {
                 tracing::warn!(
@@ -139,6 +158,7 @@ impl Gate {
             }
             return None;
         }
+        self.failures.store(0, Ordering::SeqCst);
         Some(format!(
             "{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
             self.session
@@ -236,6 +256,52 @@ mod tests {
             "the right code after the limit"
         );
         assert!(gate.page_html("/", true).contains("Too many wrong codes"));
+    }
+
+    // Issue 228: many wrong codes at the same time get at most
+    // MAX_FAILURES compares, and the count does not pass the limit.
+    #[test]
+    fn concurrent_wrong_codes_get_at_most_the_limit() {
+        for _ in 0..20 {
+            let gate = Gate::pin();
+            let pin = gate.pin_display().unwrap().to_string();
+            let wrong = if pin == "000000" { "000001" } else { "000000" };
+            let barrier = Arc::new(std::sync::Barrier::new(64));
+            let threads: Vec<_> = (0..64)
+                .map(|_| {
+                    let gate = gate.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        assert!(gate.unlock(wrong).is_none());
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            assert_eq!(gate.compares.load(Ordering::SeqCst), MAX_FAILURES);
+            assert_eq!(gate.failures.load(Ordering::SeqCst), MAX_FAILURES);
+            assert!(gate.unlock(&pin).is_none());
+            assert_eq!(gate.compares.load(Ordering::SeqCst), MAX_FAILURES);
+        }
+    }
+
+    // Issue 228: a correct code sets the count of wrong codes to 0.
+    #[test]
+    fn a_correct_code_resets_the_count() {
+        let gate = Gate::pin();
+        let pin = gate.pin_display().unwrap().to_string();
+        let wrong = if pin == "000000" { "000001" } else { "000000" };
+        for _ in 0..MAX_FAILURES - 1 {
+            assert!(gate.unlock(wrong).is_none());
+        }
+        assert!(gate.unlock(&pin).is_some());
+        for _ in 0..MAX_FAILURES - 1 {
+            assert!(gate.unlock(wrong).is_none());
+        }
+        assert!(!gate.locked_out());
+        assert!(gate.unlock(&pin).is_some());
     }
 
     #[test]
