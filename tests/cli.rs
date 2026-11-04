@@ -1304,6 +1304,22 @@ fn bad_credentials_exit_78() {
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
 
+/// Issue 250: a bare `cfrs share` names the modes, and starts nothing.
+#[test]
+fn a_bare_share_names_the_modes() {
+    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        .args(["share", "--check"])
+        .env("CFRS_EDGE", "bogus::")
+        .env_remove("TUNNEL_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    let text = stderr(&out);
+    for flag in ["--mode upload", "--dir", "--file", "--port", "--unix"] {
+        assert!(text.contains(flag), "{text}");
+    }
+}
+
 /// Issue 173: the exit code of each class of error.
 #[test]
 fn exit_codes_of_flags_and_configuration() {
@@ -1319,7 +1335,11 @@ fn exit_codes_of_flags_and_configuration() {
         (out.status.code(), stderr(&out))
     };
     for (args, env, want) in [
-        (&["share", "--mode", "download", "--check"][..], &[][..], 64),
+        // Issue 250: a bare `cfrs share` is a usage error.
+        // CFRS_EDGE=bogus:: makes sure that no tunnel starts.
+        (&["share"][..], &[("CFRS_EDGE", "bogus::")][..], 64),
+        (&["share", "--check"], &[], 64),
+        (&["share", "--mode", "download", "--check"], &[], 64),
         (&["share", "--mode", "proxy", "--check"], &[], 64),
         (
             &["tunnel", "--hello-world", "--check"],

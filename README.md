@@ -453,6 +453,11 @@ cfrs share --mode proxy --unix /run/api.sock        # share an HTTP unix socket,
 cfrs share --mode upload --dir /tmp/inbox --stop-after --idle-secs 600
 ```
 
+* Give a mode: `--mode upload` (or `--dir DIR`), `--file FILE`, `--port
+  PORT` or `--unix PATH`. A bare `cfrs share` is a usage error (exit 64),
+  and opens no session. With `--mode upload` and no `--dir`, the files go
+  to `~/Downloads/cfrs` (or `~/cfrs-uploads` when `~/Downloads` does not
+  exist).
 * The public path is `/s/<token>/`. The token has 32 random bytes, and a
   path with another token answers 404.
 * `--password` adds a 6-digit PIN. The host shows the PIN. The PIN check uses

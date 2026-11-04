@@ -662,7 +662,9 @@ struct ShareArgs {
     #[command(flatten)]
     common: TunnelOpts,
     /// Session mode. With no --mode: download with --file, proxy with
-    /// --port, else upload.
+    /// --port or --unix, upload with --dir. With none of these flags,
+    /// cfrs refuses to start: give --mode upload for the default upload
+    /// directory.
     #[arg(long, value_enum)]
     mode: Option<ModeArg>,
     /// Directory that receives uploads.
@@ -3222,7 +3224,13 @@ fn share_mode(args: &ShareArgs) -> Result<ModeArg> {
         ))),
         (Some(mode), _) => Ok(mode),
         (None, Some((_, mode))) => Ok(*mode),
-        (None, None) => Ok(ModeArg::Upload),
+        // Issue 250: a bare `cfrs share` does not open a public upload
+        // session.
+        (None, None) => Err(usage(
+            "share: give a mode: --mode upload (or --dir DIR) to receive files, \
+             --file FILE to send one file, --port PORT or --unix PATH to share a local server"
+                .to_string(),
+        )),
     }
 }
 
@@ -6577,13 +6585,15 @@ mod tests {
         let mode = |argv: &[&str]| share_mode(&share_args(argv));
         assert_eq!(mode(&["--file", "f"]).unwrap(), ModeArg::Download);
         assert_eq!(mode(&["--port", "3000"]).unwrap(), ModeArg::Proxy);
-        assert_eq!(mode(&[]).unwrap(), ModeArg::Upload);
+        assert_eq!(mode(&["--mode", "upload"]).unwrap(), ModeArg::Upload);
         assert_eq!(mode(&["--dir", "d"]).unwrap(), ModeArg::Upload);
         assert_eq!(
             mode(&["--mode", "download", "--file", "f"]).unwrap(),
             ModeArg::Download
         );
         for bad in [
+            // Issue 250: no mode flag is an error.
+            &[][..],
             &["--file", "f", "--port", "1"][..],
             &["--mode", "upload", "--file", "f"][..],
             &["--mode", "proxy", "--dir", "d"][..],
