@@ -40,10 +40,7 @@ pub const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often to send a keepalive.
 pub const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The most bidi streams that the edge can open at the same time. The edge
-/// opens one stream for each visitor request, and a quick tunnel allows 200
-/// requests at the same time. The default of quinn is 100.
-pub const MAX_EDGE_STREAMS: u32 = 256;
+pub use super::MAX_EDGE_STREAMS;
 
 /// The QUIC transport settings of an edge connection, with `initial_mtu` as
 /// the first UDP payload size.

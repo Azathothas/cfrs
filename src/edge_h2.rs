@@ -377,7 +377,7 @@ const _: () = assert!(DATA_FRAME_BUDGET >= CONNECTION_WINDOW as usize / 60 * (25
 pub fn server_builder() -> h2::server::Builder {
     let mut builder = h2::server::Builder::new();
     builder
-        .max_concurrent_streams(u32::MAX)
+        .max_concurrent_streams(crate::cloudflare::MAX_EDGE_STREAMS)
         .initial_window_size(STREAM_WINDOW)
         .initial_connection_window_size(CONNECTION_WINDOW)
         .data_frame_budget(DATA_FRAME_BUDGET);
@@ -531,16 +531,24 @@ where
         scan: FrameScan::new(),
         seen: Some(goaway.clone()),
     };
-    let mut conn = server_builder()
-        .handshake::<_, Bytes>(io)
+    // TLS has its own time limit; a silent edge after TLS must not hold
+    // the dial (issue 272).
+    let mut conn = tokio::time::timeout(DIAL_TIMEOUT, server_builder().handshake::<_, Bytes>(io))
         .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the HTTP/2 handshake with the edge timed out in {} s",
+                DIAL_TIMEOUT.as_secs()
+            )
+        })?
         .context("HTTP/2 handshake with the edge")?;
     let ping = conn.ping_pong();
     let (control_tx, control_rx) = tokio::sync::oneshot::channel();
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<String>();
     let (lost_tx, mut lost_rx) = tokio::sync::oneshot::channel::<String>();
+    let mut pinger = None;
     if let Some(mut ping) = ping {
-        tokio::spawn(async move {
+        pinger = Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(keepalive.interval).await;
                 match tokio::time::timeout(keepalive.timeout, ping.ping(h2::Ping::opaque())).await {
@@ -558,9 +566,11 @@ where
                     }
                 }
             }
-        });
+        }));
     }
     let serve = tokio::spawn(async move {
+        // The PING task ends with this task, also when it is aborted.
+        let _pinger = pinger.map(AbortOnDrop::new);
         let mut control_tx = Some(control_tx);
         let mut drain_tx = Some(drain_tx);
         let spent = async move {
@@ -640,6 +650,29 @@ where
         serve,
         draining: drain_rx,
     })
+}
+
+/// A task that is aborted when this value is dropped. A failed attempt
+/// stops the tasks that it started (issue 272).
+struct AbortOnDrop(Option<JoinHandle<()>>);
+
+impl AbortOnDrop {
+    fn new(task: JoinHandle<()>) -> Self {
+        Self(Some(task))
+    }
+
+    /// The task, which then goes on when the handle is dropped.
+    fn into_inner(mut self) -> JoinHandle<()> {
+        self.0.take().expect("the task is held until here")
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
 }
 
 /// Dial the first edge address that answers, register, and serve streams.
@@ -728,13 +761,37 @@ async fn connect_one(
         )
     })?;
 
+    register_served(
+        addr, tls, auth, tunnel_id, conn_index, options, runtime, ingress, budget,
+    )
+    .await
+}
+
+/// Serve HTTP/2 on `io` (after TLS) and register the connection. On an
+/// error, the tasks of the connection stop and the connection closes.
+#[allow(clippy::too_many_arguments)]
+async fn register_served<T>(
+    addr: SocketAddr,
+    io: T,
+    auth: &rpc::TunnelAuth,
+    tunnel_id: Uuid,
+    conn_index: u8,
+    options: &rpc::ConnectionOptions,
+    runtime: Arc<ServiceRuntime>,
+    ingress: Arc<Ingress>,
+    budget: Option<Budget>,
+) -> Result<H2Leg>
+where
+    T: AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let Served {
         control: control_rx,
         serve,
         draining,
-    } = serve_connection(tls, runtime, ingress, Keepalive::default(), budget)
+    } = serve_connection(io, runtime, ingress, Keepalive::default(), budget)
         .await
         .with_context(|| format!("the edge at {addr}"))?;
+    let serve = AbortOnDrop::new(serve);
 
     let (request, mut respond) = tokio::time::timeout(REGISTER_TIMEOUT, control_rx)
         .await
@@ -755,7 +812,7 @@ async fn connect_one(
     Ok(H2Leg {
         location: details.location,
         control,
-        serve,
+        serve: serve.into_inner(),
         draining,
         started: std::time::Instant::now(),
     })
@@ -850,17 +907,48 @@ async fn answer_configuration(
     body: h2::RecvStream,
     mut respond: h2::server::SendResponse<Bytes>,
 ) -> Result<()> {
-    let mut reader = body_reader(body);
-    let mut text = Vec::new();
-    reader.read_to_end(&mut text).await?;
-    let version = serde_json::from_slice::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| v.get("version").and_then(serde_json::Value::as_i64))
-        .unwrap_or(-1);
-    let reply = format!(r#"{{"lastAppliedVersion":{version},"err":null}}"#);
+    let reply = match read_configuration(body_reader(body), REGISTER_TIMEOUT).await {
+        Ok(text) => {
+            let version = serde_json::from_slice::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("version").and_then(serde_json::Value::as_i64))
+                .unwrap_or(-1);
+            format!(r#"{{"lastAppliedVersion":{version},"err":null}}"#)
+        }
+        Err(err) => {
+            debug!(error = %err, "the configuration push is refused");
+            serde_json::json!({ "lastAppliedVersion": -1, "err": err.to_string() }).to_string()
+        }
+    };
     let mut send = respond.send_response(http::Response::new(()), false)?;
     send.send_data(Bytes::from(reply), true)?;
     Ok(())
+}
+
+/// The largest configuration push that cfrs reads. cfrs does not apply a
+/// remote configuration: it reads only the version.
+pub const MAX_CONFIGURATION: usize = 64 * 1024;
+
+/// Read a configuration push of at most [`MAX_CONFIGURATION`] bytes in
+/// `limit` (issue 272: the read had no cap and no time limit).
+async fn read_configuration<R: AsyncRead + Unpin>(reader: R, limit: Duration) -> Result<Vec<u8>> {
+    let mut text = Vec::new();
+    let mut reader = reader.take(MAX_CONFIGURATION as u64 + 1);
+    tokio::time::timeout(limit, reader.read_to_end(&mut text))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the configuration push did not end in {} s",
+                limit.as_secs()
+            )
+        })??;
+    if text.len() > MAX_CONFIGURATION {
+        bail!(
+            "the configuration push is larger than {} KiB",
+            MAX_CONFIGURATION / 1024
+        );
+    }
+    Ok(text)
 }
 
 /// A tokio reader for an HTTP/2 request body. A task moves the data frames
@@ -1240,6 +1328,107 @@ mod tests {
         let runtime =
             Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
         (runtime, ingress)
+    }
+
+    /// Issue 272: an edge that is silent after TLS does not hold the
+    /// HTTP/2 handshake.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_edge_fails_the_handshake_in_the_dial_time() {
+        let (runtime, ingress) = service();
+        let (_edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let start = tokio::time::Instant::now();
+        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None);
+        let err = match tokio::time::timeout(DIAL_TIMEOUT * 2, served).await {
+            Ok(Err(err)) => err,
+            Ok(Ok(_)) => panic!("the handshake passed"),
+            Err(_) => panic!("the handshake has no time limit"),
+        };
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+        assert_eq!(start.elapsed(), DIAL_TIMEOUT);
+    }
+
+    /// Issue 272: a failed registration closes the connection: the task
+    /// that serves it does not go on.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_registration_closes_the_connection() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let edge = tokio::spawn(h2::client::handshake(edge_side));
+        let auth = rpc::TunnelAuth {
+            account_tag: "test".into(),
+            tunnel_secret: vec![0; 32],
+        };
+        let options = rpc::ConnectionOptions::default_for_quick_tunnel("test");
+        let addr: SocketAddr = "127.0.0.1:7844".parse().unwrap();
+        // The edge opens no control stream.
+        let attempt = register_served(
+            addr,
+            cfrs_side,
+            &auth,
+            Uuid::nil(),
+            0,
+            &options,
+            runtime,
+            ingress,
+            None,
+        );
+        let (_send, connection) = edge.await.unwrap().unwrap();
+        let driver = tokio::spawn(connection);
+        let err = match attempt.await {
+            Err(err) => err,
+            Ok(_) => panic!("the registration passed"),
+        };
+        assert!(err.to_string().contains("control stream"), "{err:#}");
+        // The connection ends soon, not at the next PING (30 s + 30 s).
+        let closed = tokio::time::timeout(Duration::from_secs(1), driver).await;
+        assert!(closed.is_ok(), "the connection is still served");
+    }
+
+    /// Issue 272: the configuration push has a cap and a time limit.
+    #[tokio::test(start_paused = true)]
+    async fn a_configuration_push_has_a_cap_and_a_time_limit() {
+        let ok = read_configuration(&br#"{"version":7}"#[..], REGISTER_TIMEOUT).await;
+        assert_eq!(ok.unwrap(), br#"{"version":7}"#);
+        // A push larger than the cap, from a source that never ends.
+        let big = tokio::io::repeat(b' ');
+        let err = read_configuration(big, REGISTER_TIMEOUT).await.unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err:#}");
+        // A push that never ends.
+        let (_keep, silent) = tokio::io::duplex(64);
+        let err = read_configuration(silent, REGISTER_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("did not end"), "{err:#}");
+    }
+
+    /// Issue 272: the edge can open as many streams as on QUIC, not
+    /// u32::MAX.
+    #[tokio::test]
+    async fn the_edge_gets_the_stream_limit_of_quic() {
+        let (runtime, ingress) = service();
+        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let client = tokio::spawn(h2::client::handshake(edge_side));
+        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
+            .await
+            .unwrap();
+        let (send, connection) = client.await.unwrap().unwrap();
+        let driver = tokio::spawn(connection);
+        // The SETTINGS of cfrs come with the first round trip.
+        let send = send.ready().await.unwrap();
+        let mut send = send;
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("https://x.trycloudflare.com/")
+            .body(())
+            .unwrap();
+        let (response, _) = send.send_request(request, true).unwrap();
+        response.await.unwrap();
+        assert_eq!(
+            send.current_max_send_streams(),
+            crate::cloudflare::MAX_EDGE_STREAMS as usize
+        );
+        drop(send);
+        driver.abort();
     }
 
     /// The meter counts the two directions and notifies one time, when the

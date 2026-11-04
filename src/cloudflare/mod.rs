@@ -51,6 +51,12 @@ pub const QUIC_SNI: &str = "quic.cftunnel.com";
 /// SNI for the HTTP/2 transport.
 pub const H2_SNI: &str = "h2.cftunnel.com";
 
+/// The most streams that the edge can open at the same time, on QUIC and
+/// on HTTP/2. The edge opens one stream for each visitor request, and a
+/// quick tunnel allows 200 requests at the same time. The default of quinn
+/// is 100.
+pub const MAX_EDGE_STREAMS: u32 = 256;
+
 /// SRV record naming the edge, as cloudflared resolves it.
 pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
 

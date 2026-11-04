@@ -128,7 +128,10 @@ connection. IPv4 addresses stay before IPv6 addresses.
 * WebSocket: `cfrs` adds `Connection: Upgrade` and `Upgrade: websocket` for the
   origin, because HTTP/2 has no upgrade headers.
 * Configuration push: `cfrs` answers `{"lastAppliedVersion":N,"err":null}`
-  with the version of the push.
+  with the version of the push. A push of more than 64 KiB, or a push that
+  does not end in 30 seconds, gets `{"lastAppliedVersion":-1,"err":"..."}`.
+* Limits: the HTTP/2 handshake after TLS has a time limit of 10 seconds.
+  The edge can open 256 streams at the same time, as on QUIC.
 
 `tools/check-header-oracle.sh` compares the header encoding of `cfrs` with the
 Go function `SerializeHeaders` of cloudflared.
