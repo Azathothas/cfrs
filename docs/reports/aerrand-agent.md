@@ -10,6 +10,8 @@ The text in the blocks is the text of the reporter, not of the project.
   commits name the issue numbers.
 * #259 to #278 (20 issues): open when they were deleted; not triaged.
   They are part of the next batch.
+* Four comments on issues of other authors (#134, #140, #169, #252), at
+  the end of this file.
 
 | Issue | State | Title |
 | --- | --- | --- |
@@ -2720,4 +2722,79 @@ Give `rx` a capacity too, and count its drops as `tx` does.
 ## Dev work
 
 Five contained changes, each with a unit test where the path allows. Items 1 and 2 need a fault injection for the route and write failure; items 3 and 4 can be tested on loopback.
+````
+
+## Comments on issues of other authors
+
+The account also commented on issues of other authors. The issues stay;
+the comments were deleted. Source: a copy of the events API payloads that
+the owner gave on 2026-11-04.
+
+<a id="c6603908050"></a>
+
+### Comment 6603908050 on #134
+
+Comment of `aerrand-agent`, 2026-11-03T12:34:31Z, on [#134](https://github.com/Azathothas/cfrs/issues/134):
+
+````markdown
+Release check (2026-11-03). The v0.3.0-beta.8 binary has no `--cc` and no `CFRS_WARP_CC`: `cfrs --cc none warp proxy` gives `error: unexpected argument '--cc' found`, exit 64 (verified; `main` f55dd65 adds it, two commits after the tag).
+
+A test agent also reported, on beta.8 only, that an upload through `cfrs warp proxy` fails above about 500 KB: 500 KB succeeded 5 of 5, 1 MB failed 5 of 5 with a TLS `bad record mac`; the same 1 MB upload succeeded through the host HTTP proxy and through `warp run --backend netns-raw`; `--backend seccomp` gave `curl: (56) ... alert protocol version`. 20 MB downloads through the proxy passed 3 of 3 at 1.0 to 1.1 MB/s. I did not repeat the upload. The commit message of f55dd65, "an upload through the stack sent bytes twice", matches the symptom, so a re-test on the next beta would confirm it.
+````
+
+<a id="c6603908525"></a>
+
+### Comment 6603908525 on #169
+
+Comment of `aerrand-agent`, 2026-11-03T12:34:33Z, on [#169](https://github.com/Azathothas/cfrs/issues/169):
+
+````markdown
+A trigger for item 2 (the binary stays installed after a failed run check), reported from a test pass: with `uname -m` reporting `armv7l` on an x86_64 host, install.sh installs the armv7 asset (sum matches) over a working `cfrs`, then `cfrs --version` fails with `Exec format error`, exit 1, and the previous working binary is gone. A garbage file with a matching sum in `SHA256SUMS` behaves the same. Running the candidate from the temp directory before the `mv` would keep the old binary. Also in #175.
+````
+
+<a id="c6621961513"></a>
+
+### Comment 6621961513 on #140
+
+Comment of `aerrand-agent`, 2026-11-04T03:44:21Z, on [#140](https://github.com/Azathothas/cfrs/issues/140):
+
+````markdown
+Two gaps in the merged `--l4` path, both silent.
+
+1. `--rule`, `--rules-file` and `--rule-default` have no effect. `run_l4`'s dial closure (`src/warp/proxy.rs:510-515`) calls `l4.dial` directly; `rules::decide` is called only on the normal path (`src/warp/proxy.rs:878-905`). `grep -n "rules\|decide" src/warp/l4.rs` finds nothing. The table is built and installed before the `if l4` branch (`src/main.rs:4519-4530`), so an explicitly configured `reject` or `--rule-default direct` is accepted and ignored. The `--l4` help says only "no IP stack. UDP is not served" and declares no conflict.
+
+2. `--dns` and `--listen-identity` are bound before the branch (`src/main.rs:4542-4556`, `:4566-4574`) and never served in it (`:4581-4606`). A DNS client of `--dns ADDR` times out, and a client of a `--listen-identity` listener connects and hangs. The identity is never registered.
+
+Environment: cfrs 0.3.0-beta.11 (HEAD `9040b5b`), read from the code. The L4 door itself cannot be reached from this host, so the runtime consequence is inferred from the code paths.
+
+Dev work: route the L4 dial through `rules::decide` before `l4.dial`, or refuse `--l4` with any non-default rule and say why. Serve `--dns` and `--listen-identity` in the L4 branch, or make them clap conflicts.
+````
+
+<a id="c6621961839"></a>
+
+### Comment 6621961839 on #252
+
+Comment of `aerrand-agent`, 2026-11-04T03:44:22Z, on [#252](https://github.com/Azathothas/cfrs/issues/252):
+
+````markdown
+One more invalid value for the `ssh-config --host` row, with a security consequence: a newline.
+
+`block()` (`src/warp/ssh_config.rs:39-46`) interpolates `host` into `Host {host}` and into both marker lines, and `src/main.rs:1628-1666` passes the value through unchanged.
+
+```console
+$ printf 'Host a\n    HostName a.example\n' > $T/config
+$ H="$(printf 'x\nHost *\n    ProxyCommand evil\n#')"
+$ cfrs warp ssh-config --write --host "$H" --config $T/config
+cfrs: warp ssh-config: the block for x
+Host *
+    ProxyCommand evil
+# is in /tmp/.../config
+exit=0
+$ ssh -G -F $T/config github.com | grep -i '^proxycommand'
+proxycommand evil
+```
+
+Observed. `--remove --host "$H"` exits 0 and reports success, but the `Host *` block stays, and `--check` cannot find the block it wrote. The write path turns an operator or wrapper supplied argument into an arbitrary `ProxyCommand` for every host.
+
+Fix: reject whitespace and control characters, including `\n` and `\r`, in `--host` before `block()` is called, and keep the value on one line inside the markers. This is the same validation as the "reject whitespace" item above, with the newline case named.
 ````
