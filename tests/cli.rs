@@ -1666,6 +1666,39 @@ fn the_socket_rule_of_net_and_relay() {
     }
 }
 
+/// Issue 300: net switch and net proxy with a TCP port 0 print the port
+/// that the kernel chose, and a client connects to it.
+#[test]
+fn a_port_0_listener_prints_the_bound_port() {
+    use std::io::BufRead;
+    for (args, prefix) in [
+        (&["net", "switch"][..], "cfrs: switch   tcp://"),
+        (&["net", "proxy"][..], "cfrs: proxy    tcp://"),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+            .args(args)
+            .args(["--listen", "tcp://127.0.0.1:0", "--run-for", "20"])
+            .env_remove("CFRS_ERROR_PROGRAM")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let line = lines
+            .find_map(|l| l.ok().filter(|l| l.starts_with(prefix)))
+            .unwrap_or_else(|| panic!("{args:?}: no line {prefix}"));
+        let addr: std::net::SocketAddr = line[prefix.len()..]
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        let connect = std::net::TcpStream::connect(addr);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_ne!(addr.port(), 0, "{args:?}: {line}");
+        connect.unwrap_or_else(|e| panic!("{args:?}: connect to {addr}: {e}"));
+    }
+}
+
 /// podssh: status, ps, stop, logs and wait read the run directory and make
 /// none.
 #[test]

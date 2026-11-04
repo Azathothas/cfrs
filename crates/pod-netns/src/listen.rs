@@ -47,6 +47,17 @@ impl ProxyListen {
     }
 }
 
+impl std::fmt::Display for ProxyListen {
+    /// `unix:PATH` or `tcp://HOST:PORT`, the form that [`ProxyListen::parse`]
+    /// reads.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unix(path) => write!(f, "unix:{}", path.display()),
+            Self::Tcp(addr) => write!(f, "tcp://{addr}"),
+        }
+    }
+}
+
 /// Bind a Unix socket at `path` that only its owner can use: mode 0600. A
 /// client must have write permission on the socket to connect.
 pub fn bind_private(

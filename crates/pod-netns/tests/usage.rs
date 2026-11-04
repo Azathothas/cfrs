@@ -39,3 +39,31 @@ fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
         assert!(!marker.exists(), "{case:?}: the program ran");
     }
 }
+
+/// Issue 300: `--serve tcp://127.0.0.1:0` prints the port that the kernel
+/// chose, and a client connects to it.
+#[test]
+fn a_port_0_front_door_prints_the_bound_port() {
+    use std::io::BufRead;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        .args(["--serve", "tcp://127.0.0.1:0", "-x", "socks5://127.0.0.1:9"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = std::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    let line = lines
+        .find_map(|l| l.ok().filter(|l| l.starts_with("pod-netns: serving ")))
+        .expect("a serving line");
+    let addr: std::net::SocketAddr = line
+        .trim_start_matches("pod-netns: serving tcp://")
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap_or_else(|e| panic!("{line}: {e}"));
+    let connect = std::net::TcpStream::connect(addr);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_ne!(addr.port(), 0, "{line}");
+    connect.unwrap_or_else(|e| panic!("connect to {addr}: {e}"));
+}

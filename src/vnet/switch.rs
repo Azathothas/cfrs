@@ -179,11 +179,15 @@ impl Switch {
 /// Accept peers on `listen` and forward packets between them.
 pub async fn serve(listen: ProxyListen) -> Result<Switch> {
     let table = Arc::new(Mutex::new(Table::default()));
+    let mut listen = listen;
     let task = match &listen {
         ProxyListen::Tcp(addr) => {
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("binding tcp://{addr}"))?;
+            // Issue 300: keep the bound address (the port that the kernel
+            // chose for port 0), not the requested one.
+            listen = ProxyListen::Tcp(listener.local_addr()?);
             tokio::spawn(async move {
                 while let Ok((stream, from)) = listener.accept().await {
                     debug!(%from, "switch peer connected");
@@ -203,7 +207,7 @@ pub async fn serve(listen: ProxyListen) -> Result<Switch> {
             })
         }
     };
-    info!(?listen, "switch is listening");
+    info!(%listen, "switch is listening");
     Ok(Switch { listen, task })
 }
 

@@ -259,11 +259,15 @@ pub async fn serve(
     resolver: Resolver,
     default_port: u16,
 ) -> Result<Proxy> {
+    let mut listen = listen;
     let accepts = match &listen {
         ProxyListen::Tcp(bind) => {
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .with_context(|| format!("binding {bind}"))?;
+            // Issue 300: keep the bound address (the port that the kernel
+            // chose for port 0), not the requested one.
+            listen = ProxyListen::Tcp(listener.local_addr()?);
             let net = net.clone();
             let resolver = resolver.clone();
             tokio::spawn(async move {

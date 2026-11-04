@@ -451,7 +451,7 @@ pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound) -> WarpProxy {
             }
         }),
     };
-    info!(?listen, "WARP proxy is listening");
+    info!(%listen, "WARP proxy is listening");
     WarpProxy { listen, task }
 }
 
@@ -568,7 +568,7 @@ pub fn run_l4(l4: Arc<super::l4::L4>, bound: Bound) -> WarpProxy {
             }
         }),
     };
-    info!(?listen, "WARP proxy (L4) is listening");
+    info!(%listen, "WARP proxy (L4) is listening");
     WarpProxy { listen, task }
 }
 

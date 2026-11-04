@@ -3642,14 +3642,7 @@ fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) ->
 
 /// The ready document of a listener for --detach.
 fn listen_doc(listen: &cfrs::vnet::proxy::ProxyListen) -> serde_json::Value {
-    match listen {
-        cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-            serde_json::json!({ "listen": format!("unix:{}", path.display()) })
-        }
-        cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
-            serde_json::json!({ "listen": format!("tcp://{addr}") })
-        }
-    }
+    serde_json::json!({ "listen": listen.to_string() })
 }
 
 /// `cfrs relay` (issue 88).
@@ -6109,14 +6102,8 @@ async fn net(args: NetArgs) -> Result<()> {
         NetCommand::Switch(args) => {
             let listen = cfrs::vnet::proxy::ProxyListen::parse(&args.listen)?;
             let switch = cfrs::vnet::switch::serve(listen).await?;
-            match &switch.listen {
-                cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-                    println!("cfrs: switch   unix:{}", path.display())
-                }
-                cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
-                    println!("cfrs: switch   tcp://{addr}")
-                }
-            }
+            // Issue 300: the bound address (a TCP port 0 gives the port).
+            println!("cfrs: switch   {}", switch.listen);
             cfrs::detach::ready(listen_doc(&switch.listen));
             sleep_or_signal(args.run_for).await;
             switch.abort();
@@ -6250,10 +6237,8 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
         });
         println!("cfrs: forward  {virt} -> {}", real.describe());
     }
-    match &proxy.listen {
-        ProxyListen::Unix(path) => println!("cfrs: proxy    unix:{}", path.display()),
-        ProxyListen::Tcp(addr) => println!("cfrs: proxy    tcp://{addr}"),
-    }
+    // Issue 300: the bound address (a TCP port 0 gives the port).
+    println!("cfrs: proxy    {}", proxy.listen);
     cfrs::detach::ready(listen_doc(&proxy.listen));
     sleep_or_signal(args.run_for).await;
     proxy.abort();
@@ -6333,10 +6318,8 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
         })
         .fault(Fault::Unavailable)?;
     let proxy = tailscale::serve(Dialer::new(&args.socket), listen, args.port).await?;
-    match &proxy.listen {
-        ProxyListen::Unix(path) => println!("cfrs: proxy    unix:{}", path.display()),
-        ProxyListen::Tcp(addr) => println!("cfrs: proxy    tcp://{addr}"),
-    }
+    // Issue 300: the bound address (a TCP port 0 gives the port).
+    println!("cfrs: proxy    {}", proxy.listen);
     println!("cfrs: localapi {}", args.socket);
     println!("cfrs: note     run tailscaled with --tun=userspace-networking");
     println!("cfrs: shim     eval \"$(cfrs net socksify --socket <listen-path>)\"");

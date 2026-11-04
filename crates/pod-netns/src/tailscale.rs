@@ -242,11 +242,15 @@ pub async fn serve(
     listen: ProxyListen,
     default_port: u16,
 ) -> Result<TailscaleProxy> {
+    let mut listen = listen;
     let accepts = match listen.clone() {
         ProxyListen::Tcp(bind) => {
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .with_context(|| format!("binding {bind}"))?;
+            // Issue 300: keep the bound address (the port that the kernel
+            // chose for port 0), not the requested one.
+            listen = ProxyListen::Tcp(listener.local_addr()?);
             let dialer = dialer.clone();
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {

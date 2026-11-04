@@ -119,7 +119,7 @@ pub fn run(live: Arc<super::Live<WarpStack>>, bound: Bound, rule: Rule, max: usi
             }),
         }
     };
-    info!(?listen, target = %rule.target(), "WARP forward is listening");
+    info!(%listen, target = %rule.target(), "WARP forward is listening");
     Forward { listen, rule, task }
 }
 

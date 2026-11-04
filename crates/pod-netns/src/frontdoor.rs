@@ -26,19 +26,10 @@ pub(crate) async fn serve_front_door(
     rules: Vec<Rule>,
     verbose: bool,
 ) -> Result<()> {
-    use crate::listen::ProxyListen;
-    let listener = match &listen {
-        ProxyListen::Unix(path) => {
-            let _ = std::fs::remove_file(path);
-            FrontListener::Unix(crate::listen::bind_private(path)?)
-        }
-        ProxyListen::Tcp(addr) => FrontListener::Tcp(tokio::net::TcpListener::bind(addr).await?),
-    };
-    eprintln!(
-        "pod-netns: serving {} ({} upstream)",
-        listen_str(&listen),
-        chain.len()
-    );
+    let (listener, bound) = bind_front_door(&listen).await?;
+    // Issue 300: the bound address, so a TCP port 0 shows the port that
+    // the kernel chose.
+    eprintln!("pod-netns: serving {bound} ({} upstream)", chain.len());
     loop {
         let conn = listener.accept().await?;
         let chain = chain.clone();
@@ -53,11 +44,26 @@ pub(crate) async fn serve_front_door(
     }
 }
 
-pub(crate) fn listen_str(listen: &crate::listen::ProxyListen) -> String {
-    match listen {
-        crate::listen::ProxyListen::Unix(p) => format!("unix:{}", p.display()),
-        crate::listen::ProxyListen::Tcp(a) => format!("tcp://{a}"),
-    }
+/// Bind the listener of the front door. Return it with the bound address:
+/// for TCP, the port that the kernel chose for port 0.
+pub(crate) async fn bind_front_door(
+    listen: &crate::listen::ProxyListen,
+) -> Result<(FrontListener, crate::listen::ProxyListen)> {
+    use crate::listen::ProxyListen;
+    Ok(match listen {
+        ProxyListen::Unix(path) => {
+            let _ = std::fs::remove_file(path);
+            (
+                FrontListener::Unix(crate::listen::bind_private(path)?),
+                listen.clone(),
+            )
+        }
+        ProxyListen::Tcp(addr) => {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let actual = listener.local_addr()?;
+            (FrontListener::Tcp(listener), ProxyListen::Tcp(actual))
+        }
+    })
 }
 
 pub(crate) async fn serve_one(
