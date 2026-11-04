@@ -26,12 +26,16 @@ postprocessors = [
 conventional_commits = false
 filter_unconventional = false
 split_commits = false
+# The subjects are "area: text" (docs/maintenance.md). The group is the
+# area. The first parser that matches wins.
 commit_parsers = [
-  { message = '^(Add|Serve)\b', group = "<!-- 0 -->Features" },
-  { message = '^Fix', group = "<!-- 1 -->Repairs" },
-  { message = '^(Build|CI|Use|Vendor|Replace)\b|^pod-netns:', group = "<!-- 2 -->Build and internals" },
-  { message = '^Rewrite', group = "<!-- 3 -->Documents" },
-  { message = '.', group = "<!-- 4 -->Other" },
+  { message = '^Version\b', skip = true },
+  { message = '^(warp|vnet|pod)\b', group = "<!-- 0 -->WARP and the virtual network" },
+  { message = '^(relay|ws_relay)\b', group = "<!-- 1 -->Relay" },
+  { message = '^(tunnel|edge|edge_h2|quic|http2|connect|config|quick|proxy|egress|net|serve|share|demo|detach|agent|doctor|status|update|signals|exit|report|state|instances|metrics|cli|cfrs|shim|resolve|verify|ports|expose|qr|autostart|origin|ingress)\b', group = "<!-- 2 -->Tunnel and commands" },
+  { message = '^(docs|README|SECURITY|CLAUDE|man|maintenance)\b', group = "<!-- 3 -->Documents" },
+  { message = '^(ci|live|release|deny|secrets|scripts|install\.sh|tests|fmt|clippy|deps|cargo|cliff|pod-netns)\b', group = "<!-- 4 -->Build, tests and CI" },
+  { message = '.', group = "<!-- 5 -->Other" },
 ]
 filter_commits = false
 tag_pattern = 'v[0-9].*'
