@@ -278,7 +278,10 @@ impl Ingress {
 
 // ── YAML parsing (cloudflared-compatible subset) ─────────────────────────────
 
+/// Issue 241: the keys of a rule are exactly [`crate::config::RULE_KEYS`],
+/// so an unknown key is an error here too.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RawIngress {
     #[serde(default)]
     pub hostname: Option<String>,

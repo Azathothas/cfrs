@@ -979,6 +979,77 @@ mod tests {
             .unwrap();
     }
 
+    /// The field names that serde reads for `T`. The deserializer stops at
+    /// `deserialize_struct` and keeps its list of fields.
+    fn serde_fields<'de, T: serde::Deserialize<'de>>() -> &'static [&'static str] {
+        struct Fields(Option<&'static [&'static str]>);
+        #[derive(Debug)]
+        struct Stop;
+        impl std::fmt::Display for Stop {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("stop")
+            }
+        }
+        impl std::error::Error for Stop {}
+        impl serde::de::Error for Stop {
+            fn custom<M: std::fmt::Display>(_: M) -> Self {
+                Stop
+            }
+        }
+        impl<'de> serde::Deserializer<'de> for &mut Fields {
+            type Error = Stop;
+            fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Stop> {
+                Err(Stop)
+            }
+            fn deserialize_struct<V: serde::de::Visitor<'de>>(
+                self,
+                _: &'static str,
+                fields: &'static [&'static str],
+                _: V,
+            ) -> Result<V::Value, Stop> {
+                self.0 = Some(fields);
+                Err(Stop)
+            }
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map enum identifier ignored_any
+            }
+        }
+        let mut fields = Fields(None);
+        let _ = T::deserialize(&mut fields);
+        fields.0.expect("a struct")
+    }
+
+    // Issue 241: each key that a raw struct reads is in its key list. A field
+    // that is not in the list is refused by check_keys and never read.
+    #[test]
+    fn each_field_of_a_raw_struct_is_in_its_key_list() {
+        let lists: [(&[&str], &[&str]); 3] = [
+            (serde_fields::<RawConfig>(), CLOUDFLARED_KEYS),
+            (serde_fields::<crate::ingress::RawIngress>(), RULE_KEYS),
+            (
+                serde_fields::<crate::ingress::RawOriginOptions>(),
+                ORIGIN_REQUEST_KEYS,
+            ),
+        ];
+        for (fields, keys) in lists {
+            assert!(!fields.is_empty());
+            for field in fields {
+                assert!(keys.contains(field), "{field} is not in {keys:?}");
+            }
+        }
+        // The keys of a rule are the fields of RawIngress.
+        let mut rule: Vec<&str> = serde_fields::<crate::ingress::RawIngress>().to_vec();
+        let mut keys = RULE_KEYS.to_vec();
+        rule.sort();
+        keys.sort();
+        assert_eq!(rule, keys);
+        let unknown: Result<crate::ingress::RawIngress, _> =
+            serde_json::from_value(serde_json::json!({"service": "x", "hostnam": "a"}));
+        assert!(unknown.is_err());
+    }
+
     // Issue 170: a misspelt key of a rule or of originRequest is an error.
     #[test]
     fn a_misspelt_rule_key_is_an_error() {
