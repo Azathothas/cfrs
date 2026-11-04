@@ -114,7 +114,12 @@ impl StaticDir {
             return None;
         }
 
+        // podssh #105: only a regular file or a directory. A read of a FIFO
+        // blocks, and a socket or a device is not a file to serve.
         let meta = std::fs::metadata(&resolved).ok()?;
+        if !meta.is_file() && !meta.is_dir() {
+            return None;
+        }
         Some((resolved, meta.is_dir()))
     }
 }
@@ -290,6 +295,22 @@ mod tests {
             self.body.extend_from_slice(b);
             Ok(())
         }
+    }
+
+    // podssh #105: a FIFO in the root is not served (a read blocks).
+    #[test]
+    fn a_fifo_is_not_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let fifo = std::ffi::CString::new(dir.path().join("f").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let site = StaticDir {
+            dir: dir.path().to_path_buf(),
+            spa: false,
+            index: "index.html".into(),
+        };
+        assert!(site.resolve("a.txt").is_some());
+        assert!(site.resolve("f").is_none());
     }
 
     fn req(path: &str) -> RequestHead {

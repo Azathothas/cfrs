@@ -846,13 +846,28 @@ async fn download_file(
         return response;
     }
     state.control.touch();
-    let mut file = match tokio::fs::File::open(&state.file).await {
+    // podssh #105: open with O_NONBLOCK (an open of a FIFO does not
+    // block), then serve only a regular file. A FIFO put at the path after
+    // the start blocked the request.
+    let mut file = match tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&state.file)
+        .await
+    {
         Ok(file) => file,
         Err(err) => {
             return (StatusCode::NOT_FOUND, format!("cannot open file: {err}")).into_response()
         }
     };
     let meta = file.metadata().await.ok();
+    if !meta.as_ref().is_some_and(|m| m.is_file()) {
+        return (
+            StatusCode::NOT_FOUND,
+            "the shared file is not a regular file",
+        )
+            .into_response();
+    }
     let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
     let mtime = meta
         .and_then(|m| m.modified().ok())
@@ -1507,6 +1522,28 @@ mod tests {
         assert_eq!(status, 403);
         assert_eq!(crate::gate::locked_status("HEAD"), 200);
         assert_eq!(crate::gate::locked_status("PUT"), 403);
+    }
+
+    /// podssh #105: a FIFO put at the path of the shared file after the
+    /// start gets 404 at once (an open of a FIFO blocked the request).
+    #[tokio::test]
+    async fn a_fifo_in_place_of_the_shared_file_does_not_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.bin");
+        std::fs::write(&file, b"data").unwrap();
+        let config = ShareConfig::download(&file);
+        let token = config.token.clone();
+        let app = ShareApp::new(config).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        let fifo = std::ffi::CString::new(file.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let (status, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send(&app.router(), "GET", &format!("/s/{token}/file"), ""),
+        )
+        .await
+        .expect("no block");
+        assert_eq!(status, 404);
     }
 
     /// Only the session id of the share opens its paths, and an unlock goes
