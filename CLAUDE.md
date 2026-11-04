@@ -57,7 +57,8 @@ These rules apply to each session. Obey them before any other default.
   `docs/development.md`,
   `crates/pod-netns/README.md`, `docs/releases/`, `docs/reports/` (the
   text of issues that GitHub deleted).
-- At the start of a session, read `docs/maintenance.md`: the procedures,
+- At the start of a session, read `docs/HANDOFF.md` first when it exists
+  (the state of unfinished work), then `docs/maintenance.md`: the procedures,
   the tools (`scripts/agent/`), the workflows, the release steps and the
   open work. Keep its "Open work" section current.
 
