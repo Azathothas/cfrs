@@ -452,14 +452,19 @@ pub enum Plan {
 }
 
 /// What to do with the release `tag` (issue 197: `--version` of the
-/// version of this binary does nothing, unless `force`).
+/// version of this binary does nothing, unless `force`; issue 275: also
+/// with no `--version`, `force` installs the version of this binary again).
 pub fn plan(tag: &str, current: &str, pinned: bool, check: bool, force: bool) -> Plan {
     if tag == current && !force {
         return if pinned { Plan::Same } else { Plan::UpToDate };
     }
     // With no --version, an older release is not an update: cfrs never
-    // goes back on its own (--version goes back on purpose).
-    if !pinned && version_order(tag, current) != std::cmp::Ordering::Greater {
+    // goes back on its own (--version goes back on purpose). `force` does
+    // not change this.
+    if !pinned
+        && !(force && tag == current)
+        && version_order(tag, current) != std::cmp::Ordering::Greater
+    {
         return Plan::UpToDate;
     }
     if check {
@@ -970,6 +975,11 @@ mod tests {
         assert_eq!(plan("v1", "v1", true, false, false), Plan::Same);
         assert_eq!(plan("v1", "v1", true, true, false), Plan::Same);
         assert_eq!(plan("v1", "v1", true, false, true), Plan::Install);
+        // Issue 275: --force with no --version installs the same version
+        // again, and --check says that it is available. No downgrade.
+        assert_eq!(plan("v1", "v1", false, false, true), Plan::Install);
+        assert_eq!(plan("v1", "v1", false, true, true), Plan::Available);
+        assert_eq!(plan("v0", "v1", false, false, true), Plan::UpToDate);
         assert_eq!(plan("v2", "v1", true, true, false), Plan::Available);
         assert_eq!(plan("v2", "v1", false, false, false), Plan::Install);
         // No downgrade with no --version; on purpose with it.

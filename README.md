@@ -244,7 +244,9 @@ prerelease.
 * With no `--version`, cfrs reads the GitHub API, else `releases.atom` (the
   API answers 403 on a shared address; the feed has no quota).
 * `--version` of the installed version says so and exits 0; `--force`
-  installs it again.
+  installs it again. `--force` with no `--version` installs the newest
+  release also when it is the installed version; it does not go back to
+  an older release.
 * The repository is fixed (it names the signer of the binary). cfrs does
   not read `CFRS_REPO` (a variable of `scripts/install.sh`); a warning says
   so.
