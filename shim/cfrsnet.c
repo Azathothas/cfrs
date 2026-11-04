@@ -641,6 +641,33 @@ static void autobind(int fd) {
     errno = saved;
 }
 
+/* Issue 308: an abstract name has no file permissions, so each local user
+   can bind or connect to it. A stream socket of the shim takes the same
+   user only: the user of the peer (SO_PEERCRED) must be the effective
+   user. */
+static int peer_is_own(int fd) {
+    struct ucred cred;
+    socklen_t len = sizeof cred;
+    if (r_getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) return 0;
+    return cred.uid == geteuid();
+}
+
+/* Put a new socket of the same type and flags in the place of fd, so that
+   the connection to a listener of another user is gone and fd is a socket
+   with no peer again. 0 on success. */
+static int fresh_socket(int fd, int type) {
+    int fl = r_fcntl(fd, F_GETFL);
+    int fdfl = r_fcntl(fd, F_GETFD);
+    int nfd = r_socket(AF_UNIX, type, 0);
+    if (nfd < 0) return -1;
+    if (fl >= 0) r_fcntl(nfd, F_SETFL, fl);
+    int rc = r_dup2(nfd, fd);
+    r_close(nfd);
+    if (rc < 0) return -1;
+    if (fdfl >= 0) r_fcntl(fd, F_SETFD, fdfl);
+    return 0;
+}
+
 int connect(int fd, const struct sockaddr *sa, socklen_t len) {
     ensure_init();
     if (!fd_is_virtual(fd)) return r_connect(fd, sa, len);
@@ -649,6 +676,15 @@ int connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (to_abstract(sa, len, &un, &un_len) < 0) return -1;
     autobind(fd);
     int rc = r_connect(fd, (struct sockaddr *)&un, un_len);
+    int type = 0;
+    socklen_t type_len = sizeof type;
+    if (rc == 0 && r_getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &type_len) == 0 &&
+        type == SOCK_STREAM && !peer_is_own(fd)) {
+        logf_("connect -> %s refused: the listener is of another user\n", un.sun_path + 1);
+        fresh_socket(fd, type);
+        errno = ECONNREFUSED;
+        return -1;
+    }
     if (rc == 0) {
         fd_record_peer(fd, sa, len);
         logf_("connect -> %s\n", un.sun_path + 1);
@@ -703,22 +739,38 @@ static int finish_accept(int listener, int client, const struct sockaddr_storage
     return client;
 }
 
+/* accept(2) and accept4(2): a client of another user is closed, and the
+   call takes the next one (a non-blocking listener then gives EAGAIN). */
 int accept(int fd, struct sockaddr *sa, socklen_t *len) {
     ensure_init();
     if (!fd_is_virtual(fd)) return r_accept(fd, sa, len);
-    struct sockaddr_storage raw;
-    socklen_t raw_len = sizeof raw;
-    int client = r_accept(fd, (struct sockaddr *)&raw, &raw_len);
-    return finish_accept(fd, client, &raw, raw_len, sa, len);
+    for (;;) {
+        struct sockaddr_storage raw;
+        socklen_t raw_len = sizeof raw;
+        int client = r_accept(fd, (struct sockaddr *)&raw, &raw_len);
+        if (client >= 0 && !peer_is_own(client)) {
+            logf_("accept: closed a client of another user\n");
+            r_close(client);
+            continue;
+        }
+        return finish_accept(fd, client, &raw, raw_len, sa, len);
+    }
 }
 
 int accept4(int fd, struct sockaddr *sa, socklen_t *len, int flags) {
     ensure_init();
     if (!fd_is_virtual(fd)) return r_accept4(fd, sa, len, flags);
-    struct sockaddr_storage raw;
-    socklen_t raw_len = sizeof raw;
-    int client = r_accept4(fd, (struct sockaddr *)&raw, &raw_len, flags);
-    return finish_accept(fd, client, &raw, raw_len, sa, len);
+    for (;;) {
+        struct sockaddr_storage raw;
+        socklen_t raw_len = sizeof raw;
+        int client = r_accept4(fd, (struct sockaddr *)&raw, &raw_len, flags);
+        if (client >= 0 && !peer_is_own(client)) {
+            logf_("accept: closed a client of another user\n");
+            r_close(client);
+            continue;
+        }
+        return finish_accept(fd, client, &raw, raw_len, sa, len);
+    }
 }
 
 /* The address an un-bound or unconnected socket reports.

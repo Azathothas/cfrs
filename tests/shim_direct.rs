@@ -726,3 +726,97 @@ int main(void){
     assert!(s.contains(&format!("peer {local}")), "{s} / {c}");
     assert!(s.contains(&format!("client said {local}")), "{s}");
 }
+
+/// Issue 308: a stream socket of the shim takes the same user only. A shim
+/// program of another user does not connect to a listener of root at its
+/// abstract name, and does not accept a client of root. Root only (the test
+/// runs the programs as uid 65534).
+#[test]
+fn the_shim_takes_the_same_user_only() {
+    use std::io::{BufRead, Write as _};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    // SAFETY: geteuid() has no precondition.
+    if !have_compiler() || unsafe { libc::geteuid() } != 0 {
+        eprintln!("skipping: no C compiler, or not root");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let shim = shim::build(dir.path()).unwrap();
+    let port = 20000 + (std::process::id() % 20000) as u16;
+    let program = |name: &str, body: &str| {
+        let source = format!(
+            r#"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+int main(int argc,char**argv){{
+  alarm(10);
+  struct sockaddr_in a; memset(&a,0,sizeof a);
+  a.sin_family=AF_INET; a.sin_port=htons(atoi(argv[1]));
+  inet_pton(AF_INET,"10.66.0.2",&a.sin_addr);
+  int s=socket(AF_INET,SOCK_STREAM,0);
+  {body}
+}}
+"#
+        );
+        let path = build_program(dir.path(), name, &format!("#include <stdlib.h>\n{source}"));
+        let mut cmd = Command::new(path);
+        cmd.env("LD_PRELOAD", &shim.path).uid(65534).gid(65534);
+        cmd
+    };
+    let abstract_name = |port: u16| {
+        std::os::unix::net::SocketAddr::from_abstract_name(
+            format!("cfrsnet/4/10.66.0.2/{port}").as_bytes(),
+        )
+        .unwrap()
+    };
+
+    // A listener of root at the abstract name of 10.66.0.2:port.
+    let squatter = std::os::unix::net::UnixListener::bind_addr(&abstract_name(port)).unwrap();
+    let out = program(
+        "own_connect",
+        r#"if(connect(s,(struct sockaddr*)&a,sizeof a)<0){
+    printf("%s\n", errno==ECONNREFUSED?"refused":"error"); return 0;}
+  printf("connected\n"); return 0;"#,
+    )
+    .arg(port.to_string())
+    .output()
+    .unwrap();
+    drop(squatter);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "refused",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // A client of root at the listener of the program of uid 65534.
+    let mut server = program(
+        "own_accept",
+        r#"if(bind(s,(struct sockaddr*)&a,sizeof a)<0||listen(s,4)<0){perror("listen");return 1;}
+  printf("ready\n"); fflush(stdout);
+  sleep(1);
+  fcntl(s,F_SETFL,fcntl(s,F_GETFL)|O_NONBLOCK);
+  int c=accept(s,0,0);
+  printf("%s\n", c>=0?"accepted":errno==EAGAIN?"eagain":"error"); return 0;"#,
+    )
+    .arg((port + 1).to_string())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
+    let mut lines = std::io::BufReader::new(server.stdout.take().unwrap()).lines();
+    assert_eq!(lines.next().unwrap().unwrap(), "ready");
+    let mut client =
+        std::os::unix::net::UnixStream::connect_addr(&abstract_name(port + 1)).unwrap();
+    let _ = client.write_all(b"x");
+    let verdict = lines.next().unwrap().unwrap();
+    let _ = server.wait();
+    assert_eq!(verdict, "eagain");
+}

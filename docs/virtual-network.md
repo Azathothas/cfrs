@@ -77,6 +77,11 @@ on the real `AF_UNIX` descriptor.
   addresses.
 * An abstract name is global on the host (in one network namespace). Two
   programs that bind the same virtual address and port get `EADDRINUSE`.
+* An abstract name has no file permissions. Each user of the host can bind
+  or connect to it. Thus the shim takes the same user only (`SO_PEERCRED`):
+  `accept` closes a client of another user and takes the next client, and
+  `connect` to a listener of another user fails with `ECONNREFUSED`. A
+  datagram socket of the shim has no such check.
 
 ## 4. Stack
 
@@ -151,6 +156,11 @@ Shim programs can also use the switch:
 * `--import VIRT` binds the abstract name of the remote address `VIRT` on this
   host. A shim program that connects to `VIRT` goes through the stack and the
   switch.
+* These sockets take the same user only. The control socket has
+  `SO_PASSCRED` and drops a datagram of another user. `--import` closes a
+  client of another user. The stack does not send a connection to an
+  abstract name that a process of another user holds. The unix listener of
+  `cfrs net switch` closes a peer of another user (also root).
 
 ### 5.4 Faults
 

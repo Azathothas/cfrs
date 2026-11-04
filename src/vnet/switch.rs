@@ -20,7 +20,7 @@ use pod_netns::listen::ProxyListen;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::vnet::device::PacketQueue;
 use crate::vnet::framing::{FrameDecoder, FrameEncoder};
@@ -176,8 +176,29 @@ impl Switch {
     }
 }
 
+/// The effective user of this process.
+fn own_uid() -> u32 {
+    // SAFETY: geteuid() has no precondition.
+    unsafe { libc::geteuid() }
+}
+
+/// True when the process at the other end of `stream` is of the user
+/// `owner` (`SO_PEERCRED`). A unix socket of the switch or of the shim
+/// takes the same user only (issue 308).
+fn peer_is(stream: &tokio::net::UnixStream, owner: u32) -> bool {
+    match stream.peer_cred() {
+        Ok(cred) => cred.uid() == owner,
+        Err(_) => false,
+    }
+}
+
 /// Accept peers on `listen` and forward packets between them.
 pub async fn serve(listen: ProxyListen) -> Result<Switch> {
+    serve_for(listen, own_uid()).await
+}
+
+/// [`serve`], with the user that a unix peer must have.
+async fn serve_for(listen: ProxyListen, owner: u32) -> Result<Switch> {
     let table = Arc::new(Mutex::new(Table::default()));
     let mut listen = listen;
     let task = match &listen {
@@ -201,6 +222,12 @@ pub async fn serve(listen: ProxyListen) -> Result<Switch> {
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
+                    // Issue 308: the same user only. Root can connect to a
+                    // socket of mode 0600 too.
+                    if !peer_is(&stream, owner) {
+                        warn!("refused a switch peer of another user");
+                        continue;
+                    }
                     debug!("switch peer connected");
                     tokio::spawn(peer(stream, table.clone()));
                 }
@@ -352,21 +379,58 @@ fn abstract_connect(name: &str) -> Result<tokio::net::UnixStream> {
 /// sends each connection that arrives (from the switch) to the abstract
 /// socket of the program. Thus a program on this host can accept
 /// connections from stacks on other hosts.
+///
+/// An abstract name has no file permissions, so each local user can send to
+/// it. The socket has `SO_PASSCRED`, and a datagram of another user is
+/// dropped (issue 308).
 #[cfg(target_os = "linux")]
 pub fn serve_control(stack: Arc<NetStack>, name: &str) -> Result<JoinHandle<()>> {
+    serve_control_for(stack, name, own_uid())
+}
+
+/// [`serve_control`], with the user that a sender must have.
+#[cfg(target_os = "linux")]
+fn serve_control_for(stack: Arc<NetStack>, name: &str, owner: u32) -> Result<JoinHandle<()>> {
+    use std::os::fd::AsRawFd;
     use std::os::linux::net::SocketAddrExt;
     let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())?;
     let socket = std::os::unix::net::UnixDatagram::bind_addr(&addr)
         .with_context(|| format!("binding the control name {name}"))?;
+    // A datagram that comes before this has no credentials: it is dropped.
+    let on: libc::c_int = 1;
+    // SAFETY: a valid socket, and a c_int option of the size given.
+    let rc = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PASSCRED,
+            (&on as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("SO_PASSCRED on the control name {name}"));
+    }
     socket.set_nonblocking(true)?;
     let socket = tokio::net::UnixDatagram::from_std(socket)?;
     Ok(tokio::spawn(async move {
         let mut exported = std::collections::HashSet::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            let Ok(n) = socket.recv(&mut buf).await else {
+            let fd = socket.as_raw_fd();
+            let Ok((n, uid)) = socket
+                .async_io(tokio::io::Interest::READABLE, || {
+                    recv_with_uid(fd, &mut buf)
+                })
+                .await
+            else {
                 break;
             };
+            if uid != Some(owner) {
+                debug!(uid = ?uid, "dropped a control datagram of another user");
+                continue;
+            }
             let Ok(Some((message, _))) = crate::vnet::control::ControlMessage::decode(&buf[..n])
             else {
                 debug!("dropped a control datagram that does not decode");
@@ -384,8 +448,52 @@ pub fn serve_control(stack: Arc<NetStack>, name: &str) -> Result<JoinHandle<()>>
     }))
 }
 
+/// Receive one datagram from `fd` with the user of its sender: the
+/// `SCM_CREDENTIALS` message that `SO_PASSCRED` adds. `None` when the
+/// datagram has no credentials.
+#[cfg(target_os = "linux")]
+fn recv_with_uid(fd: std::os::fd::RawFd, buf: &mut [u8]) -> std::io::Result<(usize, Option<u32>)> {
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr().cast(),
+        iov_len: buf.len(),
+    };
+    // Space for one control message: aligned, and larger than
+    // CMSG_SPACE(sizeof(struct ucred)).
+    let mut control = [0u64; 8];
+    // SAFETY: msghdr is plain data; all zero is a valid value.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = std::mem::size_of_val(&control) as _;
+    // SAFETY: msg points to buffers that live for the call.
+    let n = unsafe { libc::recvmsg(fd, &mut msg, libc::MSG_DONTWAIT) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut uid = None;
+    // SAFETY: the CMSG macros walk the control buffer that recvmsg filled,
+    // within msg_controllen.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_CREDENTIALS
+            {
+                let cred: libc::ucred = std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast());
+                uid = Some(cred.uid);
+            }
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+    }
+    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+        uid = None;
+    }
+    Ok((n as usize, uid))
+}
+
 /// Listen on `addr` in the stack and send each connection to the abstract
-/// socket of the shim program that bound `addr` on this host.
+/// socket of the shim program that bound `addr` on this host. A socket of
+/// another user at that name gets no connection (issue 308).
 #[cfg(target_os = "linux")]
 pub async fn export(stack: Arc<NetStack>, addr: crate::vnet::addr::VirtAddr) -> Result<()> {
     let mut listener = stack.listen(addr).await?;
@@ -396,6 +504,9 @@ pub async fn export(stack: Arc<NetStack>, addr: crate::vnet::addr::VirtAddr) -> 
             let name = name.clone();
             tokio::spawn(async move {
                 match abstract_connect(&name) {
+                    Ok(local) if !peer_is(&local, own_uid()) => {
+                        warn!(%name, "the abstract name is of another user: no connection");
+                    }
                     Ok(mut local) => {
                         let _ = tokio::io::copy_bidirectional(&mut virtual_conn, &mut local).await;
                     }
@@ -409,13 +520,18 @@ pub async fn export(stack: Arc<NetStack>, addr: crate::vnet::addr::VirtAddr) -> 
 
 /// Make the remote virtual address `addr` reachable for shim programs on this
 /// host: bind its abstract name here, and connect each client through the
-/// stack (and so through the switch).
+/// stack (and so through the switch). A client of another user is refused
+/// (issue 308).
 #[cfg(target_os = "linux")]
 pub fn import(stack: Arc<NetStack>, addr: crate::vnet::addr::VirtAddr) -> Result<JoinHandle<()>> {
     let listener = abstract_listener(&addr.abstract_name()?)?;
     info!(%addr, "imported a remote address for shim programs");
     Ok(tokio::spawn(async move {
         while let Ok((mut local, _)) = listener.accept().await {
+            if !peer_is(&local, own_uid()) {
+                debug!(%addr, "refused a client of another user");
+                continue;
+            }
             let stack = stack.clone();
             tokio::spawn(async move {
                 match stack.connect(addr).await {
@@ -568,6 +684,65 @@ mod tests {
             assert_eq!(got, b"self");
             accept.await.unwrap();
         }
+        switch.abort();
+    }
+
+    /// Issue 308: the control socket drops a `RegisterBind` of another
+    /// user, and takes the one of its own user.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_control_datagram_of_another_user_is_dropped() {
+        use crate::vnet::control::ControlMessage;
+        use std::os::linux::net::SocketAddrExt;
+        let stack = Arc::new(NetStack::over_link(config(2)));
+        let send = |name: &str, addr: VirtAddr| {
+            let to = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+            let socket = std::os::unix::net::UnixDatagram::unbound().unwrap();
+            socket.connect_addr(&to).unwrap();
+            socket
+                .send(&ControlMessage::RegisterBind { id: 1, addr }.encode())
+                .unwrap();
+        };
+        let pid = std::process::id();
+        let foreign = format!("cfrsnet/test-ctl/{pid}/foreign");
+        let own = format!("cfrsnet/test-ctl/{pid}/own");
+        let a = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8081);
+        let b = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8082);
+        let _foreign =
+            serve_control_for(stack.clone(), &foreign, own_uid().wrapping_add(1)).unwrap();
+        let _own = serve_control_for(stack.clone(), &own, own_uid()).unwrap();
+        send(&foreign, a);
+        send(&own, b);
+        // An exported address is bound in the stack: a second listen fails.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            stack.listen(a).await.is_ok(),
+            "a datagram of another user exported {a}"
+        );
+        assert!(
+            stack.listen(b).await.is_err(),
+            "a datagram of the same user did not export {b}"
+        );
+    }
+
+    /// Issue 308: the unix listener of the switch closes a peer of another
+    /// user at once.
+    #[tokio::test]
+    async fn a_switch_peer_of_another_user_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let listen = ProxyListen::Unix(dir.path().join("switch.sock"));
+        let switch = serve_for(listen.clone(), own_uid().wrapping_add(1))
+            .await
+            .unwrap();
+        let ProxyListen::Unix(path) = &listen else {
+            unreachable!()
+        };
+        let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut byte))
+            .await
+            .expect("the switch keeps a peer of another user");
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
         switch.abort();
     }
 
