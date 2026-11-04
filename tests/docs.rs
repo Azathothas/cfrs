@@ -56,6 +56,7 @@ fn each_path_in_the_documents_exists() {
         "docs/protocol.md",
         "docs/virtual-network.md",
         "docs/target-environment.md",
+        "docs/decisions.md",
     ];
     let prefixes = [
         "scripts/", "docs/", "src/", "tests/", "crates/", ".github/", "fuzz/",
