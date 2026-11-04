@@ -33,6 +33,23 @@ pub struct RawOptions {
     pub nameserver: IpAddr,
 }
 
+/// The program of the pod cannot be run (`execvpe` failed: not in PATH,
+/// not executable). The caller exits 3, as the netns backend does (issue
+/// 251: the child exited 127 with no message).
+#[derive(Debug)]
+pub struct ExecError {
+    pub program: String,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for ExecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "execvpe {}: {}", self.program, self.error)
+    }
+}
+
+impl std::error::Error for ExecError {}
+
 /// A running raw pod: the TUN of its namespace and the pid of the program.
 #[derive(Debug)]
 pub struct RawPod {
@@ -143,6 +160,18 @@ pub fn spawn(opts: &RawOptions) -> Result<RawPod> {
             write_all_fd(parent, b"a")?;
         }
         let fd = recv_fd(parent).context("the TUN of the namespace did not come (no /dev/net/tun, or the namespace cannot bring up its interfaces)")?;
+        // The end of the child has FD_CLOEXEC: a good execvpe closes it
+        // (no byte), and a failed one sends its errno.
+        let mut errno = [0u8; 4];
+        let n = read_exact_fd(parent, &mut errno);
+        if let Ok(4) = n {
+            // SAFETY: the TUN that recv_fd gave; nobody else has it.
+            unsafe { libc::close(fd) };
+            return Err(anyhow::Error::new(ExecError {
+                program: program.clone(),
+                error: std::io::Error::from_raw_os_error(i32::from_ne_bytes(errno)),
+            }));
+        }
         Ok(fd)
     })();
     // SAFETY: our end of the pair.
@@ -287,9 +316,12 @@ unsafe fn child_main(
     if crate::netns::send_fd_raw(sock, tun) != 0 {
         return NO_BACKEND;
     }
-    libc::close(sock);
     libc::close(ctl);
+    // `sock` has FD_CLOEXEC: execvpe closes it. When execvpe fails, the
+    // parent gets the errno.
     libc::execvpe(p.path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+    let errno = (*libc::__errno_location()).to_ne_bytes();
+    libc::write(sock, errno.as_ptr().cast(), errno.len());
     127
 }
 
@@ -348,4 +380,57 @@ unsafe fn add_ipv6(named: &libc::ifreq, v6: Ipv6Addr) {
         libc::ioctl(ctl6, libc::SIOCADDRT as _, &mut rt as *mut In6Rtmsg);
     }
     libc::close(ctl6);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Issue 251: a program that cannot be run is an error that names it
+    // (before: Ok, and the child exited 127 with no message).
+    #[test]
+    fn a_program_that_cannot_run_is_an_error() {
+        if !available() {
+            eprintln!("skip: this host cannot make the namespace");
+            return;
+        }
+        let err = spawn(&RawOptions {
+            program: vec!["/nonexistent/prog".into()],
+            keep_proxy_env: false,
+            v4: Ipv4Addr::new(172, 16, 0, 2),
+            v6: None,
+            mtu: 1280,
+            nameserver: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        })
+        .expect_err("a missing program");
+        let exec = err.downcast_ref::<ExecError>().expect("an ExecError");
+        assert_eq!(exec.error.kind(), std::io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("/nonexistent/prog"), "{err}");
+    }
+
+    #[test]
+    fn a_program_that_runs_gives_the_pod() {
+        if !available() {
+            eprintln!("skip: this host cannot make the namespace");
+            return;
+        }
+        let pod = spawn(&RawOptions {
+            program: vec!["true".into()],
+            keep_proxy_env: false,
+            v4: Ipv4Addr::new(172, 16, 0, 2),
+            v6: None,
+            mtu: 1280,
+            nameserver: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        })
+        .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = try_wait(pod.pid) {
+                break code;
+            }
+            assert!(std::time::Instant::now() < until, "true did not end");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(code, 0);
+    }
 }

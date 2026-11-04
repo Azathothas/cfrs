@@ -5500,6 +5500,12 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             if raw {
                 match warp_run_raw(&client, &program, keep_proxy_env).await {
                     Ok(code) => std::process::exit(code),
+                    // Issue 251: the program cannot run. The proxy pod
+                    // cannot run it either: exit 3, as the netns backend.
+                    Err(err) if err.downcast_ref::<pod_netns::raw::ExecError>().is_some() => {
+                        eprintln!("cfrs: warp run: {err:#}");
+                        std::process::exit(cfrs::exit::NO_BACKEND);
+                    }
                     Err(err) if backend == "auto" => {
                         tracing::info!(error = %format!("{err:#}"), "the netns-raw backend cannot run here; the pod with a proxy runs");
                     }

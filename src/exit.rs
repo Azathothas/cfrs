@@ -79,7 +79,7 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: NO_BACKEND,
         name: "no-backend",
-        meaning: "cfrs pod (and pod-netns): no backend can run on this host, the program is not in PATH, or the setup of the backend failed. pod doctor gives 3 when no backend can run.",
+        meaning: "cfrs pod (and pod-netns) and cfrs warp run: no backend can run on this host, the program is not in PATH (or cannot run), or the setup of the backend failed. pod doctor gives 3 when no backend can run.",
     },
     ExitCode {
         code: USAGE,
