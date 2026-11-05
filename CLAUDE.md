@@ -49,9 +49,10 @@ These rules apply to each session. Obey them before any other default.
   Services: file server, file transfer, git hosting, router.
 - Workspace: `podnet` (root: CLI and library), `crates/podnet-netns` (the
   pod backends, library only), `crates/podnet-todo` (the record tool). The
-  target is six crates here; the WARP and Cloudflare adapters move to the
-  shared repository `PodUtils/podcrates` as `pod-warp` and `pod-cloudflare`
-  (`docs/decisions.md`, 2026-11-05, Shared crates). Do not add a
+  target is five crates here (`podnet`, `podnet-core`, `podnet-netns`,
+  `podnet-vnet`, `podnet-serve`); the WARP and Cloudflare adapters and the
+  shared layers move to the shared repository `PodUtils/podcrates`
+  (`docs/decisions.md`, 2026-11-05, Shared crates and podcrates design). Do not add a
   dependency for the edge protocol: it is implemented in `src/cloudflare/`
   (later in `pod-cloudflare`).
 - A source file has at most 800 lines (`scripts/check-size.py`). A file in

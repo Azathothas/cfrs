@@ -94,7 +94,7 @@ M8 Overlays, M9 Later.
 | [T-046](crates.md) | P2 | M | M3 | chore | open | Prepare the workspace for more crates: the print macros, the build facts, the scans, the package list and the test helpers |
 | [T-047](crates.md) | P2 | L | M3 | chore | open | Extract the crate `podnet-core` |
 | [T-048](crates.md) | P2 | M | M3 | chore | open | Extract the crate `podnet-vnet`, with the C sources of the shims |
-| [T-049](crates.md) | P2 | S | M3 | chore | open | Extract the crate `podnet-relay` |
+| [T-049](crates.md) | P2 | S | M3 | chore | open | The relay client of podnet becomes the shared crate `pod-relay` |
 | [T-050](crates.md) | P2 | M | M3 | chore | open | Move the WARP adapter to the shared crate `pod-warp` in `PodUtils/podcrates` |
 | [T-051](crates.md) | P2 | M | M3 | chore | open | Extract the crate `podnet-serve`, with the library-only modules |
 | [T-052](crates.md) | P2 | M | M3 | chore | open | Move the Cloudflare adapter to the shared crate `pod-cloudflare` in `PodUtils/podcrates` |

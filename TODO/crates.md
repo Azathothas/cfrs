@@ -151,7 +151,7 @@ cargo package --list -p podnet-vnet | grep shim
 
 T-047 is done.
 
-# T-049: Extract the crate `podnet-relay`
+# T-049: The relay client of podnet becomes the shared crate `pod-relay`
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.1.
 **Category:** chore
@@ -176,6 +176,11 @@ The relay client and the reverse road (about 2,400 lines) are in the root crate.
 1. Make crates/podnet-relay with these modules. It depends on the core.
 2. Leave the HTTP/2 leg of `src/ws_relay.rs` in the root crate until T-052.
 
+## Decision
+
+The podcrates design of 2026-11-05 (`docs/decisions.md`): `podnet-relay` merges into `pod-relay` of
+`PodUtils/podcrates`, with the relay client of podssh. podnet has no crate `podnet-relay`.
+
 ## Prove
 
 ```sh
@@ -189,6 +194,7 @@ gh workflow run live.yml
 
 T-047 is done.
 
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 # T-050: Move the WARP adapter to the shared crate `pod-warp` in `PodUtils/podcrates`
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.1.
@@ -441,23 +447,28 @@ adapter of podnet move to the shared repository (T-050, T-052).
 
 ## Premise
 
-- The proposal of the podssh session (2026-11-05), each name free on crates.io that day:
-  `pod-todo` (podssh-todo and `crates/podnet-todo`), `pod-session`, `pod-e2e`, `pod-identity`,
-  `pod-wormhole`, `pod-transit`, `pod-derp`, `pod-acme` and `pod-testkit` first; then `pod-tls`,
-  `pod-dns`, `pod-proxy`, `pod-ws`, `pod-egress`, `pod-relay`, `pod-relay-serve`, `pod-ts`,
-  `pod-iroh`; from podnet `pod-warp` and `pod-cloudflare`.
+- The design of `PodUtils/podcrates` (`docs/decisions.md`, podcrates design): 26 crates in four
+  waves, and 8 names held only. podnet uses `pod-todo`, `pod-identity`, `pod-tls`, `pod-dns`,
+  `pod-proxy`, `pod-ws`, `pod-netstack`, `pod-wg`, `pod-relay`, `pod-session`, `pod-e2e`,
+  `pod-warp`, `pod-cloudflare`, `pod-wormhole`, `pod-transit` and `pod-testkit`.
 - A shared crate takes a stream or dialer trait and a rustls `CryptoProvider`; the binary chooses
   the provider (podnet keeps ring). No git source: the crates come from crates.io (`deny.toml`).
-- `podnet-relay` and the proposed `pod-relay` overlap: the client of the relay contract.
+- `pod-netstack` and `pod-warp` use smoltcp 0.14 and Rust 1.91: podnet pins smoltcp 0.12 and
+  Rust 1.89 (`Cargo.toml`).
 
 ## Approach
 
-1. When the owner has created `PodUtils/podcrates` and ruled the names: move `crates/podnet-todo`
-   to `pod-todo` (podnet depends on it), and do T-050 and T-052 there.
-2. Replace each copy entry of the record with a dependency on its shared crate (T-012, T-086,
-   T-102, T-114, T-123, T-128, T-131, T-134).
-3. Decide with the owner whether `podnet-relay` becomes `pod-relay`.
-4. Write the new order of the record in `TODO/PROGRESS.md`.
+1. When wave 1 exists: replace `crates/podnet-todo` with `pod-todo`, and the TLS, DNS and proxy
+   code of podnet (`src/trust.rs`, `src/resolve.rs`, `src/egress.rs`) with `pod-tls`, `pod-dns`
+   and `pod-proxy`.
+2. When wave 2 exists: replace the relay client (`src/ws_relay.rs`, `src/relay_reverse.rs`) with
+   `pod-relay` (no crate `podnet-relay`: T-049), and the userspace stack and WireGuard of
+   `src/warp/` with `pod-netstack` and `pod-wg`; move to smoltcp 0.14 and Rust 1.91.
+3. When wave 3 exists: replace `src/warp/` and `src/cloudflare/` with `pod-warp` and
+   `pod-cloudflare` (T-050, T-052 hand their code to the podcrates session), and add
+   `send`/`receive` on `pod-wormhole` and `pod-transit`.
+4. Replace each copy entry of the record with its shared crate (T-012, T-086, T-102, T-114,
+   T-123, T-128, T-131, T-134), and write the new order of the record in `TODO/PROGRESS.md`.
 
 ## Prove
 
@@ -470,5 +481,5 @@ The tree shows the shared crates from crates.io.
 
 ## Blocker
 
-The owner: create the repository `PodUtils/podcrates`, rule the names and the order of the shared
-crates, and reserve the names on crates.io.
+The owner: create the repository `PodUtils/podcrates`, reserve the names on crates.io, and start
+the podcrates session.

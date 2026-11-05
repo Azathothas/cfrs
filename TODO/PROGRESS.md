@@ -77,8 +77,8 @@ Each call is in its entry, and the work goes on with it until the owner rules ot
 | Entry | Action |
 | --- | --- |
 | T-021 | Transfer the repository `Azathothas/cfrs` to the organization `PodUtils` and rename it `podnet` |
-| T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay` and `podnet-serve` (0.0.0 placeholders, as `podnet`) |
-| T-137 | Create `PodUtils/podcrates`, and rule the names and the order of the shared crates (`pod-warp` and `pod-cloudflare` from podnet) |
+| T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet` and `podnet-serve` (0.0.0 placeholders, as `podnet`) |
+| T-137 | Create `PodUtils/podcrates`, reserve its 26 crate names and 8 held names (`docs/decisions.md`, podcrates design), and start its session |
 | T-025 | Set the ghcr package `podnet` to public, after T-023 |
 
 ## Questions for the owner
