@@ -3,11 +3,10 @@ name = "podnet-todo"
 description = "The checker of the work record in TODO/: pod-todo of PodUtils/podcrates with the facts of podnet (TODO/todo.toml)."
 version = "0.0.0"
 edition = "2021"
-# pod-todo of PodUtils/podcrates needs Rust 1.97. The tool ships in no
-# release: the rust-version of podnet (the root) does not follow it.
-rust-version = "1.97"
+# pod-todo of PodUtils/podcrates needs Rust 1.99, as the root does.
+rust-version = "1.99"
 license = "0BSD"
 publish = false
 
 [dependencies]
-pod-todo = { git = "https://github.com/PodUtils/podcrates", tag = "v0.1.0" }
+pod-todo = { git = "https://github.com/PodUtils/podcrates", tag = "v0.2.0" }

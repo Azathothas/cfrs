@@ -26,7 +26,7 @@ permissions:
 
 env:
   # The toolchain of each job but msrv. Change it here only.
-  RUST_TOOLCHAIN: "1.97.0"
+  RUST_TOOLCHAIN: "1.99.1"
   CARGO_TERM_COLOR: never
 
 jobs:
@@ -108,9 +108,9 @@ jobs:
           grep -m1 PermissionDenied "$RUNNER_TEMP/plant.log" || { cat "$RUNNER_TEMP/plant.log"; echo "the plant failed for another cause"; exit 1; }
           git checkout -- src/ports.rs
 
-  # The rust-version of Cargo.toml builds the workspace, but the record tool
-  # podnet-todo (it ships in no release; pod-todo needs Rust 1.97). Then a planted call
-  # of an API that is newer than that version must fail to build.
+  # The rust-version of Cargo.toml builds the workspace. It is the Rust of
+  # pod-tls (PodUtils/podcrates), the toolchain of CI: no stable API is newer,
+  # so a planted call of a newer API cannot fail, and there is no such plant.
   msrv:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -126,18 +126,7 @@ jobs:
           sh scripts/retry.sh rustup toolchain install "$msrv" --profile minimal
           echo "MSRV=$msrv" >> "$GITHUB_ENV"
       - name: Check with rust-version
-        run: cargo +"$MSRV" check --locked --workspace --exclude podnet-todo
-      - name: A newer API fails with rust-version
-        run: |
-          set -u
-          # Ipv4Addr::from_octets is stable from Rust 1.91.
-          printf '\n#[doc(hidden)]\npub fn planted_msrv() -> std::net::Ipv4Addr {\n    std::net::Ipv4Addr::from_octets([1, 2, 3, 4])\n}\n' >> src/lib.rs
-          if cargo +"$MSRV" check --locked -p podnet --lib > msrv.log 2>&1; then
-            echo "the planted API built with Rust $MSRV"
-            exit 1
-          fi
-          grep -E 'E0658|unstable' msrv.log || { cat msrv.log; echo "the build failed for another cause"; exit 1; }
-          git checkout -- src/lib.rs
+        run: cargo +"$MSRV" check --locked --workspace
 
   static:
     runs-on: ubuntu-24.04

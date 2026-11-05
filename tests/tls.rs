@@ -157,7 +157,7 @@ fn an_expired_certificate_names_the_host_clock() {
         "{text}"
     );
     assert!(
-        text.contains("certificates are checked against the clock of this host, which reads "),
+        text.contains("certificates are checked against this host's clock, which reads "),
         "{text}"
     );
     assert!(text.trim_end().ends_with("GMT"), "{text}");

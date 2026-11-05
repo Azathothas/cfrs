@@ -279,7 +279,8 @@ impl std::error::Error for EdgeError {}
 /// breaks it.
 pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String> {
     let alpns: &[&[u8]] = if alpn.is_empty() { &[] } else { &[alpn] };
-    crate::trust::client_config(&[CF_EDGE_ROOTS_PEM], alpns)
+    crate::trust::context()
+        .client_config_with(&[CF_EDGE_ROOTS_PEM], alpns)
         .map(Arc::new)
         .map_err(|e| format!("{e:#}"))
 }

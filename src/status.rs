@@ -136,7 +136,7 @@ pub fn document() -> Value {
         "proxy": proxy(),
         "edge_override": edge_override(),
         "warp_identity": warp_identity(),
-        "tls_roots": match crate::trust::roots() {
+        "tls_roots": match crate::trust::context().roots() {
             Ok(roots) => json!(roots.sources),
             Err(err) => json!({"error": format!("{err:#}")}),
         },

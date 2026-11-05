@@ -30,7 +30,8 @@ pub fn client_config(
     }
 
     let Some(path) = ca_file else {
-        return crate::trust::client_config(&[], &[])
+        return crate::trust::context()
+            .client_config_with(&[], &[])
             .map(Arc::new)
             .map_err(|e| format!("{e:#}"));
     };

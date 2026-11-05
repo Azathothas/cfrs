@@ -727,8 +727,8 @@ mod tests {
             parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT"),
             Some(std::time::Duration::ZERO)
         );
-        let later = std::time::SystemTime::now() + secs(3600);
-        let wait = parse_retry_after(&crate::trust::imf_fixdate(later)).unwrap();
+        let later = crate::trust::unix_secs(std::time::SystemTime::now()) + 3600;
+        let wait = parse_retry_after(&pod_core::clock::http_date(later)).unwrap();
         assert!(wait.as_secs() > 3590 && wait.as_secs() <= 3600, "{wait:?}");
         assert_eq!(parse_retry_after("soon"), None);
     }

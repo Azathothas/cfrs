@@ -2,7 +2,7 @@
 name = "podnet"
 version.workspace = true
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.99"
 license = "0BSD"
 build = "build.rs"
 description = "podnet: bring your own network to restricted hosts. Tunnels, WARP, relays, pods, virtual networks, file serving and transfer, from one static binary."
@@ -56,6 +56,11 @@ path = "src/main.rs"
 
 [dependencies]
 podnet-netns = { path = "crates/podnet-netns", version = "0.3.0-beta.12" }
+# TLS of PodUtils/podcrates: the roots, the client configurations and the
+# split of the ClientHello, with podnet's settings (src/trust.rs), on ring.
+pod-tls = { git = "https://github.com/PodUtils/podcrates", tag = "v0.2.0" }
+# The HTTP date of a time (the log of detach, the tests of the clock).
+pod-core = { git = "https://github.com/PodUtils/podcrates", tag = "v0.2.0" }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"

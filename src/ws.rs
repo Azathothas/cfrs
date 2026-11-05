@@ -158,7 +158,7 @@ pub async fn dial(
     let tcp_ms = started.elapsed().as_millis();
     let io: BoxedIo = if tls {
         // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
-        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let config = crate::trust::context().client_config_with(&[], &[b"http/1.1"])?;
         let name = rustls::pki_types::ServerName::try_from(host.clone())
             .with_context(|| format!("{host} is not a valid TLS name"))?;
         let stream = tokio::time::timeout(

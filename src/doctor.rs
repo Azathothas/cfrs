@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -904,16 +904,15 @@ fn verifier(tls: Tls) -> Result<Option<Arc<dyn ServerCertVerifier>>, String> {
         Tls::Edge => &[crate::cloudflare::CF_EDGE_ROOTS_PEM],
         Tls::Masque => return Ok(None),
     };
-    let roots = crate::trust::roots().map_err(|e| format!("{e:#}"))?;
-    let mut store = (*roots.store).clone();
-    for pem in extra {
-        for cert in CertificateDer::pem_slice_iter(pem).flatten() {
-            let _ = store.add(cert);
-        }
-    }
-    let v = rustls::client::WebPkiServerVerifier::builder(Arc::new(store))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let context = crate::trust::context();
+    let roots = context.roots().map_err(|e| format!("{e:#}"))?;
+    let store = roots.with_extra(extra).map_err(|e| format!("{e:#}"))?;
+    let v = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(store),
+        context.provider().clone(),
+    )
+    .build()
+    .map_err(|e| e.to_string())?;
     Ok(Some(v as Arc<dyn ServerCertVerifier>))
 }
 
@@ -1160,7 +1159,7 @@ mod tests {
         let now = std::time::SystemTime::now();
         let unix = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
         assert_eq!(
-            parse_imf_fixdate(&crate::trust::imf_fixdate(now)),
+            parse_imf_fixdate(&pod_core::clock::http_date(unix)),
             Some(unix)
         );
         assert_eq!(parse_imf_fixdate("yesterday"), None);

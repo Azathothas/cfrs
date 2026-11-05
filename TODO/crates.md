@@ -489,6 +489,14 @@ The tree shows the shared crates from the git tags of `PodUtils/podcrates`.
 from crates.io; the toolchain is Rust 1.99, not 1.91. The blocker is gone: `PodUtils/podcrates`
 exists and its session runs.
 
-Done so far: `crates/podnet-todo` is a wrapper of `pod-todo` v0.1.0 (`main` calls
-`pod_todo::main()`; the facts of podnet are in `TODO/todo.toml`). The tool has `rust-version`
-1.97; the `msrv` job of CI checks the workspace without it.
+Done so far:
+
+- `pod-todo` v0.1.0 (6c210ed): `crates/podnet-todo` is a wrapper (`main` calls
+  `pod_todo::main()`; the facts of podnet are in `TODO/todo.toml`).
+- `pod-tls` and `pod-core` v0.2.0 (the patch `adoption/podnet/pod-tls.patch` of podcrates):
+  `src/trust.rs` is the glue (one context of the process on ring, the edge roots of Cloudflare as
+  extra roots); the module `tls_fragment` is gone (the split is in `pod-tls`). Each `pod-*`
+  dependency names `tag = "v0.2.0"`. The `rust-version` is 1.99 and each toolchain pin is 1.99.1;
+  the `msrv` job has no plant step (no stable API is newer than 1.99).
+- Next: `pod-proxy` (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`), `pod-dns`
+  (`src/resolve.rs`), `pod-ws` (`src/ws.rs`).

@@ -12,7 +12,7 @@ use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
+use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use tokio_rustls::TlsConnector;
 
 use crate::ingress::{OriginOptions, Service};
@@ -261,15 +261,20 @@ fn verified_connector() -> TlsConnector {
     static ONCE: OnceLock<TlsConnector> = OnceLock::new();
     ONCE.get_or_init(|| {
         init_crypto();
-        let config = crate::trust::client_config(&[], &[]).unwrap_or_else(|err| {
-            tracing::warn!("{err:#}; using the compiled-in roots only");
-            let mut roots = RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth()
-        });
-        TlsConnector::from(Arc::new(config))
+        let context = crate::trust::context();
+        let config = context
+            .client_config_with(&[], &[])
+            .map(Arc::new)
+            .or_else(|err| {
+                tracing::warn!("{err:#}; using the compiled-in roots only");
+                pod_tls::client_config(
+                    &pod_tls::roots_from_compiled_set(),
+                    context.provider().clone(),
+                    context.groups().clone(),
+                )
+            })
+            .expect("a configuration over the compiled-in roots");
+        TlsConnector::from(config)
     })
     .clone()
 }

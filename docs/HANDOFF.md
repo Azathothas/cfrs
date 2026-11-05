@@ -10,8 +10,9 @@ this file when each step below is done.
 * The repository is `PodUtils/podnet`. GitHub redirects `Azathothas/cfrs`
   (T-021). Nobody may create a new `Azathothas/cfrs`: that ends the
   redirects.
-* `crates/podnet-todo` is a wrapper of `pod-todo` v0.1.0 of
-  `PodUtils/podcrates` (a git tag; T-137, partial).
+* podnet takes `pod-todo`, `pod-core` and `pod-tls` of
+  `PodUtils/podcrates` by the git tag `v0.2.0` (T-137, partial). The
+  toolchain is Rust 1.99.1.
 * `.github/workflows/publish.yml` publishes to crates.io by trusted
   publishing. The switch `[workspace.metadata.podnet] crates-io` is false.
 * The newest release is `v0.3.0-beta.12` of cfrs. No podnet release now.
@@ -19,17 +20,15 @@ this file when each step below is done.
 ## Next steps, in order
 
 1. The podcrates session (`session_01DXe55yrKCQcv8EsqqHsc4u`) sends the
-   patch for `pod-tls` when podcrates v0.2.0 is tagged. Apply it, run
+   patch of each next crate on the day of its release: `pod-proxy`
+   (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`), `pod-dns`
+   (`src/resolve.rs`), `pod-ws` (`src/ws.rs`). Apply it, run
    `sh scripts/agent/check.sh`, commit (T-137), push, and send it the
-   commit of `main`. The patch moves the `rust-version` of the root,
-   `podnet-netns` and `podnet-todo` to 1.99 and removes the plant step of
-   the `msrv` job. Each toolchain pin must be 1.99.1 or newer: `ci.yml`,
-   `live.yml`, `publish.yml`, `fuzz.yml`, `upstream.yml` (now 1.97.0), the
-   image of `images/build`, and the Rust version in `README.md`.
-2. Then `pod-proxy` (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`),
-   `pod-dns` (`src/resolve.rs`) and `pod-ws` (`src/ws.rs`), each from its
-   release.
-3. Until podnet takes a crate, its source files in podnet change only for
+   commit of `main`.
+2. Until podnet takes a crate, its source files in podnet change only for
    fixes; tell the podcrates session of each fix (`docs/decisions.md`,
-   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs`,
-   `src/trust.rs`, `src/tls_fragment.rs`.
+   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs` and the
+   files of step 1.
+3. The pin `smoltcp = "=0.12.0"` of `Cargo.toml` names Rust 1.91 as its
+   reason. That reason is gone at Rust 1.99; the move to smoltcp 0.14 is
+   wave 2 of T-137 (`pod-netstack`).

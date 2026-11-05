@@ -294,7 +294,7 @@ fn begin_log(path: &Path, name: &str) {
     let _ = writeln!(
         file,
         "podnet: ---- start {} pid {} name {name} ----",
-        crate::trust::imf_fixdate(std::time::SystemTime::now()),
+        pod_core::clock::http_date(crate::trust::unix_secs(std::time::SystemTime::now())),
         std::process::id()
     );
     // Issue 182: a restarted child has the log as its stderr (from its

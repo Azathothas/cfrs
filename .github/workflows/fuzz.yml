@@ -26,7 +26,7 @@ permissions:
 env:
   NIGHTLY: nightly-2026-10-15
   CARGO_FUZZ: "0.13.1"
-  STABLE: "1.97.0"
+  STABLE: "1.99.1"
   CARGO_TERM_COLOR: never
 
 jobs:

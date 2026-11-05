@@ -186,7 +186,7 @@ async fn trace_at(stack: &super::WarpStack, address: std::net::IpAddr) -> Result
             443,
         )
         .await?;
-        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let config = crate::trust::context().client_config_with(&[], &[b"http/1.1"])?;
         let name = rustls::pki_types::ServerName::try_from(TRACE_NAME).expect("a name");
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(name, stream)

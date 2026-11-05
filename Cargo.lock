@@ -2085,9 +2085,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "pod-core"
+version = "0.2.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
+dependencies = [
+ "libc",
+ "rand",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pod-tls"
+version = "0.2.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
+dependencies = [
+ "base64",
+ "p256",
+ "pod-core",
+ "rustls",
+ "rustls-pki-types",
+ "security-framework",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pod-todo"
-version = "0.1.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.1.0#57a731ef96be85c6f4bdd26b74ab6ab052b1f321"
+version = "0.2.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
 
 [[package]]
 name = "podnet"
@@ -2108,6 +2137,8 @@ dependencies = [
  "http-body-util",
  "httparse",
  "libc",
+ "pod-core",
+ "pod-tls",
  "podnet-netns",
  "qrcode",
  "quinn",

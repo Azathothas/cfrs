@@ -9,7 +9,8 @@
   shared crates go on now (T-137). There is no release now. Each other entry waits until podnet
   takes the shared crates.
 - podnet takes each crate of `PodUtils/podcrates` by a git tag, on the day of its release (T-137).
-  Done: `pod-todo` v0.1.0. Next: `pod-tls` (v0.2.0), then `pod-proxy`, `pod-dns`, `pod-ws`.
+  Done: `pod-todo` v0.1.0, `pod-tls` and `pod-core` v0.2.0. Next: `pod-proxy`, `pod-dns`,
+  `pod-ws`.
 - Keep this section short. Write the current state only; git keeps the history.
 
 ## Work order

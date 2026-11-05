@@ -966,9 +966,9 @@ fn main() {
         podnet::trust::set_ca_file(path.clone());
         // Issue 173: a roots file that cannot be used exits 78 for each
         // command (status and doctor too), before any work.
-        if let Err(err) = podnet::trust::roots() {
+        if let Err(err) = podnet::trust::context().roots() {
             // Issue 253: trust::roots names the file already.
-            let err = podnet::exit::fault(podnet::exit::Fault::Config, err);
+            let err = podnet::exit::fault(podnet::exit::Fault::Config, err.into());
             print_error(
                 &podnet::report::error_line(&err),
                 podnet::exit::code_of(&err),
@@ -4708,13 +4708,13 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
     let resolvers = podnet::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
     podnet::warp::proxy::set_resolvers(resolvers);
     // Issue 135: the split of the ClientHello of the MASQUE connection.
-    if let Some(split) = podnet::tls_fragment::Split::parse(
+    if let Some(split) = podnet::warp::live::parse_split(
         args.fragment_client_hello.as_deref().unwrap_or("off"),
         args.fragment_size.as_deref(),
     )
     .fault(Fault::Config)?
     {
-        podnet::tls_fragment::set(split);
+        podnet::warp::live::set_split(split);
     }
     // Issue 141: the name, the model and the locale of a new device.
     podnet::warp::register::DeviceHints {

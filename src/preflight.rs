@@ -258,7 +258,7 @@ pub async fn check(config: &Config) -> Report {
     };
 
     // Issue 173 row 11: the roots of --ca-file and SSL_CERT_FILE.
-    match crate::trust::roots() {
+    match crate::trust::context().roots() {
         Ok(roots) => report.push("tls-roots", Status::Pass, roots.sources.join(", ")),
         Err(err) => report.config_fail("tls-roots", format!("{err:#}")),
     }

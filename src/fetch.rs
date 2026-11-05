@@ -191,7 +191,7 @@ async fn send(request: Request) -> Result<Response> {
     )
     .await?;
     if target.tls {
-        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let config = crate::trust::context().client_config_with(&[], &[b"http/1.1"])?;
         let name = rustls::pki_types::ServerName::try_from(target.host.clone())
             .context("the host of the URL is not a TLS name")?;
         let tls = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))

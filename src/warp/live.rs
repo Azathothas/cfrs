@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use pod_tls::fragment::{Part, Split};
 use tokio::sync::{watch, Mutex};
 use tracing::{info, warn};
 
@@ -72,6 +73,42 @@ fn max_age() -> Option<Duration> {
         0 => None,
         secs => Some(Duration::from_secs(secs)),
     }
+}
+
+/// `--fragment-client-hello` and `--fragment-size` (issue 135): the split of
+/// the first ClientHello of each MASQUE connection, when one is set.
+static SPLIT: std::sync::OnceLock<Split> = std::sync::OnceLock::new();
+
+/// The split of `--fragment-client-hello` (`off`, `record` or `sni`; `off`
+/// gives `None`) and `--fragment-size` (`N` or `MIN-MAX`). A bad size is an
+/// error also with `off` (issue 252).
+pub fn parse_split(mode: &str, size: Option<&str>) -> Result<Option<Split>> {
+    Split::parse(mode, size).map_err(|err| match err {
+        pod_tls::Error::Split {
+            part: Part::Mode,
+            value,
+        } => anyhow::anyhow!(
+            "--fragment-client-hello={value:?}: give {}",
+            Part::Mode.accepted()
+        ),
+        pod_tls::Error::Split {
+            part: Part::Size,
+            value,
+        } => anyhow::anyhow!("--fragment-size={value}: give {}", Part::Size.accepted()),
+        other => other.into(),
+    })
+}
+
+/// Set the split of this process. A later call does nothing.
+pub fn set_split(split: Split) {
+    if SPLIT.set(split).is_ok() {
+        info!(mode = ?split.mode, min = split.min, max = split.max, "the first ClientHello of each MASQUE connection is split across records");
+    }
+}
+
+/// The split of the MASQUE connections, when one is set.
+pub fn split() -> Option<Split> {
+    SPLIT.get().copied()
 }
 
 /// Opens a new session.

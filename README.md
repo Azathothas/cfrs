@@ -1298,7 +1298,7 @@ cargo build --release
 ```
 
 The binary is `target/release/podnet`. Rust
-1.89 or newer is necessary.
+1.99 or newer is necessary.
 
 A static binary has no run-time dependency on the C library of the host:
 

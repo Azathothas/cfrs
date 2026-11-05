@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RUST_TOOLCHAIN: "1.97.0"
+  RUST_TOOLCHAIN: "1.99.1"
   CARGO_TERM_COLOR: never
   RUST_LOG: podnet=info
 

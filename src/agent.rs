@@ -271,9 +271,9 @@ async fn tls_with_bundle(task: &Task, path: Path, timeout: Duration) -> Outcome 
         Ok(io) => io,
         Err(err) => return Outcome::Failed(short(&err)),
     };
-    let config = match crate::trust::client_config(&[], &[b"http/1.1"]) {
+    let config = match crate::trust::context().client_config_with(&[], &[b"http/1.1"]) {
         Ok(config) => config,
-        Err(err) => return Outcome::Failed(short(&err)),
+        Err(err) => return Outcome::Failed(short(&err.into())),
     };
     let Ok(name) = rustls::pki_types::ServerName::try_from(task.host.to_string()) else {
         return Outcome::Failed("a bad TLS name".into());

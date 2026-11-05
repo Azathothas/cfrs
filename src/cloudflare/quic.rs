@@ -168,7 +168,9 @@ pub(crate) mod testing {
         )
         .unwrap();
         let addr = server.local_addr().unwrap();
-        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"podnet-test"]).unwrap();
+        let tls = crate::trust::context()
+            .client_config_with(&[cert.pem().as_bytes()], &[b"podnet-test"])
+            .unwrap();
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
         let mut config = ClientConfig::new(Arc::new(crypto));
         config.transport_config(Arc::new(transport_config(1252)));

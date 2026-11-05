@@ -607,7 +607,7 @@ async fn websocket_at(
         .with_context(|| format!("TCP to the relay {}", host.url()))?;
     let io: BoxedIo = if host.tls {
         // HTTP/1.1 only: a WebSocket upgrade does not go over HTTP/2.
-        let config = crate::trust::client_config(&[], &[b"http/1.1"])?;
+        let config = crate::trust::context().client_config_with(&[], &[b"http/1.1"])?;
         let name = rustls::pki_types::ServerName::try_from(host.host.clone())
             .context("the relay host is not a valid TLS name")?;
         let tls = tokio::time::timeout(

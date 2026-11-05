@@ -37,7 +37,7 @@ jobs:
           grep -q 'tunnelrpc.capnp' plant.log
       - name: Toolchain
         run: |
-          sh scripts/retry.sh rustup toolchain install 1.97.0 --profile minimal
-          rustup default 1.97.0
+          sh scripts/retry.sh rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
       - name: The header encoding against the Go code of cloudflared
         run: sh tools/check-header-oracle.sh

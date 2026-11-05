@@ -358,7 +358,7 @@ async fn exchange(stack: &WarpStack, resolver: &Resolver, query: &[u8]) -> Resul
                 .map_err(|_| anyhow::anyhow!("connect to {addr} through WARP timed out"))??;
             let (stream, remote) = tokio::io::duplex(4 * CHUNK);
             tokio::spawn(bridge(conn, remote));
-            let config = crate::trust::client_config(&[], &[])?;
+            let config = crate::trust::context().client_config_with(&[], &[])?;
             let server = rustls::pki_types::ServerName::try_from(name.clone())
                 .with_context(|| format!("{name:?} is not a TLS name"))?;
             let tls = tokio::time::timeout(
