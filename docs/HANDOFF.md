@@ -21,8 +21,11 @@ this file when each step below is done.
 1. The podcrates session (`session_01DXe55yrKCQcv8EsqqHsc4u`) sends the
    patch for `pod-tls` when podcrates v0.2.0 is tagged. Apply it, run
    `sh scripts/agent/check.sh`, commit (T-137), push, and send it the
-   commit of `main`. The patch moves the root `rust-version` and
-   `podnet-netns` to 1.97 and removes the plant step of the `msrv` job.
+   commit of `main`. The patch moves the `rust-version` of the root,
+   `podnet-netns` and `podnet-todo` to 1.99 and removes the plant step of
+   the `msrv` job. Each toolchain pin must be 1.99.1 or newer: `ci.yml`,
+   `live.yml`, `publish.yml`, `fuzz.yml`, `upstream.yml` (now 1.97.0), the
+   image of `images/build`, and the Rust version in `README.md`.
 2. Then `pod-proxy` (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`),
    `pod-dns` (`src/resolve.rs`) and `pod-ws` (`src/ws.rs`), each from its
    release.

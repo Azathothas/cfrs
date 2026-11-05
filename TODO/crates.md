@@ -454,7 +454,7 @@ adapter of podnet move to the shared repository (T-050, T-052).
 - A shared crate takes a stream or dialer trait and a rustls `CryptoProvider`; the binary chooses
   the provider (podnet keeps ring). podnet takes each crate by a git tag of
   `PodUtils/podcrates` (`deny.toml`, `allow-git`), not from crates.io.
-- podcrates is edition 2024 with `rust-version` 1.97. `pod-netstack` and `pod-warp` use smoltcp
+- podcrates is edition 2024 with `rust-version` 1.99 (`pod-todo` v0.1.0 needs 1.97). `pod-netstack` and `pod-warp` use smoltcp
   0.14: podnet pins smoltcp 0.12 and `rust-version` 1.89 (`Cargo.toml`).
 - podcrates v0.1.0 has `pod-todo`, `pod-core`, `pod-testkit`, `pod-term` and `pod-identity`. Its
   hand-off for podnet is `adoption/podnet/CRATE.patch` in `PodUtils/podcrates`.
@@ -466,7 +466,7 @@ adapter of podnet move to the shared repository (T-050, T-052).
    and `pod-proxy`.
 2. When wave 2 exists: replace the relay client (`src/ws_relay.rs`, `src/relay_reverse.rs`) with
    `pod-relay` (no crate `podnet-relay`: T-049), and the userspace stack and WireGuard of
-   `src/warp/` with `pod-netstack` and `pod-wg`; move to smoltcp 0.14 and Rust 1.97.
+   `src/warp/` with `pod-netstack` and `pod-wg`; move to smoltcp 0.14 and Rust 1.99.
 3. When wave 3 exists: replace `src/warp/` and `src/cloudflare/` with `pod-warp` and
    `pod-cloudflare` (T-050, T-052 hand their code to the podcrates session), and add
    `send`/`receive` on `pod-wormhole` and `pod-transit`.
@@ -486,7 +486,7 @@ The tree shows the shared crates from the git tags of `PodUtils/podcrates`.
 
 2026-11-05, the rulings "Delivery of the shared crates", "Who edits a shared crate" and
 "Toolchain" (`docs/decisions.md`): the crates come by a git tag of `PodUtils/podcrates`, not
-from crates.io; the toolchain is Rust 1.97, not 1.91. The blocker is gone: `PodUtils/podcrates`
+from crates.io; the toolchain is Rust 1.99, not 1.91. The blocker is gone: `PodUtils/podcrates`
 exists and its session runs.
 
 Done so far: `crates/podnet-todo` is a wrapper of `pod-todo` v0.1.0 (`main` calls
