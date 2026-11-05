@@ -27,8 +27,10 @@ this file when each step below is done.
    commit of `main`.
 2. Until podnet takes a crate, its source files in podnet change only for
    fixes; tell the podcrates session of each fix (`docs/decisions.md`,
-   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs` and the
-   files of step 1.
+   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs`;
+   `src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs` and their tests
+   (`pod-proxy`, from a8071b1); each place of
+   `docs/reports/services-inventory-2026-11-05.md` (`pod-services`).
 3. `pod-services` (`docs/decisions.md`, Services crate): the lists of
    services of other parties, their measurements and the watch workflows
    move to podcrates. Add no new hardcoded service. The inventory for the
