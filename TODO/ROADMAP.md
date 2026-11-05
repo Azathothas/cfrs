@@ -18,7 +18,8 @@ the workflows have the name podnet.
 
 ## M2: Split
 
-No Rust file has more than 800 lines.
+No Rust file has more than 800 lines: `scripts/size-allow.txt`, the
+allowlist of `scripts/check-size.py`, is empty.
 
 ## M3: Crates
 

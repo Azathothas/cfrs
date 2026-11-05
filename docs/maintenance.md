@@ -41,7 +41,7 @@ state of the open work.
   `.claude/session-start.sh`.
 * **Helper scripts of the agent** (in `scripts/agent/`):
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push,
-    and `cargo todo check`.
+    `cargo todo check` and `scripts/check-size.py`.
   * `watch-issues.sh [STATE_DIR]`: one line for each new issue
     (`new-issues.py` reads the issue list). It keeps a copy of each issue
     in `STATE_DIR/issues/NUMBER.json`. GitHub deletes the issues of a

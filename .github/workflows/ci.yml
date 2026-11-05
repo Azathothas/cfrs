@@ -6,7 +6,8 @@ name: ci
 # * restricted-host: the tests with bind(AF_INET) refused.
 # * msrv: the workspace builds with the rust-version of Cargo.toml.
 # * static: static musl binaries for x86_64 and aarch64, with their sizes.
-# * workflows: the rules of scripts/check-workflows.py.
+# * workflows: the rules of scripts/check-workflows.py, and the size of the
+#   Rust files (scripts/check-size.py).
 # * record: the tests of the checker of the work record (crates/podnet-todo),
 #   and `cargo todo check` (TODO/RULES.md).
 # * plant: each check above must fail on a planted fault.
@@ -194,6 +195,12 @@ jobs:
           persist-credentials: false
       - name: The rules of the workflows
         run: python3 scripts/check-workflows.py
+      # 800 lines for each Rust file, or the count of scripts/size-allow.txt,
+      # which can only go down. The self-test plants each fault first.
+      - name: The size of the Rust files
+        run: |
+          python3 -I scripts/check-size.py --self-test
+          python3 -I scripts/check-size.py
       # #246: the shell scripts have no shellcheck warning.
       - name: shellcheck
         run: |
@@ -305,6 +312,15 @@ jobs:
           git diff --quiet -- TODO/deferred.md && { echo "the plant did not change TODO/deferred.md"; exit 1; }
           must_fail "cargo todo check, a status that differs from its row" cargo run --locked -q -p podnet-todo -- check
           git checkout -- TODO/deferred.md
+
+          # An allowlisted Rust file that grew, and a new file over 800 lines.
+          f=$(awk '!/^#/ && NF { print $2; exit }' scripts/size-allow.txt)
+          echo '// planted' >> "$f"
+          must_fail "check-size.py, an allowlisted file that grew" python3 -I scripts/check-size.py
+          git checkout -- "$f"
+          seq 801 | sed 's|^|// |' > src/planted_size.rs
+          must_fail "check-size.py, a new file over 800 lines" python3 -I scripts/check-size.py
+          rm src/planted_size.rs
 
           exit "$fail"
 

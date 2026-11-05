@@ -7,9 +7,17 @@ each session; `docs/maintenance.md` has the procedures.
 
 Run `sh scripts/agent/check.sh`. It runs `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace` and `cargo todo check` (the work record in
-`TODO/`, `TODO/RULES.md`). Push only when each exits 0. CI
-(`.github/workflows/ci.yml`) runs the same.
+`cargo test --workspace`, `cargo todo check` (the work record in
+`TODO/`, `TODO/RULES.md`) and `python3 -I scripts/check-size.py`. Push
+only when each exits 0. CI (`.github/workflows/ci.yml`) runs the same.
+
+## File size
+
+A Rust file has 800 lines or fewer. `scripts/check-size.py` fails on a
+longer file, except the files of `scripts/size-allow.txt`. An allowlisted
+file can only become smaller: when it becomes smaller, lower its count
+(`python3 -I scripts/check-size.py --update`). Do not add a file to the
+list: split the file.
 
 ## Rules for tests
 

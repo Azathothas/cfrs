@@ -1,0 +1,37 @@
+# The Rust files that have more than 800 lines, with their line counts
+# (scripts/check-size.py). A file in this list can only become smaller.
+# When a file becomes smaller, lower its count; when it has 800 lines or
+# fewer, remove its line: python3 -I scripts/check-size.py --update.
+# Do not add a file, and do not raise a count: split the file.
+1199 crates/pod-netns/src/netns.rs
+1900 crates/pod-netns/src/seccomp.rs
+1040 crates/pod-netns/src/upstream.rs
+2018 crates/pod-netns/tests/seccomp.rs
+944 src/cloudflare/capnp.rs
+1123 src/cloudflare/http2.rs
+1204 src/config.rs
+1210 src/detach.rs
+1309 src/doctor.rs
+1736 src/edge_h2.rs
+1707 src/egress.rs
+2139 src/feature/mod.rs
+7103 src/main.rs
+2034 src/proxy.rs
+892 src/quicktunnel.rs
+1139 src/relay_reverse.rs
+1901 src/share.rs
+1599 src/tunnel.rs
+1162 src/update.rs
+2103 src/vnet/stack.rs
+1072 src/vnet/switch.rs
+1680 src/warp/ip.rs
+1105 src/warp/mod.rs
+1991 src/warp/proxy.rs
+936 src/warp/register.rs
+1211 src/warp/session.rs
+1043 src/warp/up.rs
+1078 src/warp/wg.rs
+995 src/ws_relay.rs
+2305 tests/cli.rs
+812 tests/detach.rs
+822 tests/shim_direct.rs
