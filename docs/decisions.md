@@ -64,6 +64,8 @@ form of the rulings that apply to each session.
 | 2026-11-05 | `publish.yml` | A publish workflow `.github/workflows/publish.yml`, separate from `release.yml`. crates.io trusts the repository `PodUtils/podnet`, this file and the environment `crates-io` (tags `v*` only). No crates.io token is stored. The token comes from `rust-lang/crates-io-auth-action` (pinned to a SHA). Each run does `cargo publish --workspace --dry-run`. The real publish runs only when `[workspace.metadata.podnet] crates-io = true` at the tag; it stays false while "Publish no real version yet" is in force. |
 | 2026-11-05 | Git dependencies and the publish (Q1) | Each `pod-*` dependency of a crate that can be published has `version` beside `git` and `tag`. Cargo builds from the git tag; `cargo deny` (wildcards) needs the version; crates.io takes the version. Until podcrates publishes its crates to crates.io, the dry run of `publish.yml` on a tag fails, and the switch stays false. |
 | 2026-11-05 | ghcr package | The package `ghcr.io/podutils/podnet` takes the visibility of the public repository when the first release pushes it. No owner action. |
+| 2026-11-05 | Shared CI scripts | A CI script that podnet and podssh share (the zig fetch with its mirrors, T-133) lives in `PodUtils/podcrates`. podnet calls it from there; it does not copy it. |
+| 2026-11-05 | Relay contract watch | The weekly watch of the relay contract belongs to `pod-relay` in `PodUtils/podcrates` (T-134), not to podnet. |
 
 ## Superseded
 

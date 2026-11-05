@@ -656,6 +656,14 @@ sh scripts/fetch-zig.sh
 gh workflow run release.yml --ref main
 ```
 
+## Correction
+
+2026-11-05, the owner (`docs/decisions.md`, Shared CI scripts): the zig fetch script, its list of
+mirrors and the weekly check of the list live in `PodUtils/podcrates`, not as a copy in podnet.
+podnet's part: when podcrates has the script, `release.yml` calls it from podcrates (pinned to a
+tag or a commit). When podcrates does not have it, open an issue there. Steps 1 and 3 are void in
+podnet.
+
 # T-134: A weekly watch of the relay contract
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.10, 3 (C14) and 4.
@@ -708,9 +716,8 @@ The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 20
 
 ## Correction
 
-2026-11-05, podnet copies no file of podssh (`docs/decisions.md`, Shared crates), so no pin file of copied files
-is necessary: steps 1 and 2 are void. A change of a shared crate comes by a git tag of PodUtils/podcrates. Step 3
-(the check of the relay contract against `https://tcp.ssh.relay.ajam.dev/llms-full.txt`) stays; the
-contract belongs to `pod-relay` (T-049), so check first whether podcrates has the check. The title is
-changed. The Decision section keeps the ruling.
-
+2026-11-05, podnet copies no file of podssh (`docs/decisions.md`, Shared crates): steps 1 and 2 are
+void. The owner (`docs/decisions.md`, Relay contract watch): the weekly watch of the relay contract
+(step 3, against `https://tcp.ssh.relay.ajam.dev/llms-full.txt`) belongs to `pod-relay` in
+`PodUtils/podcrates`, not to podnet. podnet's part: check that podcrates has the watch, else open
+an issue there; then set this entry to done.
