@@ -213,6 +213,22 @@ fn a_reference_to_no_entry_is_found() {
     assert_found(&t, "README.md:3: T-099 is not an entry of the index");
 }
 
+/// The release notes, the issue reports and the studies are readings at
+/// a time: an id of another record, or a "yet", there is no problem.
+#[test]
+fn the_readings_at_a_time_are_not_read() {
+    let t = Tree::new("readings");
+    for dir in ["docs/releases", "docs/reports", "docs/research/x"] {
+        t.write(
+            &format!("{dir}/a.md"),
+            "# A\n\npodssh T-155 is not built yet.\n",
+        );
+    }
+    assert_eq!(t.problems(), Vec::<String>::new());
+    t.write("docs/other.md", "# A\n\npodssh T-155 is not built yet.\n");
+    assert_found(&t, "docs/other.md:3: T-155 is not an entry of the index");
+}
+
 #[test]
 fn a_cited_path_must_exist() {
     let t = Tree::new("path");

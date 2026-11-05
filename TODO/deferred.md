@@ -296,10 +296,11 @@ both crates.
 
 ## Approach
 
-1. The owner chooses a package name (T-007).
+1. Use the package names of the rename (T-007).
 2. Set the stable version (T-006).
 3. Add a crates.io token as a secret, and a publish step to
-   `.github/workflows/release.yml`: `pod-netns` first.
+   `.github/workflows/release.yml`: the library crates first, from the
+   bottom up.
 
 ## Prove
 
@@ -310,9 +311,8 @@ cargo publish --dry-run --locked -p cfrs
 
 ## Blocker
 
-The owner. The ruling "crates.io" of 2026-11-04 in `docs/decisions.md`:
-publish nothing now, and choose no package name; decide again at the
-stable release.
+The owner. The ruling "crates.io" of 2026-11-05 in `docs/decisions.md`:
+publish nothing now, and keep the packaging ready for a publish.
 
 # T-006: crates.io: the workspace version and the `pod-netns` requirement are prereleases (GitHub #222)
 
@@ -330,9 +330,11 @@ dependency `pod-netns` requires `0.3.0-beta.12`. crates.io marks a version
 with a pre-release identifier as a prerelease: it does not satisfy
 `^0.3.0`, and `cargo install` skips it unless `--version` names it. A
 requirement `^0.3.0-beta.N` matches only prereleases, so it does not match
-a stable `pod-netns` `0.3.0`. The first stable version is `0.3.0`. Change
-the workspace version and the requirement in one commit. The release
-notes tell the users who pinned `=0.3.0-beta.N` to change to `0.3.0`.
+a stable `pod-netns` `0.3.0`. The first stable version of a line is
+`X.Y.0` of that line (`0.3.0` now; podnet starts at `v0.4.0-beta.1`, the
+ruling "Rename" of 2026-11-05). Change the workspace version and each
+requirement between the crates in one commit. The release notes tell the
+users who pinned a prerelease to change to the stable version.
 
 ## Premise
 
@@ -342,14 +344,14 @@ problem: crates.io decides at the upload.
 ## Approach
 
 At the first stable release, in one commit: set the workspace version and
-the `pod-netns` requirement to `0.3.0` (step 1 of "Release" in
+each requirement between the crates to `X.Y.0` (step 1 of "Release" in
 `docs/maintenance.md`), and write the note in the release notes.
 
 ## Prove
 
 ```sh
-grep -n '^version = "0.3.0"$' Cargo.toml
-cargo package --locked --list -p pod-netns
+grep -n '^version = "[0-9]*\.[0-9]*\.0"$' Cargo.toml
+cargo package --locked --list --workspace
 ```
 
 ## Blocker
@@ -380,21 +382,30 @@ program-name strings of the CLI, the cross-references of
 ## Premise
 
 Read: the answer of `https://crates.io/api/v1/crates/cfrs` that the issue
-quotes. Not measured here.
+quotes. The ruling "Name" of 2026-11-05 in `docs/decisions.md` names the
+project podnet, and the ruling "Crates" names its crates (`podnet`,
+`podnet-core`, `podnet-netns` and five more). Measured on 2026-11-05:
+`https://crates.io/api/v1/crates/podnet` and
+`https://crates.io/api/v1/crates/podnet-netns` answer 404 (no such crate).
+Another project can take a free name before the publish.
 
 ## Approach
 
-1. The owner chooses a package name.
-2. In one commit: set `[package] name`, keep the binary name, and change
-   the texts of the Problem.
+1. The rename (milestone M1) sets the package names of the ruling
+   "Crates".
+2. Before the publish: read the crates.io API for each name again.
+3. In the commit of the publish: the install text of `README.md`, a
+   crates.io install section and a docs.rs badge.
 
 ## Prove
 
 ```sh
-cargo package --locked --list -p NAME
+curl -qsS -o /dev/null -w '%{http_code}\n' https://crates.io/api/v1/crates/podnet
+cargo package --locked --list --workspace
 ```
 
 ## Blocker
 
-The owner chooses a package name. The ruling "crates.io" of 2026-11-04 in
-`docs/decisions.md`: choose no package name now.
+The owner. The ruling "crates.io" of 2026-11-05 in `docs/decisions.md`:
+publish nothing now. The name of the package comes from the rename
+(milestone M1).

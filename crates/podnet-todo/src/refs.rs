@@ -13,6 +13,12 @@ use crate::parse::{code_spans, doc_section, lines_with_fences};
 
 pub const ROADMAP: &str = "TODO/ROADMAP.md";
 
+/// The directories of `docs/` that hold readings at a time, with the paths
+/// and the ids of that time (also the ids of another project's record): the
+/// release notes, the text of the issues that GitHub deleted, and the
+/// studies. The checker does not read them.
+pub const READINGS: [&str; 3] = ["docs/releases/", "docs/reports/", "docs/research/"];
+
 /// The top-level directories and the root files of this repository. A code
 /// span that starts with one of them is a citation that must exist; another
 /// project's file is written `owner/repo:path`, which never starts so.
@@ -77,9 +83,7 @@ pub fn check(root: &Path, r: &Record, p: &mut Vec<Problem>) {
 
 /// The Markdown files whose `T-NNN` references must resolve, and whose
 /// citations `remap` moves: the root documents, the README of each crate,
-/// `TODO/` and `docs/`. The release notes (`docs/releases/`) and the issue
-/// reports (`docs/reports/`) are readings at a time, with the paths of that
-/// time, and are not read.
+/// `TODO/` and `docs/`. The directories of [`READINGS`] are not read.
 pub fn documents(root: &Path) -> Vec<String> {
     let mut out: Vec<String> = ["README.md", "CLAUDE.md", "SECURITY.md"]
         .iter()
@@ -98,11 +102,7 @@ pub fn documents(root: &Path) -> Vec<String> {
             krate.file_name().to_string_lossy()
         ));
     }
-    out.retain(|rel| {
-        root.join(rel).is_file()
-            && !rel.starts_with("docs/releases/")
-            && !rel.starts_with("docs/reports/")
-    });
+    out.retain(|rel| root.join(rel).is_file() && !READINGS.iter().any(|dir| rel.starts_with(dir)));
     out.sort();
     out
 }

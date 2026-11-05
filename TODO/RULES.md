@@ -52,8 +52,8 @@ over this page.
 - Do not use an id again, also after the owner removes its entry.
 - Name an entry by its id. The checker fails on an id that does not exist
   in `TODO/`, `docs/`, `README.md`, `CLAUDE.md`, `SECURITY.md` and the
-  README of each crate. It does not read `docs/releases/` and
-  `docs/reports/`.
+  README of each crate. It does not read `docs/releases/`,
+  `docs/reports/` and `docs/research/`: they are readings at a time.
 
 ### Write the entry before the work
 

@@ -7,8 +7,8 @@
 //! entry beside it is named. Each status beside an id (`T-NNN, partial`)
 //! agrees with the index, unless its unit reads at a date or at a commit. A
 //! unit is a paragraph, a list item or a row of a table: an id in another
-//! item covers no claim. The release notes (`docs/releases/`) and the issue
-//! reports (`docs/reports/`) are not read: they are readings at a time.
+//! item covers no claim. The readings at a time (`docs/releases/`,
+//! `docs/reports/`, `docs/research/`) are not read.
 
 use std::collections::HashMap;
 use std::path::Path;
