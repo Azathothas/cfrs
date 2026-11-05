@@ -241,6 +241,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The zig download of PodUtils/podcrates (scripts/fetch-zig.sh, the
+      # community mirrors, then ziglang.org), at a pinned commit
+      # (docs/decisions.md, Shared CI scripts).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PodUtils/podcrates
+          ref: 9c9c1e345112b13f340e8502a69b807501f34f42
+          path: .podcrates
+          sparse-checkout: scripts
+          persist-credentials: false
       - name: the build image
         run: |
           set -eu
@@ -257,8 +267,7 @@ jobs:
             "$BUILD_IMAGE" sh -c '
               set -eu
               z="zig-x86_64-linux-$ZIG_VERSION"
-              wget -q -O "/tmp/$z.tar.xz" "https://ziglang.org/download/$ZIG_VERSION/$z.tar.xz"
-              echo "$ZIG_SHA256  /tmp/$z.tar.xz" | sha256sum -c -
+              ZIG_SOURCE=podnet sh .podcrates/scripts/fetch-zig.sh "$ZIG_VERSION" "$ZIG_SHA256" "/tmp/$z.tar.xz"
               xzcat "/tmp/$z.tar.xz" | tar -x -C /tmp
               export PATH="/tmp/$z:$PATH"
               RUSTFLAGS= cargo install --quiet --locked --root /tmp/zigbuild cargo-zigbuild --version "$ZIGBUILD_VERSION"
