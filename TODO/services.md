@@ -1,9 +1,8 @@
 This file holds the entries of milestone M6: the services that podnet builds from its pieces. The
 order is the owner's (2026-11-05): the shared parts first, then the file server, git hosting, the
 router, and file transfer. `docs/research/podnet/capabilities.md` gives the design of each role.
-`docs/research/podnet/podssh-copy.md` gives the podssh code that podnet copies, and how. A copy
-of podssh code lands in one commit ("Copy podssh PATH at COMMIT into PATH"), and its changes in
-later commits.
+`docs/research/podnet/podssh-copy.md` is a reading of the podssh code. podnet does not copy that code:
+it comes through the shared crates of `PodUtils/podcrates` (`docs/decisions.md`, Shared crates).
 
 # T-082: `connect --stdio` for an SSH `ProxyCommand` through `tunnel --forward`
 
@@ -141,7 +140,7 @@ cargo test -p podnet-serve -- ustar_round_trip_keeps_odd_names a_directory_downl
 
 The second test compares `tar -tf` of the download with the tree.
 
-# T-086: Copy the resumable layer, the end-to-end channel, the key identity and UDP in a stream of podssh into `podnet-relay`
+# T-086: Take the resumable layer, the end-to-end channel, the key identity and UDP in a stream from the shared crates
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.3, 3 (C4, C6, C7) and 5 (G1);
 `docs/research/podnet/capabilities.md`, section 6 (enabler 5).
@@ -168,16 +167,13 @@ fails. The relay sees the bytes.
 
 ## Approach
 
-1. Copy the layer with no `handover/` and no `keep/handover.rs`, with the shims `text.rs`,
-   `wake.rs` and the backoff helper.
-2. Change in later commits: the `PODSSH_*` variables to `PODNET_*`, with rows in
-   `src/manual/facts.rs`; Linux only; `cargo fmt` at width 100; split each file over 800 lines;
-   a podssh id in a comment as "podssh T-NNN"; no dated history in comments.
-3. Copy the core of the channel (`mod.rs`, `frame.rs`, `channel.rs`, `channel/carry.rs`,
-   `handshake.rs`, `ends.rs`, `ask.rs`) and the identity, with ed25519-dalek 3 and the
-   private-file helpers of podnet. Then copy UDP in a stream.
-4. Copy the tests with the code: the 18 self-contained session test files, and the tests of the
-   channel and of the identity file.
+1. Take `pod-session` (the layer) of PodUtils/podcrates.
+2. Add the rows of the variables to `src/manual/facts.rs`.
+3. Take `pod-e2e` (the channel) and `pod-identity` (the key identity). The podnet helpers for
+   private files stay in podnet. UDP in a stream comes with the crate that owns it: read `pod-session`
+   and `pod-relay` first.
+4. The tests stay in the shared crates (each crate keeps the tests of its source). Add one
+   test of podnet that runs a session over a fake relay.
 5. Run `cargo deny check`.
 
 ## Decision
@@ -191,7 +187,8 @@ The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of
 ## Prove
 
 ```sh
-cargo test -p podnet-relay
+cargo tree -p podnet --depth 1 | grep 'pod-session\|pod-e2e\|pod-identity'
+cargo test --test relay_reverse
 cargo deny check
 gh workflow run release.yml --ref main   # the dry run builds the eight targets
 ```
@@ -201,6 +198,11 @@ gh workflow run release.yml --ref main   # the dry run builds the eight targets
 T-049 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work of the Approach is in PodUtils/podcrates. The title and the steps are changed. There is
+no crate `podnet-relay`. The start condition names T-049 (the take of `pod-relay`).
 
 # T-087: `relay node` and `relay connect` resume a session past the limits of the relay
 
@@ -246,6 +248,12 @@ step carries 200 MiB in each direction through the real relay.
 ## Start condition
 
 T-086 is done.
+
+## Correction
+
+2026-11-05, The layer is `pod-session` and the channel is `pod-e2e` (T-086). The framing of the
+reverse road moves with `pod-relay` (T-049): the node and the client code of `src/relay_reverse.rs` is in that crate
+after the take.
 
 # T-088: File server: a directory listing in HTML and JSON
 
@@ -482,7 +490,8 @@ podnet has no SSH server. The server module of russh is compiled in, and nothing
    stderr, and send the exit status.
 4. Refuse a shell, a pty, `direct-tcpip` and `tcpip-forward`.
 5. Take ed25519 and ECDSA keys only.
-6. Copy parts of the test server of podssh as an SSH server for the tests.
+6. Use the SSH test server of `pod-testkit` (PodUtils/podcrates) for the tests. Do not copy the
+   test server of podssh.
 
 ## Decision
 
@@ -499,6 +508,11 @@ cargo test --workspace -- git_ssh_upload_pack_matches_git git_ssh_refuses_an_unk
 The russh client of the tree runs `exec git-upload-pack` over a unix socket. Its ref
 advertisement equals the output of `git upload-pack --advertise-refs`. An unknown command is
 refused.
+
+## Correction
+
+2026-11-05, step 6: no copy of podssh code. When `pod-testkit` has no SSH server, open an issue in
+PodUtils/podcrates.
 
 # T-094: `podnet git serve`: the repository root, `git init`, `git urls`, the tunnel, the relay and the live step
 
@@ -830,7 +844,7 @@ The step "router" passes.
 
 T-100 is done.
 
-# T-102: Copy the mailbox client, the code words and the SPAKE2 phases of podssh
+# T-102: Take the mailbox client, the code words and the SPAKE2 phases from `pod-wormhole`
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.2 and 3 (C8);
 `docs/research/podnet/capabilities.md`, sections 4.2 to 4.4; the owner's rulings of 2026-11-05
@@ -856,13 +870,12 @@ sees the plain bytes.
 
 ## Approach
 
-1. Copy `mailbox.rs`, `wormhole.rs`, `phrase.rs`, `words.rs` and the constants of `mod.rs` into a
-   rendezvous module of `podnet-relay`.
-2. Replace the WebSocket session of podssh with tokio-tungstenite over `egress::dial`, so that the
-   proxy applies.
+1. Take `pod-wormhole` (wave 3 of PodUtils/podcrates): the mailbox client, the code words
+   and the SPAKE2 phases.
+2. Give the crate a dialer of podnet (`egress::dial`, later `pod-proxy`), so that the proxy applies.
 3. Set the AppID of the magic-wormhole file transfer (`lothar.com/wormhole/text-or-file-xfer`).
    Add a mailbox variable with its row in `src/manual/facts.rs`.
-4. Copy the unit tests with the code.
+4. The unit tests stay in `pod-wormhole`. Add a loopback test of podnet against a mailbox stand-in.
 
 ## Decision
 
@@ -875,7 +888,8 @@ The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of
 ## Prove
 
 ```sh
-cargo test -p podnet-relay -- rendezvous::
+cargo tree -p podnet --depth 1 | grep pod-wormhole
+cargo test --workspace -- wormhole_rendezvous_
 cargo deny check
 ```
 
@@ -886,6 +900,10 @@ A wrong code fails at both ends. A loopback test runs against a stand-in of the 
 T-049 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work goes to `pod-wormhole` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. The title and the steps are changed. There is no crate `podnet-relay`.
 
 # T-103: The file-transfer protocol and the transit protocol of magic-wormhole
 
@@ -918,14 +936,14 @@ offer, the answer, the transit hints, the transit handshake and the records. Wit
 2. Write a directory as a zip with no compression. Read a deflated zip with an inflate decoder:
    choose between own code and a pure Rust crate, and write the choice with its `cargo deny`
    result in the Decision section.
-3. Adapt the transit carrier of podssh to the transit protocol of magic-wormhole: the hints, the
-   relay handshake, the sender and receiver handshakes, and the records sealed with SecretBox
-   under the transit key.
+3. The transit carrier is `pod-transit` (wave 3). The transit protocol of magic-wormhole (the hints,
+   the relay handshake, the sender and receiver handshakes, and the records sealed with SecretBox
+   under the transit key) is in `pod-transit` or `pod-wormhole`: read both crates first.
 
 ## Prove
 
 ```sh
-cargo test -p podnet-relay -- wormhole_transfer_
+cargo test --workspace -- wormhole_transfer_
 ```
 
 Each phase is checked against messages captured from the Python magic-wormhole. A changed record
@@ -934,6 +952,12 @@ fails.
 ## Start condition
 
 T-102 is done.
+
+## Correction
+
+2026-11-05, The file-transfer protocol and the transit protocol are work of `pod-wormhole` and `pod-transit` in
+PodUtils/podcrates. podnet takes the crates (T-137, step 3). The inflate decoder (step 2) is a call made
+without a ruling: it belongs to the crate that reads the zip.
 
 # T-104: The podnet relay as a carrier of a transfer
 
@@ -964,12 +988,17 @@ the podnet relay as one more carrier.
 ## Prove
 
 ```sh
-cargo test -p podnet-relay -- transfer_over_the_relay_crosses_the_cap
+cargo test --workspace -- transfer_over_the_relay_crosses_the_cap
 ```
 
 ## Start condition
 
 T-087 and T-103 are done.
+
+## Correction
+
+2026-11-05, The transit carrier is `pod-transit`, and the relay client is `pod-relay`. The hint of podnet's own
+kind is a change of `pod-transit` (PodUtils/podcrates). There is no crate `podnet-relay`.
 
 # T-105: `podnet send` and `podnet receive`
 
@@ -1007,6 +1036,10 @@ cargo test --test cli -- send_and_receive_on_the_loopback a_wrong_code_ends_the_
 ## Start condition
 
 T-103 is done.
+
+## Correction
+
+2026-11-05, The command stays in podnet. It uses `pod-wormhole` and `pod-transit` (T-102, T-103).
 
 # T-106: An interop test with the Python magic-wormhole, and the live step of a transfer of 100 MiB
 
@@ -1046,3 +1079,10 @@ gh workflow run live.yml
 ## Start condition
 
 T-104 and T-105 are done.
+
+## Correction
+
+2026-11-05, `wormhole-peer.py` and `pair-code.yml` are scripts and a workflow of podssh. Do not copy them into
+podnet. Read whether `pod-testkit` or `pod-wormhole` of PodUtils/podcrates has the interop harness; when it
+has not, write the harness in podnet (it is a CI file, no code of a crate).
+

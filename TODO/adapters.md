@@ -47,6 +47,12 @@ cargo doc -p podnet-core --no-deps
 
 T-053 is done.
 
+## Correction
+
+2026-11-05, `src/egress.rs`, `src/ws_relay.rs` and `src/warp/` move to `pod-proxy`, `pod-relay` and `pod-warp`
+(T-137). A shared crate takes a stream or dialer trait (T-137, Premise). Before step 1, find which shared crate
+holds the dialer trait and use it. Do not define a second trait in `podnet-core`.
+
 # T-056: Dialers for direct, the egress proxy, the relay, the pod upstream chains, the tailnet front door and the virtual network
 
 **Source:** `docs/research/podnet/architecture.md`, sections 4.3 and 4.6, step F.
@@ -87,6 +93,11 @@ cargo test --workspace -- dialer_
 
 T-055 is done.
 
+## Correction
+
+2026-11-05, The dial functions of the egress proxy and of the relay are in `pod-proxy` and `pod-relay` after the
+takes. The wrappers use the paths of the shared crates.
+
 # T-057: A dialer and datagrams for WARP
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.3.
@@ -116,13 +127,18 @@ only the WARP commands and the quic+warp leg use them.
 ## Prove
 
 ```sh
-cargo test -p podnet-warp -- warp_dialer_
+cargo test --workspace -- warp_dialer_
 gh workflow run live.yml
 ```
 
 ## Start condition
 
 T-055 and T-012 are done.
+
+## Correction
+
+2026-11-05, There is no crate `podnet-warp`. The WARP adapter is `pod-warp` (T-050). The Dialer belongs to the
+adapter that holds the stack (`pod-warp`): do this work after the take, or as a change in PodUtils/podcrates.
 
 # T-058: The combinators `Chain`, `Rules`, `Race` and `Failover`
 

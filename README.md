@@ -1298,7 +1298,9 @@ cargo build --release
 ```
 
 The binary is `target/release/podnet`. Rust
-1.99 or newer is necessary.
+1.99 or newer is necessary. The build takes the `pod-*` crates from the
+git repository `PodUtils/podcrates` (by tag), so it needs access to
+GitHub.
 
 A static binary has no run-time dependency on the C library of the host:
 

@@ -101,6 +101,7 @@ state of the open work.
 | `live.yml` | each push to `main`, each day, by hand | podnet against the real edge and WARP, on a GitHub runner |
 | `deny.yml`, `secrets.yml` | each push | licences and advisories; secret scan (`.github/secrets-allow.txt`) |
 | `release.yml` | a tag, or by hand | the release binaries; a dry run with no input |
+| `publish.yml` | a tag `v*`, or by hand | `cargo publish --workspace --dry-run`; the real publish only when `[workspace.metadata.podnet] crates-io = true` (trusted publishing, no token) |
 | `release-proofs.yml` | after a release | checks the release files, SHA256SUMS and the signatures |
 | `fuzz.yml`, `upstream.yml` | on a schedule | fuzz targets; changes of cloudflared |
 | `record-issues.yml` | each day, by hand | `TODO/github.txt` against GitHub (`scripts/check-github-numbers.py`) |
@@ -119,7 +120,9 @@ Facts about `live.yml`:
 
 ## Release
 
-When a batch of fixes is green (`CLAUDE.md`):
+There is no podnet release now (`docs/decisions.md`, 2026-11-05, Order).
+These steps apply when the owner allows releases again. When a batch of
+fixes is green (`CLAUDE.md`):
 
 1. Set the version in `Cargo.toml` (the package and the `podnet-netns`
    dependency), `Cargo.lock` and `fuzz/Cargo.lock` (the packages `podnet` and
@@ -150,7 +153,10 @@ At the first stable release (no `-beta.N`), also:
 * Decide the crates.io publish of `podnet` (the name `cfrs` is taken by
   another project; the owner reserved `podnet` as a 0.0.0 placeholder,
   #224; `docs/decisions.md`), and set `documentation` in
-  both manifests.
+  both manifests. `publish.yml` publishes by trusted publishing when
+  `[workspace.metadata.podnet] crates-io = true`. A dependency on
+  `PodUtils/podcrates` by git tag needs `version` beside `git` and `tag`
+  (`docs/decisions.md`, Git dependencies and the publish).
 
 ## The code
 
@@ -165,10 +171,18 @@ At the first stable release (no `-beta.N`), also:
 | `src/ws_relay.rs`, `src/relay_reverse.rs` | the WebSocket relay: the forward leg, and `podnet relay` (reverse mode) |
 | `src/detach.rs`, `src/instances.rs` | `--detach`, the supervisor, `ps`, `stop`, `logs`, `wait` |
 | `src/agent.rs` | `doctor --agent`, `agent up` |
-| `src/egress.rs`, `src/proxy_auth.rs`, `src/resolve.rs` | the egress proxy, Digest, the resolver chain (system, DoH, pins) |
+| `src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`, `src/resolve.rs`, `src/ws.rs` | the egress proxy, Digest, the fetch client, the resolver chain (system, DoH, pins), the WebSocket client. They move to `pod-proxy`, `pod-dns` and `pod-ws` of `PodUtils/podcrates` (T-137) |
+| `src/trust.rs` | glue over `pod-tls`: one TLS context of the process on ring, with the edge roots of Cloudflare as extra roots |
+| `crates/podnet-todo/` | `cargo todo`: a wrapper over `pod-todo`; the facts of podnet are in `TODO/todo.toml` |
 | `src/vnet/` | `podnet net`: the userspace networks, the LD_PRELOAD shim |
 | `src/manual/` | `podnet man`; `facts.rs` lists each environment variable |
 | `crates/podnet-netns/` | `podnet pod`: the netns, seccomp and raw backends |
+
+Shared crates: `pod-todo`, `pod-core` and `pod-tls` come from
+`PodUtils/podcrates` by the git tag `v0.2.0` (T-137). `deny.toml` allows
+that git source. Once podnet takes a crate, a change of its code goes to
+`PodUtils/podcrates` (under its `AGENTS.md`) or into an issue there, not
+into podnet. The toolchain is Rust 1.99.1 and `rust-version` is 1.99.
 
 Rules that the tests check:
 
@@ -196,10 +210,10 @@ work order, `TODO/INDEX.md` has each entry. Facts that a session needs:
 
 * **A handoff file** (HANDOFF.md in `docs/`, when a session leaves one):
   read it first. It has the state of unfinished work.
-* **Releases**: the newest release of the old name is `v0.3.0-beta.12`
-  (cfrs; release run 41858039866, release-proofs 41859986797). The first
-  podnet release is `v0.4.0-beta.1`, after the rename of the GitHub
-  repository (record milestone M1).
+* **Releases**: the newest release is `v0.3.0-beta.12` (cfrs; release run
+  41858039866, release-proofs 41859986797). No podnet release now
+  (`docs/decisions.md`, Order); the plan for `v0.4.0-beta.1` is T-022 and
+  T-023.
 * **Issue numbers of the QA archive**: GitHub deleted #259 to #278 (and
   the closed #165 to #207) with the account `aerrand-agent`; their text
   is in `docs/reports/aerrand-agent.md`. They are filed again as GitHub

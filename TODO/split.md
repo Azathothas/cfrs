@@ -65,6 +65,10 @@ The count equals the count before the commit.
 
 T-008 and T-009 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/config.rs`, `src/cloudflare/http2.rs`, `src/cloudflare/capnp.rs`, `src/quicktunnel.rs`, `src/warp/up.rs`, `src/warp/register.rs` and `src/ws_relay.rs` move to PodUtils/podcrates (`pod-cloudflare`, `pod-warp` and `pod-relay`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. Split only the files that stay in podnet: `src/vnet/switch.rs` and `crates/podnet-netns/src/upstream.rs`. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-027: `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.1.
@@ -366,6 +370,10 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 
 T-008 and T-009 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/egress.rs` move to PodUtils/podcrates (`pod-proxy`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. Split only the files that stay in podnet: `src/detach.rs`, `src/update.rs` and `src/doctor.rs`. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-034: Split `src/vnet/stack.rs`
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.2.
@@ -445,6 +453,10 @@ gh workflow run live.yml
 
 T-008, T-009 and T-012 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/warp/ip.rs`, `src/warp/session.rs` and `src/warp/wg.rs` move to PodUtils/podcrates (`pod-warp`, with `pod-netstack` and `pod-wg`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. No file of this entry stays in podnet. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-036: Split `src/warp/mod.rs` and `src/warp/proxy.rs`
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.2 (the two rows).
@@ -487,6 +499,10 @@ gh workflow run live.yml
 
 T-008, T-009 and T-012 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/warp/mod.rs` and `src/warp/proxy.rs` move to PodUtils/podcrates (`pod-warp`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. No file of this entry stays in podnet. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-037: Split `src/relay_reverse.rs` and `src/share.rs`
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.2 (the two rows).
@@ -525,6 +541,10 @@ gh workflow run live.yml
 ## Start condition
 
 T-008 and T-009 are done.
+
+## Correction
+
+2026-11-05, The named modules `src/relay_reverse.rs` move to PodUtils/podcrates (`pod-relay`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. Split only the files that stay in podnet: `src/share.rs`. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
 
 # T-038: Split `src/feature/mod.rs` and `src/proxy.rs`
 
@@ -566,6 +586,10 @@ gh workflow run live.yml
 
 T-008 and T-009 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/proxy.rs` move to PodUtils/podcrates (`pod-cloudflare`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. Split only the files that stay in podnet: `src/feature/mod.rs`. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-039: Split `src/edge_h2.rs` and `src/tunnel.rs`
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.2 (the two rows).
@@ -604,6 +628,10 @@ gh workflow run live.yml
 
 T-008 and T-009 are done.
 
+## Correction
+
+2026-11-05, The named modules `src/edge_h2.rs` and `src/tunnel.rs` move to PodUtils/podcrates (`pod-cloudflare`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. No file of this entry stays in podnet. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
 # T-040: Split the seccomp backend and the netns backend of the pod crate
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.2 (the two rows of the pod crate);
@@ -639,7 +667,8 @@ with no test module. The fixes of M5 (T-063 to T-067) and the features of M7 cha
 ```sh
 sh scripts/agent/check.sh
 python3 -I scripts/check-size.py
-cargo test --test seccomp --test raw
+cargo test --test pod_seccomp
+cargo test -p podnet-netns --test raw
 sh scripts/test_in_box.sh
 gh workflow run live.yml
 ```
@@ -665,7 +694,7 @@ and `tests/detach.rs` 812.
 ## Premise
 
 - Cargo finds a test directory with a main.rs as the test target of that name, so the names
-  `cli`, `seccomp` and `detach` do not change.
+  `cli`, `pod_seccomp` and `detach` do not change.
 - `tests/shim_no_socket.rs` and `tests/af_inet_kernel.rs` repeat parts of the C harness of
   `tests/shim_direct.rs`.
 - After T-019, the seccomp tests are in `tests/` of the root crate.
@@ -674,7 +703,7 @@ and `tests/detach.rs` 812.
 
 1. `tests/cli.rs`: a cli directory with the helpers in main.rs, and modules for the exit codes,
    the log, the manual, detach and autostart, net, warp and serve.
-2. The seccomp tests: a seccomp directory with the SOCKS5 stand-in and the helpers in main.rs,
+2. The seccomp tests (`tests/pod_seccomp.rs`): a `pod_seccomp` directory with the SOCKS5 stand-in and the helpers in main.rs,
    and modules for TCP, UDP, listen, DNS and the rules.
 3. `tests/shim_direct.rs`: move the compile and run harness to a shared module, and use it from
    `tests/shim_no_socket.rs` and `tests/af_inet_kernel.rs`.
@@ -683,7 +712,7 @@ and `tests/detach.rs` 812.
 ## Prove
 
 ```sh
-cargo test --test cli --test seccomp --test shim_direct --test detach
+cargo test --test cli --test pod_seccomp --test shim_direct --test detach
 python3 -I scripts/check-size.py
 cargo test --workspace -- --list 2>/dev/null | grep -c ': test$'
 ```
@@ -742,6 +771,12 @@ The allowlist of the layer check has seven rows fewer.
 
 T-010 is done.
 
+## Correction
+
+2026-11-05, `fetch` and `relay_reverse` (rows 5 and 7 of the 18) and the modules of
+`src/warp/` leave podnet with `pod-proxy`, `pod-relay` and `pod-warp` (T-137). Read the rows again at
+the start. Cut only the references that stay in podnet.
+
 # T-043: Cut the upward references 8, 9 and 18: a WebSocket bridge and `Metered` in the core
 
 **Source:** `docs/research/podnet/architecture.md`, section 3.3 (rows 8, 9 and 18).
@@ -782,6 +817,11 @@ gh workflow run live.yml
 ## Start condition
 
 T-010 is done.
+
+## Correction
+
+2026-11-05, `src/ws.rs` (`pod-ws`), `edge_h2` (`pod-cloudflare`) and `relay_reverse` (`pod-relay`) move to
+PodUtils/podcrates. The three rows disappear when podnet takes these crates. Read the rows again at the start.
 
 # T-044: Cut the upward references 10 to 17: the WARP QUIC configuration, `ShareLink`, `RULE_KEYS`, `connect_tunnel` and the edge side of `ws`
 
@@ -832,6 +872,12 @@ The allowlist of the layer check is empty.
 
 T-010 is done.
 
+## Correction
+
+2026-11-05, The rows 10 to 17 cross from the WARP adapter and the services to the Cloudflare adapter. Both
+adapters move to `pod-warp` and `pod-cloudflare`. Read the rows again at the start. Cut only the
+references that stay in podnet (for example `ShareLink` and `RULE_KEYS`).
+
 # T-045: Each file is under 800 lines, and the allowlists of the size check and the layer check are empty
 
 **Source:** `docs/research/podnet/architecture.md`, sections 3.4 and 4.6; the owner's ruling of
@@ -876,3 +922,9 @@ git ls-files '*.rs' | xargs wc -l | sort -n | tail -3
 ## Start condition
 
 T-026 to T-044 are done.
+
+## Correction
+
+2026-11-05, The two cycles of the Premise (the core and the Cloudflare crate) leave podnet with the takes of
+`pod-proxy`, `pod-dns`, `pod-cloudflare` (T-137). The allowlists empty by moves and by splits.
+

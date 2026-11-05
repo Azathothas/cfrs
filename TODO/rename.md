@@ -436,6 +436,11 @@ T-016, T-017, T-019 and T-020 are done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
+## Correction
+
+2026-11-05, no release now (the ruling "Order"). This entry waits. The Cargo.toml `rust-version` is 1.99
+and the workspace version is `0.3.0-beta.12`; the version change is part of this entry.
+
 # T-023: Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs
 
 **Source:** `docs/research/podnet/rename.md`, section 5, step 5; `docs/maintenance.md`, section
@@ -564,7 +569,8 @@ token of a workflow cannot change the visibility of a package.
 
 1. After T-023, pull `ghcr.io/podutils/podnet:beta` with no login.
 2. The package takes the visibility of the public repository (the ruling "ghcr package" of
-   2026-11-05). When the pull fails, ask the owner.
+   2026-11-05). This needs no action of the owner. When the pull fails, read the settings of the
+   package and report the fact in the entry.
 3. Optional: the owner writes "moved to ghcr.io/podutils/podnet" in the description of the
    package `cfrs`.
 
@@ -578,6 +584,12 @@ docker pull ghcr.io/podutils/podnet:beta
 ## Start condition
 
 T-023 is done.
+
+## Correction
+
+2026-11-05, no owner action is necessary (the ruling "ghcr package"). The Problem keeps the risk of a
+private package; the Approach tells what to do when the pull fails. No podnet release now (the
+ruling "Order"): the entry waits for T-023.
 
 # T-136: live: two runs in a row failed before the transfer of the repository (GitHub #311)
 

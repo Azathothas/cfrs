@@ -131,7 +131,7 @@ M8 Overlays, M9 Later.
 | [T-083](services.md) | P2 | S | M6 | feature | open | A relay node serves a handler in the process, with no socket file |
 | [T-084](services.md) | P2 | M | M6 | feature | open | One HTTP authentication layer for the local listener, the tunnel and the relay |
 | [T-085](services.md) | P2 | M | M6 | feature | open | A ustar writer and reader, and a directory as one tar download of the file server |
-| [T-086](services.md) | P2 | L | M6 | feature | open | Copy the resumable layer, the end-to-end channel, the key identity and UDP in a stream of podssh into `podnet-relay` |
+| [T-086](services.md) | P2 | L | M6 | feature | open | Take the resumable layer, the end-to-end channel, the key identity and UDP in a stream from the shared crates |
 | [T-087](services.md) | P2 | M | M6 | feature | open | `relay node` and `relay connect` resume a session past the limits of the relay |
 | [T-088](services.md) | P2 | S | M6 | feature | open | File server: a directory listing in HTML and JSON |
 | [T-089](services.md) | P2 | M | M6 | feature | open | File server: users with read and write roles, and a PIN, on each listener |
@@ -147,7 +147,7 @@ M8 Overlays, M9 Later.
 | [T-099](services.md) | P2 | M | M6 | feature | open | Router: `podnet forward` for each network, UDP forwards, a DNS door, and `podnet expose` |
 | [T-100](services.md) | P2 | M | M6 | feature | open | Router: a config file, and `podnet route` with `--detach` and autostart |
 | [T-101](services.md) | P2 | M | M6 | measurement | open | Router: the live step with WARP, the relay and direct, and a failover |
-| [T-102](services.md) | P2 | M | M6 | feature | open | Copy the mailbox client, the code words and the SPAKE2 phases of podssh |
+| [T-102](services.md) | P2 | M | M6 | feature | open | Take the mailbox client, the code words and the SPAKE2 phases from `pod-wormhole` |
 | [T-103](services.md) | P2 | L | M6 | feature | open | The file-transfer protocol and the transit protocol of magic-wormhole |
 | [T-104](services.md) | P2 | M | M6 | feature | open | The podnet relay as a carrier of a transfer |
 | [T-105](services.md) | P2 | M | M6 | feature | open | `podnet send` and `podnet receive` |
@@ -168,18 +168,18 @@ M8 Overlays, M9 Later.
 | [T-120](later.md) | P3 | M | M9 | feature | open | Router kernel mode: masquerade, an MSS clamp, an unreachable kill switch and `rp_filter` |
 | [T-121](later.md) | P3 | S | M9 | feature | open | Router: export the groups as a JSON file of the mwan form |
 | [T-122](later.md) | P3 | M | M9 | research | open | Research: a native git server with no installed `git` |
-| [T-123](later.md) | P3 | M | M9 | feature | open | Tailscale in the process: copy the fork of tailscale-rs and its patches |
+| [T-123](later.md) | P3 | M | M9 | feature | open | Tailscale in the process: take the fork of tailscale-rs through `pod-ts` |
 | [T-124](later.md) | P3 | L | M9 | feature | open | Tailscale in the process: an adapter crate behind a feature that is off by default, with the static build proven |
 | [T-125](later.md) | P3 | L | M9 | feature | open | A userspace WireGuard responder: `podnet wg serve` |
 | [T-126](later.md) | P3 | M | M9 | feature | open | Egress through an `https://` proxy and through wstunnel |
 | [T-127](later.md) | P3 | L | M9 | feature | open | Egress through VLESS, Shadowsocks and Wisp |
-| [T-128](later.md) | P3 | L | M9 | feature | open | The DERP carrier of podssh |
+| [T-128](later.md) | P3 | L | M9 | feature | open | The DERP carrier through `pod-derp` |
 | [T-129](later.md) | P3 | M | M9 | feature | open | An ACME client for a public listener |
 | [T-130](later.md) | P3 | M | M9 | research | open | Research: the iroh road, and a relay and mailbox of podnet's own |
 | [T-131](later.md) | P3 | L | M9 | chore | open | A crate that podnet and podssh share for the layer, the channel and the identity |
 | [T-132](later.md) | P3 | S | M9 | chore | open | `try_update` in place of the macro `update_atomic!` |
 | [T-133](later.md) | P3 | S | M9 | chore | open | Zig from the community mirrors in the release workflow |
-| [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the copied podssh files and of the relay contract |
+| [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the relay contract |
 | [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |
 | [T-136](rename.md) | P1 | S | M1 | defect | done | live: two runs in a row failed before the transfer of the repository (GitHub #311) |
 | [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |

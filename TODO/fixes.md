@@ -5,7 +5,10 @@ work" of `docs/maintenance.md` and the seccomp ideas of the vn kit found.
 attachments, not files of the repository: `docs/research/podnet/mwan-field.md`, section 2.3,
 quotes them. These entries can start at any time from M0. An entry that changes a file of a split
 of M2 lands before that split starts, or after it ends. Names: before T-016 a variable is
-`CFRS_X`; after it, `PODNET_X`.
+`CFRS_X`; after it, `PODNET_X`. A fix in a module that podcrates already holds, or that
+T-137 plans to move (`src/warp/`, `src/resolve.rs`, `src/egress.rs`, `src/cloudflare/`), lands in
+podnet until podnet takes the crate. Tell the podcrates session of the fix (`docs/decisions.md`, Who edits a
+shared crate). After the take, the fix goes to PodUtils/podcrates.
 
 # T-063: seccomp: a TCP socket stays tracked after its connect, and its options and addresses come from its entry
 
@@ -51,7 +54,7 @@ handshake. With `--backend netns`, the same program works. The reporter lost abo
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_tcp_socket_keeps_its_options_and_addresses
+cargo test --test pod_seccomp -- seccomp_tcp_socket_keeps_its_options_and_addresses
 ```
 
 The new C test connects through the SOCKS5 stand-in of the test. It asserts that
@@ -94,7 +97,7 @@ made by `dup`, `dup2` or `fcntl(F_DUPFD)` has no entry, so it sends to the wrong
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_close_in_a_child_keeps_the_parent_entry seccomp_dup_keeps_the_udp_destination
+cargo test --test pod_seccomp -- seccomp_close_in_a_child_keeps_the_parent_entry seccomp_dup_keeps_the_udp_destination
 ```
 
 ## Start condition
@@ -134,7 +137,7 @@ an AF_UNIX socket pair, not the upstream socket.
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_handoff_of_a_unix_upstream_leaves_no_relay
+cargo test --test pod_seccomp -- seccomp_handoff_of_a_unix_upstream_leaves_no_relay
 ```
 
 The test asserts that `setsockopt(TCP_NODELAY)` on the handed descriptor gives 0 from the kernel,
@@ -186,7 +189,7 @@ address. `recvmmsg` is the same need.
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_icmp_echo_to_the_gateway seccomp_recvmmsg_gets_the_real_source seccomp_long_udp_name_is_refused
+cargo test --test pod_seccomp -- seccomp_icmp_echo_to_the_gateway seccomp_recvmmsg_gets_the_real_source seccomp_long_udp_name_is_refused
 ```
 
 The ICMP test follows the ICMP part of the vn kit's static guest: an echo to the gateway gets an
@@ -222,7 +225,7 @@ ends. A program with a slow upstream freezes in calls that need no network.
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_a_slow_dial_does_not_stop_other_calls
+cargo test --test pod_seccomp -- seccomp_a_slow_dial_does_not_stop_other_calls
 ```
 
 An upstream stand-in answers after 2 s. A second thread of the program calls `getsockname`, and
@@ -487,6 +490,11 @@ cargo test --workspace -- warp_resolve_takes_the_pin_first ps_prints_each_forwar
 ```
 
 The first test asserts that a pinned name gives the pin and sends no DNS packet into the stack.
+
+## Correction
+
+2026-11-05, `src/resolve.rs` moves to `pod-dns` (T-137). Until podnet takes `pod-dns`, this fix of `src/resolve.rs`
+lands in podnet and the podcrates session ports it. After the take, the fix goes to PodUtils/podcrates.
 
 # T-074: `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg
 

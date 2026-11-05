@@ -148,6 +148,13 @@ python3 -I scripts/check-layers.py --plant-empty   # must exit 1
 Plant: add `use crate::tunnel;` to `src/egress.rs`. The check must fail and name
 `egress -> tunnel`.
 
+## Correction
+
+2026-11-05, The 18 references and the layers come from a reading at `3bed023`. T-137 moves modules to
+PodUtils/podcrates (`pod-proxy`, `pod-dns`, `pod-ws`, `pod-warp`, `pod-cloudflare`, `pod-relay`). A
+reference that a moved module owns leaves the list when podnet takes the crate. Read the 18 rows again at
+the start of this entry and write the allowlist for the tree of that day.
+
 # T-011: Loopback tests for the commands that have no behaviour test, before the splits
 
 **Source:** `docs/research/podnet/architecture.md`, section 5 (the gaps);
@@ -214,7 +221,8 @@ device, and the service limits the new devices of each address.
   (`Azathothas/podssh:crates/podssh-warp/src/tests/api.rs`).
 - podnet reads `PODNET_WARP_API` for the base of the API (`src/warp/register.rs`). The unit tests of
   podnet have only echo front doors (`src/warp/session.rs`).
-- podssh uses smoltcp 0.14. podnet pins smoltcp 0.12 (`Cargo.toml`).
+- podssh uses smoltcp 0.14. podnet pins smoltcp 0.12 (`Cargo.toml`); `pod-warp` of PodUtils/podcrates
+  uses smoltcp 0.14.
 
 ## Approach
 
@@ -247,6 +255,14 @@ The test of `warp proxy` must fail on the pin.
 ## Start condition
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, Step 1 and step 2 say "copy". Do not copy code of podssh into podnet. The edge stand-in and the
+API stand-in come through PodUtils/podcrates (`pod-warp` in wave 3, or `pod-testkit`). Before the work, read
+those crates. When they have no stand-in, open an issue in PodUtils/podcrates. The tests of the WARP
+commands (`warp register`, `warp status`, `warp proxy` and the others) stay in podnet and use the stand-in
+of the shared crate. The adaptation to smoltcp 0.12 is not necessary.
 
 # T-013: A daily check that the record's list of GitHub numbers agrees with GitHub
 

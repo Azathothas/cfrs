@@ -50,6 +50,11 @@ with the plan.
 
 T-100 is done.
 
+## Correction
+
+2026-11-05, the route code is `src/warp/route.rs`, in the WARP adapter that moves to `pod-warp` (T-050). Read
+where the code is when this entry starts.
+
 # T-120: Router kernel mode: masquerade, an MSS clamp, an unreachable kill switch and `rp_filter`
 
 **Source:** `docs/research/podnet/mwan-field.md`, sections 1.4 (D1, D4), 1.6 (mode B) and 2.2
@@ -164,7 +169,7 @@ cargo todo check
 
 T-094 is done.
 
-# T-123: Tailscale in the process: copy the fork of tailscale-rs and its patches
+# T-123: Tailscale in the process: take the fork of tailscale-rs through `pod-ts`
 
 **Source:** `docs/research/podnet/podssh.md`, sections 2.1 and 2.3 (step 4);
 `docs/research/podnet/podssh-copy.md`, sections 2.5 and 3 (C19); the owner's ruling of 2026-11-05
@@ -216,6 +221,12 @@ T-114 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
+## Correction
+
+2026-11-05, The work goes to `pod-ts` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. Do not copy code of podssh into podnet (`docs/decisions.md`, Shared crates). The code comes through PodUtils/podcrates. The fork and its patches are the code of `pod-ts` (wave 4). The
+vendor policy and the weekly checks of the copies are podcrates work. The remaining work of podnet: the
+feature that is off by default, and the notices of the licence (T-124).
+
 # T-124: Tailscale in the process: an adapter crate behind a feature that is off by default, with the static build proven
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.5, 3 (C19) and 3.3; the owner's
@@ -262,6 +273,13 @@ gh workflow run release.yml --ref main
 
 T-123 is done.
 
+## Correction
+
+2026-11-05, The adapter is `pod-ts` (wave 4 of PodUtils/podcrates), not a copy of `podssh-ts`. Step 1 becomes:
+take `pod-ts` behind the feature `ts`, off by default. The MSRV check of 1.92 in step 3 is not necessary:
+the toolchain is Rust 1.99 and `rust-version` is 1.99. A dependency by a git tag needs `allow-git` in
+`deny.toml` (it has it for podcrates).
+
 # T-125: A userspace WireGuard responder: `podnet wg serve`
 
 **Source:** `docs/research/podnet/vn.md`, sections 3.2 and 5 (question 3).
@@ -296,6 +314,11 @@ cargo test --workspace -- wg_serve_accepts_a_peer_and_dials_its_flows
 ## Start condition
 
 T-117 is done.
+
+## Correction
+
+2026-11-05, the responder half of the WireGuard code (`src/warp/wg.rs`) is in `pod-wg` (wave 2). The work goes to
+`pod-wg` in PodUtils/podcrates; podnet takes it and adds `podnet wg serve` (T-137).
 
 # T-126: Egress through an `https://` proxy and through wstunnel
 
@@ -335,6 +358,11 @@ cargo test --workspace -- https_proxy_dialer_through_a_test_ca wstunnel_dialer_
 
 T-059 is done.
 
+## Correction
+
+2026-11-05, The work goes to `pod-egress` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. Do not copy code of podssh into podnet (`docs/decisions.md`, Shared crates). The code comes through PodUtils/podcrates. The egress roads (`via`, wstunnel) are in the design of
+`pod-egress` (wave 4). `src/egress.rs` moves to `pod-proxy`. Read both crates before the work.
+
 # T-127: Egress through VLESS, Shadowsocks and Wisp
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.4 and 3 (C16).
@@ -370,7 +398,11 @@ cargo test --workspace -- vless_dialer_ shadowsocks_dialer_ wisp_dialer_
 
 T-059 is done.
 
-# T-128: The DERP carrier of podssh
+## Correction
+
+2026-11-05, The work goes to `pod-egress` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. Do not copy code of podssh into podnet (`docs/decisions.md`, Shared crates). The code comes through PodUtils/podcrates. The Approach says "copy": it means "take from the shared crate".
+
+# T-128: The DERP carrier through `pod-derp`
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.6 and 3 (C17).
 **Category:** feature
@@ -391,7 +423,7 @@ of Tailscale need no account and run on TCP 443.
 
 ## Approach
 
-1. Copy the carrier into `podnet-relay`. Change the WebSocket glue.
+1. Take `pod-derp` of PodUtils/podcrates. Write the glue to the relay client (`pod-relay`).
 2. Use it as a carrier of the layer of T-086 and of a transfer.
 3. Test it against `derper` in a workflow.
 
@@ -402,7 +434,7 @@ The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of
 ## Prove
 
 ```sh
-cargo test -p podnet-relay -- derp_
+cargo test --workspace -- derp_
 cargo deny check
 ```
 
@@ -411,6 +443,10 @@ cargo deny check
 T-086 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work goes to `pod-derp` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. There is no crate `podnet-relay`: the relay client is `pod-relay`.
 
 # T-129: An ACME client for a public listener
 
@@ -433,7 +469,7 @@ The file server and git on a public port need a certificate that browsers and gi
 
 ## Approach
 
-1. Copy the client into `podnet-serve`. Use keys of ring and rcgen.
+1. Take `pod-acme` of PodUtils/podcrates (wave 4) in `podnet-serve`. Keys come from ring and rcgen.
 2. Add `--acme DOMAIN` to `serve` and `git serve` on a public TCP listener.
 
 ## Prove
@@ -447,6 +483,10 @@ The test runs against a local ACME test server (pebble) in a workflow.
 ## Start condition
 
 T-091 is done.
+
+## Correction
+
+2026-11-05, The work goes to `pod-acme` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. Do not copy code of podssh into podnet (`docs/decisions.md`, Shared crates). The code comes through PodUtils/podcrates.
 
 # T-130: Research: the iroh road, and a relay and mailbox of podnet's own
 
@@ -479,6 +519,12 @@ not ruled on them.
 ```sh
 cargo todo check
 ```
+
+## Correction
+
+2026-11-05, The iroh road is `pod-iroh` (wave 4 of PodUtils/podcrates) and the relay role is
+`pod-relay-serve`. The toolchain is Rust 1.99, so the line "needs Rust 1.91" of the Premise is not a
+constraint. The measures of the Approach stay: they decide whether podnet takes these crates.
 
 # T-131: A crate that podnet and podssh share for the layer, the channel and the identity
 
@@ -523,9 +569,16 @@ cargo deny check
 
 ## Start condition
 
-T-087 is done, and the owner chose the source of the shared crate (`docs/decisions.md`).
+T-137 takes `pod-session`, `pod-e2e` and `pod-identity` (the owner chose the source: a git tag).
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The shared crates exist in PodUtils/podcrates: `pod-session` (the resumable layer), `pod-e2e`
+(the end-to-end channel), `pod-identity` (the key identity). The owner chose the source: a git tag
+(`docs/decisions.md`, Delivery of the shared crates). This entry is done by T-137, step 2. Close it
+with the commit that takes `pod-session`, `pod-e2e` and `pod-identity`. podnet has no copy to remove.
 
 # T-132: `try_update` in place of the macro `update_atomic!`
 
@@ -543,7 +596,7 @@ deprecated `fetch_update` (#214). `src/share.rs` and `src/gate.rs` use it.
 
 ## Premise
 
-- The MSRV is 1.89 (`Cargo.toml`, `rust-version`).
+- The MSRV is 1.99 (`Cargo.toml`, `rust-version`).
 - The standard library has `try_update` on the atomic types as a stable API from a later release.
 
 ## Approach
@@ -554,15 +607,21 @@ deprecated `fetch_update` (#214). `src/share.rs` and `src/gate.rs` use it.
 ## Prove
 
 ```sh
-cargo +1.89 check --workspace
+cargo check --workspace
 sh scripts/agent/check.sh
 ```
 
-The first command uses the MSRV of that time.
+The toolchain is Rust 1.99.1, the same as the MSRV.
 
 ## Start condition
 
 The `rust-version` of `Cargo.toml` is at or above the release in which `try_update` is stable.
+
+## Correction
+
+2026-11-05, `try_update` is stable at Rust 1.99.1, the `rust-version` of `Cargo.toml` (a test program with
+`AtomicUsize::try_update` compiles). The start condition holds. The work waits only for the ruling
+"Order".
 
 # T-133: Zig from the community mirrors in the release workflow
 
@@ -597,7 +656,7 @@ sh scripts/fetch-zig.sh
 gh workflow run release.yml --ref main
 ```
 
-# T-134: A weekly watch of the copied podssh files and of the relay contract
+# T-134: A weekly watch of the relay contract
 
 **Source:** `docs/research/podnet/podssh-copy.md`, sections 2.10, 3 (C14) and 4.
 **Category:** chore
@@ -646,3 +705,12 @@ gh workflow run upstream.yml
 T-086 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, podnet copies no file of podssh (`docs/decisions.md`, Shared crates), so no pin file of copied files
+is necessary: steps 1 and 2 are void. A change of a shared crate comes by a git tag of PodUtils/podcrates. Step 3
+(the check of the relay contract against `https://tcp.ssh.relay.ajam.dev/llms-full.txt`) stays; the
+contract belongs to `pod-relay` (T-049), so check first whether podcrates has the check. The title is
+changed. The Decision section keeps the ruling.
+

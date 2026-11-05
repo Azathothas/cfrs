@@ -1,7 +1,8 @@
 This file holds the entries of milestone M8: the overlay networks. The owner ruled on 2026-11-05
 (`docs/decisions.md`, Tailscale): the `tailscaled` sidecar now, with a headscale harness in CI; an
-in-process Tailscale later, behind a feature that is off by default (T-123, T-124). Sources:
-`docs/research/podnet/podssh.md`, section 2; `docs/research/podnet/podssh-copy.md`, section 2.5.
+in-process Tailscale later, behind a feature that is off by default (T-123, T-124). The in-process
+code is `pod-ts` of `PodUtils/podcrates`. Sources: `docs/research/podnet/podssh.md`, section 2;
+`docs/research/podnet/podssh-copy.md`, section 2.5 (readings).
 
 # T-114: A headscale harness in CI for the `tailscaled` sidecar
 
@@ -30,7 +31,7 @@ The sidecar paths have no CI test with a real `tailscaled`: `net tailscale --soc
 
 ## Approach
 
-1. Copy the harness. Remove the runs of `podssh ts`, of `-W` and of the live relay.
+1. Write the harness. Read first whether `pod-testkit` of PodUtils/podcrates has a headscale harness. Take it when it has. Do not copy the scripts of podssh.
 2. Add runs of `net tailscale` (SOCKS5 and HTTP CONNECT to a service of a peer), of
    `pod -x tailscale:SOCK -- curl`, and of `net ts-shims` with `tailscaled --ssh`.
 3. Keep the plant `TS_HS_PLANT=unknown-key`. It must fail.
@@ -52,6 +53,12 @@ gh workflow run ts-headscale.yml -f plant=unknown-key   # must fail
 ## Start condition
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, podnet copies no file of podssh (`docs/decisions.md`, Shared crates). The harness is a script and a
+workflow, not a crate: the shared crate that holds it is not known (`pod-testkit` is the candidate).
+Ask the podcrates session before the work. The Premise lists the harness of podssh as a reading.
 
 # T-115: The tailnet as a network of the registry and of the router
 
@@ -124,6 +131,12 @@ of a VPN.
 cargo test --workspace -- wg_quick_file_parses wg_reserved_bytes_are_zero_by_default wg_handshake_with_the_test_responder
 ```
 
+## Correction
+
+2026-11-05, The wg-quick reader and the reserved bytes belong to the WireGuard code, which moves to `pod-wg`
+(wave 2 of PodUtils/podcrates) from `src/warp/wg.rs`. Do this work in `pod-wg` after the take, or as an
+issue in PodUtils/podcrates. podnet only takes the crate (T-137).
+
 # T-117: WireGuard: `wg:FILE` as a network over UDP or over a carrier
 
 **Source:** `docs/research/podnet/podssh.md`, section 2.3, step 2.
@@ -160,6 +173,11 @@ A userspace responder on the loopback serves an HTTP service behind the peer.
 ## Start condition
 
 T-116 and T-059 are done.
+
+## Correction
+
+2026-11-05, The stack is `pod-netstack` and the WireGuard code is `pod-wg` (wave 2). Step 1 puts the peer on
+the smoltcp 0.14 stack of `pod-netstack`, not on a smoltcp 0.12 stack of podnet.
 
 # T-118: Research: NetBird, Firezone and ZeroTier as networks
 

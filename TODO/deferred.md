@@ -266,6 +266,14 @@ A hop of podnet must publish an ECH config, and the owner must accept an
 HPKE provider. The ruling "#151" of 2026-11-04 in `docs/decisions.md`
 defers the work.
 
+## Correction
+
+2026-11-05, `src/trust.rs` is glue over `pod-tls` (PodUtils/podcrates), and the client configurations are
+in `pod-tls`. An ECH change goes to `pod-tls` as an issue or a change there (the ruling "Who edits a
+shared crate"), not into `src/trust.rs`. The MASQUE configuration of `src/warp/session.rs` goes to `pod-warp`
+and the QUIC configuration of `src/cloudflare/quic.rs` to `pod-cloudflare` (T-050, T-052). The blocker
+stays.
+
 # T-005: crates.io: publish the library and the CLI (GitHub #161)
 
 **Source:** GitHub #161 (from #160, item K3).
@@ -298,9 +306,9 @@ both crates.
 
 1. Use the package names of the rename (T-007).
 2. Set the stable version (T-006).
-3. Add a crates.io token as a secret, and a publish step to
-   `.github/workflows/release.yml`: the library crates first, from the
-   bottom up.
+3. Set `[workspace.metadata.podnet] crates-io = true` at the tag. The workflow
+   `.github/workflows/publish.yml` publishes by trusted publishing, with no
+   token and no step in `release.yml`.
 
 ## Prove
 
@@ -313,6 +321,13 @@ cargo publish --dry-run --locked -p podnet
 
 The owner. The ruling "crates.io" of 2026-11-05 in `docs/decisions.md`:
 publish nothing now, and keep the packaging ready for a publish.
+
+## Correction
+
+2026-11-05, step 3 is done in part: `.github/workflows/publish.yml` exists (trusted publishing, a dry run
+of `cargo publish --workspace` in each run). The real publish waits for the owner. A
+`pod-*` dependency by a git tag stops the dry run until podcrates publishes its crates to crates.io (the
+ruling "Git dependencies and the publish"). The names of the other crates are in T-007.
 
 # T-006: crates.io: the workspace version and the `podnet-netns` requirement are prereleases (GitHub #222)
 
@@ -383,8 +398,8 @@ program-name strings of the CLI, the cross-references of
 
 Read: the answer of `https://crates.io/api/v1/crates/cfrs` that the issue
 quotes. The ruling "Name" of 2026-11-05 in `docs/decisions.md` names the
-project podnet, and the ruling "Crates" names its crates (`podnet`,
-`podnet-core`, `podnet-netns` and five more). Measured on 2026-11-05:
+project podnet, and the ruling "Shared crates" gives it five crates (`podnet`,
+`podnet-core`, `podnet-netns`, `podnet-vnet` and `podnet-serve`). Measured on 2026-11-05:
 `https://crates.io/api/v1/crates/podnet` and
 `https://crates.io/api/v1/crates/podnet-netns` answer 404 (no such crate).
 Another project can take a free name before the publish.
@@ -416,6 +431,7 @@ version (the rulings "crates.io" and "Shared crates" of 2026-11-05 in
 
 Measured on 2026-11-05, after the rename: `https://crates.io/api/v1/crates/podnet`
 answers 200. The owner published the placeholder `podnet` 0.0.0 (repository
-`PodUtils/podnet`). `podnet-core`, `podnet-netns`, `podnet-vnet`,
-`podnet-relay`, `podnet-warp`, `podnet-serve` and `podnet-cloudflare`
-answer 404.
+`PodUtils/podnet`). `podnet-core`, `podnet-netns`, `podnet-vnet` and
+`podnet-serve` answered 404 then: they wait in the queue of the owner. The names
+`podnet-relay`, `podnet-warp` and `podnet-cloudflare` are not used: `pod-relay`, `pod-warp` and
+`pod-cloudflare` are crates of PodUtils/podcrates.

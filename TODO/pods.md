@@ -36,7 +36,7 @@ called this the highest cost of the session.
 ## Prove
 
 ```sh
-cargo test --workspace --test seccomp -- seccomp_pod_outlives_its_first_child
+cargo test --test pod_seccomp -- seccomp_pod_outlives_its_first_child
 ```
 
 A C program starts a daemon and exits 0. The daemon connects after 2 s through the pod, and the

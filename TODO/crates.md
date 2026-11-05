@@ -1,7 +1,10 @@
 This file holds the entries of milestone M3: the extraction of the crates from the bottom up, one
-crate in each commit. The owner ruled eight crates on 2026-11-05 (`docs/decisions.md`, Crates):
-`podnet` (the CLI, at the root), `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`,
-`podnet-warp`, `podnet-serve` and `podnet-cloudflare`. `podnet-netns` exists after T-020.
+crate in each commit. podnet has five crates (`docs/decisions.md`, 2026-11-05, Shared crates):
+`podnet` (the CLI, at the root), `podnet-core`, `podnet-netns`, `podnet-vnet` and
+`podnet-serve`. `podnet-netns` exists after T-020. The relay client, the WARP adapter and the
+Cloudflare adapter are crates of `PodUtils/podcrates` (`pod-relay`, `pod-warp`, `pod-cloudflare`):
+T-049, T-050 and T-052 are takes of these crates through T-137, not work in podnet. The shared
+crates come by a git tag, not from crates.io.
 `docs/research/podnet/architecture.md`, sections 4.1, 4.2, 4.5 and 4.6 (step E), gives the
 contents of each crate and the edges between them. In each commit: a new manifest with a subset
 of the dependencies, a `pub use` in the root library for each old path, `pub` (with
@@ -51,8 +54,8 @@ checks do not run, until they change.
 
 ## Decision
 
-The owner, 2026-11-05 (`docs/decisions.md`, Crates): eight crates. Thus the test helpers go into
-the core behind a feature, not into a ninth crate.
+The owner, 2026-11-05 (`docs/decisions.md`, Crates): the test helpers go into the core behind a
+feature, not into an extra crate of podnet.
 
 ## Prove
 
@@ -64,6 +67,13 @@ cargo build --timings
 ## Start condition
 
 T-045 is done.
+
+## Correction
+
+2026-11-05, the ruling "Shared crates" (`docs/decisions.md`) supersedes "Crates: eight crates": podnet has
+five crates. `pod-testkit` (wave 1 of PodUtils/podcrates) is a shared crate for tests. Before step
+5, read `pod-testkit`. When it has `need_loopback!` and `need_localhost!`, take them from it. When it has
+not, open an issue in PodUtils/podcrates. Step 1 to 4 stay.
 
 # T-047: Extract the crate `podnet-core`
 
@@ -83,7 +93,7 @@ adapter checks them again, and the compiler does not hold the layers.
 
 - The core is: `exit`, `hop`, `state`, `report`, `decisions`, `metrics` (with `Metered`),
   `rlimit`, `yaml`, `race`, `util`, `qr`, `ports`; the I/O part of `net`, `trust`, `egress`,
-  `proxy_auth`, `resolve`, `fetch`, `tls_fragment`, `udp`, `connect`, the WebSocket bridge of
+  `proxy_auth`, `resolve`, `fetch`, `udp`, `connect`, the WebSocket bridge of
   T-043; `detach`, `instances` and `autostart`.
 - After T-045, no core module refers to a higher layer.
 - A `pub use` of a moved module keeps `crate::module::Item` valid inside the root crate.
@@ -108,6 +118,14 @@ gh workflow run live.yml
 ## Start condition
 
 T-046 is done.
+
+## Correction
+
+2026-11-05, the module tls_fragment is gone (the split of the ClientHello is in `pod-tls`), and
+`src/trust.rs` is glue over `pod-tls`. `src/egress.rs`, `src/proxy_auth.rs` and `src/fetch.rs` move to
+`pod-proxy`, `src/resolve.rs` to `pod-dns`, and the WebSocket bridge of `src/ws.rs` to `pod-ws`
+(T-137). Extract `podnet-core` from what stays in podnet after these takes. Recount the module list
+when the entry starts. Step 4 names the MSRV job: it stays, and its plant step is gone.
 
 # T-048: Extract the crate `podnet-vnet`, with the C sources of the shims
 
@@ -151,6 +169,13 @@ cargo package --list -p podnet-vnet | grep shim
 
 T-047 is done.
 
+## Correction
+
+2026-11-05, `src/vnet/` uses smoltcp 0.12 (`Cargo.toml`). The pin has no reason in the toolchain now
+(Rust 1.99). The userspace stack of `pod-netstack` (wave 2 of PodUtils/podcrates) uses smoltcp 0.14.
+Before the extraction, read whether `src/vnet/` takes `pod-netstack` (T-137); if it does, do not extract the
+stack code into `podnet-vnet`.
+
 # T-049: The relay client of podnet becomes the shared crate `pod-relay`
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.1.
@@ -173,7 +198,9 @@ The relay client and the reverse road (about 2,400 lines) are in the root crate.
 
 ## Approach
 
-1. Make crates/podnet-relay with these modules. It depends on the core.
+1. Take `pod-relay` of PodUtils/podcrates (a git tag) in place of the relay modules. Remove
+   `src/ws_relay.rs`, `src/relay_pool.rs` and `src/relay_reverse.rs` from podnet when the crate has
+   their code.
 2. Leave the HTTP/2 leg of `src/ws_relay.rs` in the root crate until T-052.
 
 ## Decision
@@ -185,7 +212,7 @@ The podcrates design of 2026-11-05 (`docs/decisions.md`): `podnet-relay` merges 
 
 ```sh
 sh scripts/agent/check.sh
-cargo test -p podnet-relay
+cargo tree -p podnet --depth 1 | grep pod-relay
 cargo test --test relay_reverse
 gh workflow run live.yml
 ```
@@ -195,6 +222,12 @@ gh workflow run live.yml
 T-047 is done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work goes to `pod-relay` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. The Approach names the take. A fix of the relay
+code before the take goes to the podcrates session too (`docs/decisions.md`, Who edits a shared crate).
+
 # T-050: Move the WARP adapter to the shared crate `pod-warp` in `PodUtils/podcrates`
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.1.
@@ -210,25 +243,25 @@ The WARP adapter (`src/warp/`, 21 files, about 14,500 lines) is in the root crat
 
 ## Premise
 
-- `podnet-warp` depends on the core, on `podnet-vnet` (`device::LinkDevice`), on `podnet-relay`
-  (MASQUE through the relay) and on `podnet-netns` (the backends of `warp run`).
+- The WARP adapter depends on the core, on `podnet-vnet` (`device::LinkDevice`), on the relay
+  client (MASQUE through the relay) and on `podnet-netns` (the backends of `warp run`).
 - The stand-ins of T-012 move with it.
 
 ## Approach
 
 1. Move `src/warp/` to `pod-warp` in `PodUtils/podcrates`, with the stand-ins of T-012 as its tests.
 2. Replace the links to the crates of podnet with traits of `pod-warp`.
-3. podnet depends on `pod-warp` from crates.io, and keeps the WARP CLI in the root crate.
+3. podnet depends on `pod-warp` by a git tag of PodUtils/podcrates, and keeps the WARP CLI in the root crate.
 
 ## Decision
 
-The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the WARP adapter moves to `PodUtils/podcrates` as `pod-warp`. A shared crate cannot depend on the crates of podnet: the links to `podnet-vnet`, `podnet-relay` and `podnet-netns` become traits of the shared crate, or move to shared crates too.
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the WARP adapter moves to `PodUtils/podcrates` as `pod-warp`. A shared crate cannot depend on the crates of podnet: the links to `podnet-vnet`, the relay client and `podnet-netns` become traits of the shared crate, or move to shared crates too.
 
 ## Prove
 
 ```sh
 sh scripts/agent/check.sh
-cargo test -p podnet-warp
+cargo tree -p podnet --depth 1 | grep pod-warp
 cargo test --workspace -- warp_stand_in_
 gh workflow run live.yml
 ```
@@ -238,6 +271,11 @@ gh workflow run live.yml
 T-048 and T-049 are done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work goes to `pod-warp` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. `pod-warp` is in wave 3 and uses smoltcp 0.14 and
+Rust 1.99. A fix in `src/warp/` before the take stays a fix, and the podcrates session ports it.
 
 # T-051: Extract the crate `podnet-serve`, with the library-only modules
 
@@ -283,6 +321,11 @@ cargo test --test api_surface
 
 T-047 is done.
 
+## Correction
+
+2026-11-05, `podnet-serve` stays in podnet. The modules that use `src/proxy_auth.rs`, `src/egress.rs` or
+`src/ws.rs` use `pod-proxy` and `pod-ws` after T-137. Recount the module list when the entry starts.
+
 # T-052: Move the Cloudflare adapter to the shared crate `pod-cloudflare` in `PodUtils/podcrates`
 
 **Source:** `docs/research/podnet/architecture.md`, sections 4.1 and 4.2 (the row cargo package).
@@ -312,7 +355,7 @@ podnet.
 
 1. Move the edge client, the tunnel and the quick tunnels to `pod-cloudflare` in `PodUtils/podcrates`.
 2. Replace the links to the crates of podnet with traits of `pod-cloudflare`.
-3. podnet depends on `pod-cloudflare` from crates.io, and keeps the tunnel CLI in the root crate.
+3. podnet depends on `pod-cloudflare` by a git tag of PodUtils/podcrates, and keeps the tunnel CLI in the root crate.
 4. Move the two tests that read files outside the crate to the root crate of podnet.
 5. Move the pin file of `tools/check-upstream.py` and the watch of `.github/workflows/upstream.yml`
    to `PodUtils/podcrates` with the edge client.
@@ -328,7 +371,7 @@ The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the Cloudflare adapt
 
 ```sh
 sh scripts/agent/check.sh
-cargo test -p podnet-cloudflare
+cargo tree -p podnet --depth 1 | grep pod-cloudflare
 python3 -I tools/check-upstream.py
 gh workflow run live.yml
 ```
@@ -338,6 +381,11 @@ gh workflow run live.yml
 T-049, T-050 and T-051 are done.
 
 The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+
+## Correction
+
+2026-11-05, The work goes to `pod-cloudflare` in PodUtils/podcrates. podnet only takes the crate (T-137). Do not do it in podnet. The rule "no dependency for the edge protocol"
+stays: `pod-cloudflare` implements it.
 
 # T-053: The root package is the CLI and a facade that keeps each library path
 
@@ -364,7 +412,7 @@ use crate-private items of several crates. No document maps each crate to its pu
 
 ## Approach
 
-1. Make `src/lib.rs` a facade: `pub use podnet_warp as warp;`, `pub use podnet_vnet as vnet;` and
+1. Make `src/lib.rs` a facade: `pub use pod_warp as warp;`, `pub use podnet_vnet as vnet;` and
    the other modules and root re-exports.
 2. Give each crate a `#[doc(hidden)] pub mod fuzzing`. Make the facade module call them.
 3. Write the path map in `docs/maintenance.md`, section "The code": each crate, its purpose and
@@ -385,6 +433,13 @@ cargo build --timings
 
 T-052 is done.
 
+## Correction
+
+2026-11-05, The facade re-exports `pod-warp`, `pod-cloudflare` and `pod-relay` (shared crates), and
+`podnet-core`, `podnet-vnet` and `podnet-serve` (podnet). Each fuzz target that uses a private item of
+a shared crate needs a `#[doc(hidden)] pub mod fuzzing` in that crate: open an issue in
+PodUtils/podcrates.
+
 # T-054: A prerelease after the crate split, with the static builds of each target
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.2 (the rows Release build and
@@ -397,7 +452,7 @@ cargo package); `docs/maintenance.md`, section "Release"; `CLAUDE.md` (Releases)
 
 ## Problem
 
-The crate split changes the build of each release binary: eight crates, each with its own
+The crate split changes the build of each release binary: five crates and the shared crates, each with its own
 dependencies, and the C shims inside a crate. Only a release run proves the eight static targets
 of cargo-zigbuild and the image.
 
@@ -429,6 +484,12 @@ gh workflow run release-proofs.yml -f tag=v0.4.0-beta.N
 
 T-053 is done.
 
+## Correction
+
+2026-11-05, The ruling "Order" (`docs/decisions.md`): no podnet release now. Start this entry only when the
+owner allows releases again. A `pod-*` dependency by a git tag stops `cargo publish` (the ruling
+"Git dependencies and the publish"): the release builds with the git source and the publish stays off.
+
 # T-137: podnet uses the shared crates of `PodUtils/podcrates`
 
 **Source:** the owner, 2026-11-05 (`docs/decisions.md`, Shared crates and Order); the proposal of
@@ -455,14 +516,14 @@ adapter of podnet move to the shared repository (T-050, T-052).
   the provider (podnet keeps ring). podnet takes each crate by a git tag of
   `PodUtils/podcrates` (`deny.toml`, `allow-git`), not from crates.io.
 - podcrates is edition 2024 with `rust-version` 1.99 (`pod-todo` v0.1.0 needs 1.97). `pod-netstack` and `pod-warp` use smoltcp
-  0.14: podnet pins smoltcp 0.12 and `rust-version` 1.89 (`Cargo.toml`).
+  0.14. podnet has `rust-version` 1.99 and pins smoltcp 0.12 (`Cargo.toml`); the move to 0.14 comes with `pod-netstack`.
 - podcrates v0.1.0 has `pod-todo`, `pod-core`, `pod-testkit`, `pod-term` and `pod-identity`. Its
   hand-off for podnet is `adoption/podnet/CRATE.patch` in `PodUtils/podcrates`.
 
 ## Approach
 
-1. When wave 1 exists: replace `crates/podnet-todo` with `pod-todo`, and the TLS, DNS and proxy
-   code of podnet (`src/trust.rs`, `src/resolve.rs`, `src/egress.rs`) with `pod-tls`, `pod-dns`
+1. When wave 1 exists: replace `crates/podnet-todo` with `pod-todo` (done), and the TLS, DNS and proxy
+   code of podnet (`src/trust.rs`, `src/resolve.rs`, `src/egress.rs`) with `pod-tls` (done), `pod-dns`
    and `pod-proxy`.
 2. When wave 2 exists: replace the relay client (`src/ws_relay.rs`, `src/relay_reverse.rs`) with
    `pod-relay` (no crate `podnet-relay`: T-049), and the userspace stack and WireGuard of
