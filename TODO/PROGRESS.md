@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 135 entries: 118 open, 1 partial, 9 blocked, 7 done.
+`TODO/INDEX.md` holds 136 entries: 119 open, 1 partial, 9 blocked, 7 done.
 
 ## State
 
@@ -18,7 +18,8 @@ one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes firs
 not wait for a larger one.
 
 1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
-2. **M1, the rename:** the owner renames the repository (T-021). Then T-022, T-023 and T-024;
+2. **M1, the rename:** the owner transfers the repository (T-021). Then T-136, T-022, T-023 and
+   T-024;
    T-017 needs its rebuild check. T-025 waits for the owner.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,

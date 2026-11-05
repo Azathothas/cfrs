@@ -14,4 +14,5 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #151 | tls: send an encrypted ClientHello on the hops that publish a config | open (deferred: no HPKE in ring, no ECH config on the hops) | T-004 |
 | #161 | Publish the library and the CLI on crates.io (deferred) | open (deferred: publish nothing now) | T-005 |
 | #222 | crates.io: the workspace version is a prerelease, and the beta requirement cannot match a stable pod-netns | open (deferred: the first stable release) | T-006 |
-| #224 | crates.io: the crate name cfrs is registered to another project | open (deferred: publish nothing now; the name comes from the rename) | T-007 |
+| #224 | crates.io: the crate name cfrs is registered to another project | closed (the owner chose and reserved `podnet`) | T-007 |
+| #311 | live: two runs in a row failed | open | T-136 |

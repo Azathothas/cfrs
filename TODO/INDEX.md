@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**135 entries: 118 open, 1 partial, 9 blocked, 7 done.**
+**136 entries: 119 open, 1 partial, 9 blocked, 7 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 9 | 0 | 1 | 4 | 14 |
+| P1 | 10 | 0 | 1 | 4 | 15 |
 | P2 | 81 | 1 | 6 | 3 | 91 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 118 | 1 | 9 | 7 | 135 |
+| **All** | 119 | 1 | 9 | 7 | 136 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -181,3 +181,4 @@ M8 Overlays, M9 Later.
 | [T-133](later.md) | P3 | S | M9 | chore | open | Zig from the community mirrors in the release workflow |
 | [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the copied podssh files and of the relay contract |
 | [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |
+| [T-136](rename.md) | P1 | S | M1 | defect | open | live: two runs in a row failed before the transfer of the repository (GitHub #311) |

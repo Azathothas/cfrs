@@ -535,3 +535,52 @@ release (T-023). Only the owner can change it.
 ## Start condition
 
 T-023 is done.
+
+# T-136: live: two runs in a row failed before the transfer of the repository (GitHub #311)
+
+**Source:** GitHub #311 (the job report of `live`).
+**Category:** defect
+**Milestone:** M1
+**Priority:** P1
+**Effort:** S
+**Status:** open
+
+## Problem
+
+The issue: "The workflow live failed in two runs in a row. The last run:
+https://github.com/Azathothas/cfrs/actions/runs/41995395204". The failed runs:
+
+- 41987488063 (bcd9aa7, before the rename): the step of the second batch. The WARP service
+  answered HTTP 429 (error 1015) to a new device of the nested session.
+- 41994001349 (091b40f) and 41995395204 (35f9261): the step "podnet update refuses
+  v0.3.0-beta.1 of cfrs". `podnet update` read `https://api.github.com/repos/PodUtils/podnet/releases`
+  and got HTTP 404: the repository `PodUtils/podnet` does not exist before T-021.
+
+## Premise
+
+- `src/update.rs` names the repository `PodUtils/podnet` since the rename (T-016) and the ruling
+  "Home" of 2026-11-05.
+- GitHub redirects `Azathothas/cfrs` to `PodUtils/podnet` after the transfer (T-021).
+- The live job opens this issue after two failed runs (`.github/workflows/live.yml`, job
+  `report`).
+
+## Approach
+
+1. After T-021, read the next live run. The update step must pass: `podnet update` reads the
+   release list of `PodUtils/podnet` (with the releases of cfrs) and refuses v0.3.0-beta.1 for its
+   identity.
+2. When a step fails for a 429 of the WARP service, read the `Retry-After` and the step (T-101
+   has the same risk).
+3. Close GitHub #311 with the failed runs, their causes and the run that passed.
+
+## Prove
+
+```sh
+gh workflow run live.yml
+```
+
+The step "podnet update refuses v0.3.0-beta.1 of cfrs" and the step of the second batch pass.
+
+## Start condition
+
+T-021 is done.
