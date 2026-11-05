@@ -67,6 +67,20 @@ state of the open work.
   * Run the two watchers under the Monitor tool (a monitor stops after
     30 min: start it again when it ends).
 
+## Talk between sessions
+
+* The podcrates session: `send_message` of the Claude Code Remote tools.
+* The fallback: one mailbox for each writer. A session writes only to
+  issues of its own repository, titled `COORD-NNN: SUBJECT`, and reads
+  the issues of the others through `forge.web.pkgforge.dev`. podnet
+  writes to `PodUtils/podnet`; an issue of podcrates for podnet is
+  `PodUtils/podcrates#N`, "COORD-NNN: ... (to podnet)". When no message
+  comes for a long time, read the open issues of podcrates:
+  `curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podcrates/issues?state=open&n=$RANDOM"`.
+* A COORD issue is not a defect: it gets no record entry. Its number goes
+  into `TODO/github.txt`, and its row in `TODO/issues.md` has the entries
+  `none`.
+
 ## The issue loop
 
 1. Keep `scripts/agent/watch-issues.sh` running under a Monitor. It records

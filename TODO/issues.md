@@ -15,4 +15,8 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #161 | Publish the library and the CLI on crates.io (deferred) | open (deferred: publish nothing now) | T-005 |
 | #222 | crates.io: the workspace version is a prerelease, and the beta requirement cannot match a stable pod-netns | open (deferred: the first stable release) | T-006 |
 | #224 | crates.io: the crate name cfrs is registered to another project | closed (the owner chose and reserved `podnet`) | T-007 |
-| #311 | live: two runs in a row failed | open | T-136 |
+| #311 | live: two runs in a row failed | closed | T-136 |
+| #316 | live: two runs in a row failed | closed | T-138 |
+| #317 | COORD-001: a test of the fallback channel | closed (a COORD issue between sessions; no work) | none |
+
+#312 to #315 are pull requests.

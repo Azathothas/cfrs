@@ -837,3 +837,50 @@ A test asserts that `podnet pod --version` starts with the name of the CLI and t
 ## Start condition
 
 T-019 and T-020 are done.
+
+# T-138: live: two runs in a row failed on the edge and WARP services (GitHub #316)
+
+**Source:** GitHub #316 (the job report of `live`).
+**Category:** defect
+**Milestone:** M5
+**Priority:** P2
+**Effort:** S
+**Status:** done
+
+## Problem
+
+The issue: "The workflow live failed in two runs in a row." The failed runs:
+
+- 42060806281 (a2af228), the step "Throughput of the HTTP path and of a --forward WebSocket": the
+  edge answered `Unauthorized: Tunnel not found` to the registration of a tunnel that the step
+  made some seconds before; `the tunnel is not ready after 90 s`.
+- 42062631365 (542f40b), the step "Throughput through WARP, 1 to 16 MiB": the origin server of
+  the script got `OSError: [Errno 98] Address already in use`, and the POST of 1 MiB got HTTP 530
+  from the edge.
+
+## Premise
+
+- a2af228 changed only `version` beside the git dependencies of `Cargo.toml`. 542f40b changed only
+  documents and the record. The code is the code of a5894fe, whose live run 42058519485 passed.
+- The next live run 42064698302 (66c9512) passed each step.
+- Not measured: the cause on the side of the edge (the time until a new named tunnel is known to
+  the edge) and the process that held the port of the origin server.
+
+## Approach
+
+1. Read the failed step of each run (`docs/maintenance.md`, The issue loop).
+2. Compare with the runs before and after.
+3. The watches of the services move to `pod-services` (`docs/decisions.md`, Services crate): the
+   wait for a new tunnel goes there, with no change in podnet now.
+
+## Prove
+
+```sh
+curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet/actions/runs/42064698302?n=$RANDOM"
+```
+
+## Done
+
+2026-11-05, the commit of this Done section. Two failures of services in the live job, not of
+the code: the live run 42064698302 of 66c9512 passed with the same code. The podcrates session
+noted the "Tunnel not found" for the watches of `pod-services`.

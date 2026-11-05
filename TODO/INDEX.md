@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**137 entries: 119 open, 1 partial, 7 blocked, 10 done.**
+**138 entries: 119 open, 1 partial, 7 blocked, 11 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 9 | 1 | 0 | 6 | 16 |
-| P2 | 82 | 0 | 5 | 4 | 91 |
+| P2 | 82 | 0 | 5 | 5 | 92 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 119 | 1 | 7 | 10 | 137 |
+| **All** | 119 | 1 | 7 | 11 | 138 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -183,3 +183,4 @@ M8 Overlays, M9 Later.
 | [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |
 | [T-136](rename.md) | P1 | S | M1 | defect | done | live: two runs in a row failed before the transfer of the repository (GitHub #311) |
 | [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |
+| [T-138](fixes.md) | P2 | S | M5 | defect | done | live: two runs in a row failed on the edge and WARP services (GitHub #316) |

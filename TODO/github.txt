@@ -13,4 +13,10 @@
 161 issue open
 222 issue open
 224 issue closed
-311 issue open
+311 issue closed
+312 pull open
+313 pull open
+314 pull open
+315 pull open
+316 issue closed
+317 issue closed
