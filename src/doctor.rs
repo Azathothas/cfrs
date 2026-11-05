@@ -517,10 +517,8 @@ async fn clock(paths: &[Path], timeout: Duration) -> Clock {
         };
     };
     let url = format!("https://{}/", path.target.authority());
-    let answer = crate::fetch::Request::new("HEAD", url.clone())
-        .timeout(timeout)
-        .send()
-        .await;
+    let answer =
+        crate::fetch::send(crate::fetch::Request::new("HEAD", url.clone()).timeout(timeout)).await;
     let date = match &answer {
         Ok(r) => r.header("date").map(str::to_string),
         Err(_) => None,
@@ -607,7 +605,8 @@ fn proxy_report(targets: &[Target]) -> Value {
         None => "none: each connection is direct".to_string(),
         Some(p) => {
             let mut text = format!(
-                "{p} (credentials: {})",
+                "{} (credentials: {})",
+                p.label(),
                 if p.has_credentials() {
                     "present"
                 } else {
@@ -621,7 +620,7 @@ fn proxy_report(targets: &[Target]) -> Value {
         }
     };
     json!({
-        "url": first.as_ref().map(|p| p.to_string()),
+        "url": first.as_ref().map(|p| p.label()),
         "credentials": first.as_ref().map(|p| p.has_credentials()),
         "direct": direct,
         "text": text,
@@ -629,7 +628,7 @@ fn proxy_report(targets: &[Target]) -> Value {
 }
 
 async fn path(target: Target, options: Options, start: Instant) -> Path {
-    let via = crate::egress::proxy_for(&target.host, target.port).map(|p| p.to_string());
+    let via = crate::egress::proxy_for(&target.host, target.port).map(|p| p.label());
     // Issue 128: the answer of the resolver chain, before the samples.
     let dns = if via.is_none() && target.host.parse::<std::net::IpAddr>().is_err() {
         let took = Instant::now();

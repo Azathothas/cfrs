@@ -185,15 +185,16 @@ At the first stable release (no `-beta.N`), also:
 | `src/ws_relay.rs`, `src/relay_reverse.rs` | the WebSocket relay: the forward leg, and `podnet relay` (reverse mode) |
 | `src/detach.rs`, `src/instances.rs` | `--detach`, the supervisor, `ps`, `stop`, `logs`, `wait` |
 | `src/agent.rs` | `doctor --agent`, `agent up` |
-| `src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`, `src/resolve.rs`, `src/ws.rs` | the egress proxy, Digest, the fetch client, the resolver chain (system, DoH, pins), the WebSocket client. They move to `pod-proxy`, `pod-dns` and `pod-ws` of `PodUtils/podcrates` (T-137) |
+| `src/egress.rs`, `src/fetch.rs` | glue over `pod-proxy`: the dial of each connection (the proxy of `--proxy`, the variables or a tool's file, `NO_PROXY`, Digest, the race of addresses) and the HTTP client, with podnet's settings, words, hops and counters |
+| `src/resolve.rs`, `src/ws.rs` | the resolver chain (system, DoH, pins), the WebSocket client. They move to `pod-dns` and `pod-ws` of `PodUtils/podcrates` (T-137) |
 | `src/trust.rs` | glue over `pod-tls`: one TLS context of the process on ring, with the edge roots of Cloudflare as extra roots |
 | `crates/podnet-todo/` | `cargo todo`: a wrapper over `pod-todo`; the facts of podnet are in `TODO/todo.toml` |
 | `src/vnet/` | `podnet net`: the userspace networks, the LD_PRELOAD shim |
 | `src/manual/` | `podnet man`; `facts.rs` lists each environment variable |
 | `crates/podnet-netns/` | `podnet pod`: the netns, seccomp and raw backends |
 
-Shared crates: `pod-todo`, `pod-core` and `pod-tls` come from
-`PodUtils/podcrates` by the git tag `v0.2.0` (T-137). `deny.toml` allows
+Shared crates: `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` come from
+`PodUtils/podcrates` by the git tag `v0.3.0` (T-137). `deny.toml` allows
 that git source. Once podnet takes a crate, a change of its code goes to
 `PodUtils/podcrates` (under its `AGENTS.md`) or into an issue there, not
 into podnet. The toolchain is Rust 1.99.1 and `rust-version` is 1.99.

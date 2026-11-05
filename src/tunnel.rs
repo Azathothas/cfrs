@@ -610,7 +610,7 @@ pub fn plan_with_proxy(
     protocol: Protocol,
     proxy: Option<&crate::egress::Proxy>,
 ) -> (Vec<LegKind>, Option<String>) {
-    let Some(proxy) = proxy else {
+    let Some(proxy) = proxy.map(|p| p.label()) else {
         return (plan, None);
     };
     if !plan.contains(&LegKind::QuicDirect) {
@@ -1242,7 +1242,7 @@ async fn verify_fetch(
     loop {
         attempt += 1;
         let request = crate::fetch::Request::new("GET", url).timeout(Duration::from_secs(15));
-        match request.send().await {
+        match crate::fetch::send(request).await {
             Ok(response) => {
                 let body = response.text();
                 let ok = response.is_success()

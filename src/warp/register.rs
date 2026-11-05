@@ -19,6 +19,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::egress::Proxy;
+use crate::fetch::{Request, Response};
 
 /// API host. Reachable on TCP 443, which is the point of this module.
 pub const API_BASE: &str = "https://api.cloudflareclient.com";
@@ -58,17 +59,14 @@ pub fn api_bases(value: Option<&str>) -> Result<Vec<String>> {
 
 /// Send `request` (made for [`API_BASE`]) to each API base in turn, until
 /// one answers with a status under 500. The error names each base.
-async fn send_api(request: crate::fetch::Request) -> Result<crate::fetch::Response> {
+async fn send_api(request: Request) -> Result<Response> {
     let bases = api_bases(std::env::var(API_VARIABLE).ok().as_deref())
         .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
     send_api_to(request, &bases).await
 }
 
 /// [`send_api`] with the bases `bases`.
-async fn send_api_to(
-    request: crate::fetch::Request,
-    bases: &[String],
-) -> Result<crate::fetch::Response> {
+async fn send_api_to(request: Request, bases: &[String]) -> Result<Response> {
     let path = request
         .url
         .strip_prefix(API_BASE)
@@ -79,7 +77,7 @@ async fn send_api_to(
     for (i, base) in bases.iter().enumerate() {
         let mut attempt = request.clone();
         attempt.url = format!("{base}{path}");
-        match attempt.send().await {
+        match crate::fetch::send(attempt).await {
             Ok(response) if response.status < 500 || i + 1 == count => return Ok(response),
             Ok(response) => failures.push(format!("{base}: HTTP {}", response.status)),
             Err(err) if i + 1 == count => {
@@ -399,13 +397,13 @@ fn request(
     path: &str,
     bearer: Option<&str>,
     proxy: Option<&Proxy>,
-) -> crate::fetch::Request {
-    let mut request = crate::fetch::Request::new(method, format!("{API_BASE}/{API_VERSION}{path}"))
+) -> Request {
+    let mut request = Request::new(method, format!("{API_BASE}/{API_VERSION}{path}"))
         .header("User-Agent", USER_AGENT)
         .header("CF-Client-Version", CLIENT_VERSION)
         .header("Content-Type", "application/json; charset=UTF-8")
         .timeout(std::time::Duration::from_secs(30))
-        .via(proxy.cloned());
+        .via(crate::egress::via(proxy));
     if let Some(token) = bearer {
         request = request.header("Authorization", format!("Bearer {token}"));
     }
@@ -414,25 +412,23 @@ fn request(
 
 /// The send of an API request: see [`send_api`].
 trait SendApi {
-    async fn send_api(self) -> Result<crate::fetch::Response>;
+    async fn send_api(self) -> Result<Response>;
 }
 
-impl SendApi for crate::fetch::Request {
-    async fn send_api(self) -> Result<crate::fetch::Response> {
+impl SendApi for Request {
+    async fn send_api(self) -> Result<Response> {
         send_api(self).await
     }
 }
 
-fn with_json<T: Serialize>(
-    request: crate::fetch::Request,
-    body: &T,
-) -> Result<crate::fetch::Request> {
-    Ok(request.json(&serde_json::to_value(body).context("encoding the WARP API body")?))
+fn with_json<T: Serialize>(request: Request, body: &T) -> Result<Request> {
+    let body = serde_json::to_value(body).context("encoding the WARP API body")?;
+    Ok(request.json(body.to_string()))
 }
 
 /// The device of an answer. A body that cannot be decoded is not shown: the
 /// answer of `POST /reg` holds the token.
-fn check(resp: crate::fetch::Response) -> Result<Device> {
+fn check(resp: Response) -> Result<Device> {
     if !resp.is_success() {
         bail!("WARP API answered HTTP {}: {}", resp.status, resp.text());
     }
@@ -590,7 +586,7 @@ pub async fn set_license(
         Some(token),
         proxy,
     )
-    .json(&serde_json::json!({ "license": license }))
+    .json(serde_json::json!({ "license": license }).to_string())
     .send_api()
     .await
     .context("PUT /reg/{id}/account")?;
@@ -631,7 +627,7 @@ pub fn api_status(err: &anyhow::Error) -> Option<u16> {
         .map(|e| e.status)
 }
 
-fn json_body(resp: crate::fetch::Response) -> Result<serde_json::Value> {
+fn json_body(resp: Response) -> Result<serde_json::Value> {
     if !resp.is_success() {
         return Err(ApiError {
             status: resp.status,
@@ -800,7 +796,7 @@ mod tests {
         let busy = answering(503).await;
         let refused = answering(403).await;
         let request = || {
-            crate::fetch::Request::new("GET", format!("{API_BASE}/{API_VERSION}/reg/x"))
+            Request::new("GET", format!("{API_BASE}/{API_VERSION}/reg/x"))
                 .timeout(std::time::Duration::from_secs(5))
                 .via(None)
         };

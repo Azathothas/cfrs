@@ -415,11 +415,11 @@ async fn doh_query_at(server: &DohServer, name: &str, rtype: &str) -> Result<Doh
         .timeout(STEP_TIMEOUT);
     // The DoH server is an IP address, or a name that the proxy resolves.
     // The dial of a proxy can resolve the proxy host: not by DoH again.
-    let response = NO_DOH.scope((), request.send()).await?;
+    let response = NO_DOH.scope((), crate::fetch::send(request)).await?;
     if !response.is_success() {
         bail!("HTTP {}", response.status);
     }
-    response.json()
+    crate::fetch::json(&response)
 }
 
 #[cfg(test)]

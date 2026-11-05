@@ -107,13 +107,13 @@ fail that check. The steps:
 | The state directory is read-only | podnet tries the next directory of the chain; a WARP registration does not start when no directory can be written | measured (test) | `src/state.rs`; `src/warp/mod.rs` `register_or_load` |
 | The proxy re-terminates TLS | Give its root with `--ca-file` or `SSL_CERT_FILE` for the API and DoH. The edge and MASQUE cannot pass through it: they need the Cloudflare chain, and MASQUE needs a client certificate | inferred | `src/trust.rs`; `tests/tls.rs` |
 | The proxy refuses `CONNECT` to an IP address | DoH by name (`cloudflare-dns.com`, `dns.google`) through the proxy | measured | `src/resolve.rs` `doh_servers` |
-| The proxy answers 407 | The error names each scheme of `Proxy-Authenticate`; podnet answers Basic and Digest (MD5, MD5-sess, SHA-256, SHA-256-sess), and the advice follows what it sent | measured (test) | `src/egress.rs` `a_407_names_the_schemes`, `a_407_with_digest_does_not_say_basic_only` |
+| The proxy answers 407 | The error names each scheme of `Proxy-Authenticate`; podnet answers Basic and Digest (MD5, MD5-sess, SHA-256, SHA-256-sess), and the advice follows what it sent | measured (test) | `PodUtils/podcrates:crates/pod-proxy/src/proxy_auth.rs` `a_407_names_the_schemes`, `a_407_with_digest_does_not_say_basic_only`; `tests/egress.rs` `a_407_names_the_schemes` |
 | No `/proc` | The seccomp backend of `podnet pod` cannot read the memory of the program; `podnet pod doctor` reports it | inferred | `crates/podnet-netns/src/seccomp.rs` |
 | `/proc/<pid>/mem` and `process_vm_writev` are refused | `getsockname` and `getpeername` answer `EOPNOTSUPP` under the seccomp backend; QUIC clients fail, and a program that reads its own address can crash (a Go `LocalAddr()` type assertion). A warning and the `write program memory` row of `pod doctor` say so; `--backend netns` avoids it | measured (issue 186) | `crates/podnet-netns/src/seccomp.rs` `handle_sockname`; `tests/pod_seccomp.rs` `getpeername_is_the_inet_address_or_eopnotsupp` |
 | The clock is wrong | A certificate error gives the clock of the host | measured (test) | `tests/tls.rs` `an_expired_certificate_names_the_host_clock` |
 | `bind` is allowed and `listen` is refused | `podnet net doctor` gives `listen(...) FAIL`; only `warp proxy`, `connect` and `net proxy` need a listener | measured (test) | `src/vnet/doctor.rs`; `tests/cli.rs` `doctor_tells_listen_from_bind` |
 | Outbound UDP is refused (EPERM, ICMP) | `--protocol auto` does not try QUIC on UDP 7844 | measured (test) | `src/udp.rs`; `tunnel::plan_with_udp` |
-| No IPv6 (`EAFNOSUPPORT`) | Direct dials alternate the families and go on to the next address after 250 ms | inferred | `src/egress.rs` `dial_addrs` |
+| No IPv6 (`EAFNOSUPPORT`) | Direct dials alternate the families and go on to the next address after 250 ms | inferred | `PodUtils/podcrates:crates/pod-proxy/src/race.rs` `dial_addrs` |
 
 ## Other networks to the front door
 
@@ -163,7 +163,7 @@ session.
 ## Rules of podnet
 
 1. Use one egress path for each connection: the proxy of `--proxy` or the
-   variables, with `NO_PROXY`. Code: `src/egress.rs`. Followed by each
+   variables, with `NO_PROXY`. Code: `src/egress.rs`, over `pod-proxy`. Followed by each
    command; `podnet pod` has its own upstream list (`podnet pod -x`).
 2. Do not send UDP around a proxy. Code: `tunnel::plan_with_proxy`.
 3. Resolve names with a chain that works with no system resolver. Code:

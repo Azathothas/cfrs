@@ -510,7 +510,7 @@ impl TunnelOpts {
                 ));
             }
             config.ingress.auth = Some(
-                podnet::proxy_auth::Credentials::load(user, file)
+                podnet::ingress::credentials(user, file)
                     .context("--auth-password-file")
                     .fault(Fault::Config)?,
             );
@@ -2374,7 +2374,7 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
 
 /// Apply --proxy, --no-proxy and --resolve.
 fn network_options(cli: &Cli) -> Result<()> {
-    use podnet::egress::{set_choice, Proxy, ProxyChoice};
+    use podnet::egress::Proxy;
     if let Some(spec) = &cli.proxy {
         // Issue 95: a value with no scheme (PODNET_PROXY=notaurl) became
         // http://notaurl:8080, and each leg then failed on a name. The
@@ -2391,11 +2391,9 @@ fn network_options(cli: &Cli) -> Result<()> {
         for secret in Proxy::secret_parts(spec) {
             podnet::report::hide(&secret);
         }
-        set_choice(ProxyChoice::Via(
-            Proxy::parse_trusted(spec).context("--proxy")?,
-        ));
+        podnet::egress::set_proxy(spec).context("--proxy")?;
     } else if cli.no_proxy {
-        set_choice(ProxyChoice::Direct);
+        podnet::egress::set_direct();
     }
     if let Some(list) = &cli.resolve {
         podnet::resolve::set_pins(list).context("--resolve")?;
@@ -3024,7 +3022,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     // Issue 205: the credential of a tunnel with --auth-user.
     let auth: Option<Arc<str>> = match (&args.auth_user, &args.auth_password_file) {
         (Some(user), Some(file)) => Some(Arc::from(
-            podnet::proxy_auth::Credentials::load(user, file)
+            podnet::ingress::credentials(user, file)
                 .context("--auth-password-file")
                 .fault(Fault::Config)?
                 .basic_header(),
@@ -5274,8 +5272,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
             // Issue 146: the credentials of the clients.
             if let (Some(user), Some(file)) = (&proxy_user, &proxy_password_file) {
-                let credentials =
-                    podnet::proxy_auth::Credentials::load(user, file).fault(Fault::Config)?;
+                let credentials = podnet::ingress::credentials(user, file).fault(Fault::Config)?;
                 podnet::warp::proxy::set_credentials(credentials);
             }
             // Issue 117: the DNS listener is bound before the session, as
@@ -5554,7 +5551,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 // outside the TUN; the relay of a later session should,
                 // where a route to it exists.
                 let session_host = match podnet::egress::proxy_for(&endpoint, 443) {
-                    Some(proxy) => proxy.host().to_string(),
+                    Some(proxy) => proxy.host,
                     None => endpoint.clone(),
                 };
                 let mut relay_host = String::new();
@@ -5563,7 +5560,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                         // Issue 105: a relay that is reached through the
                         // proxy needs no route of its own.
                         relay_host = match podnet::egress::proxy_for(relay.host(), relay.port()) {
-                            Some(proxy) => proxy.host().to_string(),
+                            Some(proxy) => proxy.host,
                             None => relay.host().to_string(),
                         };
                     }

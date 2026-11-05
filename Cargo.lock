@@ -751,6 +751,7 @@ dependencies = [
  "const-oid",
  "crypto-common",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -2086,8 +2087,8 @@ dependencies = [
 
 [[package]]
 name = "pod-core"
-version = "0.2.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
+version = "0.3.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.3.0#c0d62b8d64c0ddde0ab9727adca62307d17213dd"
 dependencies = [
  "libc",
  "rand",
@@ -2096,9 +2097,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pod-proxy"
+version = "0.3.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.3.0#c0d62b8d64c0ddde0ab9727adca62307d17213dd"
+dependencies = [
+ "base64",
+ "libc",
+ "pod-core",
+ "pod-tls",
+ "rustls-pki-types",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "pod-tls"
-version = "0.2.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
+version = "0.3.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.3.0#c0d62b8d64c0ddde0ab9727adca62307d17213dd"
 dependencies = [
  "base64",
  "p256",
@@ -2115,8 +2132,8 @@ dependencies = [
 
 [[package]]
 name = "pod-todo"
-version = "0.2.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.2.0#8dc1fb51d71362de6f0e4b128befe013f022acf5"
+version = "0.3.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.3.0#c0d62b8d64c0ddde0ab9727adca62307d17213dd"
 
 [[package]]
 name = "podnet"
@@ -2138,6 +2155,7 @@ dependencies = [
  "httparse",
  "libc",
  "pod-core",
+ "pod-proxy",
  "pod-tls",
  "podnet-netns",
  "qrcode",

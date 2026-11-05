@@ -6,8 +6,8 @@
 
 use serde_json::{json, Value};
 
-/// The variables of the proxy, in the order that podnet reads them.
-const PROXY_VARIABLES: &[&str] = &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+// The variables of the proxy, in the order that podnet reads them.
+use crate::egress::PROXY_VARIABLES;
 
 /// The proxy that podnet uses, by the choice of the dial: `--no-proxy`,
 /// `--proxy` (or `PODNET_PROXY`), else the first proxy variable that is set.
@@ -21,7 +21,7 @@ fn proxy() -> Value {
             "source": source,
             "address": match p.carrier() {
                 Carrier::Tcp => format!("{}:{}", p.address().0, p.address().1),
-                _ => p.to_string(),
+                _ => p.label(),
             },
             "kind": p.kind_text(),
             "credentials": p.has_credentials(),
@@ -40,7 +40,7 @@ fn proxy() -> Value {
         if value.trim().is_empty() {
             continue;
         }
-        return match Proxy::parse(&value) {
+        return match crate::egress::parse(&value) {
             Ok(p) => {
                 let mut doc = describe(&p, key);
                 // The key of beta.11 and before.

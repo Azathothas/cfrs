@@ -1745,7 +1745,7 @@ mod tests {
             }
         });
         let mut ingress = Ingress::new().catch_all(Service::Http(origin));
-        let creds = crate::proxy_auth::Credentials::new("u", "secret").unwrap();
+        let creds = pod_proxy::Credentials::new("u", "secret").unwrap();
         ingress.auth = Some(creds.clone());
         let runtime = ServiceRuntime::build(&ingress, Metrics::new()).unwrap();
         let run = |auth: Option<String>| {

@@ -845,10 +845,8 @@ async fn dial(addrs: &[SocketAddr]) -> Result<(usize, crate::net::BoxedIo)> {
     if let Some(proxy) = crate::egress::proxy_for(&first.ip().to_string(), first.port()) {
         let mut last = None;
         for (i, addr) in addrs.iter().enumerate() {
-            match proxy
-                .connect(&addr.ip().to_string(), addr.port(), DIAL_TIMEOUT)
-                .await
-            {
+            let host = addr.ip().to_string();
+            match crate::egress::dial(&host, addr.port(), Some(&proxy), DIAL_TIMEOUT).await {
                 Ok(io) => return Ok((i, io)),
                 Err(err) => last = Some(err.context(format!("TCP to the edge at {addr}"))),
             }

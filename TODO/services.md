@@ -84,7 +84,7 @@ authentication.
 
 ## Premise
 
-- Read: the Basic check is in `src/proxy.rs`, and its credentials in `src/proxy_auth.rs`
+- Read: the Basic check is in `src/proxy.rs`, and its credentials in `PodUtils/podnet:src/proxy_auth.rs`
   (`Credentials`).
 - Read: `serve --local` refuses `--auth-user` (`src/main.rs`).
 - The PIN gate is `src/gate.rs`.

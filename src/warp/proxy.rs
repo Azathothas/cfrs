@@ -593,12 +593,11 @@ where
 
 /// The credentials that each client of the proxies of this process must
 /// give (issue 146), when they are set.
-static CREDENTIALS: std::sync::OnceLock<crate::proxy_auth::Credentials> =
-    std::sync::OnceLock::new();
+static CREDENTIALS: std::sync::OnceLock<pod_proxy::Credentials> = std::sync::OnceLock::new();
 
 /// Set the credentials of the clients (issue 146). Call it before the first
 /// client.
-pub fn set_credentials(credentials: crate::proxy_auth::Credentials) {
+pub fn set_credentials(credentials: pod_proxy::Credentials) {
     let _ = CREDENTIALS.set(credentials);
 }
 
@@ -616,7 +615,7 @@ pub async fn handle_client_auth<S, D, F>(
     stream: S,
     dial: D,
     udp: Option<Arc<WarpStack>>,
-    auth: Option<&crate::proxy_auth::Credentials>,
+    auth: Option<&pod_proxy::Credentials>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1878,7 +1877,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_socks5_client_gives_its_credentials() {
-        let creds = crate::proxy_auth::Credentials::new("alice", "pw").unwrap();
+        let creds = pod_proxy::Credentials::new("alice", "pw").unwrap();
         for (user, pass, ok) in [("alice", "pw", true), ("alice", "no", false)] {
             let seen = Arc::new(std::sync::Mutex::new(None));
             let (mut client, server) = tokio::io::duplex(1024);
@@ -1934,7 +1933,7 @@ mod tests {
     // gets 200.
     #[tokio::test]
     async fn an_http_client_gives_its_credentials() {
-        let creds = crate::proxy_auth::Credentials::new("alice", "pw").unwrap();
+        let creds = pod_proxy::Credentials::new("alice", "pw").unwrap();
         for (header, want) in [
             ("", "407"),
             ("Proxy-Authorization: Basic YWxpY2U6cHc=\r\n", "200"),

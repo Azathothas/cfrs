@@ -122,7 +122,7 @@ T-046 is done.
 ## Correction
 
 2026-11-05, the module tls_fragment is gone (the split of the ClientHello is in `pod-tls`), and
-`src/trust.rs` is glue over `pod-tls`. `src/egress.rs`, `src/proxy_auth.rs` and `src/fetch.rs` move to
+`src/trust.rs` is glue over `pod-tls`. `src/egress.rs`, `PodUtils/podnet:src/proxy_auth.rs` and `src/fetch.rs` move to
 `pod-proxy`, `src/resolve.rs` to `pod-dns`, and the WebSocket bridge of `src/ws.rs` to `pod-ws`
 (T-137). Extract `podnet-core` from what stays in podnet after these takes. Recount the module list
 when the entry starts. Step 4 names the MSRV job: it stays, and its plant step is gone.
@@ -323,7 +323,7 @@ T-047 is done.
 
 ## Correction
 
-2026-11-05, `podnet-serve` stays in podnet. The modules that use `src/proxy_auth.rs`, `src/egress.rs` or
+2026-11-05, `podnet-serve` stays in podnet. The modules that use `PodUtils/podnet:src/proxy_auth.rs`, `src/egress.rs` or
 `src/ws.rs` use `pod-proxy` and `pod-ws` after T-137. Recount the module list when the entry starts.
 
 # T-052: Move the Cloudflare adapter to the shared crate `pod-cloudflare` in `PodUtils/podcrates`
@@ -559,8 +559,13 @@ Done so far:
   extra roots); the module `tls_fragment` is gone (the split is in `pod-tls`). Each `pod-*`
   dependency names `tag = "v0.2.0"`. The `rust-version` is 1.99 and each toolchain pin is 1.99.1;
   the `msrv` job has no plant step (no stable API is newer than 1.99).
-- Next: `pod-proxy` (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`), `pod-dns`
-  (`src/resolve.rs`), `pod-ws` (`src/ws.rs`).
+- `pod-proxy` v0.3.0 (the patch `adoption/podnet/pod-proxy.patch` of podcrates): the module
+  `proxy_auth` is gone; `src/egress.rs` and `src/fetch.rs` are glue over `pod-proxy` (podnet's
+  rules of the variables, `--proxy`, the resolver chain, the counters, the words of a failure).
+  `socks5://` resolves the name in podnet, `socks5h://` sends it. Each `pod-*` dependency names
+  `tag = "v0.3.0"` with `version = "0.3.0"`.
+- Next: `pod-dns` (`src/resolve.rs`; the DoH resolvers become a setting, their list goes to
+  `pod-services`), then `pod-ws` (`src/ws.rs`).
 - The owner, 2026-11-05 (`docs/decisions.md`, Services crate): the lists of services of other
   parties, their measurements and the watch workflows move to `pod-services`. podnet takes it
   like each other crate.

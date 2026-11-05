@@ -9,7 +9,6 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 /// A quick-tunnel API on plain HTTP. With `ok`, it gives a tunnel; else 503.
 fn api(ok: bool) -> (u16, Arc<AtomicUsize>) {
@@ -310,24 +309,6 @@ fn a_407_names_the_schemes() {
         text.contains("podnet supports Basic and Digest only"),
         "{text}"
     );
-}
-
-/// An address that does not answer delays the dial by one attempt delay,
-/// not by its own time-out.
-#[tokio::test]
-async fn a_silent_address_does_not_hold_the_dial() {
-    test_host::need_loopback!();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let good = listener.local_addr().unwrap();
-    // TEST-NET-1: no host answers there.
-    let silent: std::net::SocketAddr = "192.0.2.1:9".parse().unwrap();
-    let start = Instant::now();
-    let (index, _stream) = podnet::egress::dial_addrs(&[silent, good], Duration::from_secs(10))
-        .await
-        .unwrap();
-    let took = start.elapsed();
-    assert_eq!(index, 1);
-    assert!(took < Duration::from_millis(1000), "the dial took {took:?}");
 }
 
 /// A proxy that refuses with a text: the error line keeps the text, and

@@ -120,7 +120,7 @@ fn text(data: &[u8]) -> Option<&str> {
 pub fn proxy_url(data: &[u8]) {
     let Some(spec) = text(data) else { return };
     if let Ok(proxy) = crate::egress::Proxy::parse(spec) {
-        let shown = proxy.to_string();
+        let shown = proxy.label();
         assert!(!shown.contains('@'), "{shown}");
     }
 }

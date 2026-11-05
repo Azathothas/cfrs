@@ -195,7 +195,7 @@ async fn dial(path: Path, host: &str, port: u16, timeout: Duration) -> Result<Bo
         )),
         Path::Proxy => {
             let proxy = crate::egress::proxy_for(host, port).context("no proxy")?;
-            proxy.connect(host, port, timeout).await
+            crate::egress::dial(host, port, Some(&proxy), timeout).await
         }
         Path::Warp => {
             let io = tokio::time::timeout(timeout, crate::warp::nc::via_running(host, port))
@@ -357,7 +357,7 @@ async fn localhost() -> Outcome {
 
 /// Run each check, at the same time.
 pub async fn run(timeout: Duration) -> Report {
-    let proxy = crate::egress::proxy_for("github.com", 443).map(|p| p.to_string());
+    let proxy = crate::egress::proxy_for("github.com", 443).map(|p| p.label());
     let warp_up = crate::warp::up::socket_path()
         .map(|s| std::os::unix::net::UnixStream::connect(s).is_ok())
         .unwrap_or(false);

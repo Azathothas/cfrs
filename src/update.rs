@@ -123,12 +123,11 @@ impl std::error::Error for HttpStatus {}
 async fn get(url: &str, timeout: Duration, max_body: usize) -> Result<Vec<u8>> {
     let mut url = url.to_string();
     for _ in 0..6 {
-        let response = crate::fetch::Request::new("GET", url.clone())
+        let request = crate::fetch::Request::new("GET", url.clone())
             .header("Accept", "application/octet-stream, application/json")
             .timeout(timeout)
-            .max_body(max_body)
-            .send()
-            .await?;
+            .max_body(max_body);
+        let response = crate::fetch::send(request).await?;
         match response.status {
             200 => return Ok(response.body),
             301 | 302 | 303 | 307 | 308 => {

@@ -401,7 +401,7 @@ impl Relay {
             let request = crate::fetch::Request::new("GET", format!("{}/relays.json", at.url()))
                 .timeout(Duration::from_secs(20))
                 .max_body(crate::relay_pool::MAX_BODY);
-            let hosts = match request.send().await {
+            let hosts = match crate::fetch::send(request).await {
                 Ok(response) if response.status == 200 => {
                     crate::relay_pool::parse_pool(response.text().as_bytes(), &primary)
                 }
@@ -575,12 +575,12 @@ impl Relay {
         token: Option<&str>,
     ) -> Result<std::result::Result<serde_json::Value, (u16, String)>> {
         let mut request = crate::fetch::Request::new("POST", format!("{}{path}", self.url()))
-            .json(&serde_json::json!({}))
+            .json(serde_json::json!({}).to_string())
             .timeout(Duration::from_secs(20));
         if let Some(token) = token {
             request = request.header("X-Relay-Token", token);
         }
-        let response = request.send().await?;
+        let response = crate::fetch::send(request).await?;
         if response.status != 200 {
             let retry = response.header("retry-after").map(str::to_string);
             let mut text: String = response.text().chars().take(200).collect();
@@ -589,7 +589,7 @@ impl Relay {
             }
             return Ok(Err((response.status, text)));
         }
-        Ok(Ok(response.json()?))
+        Ok(Ok(crate::fetch::json(&response)?))
     }
 }
 
@@ -687,10 +687,10 @@ enum MintError {
 
 async fn mint_at(host: &Host) -> std::result::Result<Minted, MintError> {
     let url = format!("{}/v1/mint", host.url());
-    let response = crate::fetch::Request::new("POST", url)
-        .json(&serde_json::json!({}))
-        .timeout(Duration::from_secs(20))
-        .send()
+    let request = crate::fetch::Request::new("POST", url)
+        .json(serde_json::json!({}).to_string())
+        .timeout(Duration::from_secs(20));
+    let response = crate::fetch::send(request)
         .await
         .context("minting a relay token")
         .map_err(MintError::Next)?;
@@ -713,8 +713,7 @@ async fn mint_at(host: &Host) -> std::result::Result<Minted, MintError> {
             )))
         }
     }
-    let body: serde_json::Value = response
-        .json()
+    let body: serde_json::Value = crate::fetch::json(&response)
         .context("the mint answer")
         .map_err(MintError::Next)?;
     let token = body

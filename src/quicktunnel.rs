@@ -247,11 +247,10 @@ pub async fn request_quick_tunnel(
         .header("Content-Type", "application/json")
         .header("User-Agent", user_agent)
         .timeout(timeout)
-        .via(proxy.cloned());
-    if let Some(body) = auth_mode.request_body() {
-        request.body = Some(body.into());
-    }
-    let response = request.send().await.map_err(ProvisionError::Http)?;
+        .via(crate::egress::via(proxy));
+    request.body = auth_mode.request_body().map(Into::into);
+    let response = crate::fetch::send(request).await;
+    let response = response.map_err(ProvisionError::Http)?;
     let status = response.status;
     let text = response.text();
     let retry_after = response.header("retry-after").and_then(parse_retry_after);
