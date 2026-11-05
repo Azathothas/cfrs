@@ -1,0 +1,15 @@
+# The facts of this repository for the checker of the record (pod-todo of
+# PodUtils/podcrates). TODO/RULES.md gives the rules.
+tool = "podnet-todo"
+milestones = ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"]
+categories = ["defect", "feature", "measurement", "release", "chore", "research", "docs"]
+roadmap = "TODO/ROADMAP.md"
+questions = "Questions for the owner"
+top_dirs = ["src", "tests", "crates", "scripts", "docs", "fuzz", ".github", "TODO", "tools", "shim", "examples", "images", "notebooks"]
+root_files = [
+  "Cargo.toml", "Cargo.lock", "README.md", "CLAUDE.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+  "build.rs", "deny.toml", "about.toml", "about.hbs", "cliff.toml",
+]
+documents = ["README.md", "CLAUDE.md", "SECURITY.md", "crates/*/README.md"]
+document_dirs = ["TODO", "docs"]
+readings = ["docs/releases/", "docs/reports/", "docs/research/"]

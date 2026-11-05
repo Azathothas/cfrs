@@ -25,8 +25,8 @@ over this page.
 - CI runs `cargo test -p podnet-todo` and `cargo todo check` on each push
   (`.github/workflows/ci.yml`, job `record`). `sh scripts/agent/check.sh`
   runs `cargo todo check` too.
-- `crates/podnet-todo/src/model.rs` has the values that the checker
-  accepts.
+- `TODO/todo.toml` and the defaults of `pod-todo` (PodUtils/podcrates)
+  have the values that the checker accepts.
 
 ## 2. Entries
 

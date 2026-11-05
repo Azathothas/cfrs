@@ -310,7 +310,7 @@ of the old releases (README, decisions, maintenance).
 **Milestone:** M1
 **Priority:** P1
 **Effort:** S
-**Status:** blocked
+**Status:** done
 
 ## Problem
 
@@ -345,10 +345,25 @@ curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet?n=$RANDO
 
 Each of the first two prints a 301. The download ends in a 200.
 
-## Blocker
+## Done
 
-The owner transfers the repository `Azathothas/cfrs` to the organization `PodUtils` and renames
-it `podnet` (Settings, General, Transfer ownership; then Repository name), after the push of T-016.
+2026-11-05, the commit of this Done section. The owner transferred the repository; GitHub
+redirects the old name:
+
+- `git remote get-url origin` prints `https://github.com/PodUtils/podnet`.
+- The API: `repos/Azathothas/cfrs` and `repos/Azathothas/cfrs/releases` (read through the mirror
+  `forge.web.pkgforge.dev`) answer with the repository `PodUtils/podnet` (id 1440651801) and its
+  releases.
+- The download `Azathothas/cfrs/releases/download/v0.3.0-beta.12/SHA256SUMS`: 301 to
+  `PodUtils/podnet/releases/download/...`, then 302 to `objects.githubusercontent.com`.
+- `raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh`: 200.
+- The live run 42019420877 (b7682c5): `podnet update` read the release list of
+  `PodUtils/podnet` (T-136).
+
+Not measured from this sandbox: the 301 of `github.com/Azathothas/cfrs` and of
+`api.github.com/repos/Azathothas/cfrs/releases` (the proxy of the sandbox answers 403 for a
+repository that is not in the session), and the end of the download (the proxy answers 401 at
+`objects.githubusercontent.com`).
 
 # T-022: The version `0.4.0-beta.1`, and its release note with each breaking change
 
@@ -381,10 +396,13 @@ v0.3.0-beta.12. Each rename breaks a user of cfrs, and the note must tell how to
    (`CFRS_X` is `PODNET_X`, `CFRSNET_X` is `PODNET_VNET_X`, `CFRSSOCKS_X` is `PODNET_SOCKS_X`),
    the state and run paths, `podnet0`, the units and the markers, the metrics, the paths
    `/__podnet/`, the User-Agent and the log filter `podnet=`.
-3. Write the moves: install podnet fresh (`cfrs update` cannot install it); move
+3. At the head of the note, write that the releases up to v0.3.0-beta.12 are signed as
+   `https://github.com/Azathothas/cfrs/.github/workflows/release.yml@refs/tags/TAG` and have
+   `cfrs-TARGET` assets (from T-017).
+4. Write the moves: install podnet fresh (`cfrs update` cannot install it); move
    `~/.local/state/cfrs` to keep the WARP device; run `cfrs autostart remove` and
    `cfrs warp down` first.
-4. Extend the test of the tags to each `vX.Y.Z-beta.N`.
+5. Extend the test of the tags to each `vX.Y.Z-beta.N`.
 
 ## Decision
 
@@ -526,6 +544,9 @@ token of a workflow cannot change the visibility of a package.
 
 - `ghcr.io/azathothas/cfrs` is public, with 46 tags. It stays after the rename.
 - `.github/workflows/release.yml` pushes the image to `ghcr.io/OWNER/NAME`.
+- On 2026-11-05 (after the transfer), ghcr gives no anonymous pull token for
+  `podutils/podnet` (`DENIED`): the package does not exist before the first podnet release.
+  `azathothas/cfrs` gives a token, and its tag list answers 200.
 
 ## Approach
 
@@ -557,7 +578,7 @@ T-023 is done.
 **Milestone:** M1
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -598,3 +619,16 @@ The step "podnet update refuses v0.3.0-beta.1 of cfrs" and the step of the secon
 ## Start condition
 
 T-021 is done.
+
+## Done
+
+2026-11-05, the commit of this Done section. The cause of each failed run before the transfer:
+the repository `PodUtils/podnet` did not exist (`HTTP 404` at
+`https://api.github.com/repos/PodUtils/podnet/releases`, runs 41994001349, 41995395204,
+41996448408 and 41996732296), and the 429 of the WARP service in run 41987488063. After the
+transfer, the live run 42019420877 (b7682c5, job 127218156938) passed each step. The step
+"podnet update refuses v0.3.0-beta.1 of cfrs" prints: `podnet: checking the signature of
+v0.3.0-beta.1: the certificate names
+["https://github.com/Azathothas/cfrs/.github/workflows/release.yml@refs/tags/v0.3.0-beta.1"], not
+https://github.com/PodUtils/podnet/.github/workflows/release.yml@refs/tags/v0.3.0-beta.1`. The
+step of the second batch passed with no 429. GitHub #311 is closed.

@@ -108,7 +108,8 @@ jobs:
           grep -m1 PermissionDenied "$RUNNER_TEMP/plant.log" || { cat "$RUNNER_TEMP/plant.log"; echo "the plant failed for another cause"; exit 1; }
           git checkout -- src/ports.rs
 
-  # The rust-version of Cargo.toml builds the workspace. Then a planted call
+  # The rust-version of Cargo.toml builds the workspace, but the record tool
+  # podnet-todo (it ships in no release; pod-todo needs Rust 1.97). Then a planted call
   # of an API that is newer than that version must fail to build.
   msrv:
     runs-on: ubuntu-24.04
@@ -125,7 +126,7 @@ jobs:
           sh scripts/retry.sh rustup toolchain install "$msrv" --profile minimal
           echo "MSRV=$msrv" >> "$GITHUB_ENV"
       - name: Check with rust-version
-        run: cargo +"$MSRV" check --locked --workspace
+        run: cargo +"$MSRV" check --locked --workspace --exclude podnet-todo
       - name: A newer API fails with rust-version
         run: |
           set -u

@@ -2085,6 +2085,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "pod-todo"
+version = "0.1.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.1.0#57a731ef96be85c6f4bdd26b74ab6ab052b1f321"
+
+[[package]]
 name = "podnet"
 version = "0.3.0-beta.12"
 dependencies = [
@@ -2147,6 +2152,9 @@ dependencies = [
 [[package]]
 name = "podnet-todo"
 version = "0.0.0"
+dependencies = [
+ "pod-todo",
+]
 
 [[package]]
 name = "poly1305"

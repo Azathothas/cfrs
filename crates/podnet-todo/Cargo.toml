@@ -1,14 +1,13 @@
 [package]
 name = "podnet-todo"
-description = "The checker of the work record in TODO/: a reader that CI runs, and a writer that moves a status, derives the counts and moves the citations of an edited file."
-# A tool of the repository: it ships in no release and is not published, so
-# its version does not follow the workspace version.
+description = "The checker of the work record in TODO/: pod-todo of PodUtils/podcrates with the facts of podnet (TODO/todo.toml)."
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.89"
+# pod-todo of PodUtils/podcrates needs Rust 1.97. The tool ships in no
+# release: the rust-version of podnet (the root) does not follow it.
+rust-version = "1.97"
 license = "0BSD"
 publish = false
 
-# No dependencies: the record is Markdown with fixed lines, and CI builds
-# this crate on each push.
 [dependencies]
+pod-todo = { git = "https://github.com/PodUtils/podcrates", tag = "v0.1.0" }

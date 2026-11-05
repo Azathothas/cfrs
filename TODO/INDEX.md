@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**137 entries: 119 open, 1 partial, 10 blocked, 7 done.**
+**137 entries: 118 open, 2 partial, 8 blocked, 9 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 10 | 0 | 2 | 4 | 16 |
+| P1 | 9 | 1 | 0 | 6 | 16 |
 | P2 | 81 | 1 | 6 | 3 | 91 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 119 | 1 | 10 | 7 | 137 |
+| **All** | 118 | 2 | 8 | 9 | 137 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -66,7 +66,7 @@ M8 Overlays, M9 Later.
 | [T-018](rename.md) | P2 | S | M1 | docs | done | `CLAUDE.md` names `podnet`, its crates and the record |
 | [T-019](rename.md) | P1 | M | M1 | chore | done | Drop the `pod-netns` binary, and move its integration tests to the root crate |
 | [T-020](rename.md) | P1 | S | M1 | chore | done | Rename the crate `pod-netns` to `podnet-netns` |
-| [T-021](rename.md) | P1 | S | M1 | chore | blocked | Verify the GitHub redirects after the transfer of the repository to PodUtils |
+| [T-021](rename.md) | P1 | S | M1 | chore | done | Verify the GitHub redirects after the transfer of the repository to PodUtils |
 | [T-022](rename.md) | P1 | S | M1 | release | open | The version `0.4.0-beta.1`, and its release note with each breaking change |
 | [T-023](rename.md) | P1 | S | M1 | release | open | Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs |
 | [T-024](rename.md) | P2 | S | M1 | chore | open | The update checks pass against a podnet release again |
@@ -181,5 +181,5 @@ M8 Overlays, M9 Later.
 | [T-133](later.md) | P3 | S | M9 | chore | open | Zig from the community mirrors in the release workflow |
 | [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the copied podssh files and of the relay contract |
 | [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |
-| [T-136](rename.md) | P1 | S | M1 | defect | open | live: two runs in a row failed before the transfer of the repository (GitHub #311) |
-| [T-137](crates.md) | P1 | M | M3 | chore | blocked | podnet uses the shared crates of `PodUtils/podcrates` |
+| [T-136](rename.md) | P1 | S | M1 | defect | done | live: two runs in a row failed before the transfer of the repository (GitHub #311) |
+| [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |
