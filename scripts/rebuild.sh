@@ -72,19 +72,18 @@ fi
 
 curl -fsSL -o "$dir/SHA256SUMS" "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
 failed=0
-for b in podnet; do
-    want=$(awk -v f="$b-$target" '$2 == f { print $1 }' "$dir/SHA256SUMS")
-    got=$(sha256sum "$src/target/$target/release/$b" | cut -d ' ' -f 1)
-    if [ -n "$want" ] && [ "$got" = "$want" ]; then
-        echo "same   $b-$target $got"
-    else
-        echo "DIFF   $b-$target: rebuilt $got, SHA256SUMS ${want:-none}"
-        if command -v objdump > /dev/null 2>&1; then
-            objdump -h "$src/target/$target/release/$b" | sed -n '1,40p'
-        fi
-        failed=1
+b=podnet
+want=$(awk -v f="$b-$target" '$2 == f { print $1 }' "$dir/SHA256SUMS")
+got=$(sha256sum "$src/target/$target/release/$b" | cut -d ' ' -f 1)
+if [ -n "$want" ] && [ "$got" = "$want" ]; then
+    echo "same   $b-$target $got"
+else
+    echo "DIFF   $b-$target: rebuilt $got, SHA256SUMS ${want:-none}"
+    if command -v objdump > /dev/null 2>&1; then
+        objdump -h "$src/target/$target/release/$b" | sed -n '1,40p'
     fi
-done
+    failed=1
+fi
 if [ "$failed" = 0 ]; then
     echo "rebuild.sh: the binaries of $tag are reproduced"
 fi
