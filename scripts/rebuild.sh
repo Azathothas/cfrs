@@ -43,6 +43,13 @@ trap cleanup EXIT INT TERM
 src="$dir/rebuild-of-$tag"
 git clone --quiet --depth 1 --branch "$tag" "https://github.com/$repo" "$src"
 commit=$(git -C "$src" rev-parse HEAD)
+# The name of the binary is the name of the package of the tag: cfrs up to
+# v0.3.0-beta.12, podnet after the rename.
+b=$(sed -n '/^\[package\]/,/^\[/s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$src/Cargo.toml" | head -n 1)
+[ -n "$b" ] || {
+    echo "rebuild.sh: Cargo.toml of $tag names no package" >&2
+    exit 1
+}
 image=$(tr -d '\r' < "$src/images/build/Dockerfile" |
     sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')
 case "$image" in
@@ -52,7 +59,7 @@ case "$image" in
         exit 1
         ;;
 esac
-echo "rebuild.sh: $tag ($commit), $target, in $image"
+echo "rebuild.sh: $tag ($commit), $b, $target, in $image"
 if [ "$engine" = docker ] && [ -f "$src/scripts/pull-image.sh" ]; then
     image=$(sh "$src/scripts/pull-image.sh" "$image")
 else
@@ -62,7 +69,7 @@ fi
 # The command of release.yml, at another path in the container.
 "$engine" run --rm -v "$src:/rebuild/$tag" -w "/rebuild/$tag" \
     -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static \
-    -e PODNET_BUILD_COMMIT="$commit" \
+    -e PODNET_BUILD_COMMIT="$commit" -e CFRS_BUILD_COMMIT="$commit" \
     "$image" \
     cargo build --locked --release --target "$target"
 # The container wrote target/ as root: give it back to this user, so that
@@ -72,7 +79,6 @@ fi
 
 curl -fsSL -o "$dir/SHA256SUMS" "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
 failed=0
-b=podnet
 want=$(awk -v f="$b-$target" '$2 == f { print $1 }' "$dir/SHA256SUMS")
 got=$(sha256sum "$src/target/$target/release/$b" | cut -d ' ' -f 1)
 if [ -n "$want" ] && [ "$got" = "$want" ]; then

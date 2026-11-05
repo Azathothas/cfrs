@@ -93,7 +93,7 @@ step 3).
 **Milestone:** M1
 **Priority:** P2
 **Effort:** S
-**Status:** partial
+**Status:** done
 
 ## Problem
 
@@ -136,6 +136,18 @@ sh scripts/rebuild.sh v0.3.0-beta.12   # the rebuilt binary equals the published
 ## Start condition
 
 T-016 is done, or this entry goes into its commit.
+
+## Done
+
+2026-11-05, the commit of this Done section. `scripts/rebuild.sh` takes the name of the binary
+from the package of the tag (`cfrs` up to v0.3.0-beta.12) and passes `CFRS_BUILD_COMMIT` and
+`PODNET_BUILD_COMMIT`. `sh scripts/rebuild.sh v0.3.0-beta.12 x86_64-unknown-linux-musl` prints
+`same   cfrs-x86_64-unknown-linux-musl ffebc5fcb92e31d96e809904226a6fe112001016970700a209b9f2b2f0fbd67e`
+and `the binaries of v0.3.0-beta.12 are reproduced` (in this sandbox, the container also got the
+proxy and its CA; the build command is the same). `docs/maintenance.md` states the crates.io facts:
+`cfrs` is taken, the owner reserved `podnet`. `README.md` and `SECURITY.md` give the identity and
+the assets of the old releases; the head of the note of v0.4.0-beta.1 goes to T-022 (step 3).
+`Cargo.toml` has the new `description` and `keywords`.
 
 # T-018: `CLAUDE.md` names `podnet`, its crates and the record
 

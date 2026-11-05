@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 137 entries: 118 open, 2 partial, 8 blocked, 9 done.
+`TODO/INDEX.md` holds 137 entries: 118 open, 1 partial, 8 blocked, 10 done.
 
 ## State
 
@@ -15,7 +15,7 @@
 ## Work order
 
 1. **Now:** T-137: take each crate of `PodUtils/podcrates` from its release, with the patch of
-   the podcrates session. T-017 (the facts of the old name). T-025 waits for the first release.
+   the podcrates session. T-025 waits for the first release.
 2. **Hold:** each other entry waits until podnet takes the shared crates (T-137). Then write the
    new order here (T-137, step 4). The order below is the order before the hold; T-137 changes
    it.
@@ -27,8 +27,7 @@ one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes firs
 not wait for a larger one.
 
 1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
-2. **M1, the rename:** T-022, T-023 and T-024; T-017 needs its rebuild check. T-025 waits for
-   the owner.
+2. **M1, the rename:** T-022, T-023 and T-024. T-025 waits for the owner.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,
    T-079, T-080. A fix in a pod backend lands before T-040 starts, or after it ends.

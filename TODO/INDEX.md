@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**137 entries: 118 open, 2 partial, 8 blocked, 9 done.**
+**137 entries: 118 open, 1 partial, 8 blocked, 10 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 9 | 1 | 0 | 6 | 16 |
-| P2 | 81 | 1 | 6 | 3 | 91 |
+| P2 | 81 | 0 | 6 | 4 | 91 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 118 | 2 | 8 | 9 | 137 |
+| **All** | 118 | 1 | 8 | 10 | 137 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -62,7 +62,7 @@ M8 Overlays, M9 Later.
 | [T-014](record.md) | P2 | S | M0 | docs | done | The milestones M0 to M9 in a roadmap, and the open work of the maintenance page in the record |
 | [T-015](record.md) | P3 | S | M2 | chore | open | CI checks that each pushed commit moved the citations of the files that it changed |
 | [T-016](rename.md) | P1 | M | M1 | chore | done | Rename `cfrs` to `podnet` in the code, the tests, the workflows, the scripts and the documents |
-| [T-017](rename.md) | P2 | S | M1 | docs | partial | The documents and the scripts state the facts of the old name |
+| [T-017](rename.md) | P2 | S | M1 | docs | done | The documents and the scripts state the facts of the old name |
 | [T-018](rename.md) | P2 | S | M1 | docs | done | `CLAUDE.md` names `podnet`, its crates and the record |
 | [T-019](rename.md) | P1 | M | M1 | chore | done | Drop the `pod-netns` binary, and move its integration tests to the root crate |
 | [T-020](rename.md) | P1 | S | M1 | chore | done | Rename the crate `pod-netns` to `podnet-netns` |

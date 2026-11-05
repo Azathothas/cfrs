@@ -147,8 +147,9 @@ At the first stable release (no `-beta.N`), also:
   the stable version (#222): a prerelease version requirement does not
   match a stable crate.
 * Rewrite the line of the README that says `:latest` has no image (#258).
-* Decide the crates.io publish of `podnet` (the name `cfrs` is taken and
-  `podnet` is free, #224; `docs/decisions.md`), and set `documentation` in
+* Decide the crates.io publish of `podnet` (the name `cfrs` is taken by
+  another project; the owner reserved `podnet` as a 0.0.0 placeholder,
+  #224; `docs/decisions.md`), and set `documentation` in
   both manifests.
 
 ## The code
