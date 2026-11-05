@@ -1,0 +1,44 @@
+name: record-issues
+
+# TODO/github.txt against GitHub, each day and by hand
+# (scripts/check-github-numbers.py). `cargo todo check` holds TODO/issues.md
+# to the list with no network; this job holds the list to GitHub. It is red
+# when an issue or a pull request came, or changed its state, and no session
+# mapped it (TODO/RULES.md). Then a planted drop must fail the check.
+
+on:
+  schedule:
+    # Each day at 05:43 UTC, off the hour.
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  numbers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      CHECK_GITHUB_API: https://api.github.com
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: TODO/github.txt against GitHub
+        run: python3 -I scripts/check-github-numbers.py
+      # A check that cannot fail proves nothing: a number dropped from the
+      # list must fail it.
+      - name: A planted drop fails the check
+        run: |
+          set -u
+          rc=0
+          python3 -I scripts/check-github-numbers.py --plant-drop 89 > plant.log 2>&1 || rc=$?
+          cat plant.log
+          test "$rc" -eq 1 || { echo "the check exited $rc on a planted drop, not 1"; exit 1; }
+          grep -q '#89 on GitHub' plant.log

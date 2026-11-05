@@ -1,0 +1,15 @@
+# The numbers of GitHub (issues and pull requests) of this repository, with
+# their states. One on each line: NUMBER issue|pull open|closed, or
+# NUMBER issue deleted for an issue that GitHub deleted.
+#
+# The list holds each number from 311 on, and each open number before 311.
+# `cargo todo check` holds TODO/issues.md to this list.
+# scripts/check-github-numbers.py holds this list to GitHub
+# (.github/workflows/record-issues.yml, each day).
+89 issue open
+140 issue open
+149 issue open
+151 issue open
+161 issue open
+222 issue open
+224 issue open
