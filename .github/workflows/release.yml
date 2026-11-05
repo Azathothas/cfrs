@@ -12,9 +12,9 @@ name: release
 # A session whose git cannot push a tag releases this way.
 #
 # The Linux binaries are static musl. x86-64 and ARM64 are built in the
-# pinned image of images/build on a native runner; ARMv7 with Alpine's rust
-# in a linux/arm/v7 container on an ARM64 runner; RISC-V 64, i686, ARMv6
-# (arm-musleabihf), LoongArch64 and POWER little-endian with cargo-zigbuild. Each binary is checked for dynamic dependencies, and runs
+# pinned image of images/build on a native runner; RISC-V 64, i686, ARMv7,
+# ARMv6 (arm-musleabihf), LoongArch64 and POWER little-endian with
+# cargo-zigbuild in the same image. Each binary is checked for dynamic dependencies, and runs
 # scripts/release-short.sh on its own architecture before it is published.
 
 on:
@@ -153,61 +153,6 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # 32-bit ARM: Alpine's own toolchain for armv7, in a linux/arm/v7 container
-  # on an ARM64 runner. QEMU runs it where the runner's CPU cannot.
-  linux-armv7:
-    if: inputs.publish == '' || startsWith(github.ref, 'refs/tags/')
-    name: linux armv7-unknown-linux-musleabihf
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: the image
-        run: |
-          set -eu
-          ref=$(tr -d '\r' < images/armv7/Dockerfile | sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')
-          case "$ref" in
-            *@sha256:*) echo "ARMV7_IMAGE=$(PULL_PLATFORM=linux/arm/v7 sh scripts/pull-image.sh "$ref")" >> "$GITHUB_ENV" ;;
-            *) echo "images/armv7/Dockerfile names no image pinned to a digest" >&2; exit 1 ;;
-          esac
-      - name: does the runner run 32-bit ARM?
-        id: probe
-        run: |
-          if docker run --rm --platform linux/arm/v7 "$ARMV7_IMAGE" uname -m; then
-            echo "native=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "native=no" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.probe.outputs.native != 'yes'
-        name: QEMU for 32-bit ARM
-        run: sh scripts/binfmt.sh arm
-      - name: build (static musl, Alpine's rust for armv7)
-        run: |
-          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work \
-            -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static -e PODNET_BUILD_COMMIT \
-            "$ARMV7_IMAGE" sh -c 'apk add --no-cache build-base rust cargo >/dev/null && rustc -vV &&
-              t=$(rustc -vV | sed -n "s/^host: //p") && cargo build --locked --release --target "$t" &&
-              mkdir -p dist && for b in podnet; do cp "target/$t/release/$b" "dist/$b-armv7-unknown-linux-musleabihf"; done'
-      - name: the binaries are static
-        run: |
-          set -eu
-          for b in podnet; do
-            B=dist/$b-armv7-unknown-linux-musleabihf
-            file "$B"
-            if readelf -d "$B" | grep -q NEEDED; then echo "$b: dynamic dependencies"; readelf -d "$B"; exit 1; fi
-            if readelf -l "$B" | grep -q INTERP; then echo "$b: asks for a program interpreter"; exit 1; fi
-            readelf -h "$B" | grep -E 'Class|Machine|Flags'
-          done
-      - name: the binary runs
-        run: |
-          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work -e PODNET_BUILD_COMMIT "$ARMV7_IMAGE" \
-            sh scripts/release-short.sh dist/podnet-armv7-unknown-linux-musleabihf --net
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: podnet-armv7-unknown-linux-musleabihf
-          path: dist/*
-          if-no-files-found: error
-
   # RISC-V 64, cross-compiled with cargo-zigbuild in the pinned image; the
   # binary then runs on the runner under QEMU.
   # The other Linux architectures, built with cargo-zigbuild (zig cc) in the
@@ -227,6 +172,8 @@ jobs:
           - target: i686-unknown-linux-musl
             qemu: ""
           - target: arm-unknown-linux-musleabihf
+            qemu: arm
+          - target: armv7-unknown-linux-musleabihf
             qemu: arm
           - target: loongarch64-unknown-linux-musl
             qemu: loong64
@@ -343,7 +290,7 @@ jobs:
   # and Sigstore's cosign installer, each pinned by its commit, and no other
   # tool.
   publish:
-    needs: [linux, linux-armv7, linux-zig, notes]
+    needs: [linux, linux-zig, notes]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

@@ -458,8 +458,8 @@ of cargo-zigbuild and the image.
 
 ## Premise
 
-- `.github/workflows/release.yml` builds the eight targets with cargo-zigbuild, and armv7 in
-  Alpine.
+- `.github/workflows/release.yml` builds x86-64 and ARM64 in the build image, and the other
+  targets (armv7 too) with cargo-zigbuild.
 - `docs/maintenance.md`, section "Release", gives the steps.
 
 ## Approach

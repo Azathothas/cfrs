@@ -26,7 +26,6 @@ updates:
   - package-ecosystem: docker
     directories:
       - /images/build
-      - /images/armv7
       - /images/binfmt
       - /images/trufflehog
     schedule:
