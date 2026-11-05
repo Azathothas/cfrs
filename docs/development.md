@@ -6,8 +6,9 @@ each session; `docs/maintenance.md` has the procedures.
 ## Checks before a push
 
 Run `sh scripts/agent/check.sh`. It runs `cargo fmt --all --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo test --workspace`. Push only when the three exit 0. CI
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` and `cargo todo check` (the work record in
+`TODO/`, `TODO/RULES.md`). Push only when each exits 0. CI
 (`.github/workflows/ci.yml`) runs the same.
 
 ## Rules for tests

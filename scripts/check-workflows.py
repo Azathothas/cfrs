@@ -23,7 +23,10 @@ from pathlib import Path
 import yaml
 
 # The jobs that run the code of the repository or the built binary.
-READ_ONLY = {"test", "restricted-host", "live", "static", "msrv", "plant", "workflows", "all", "secrets", "build"}
+READ_ONLY = {
+    "test", "restricted-host", "live", "static", "msrv", "plant", "workflows", "all", "secrets", "build",
+    "record",
+}
 SHA = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
 

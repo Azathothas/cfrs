@@ -7,6 +7,8 @@ name: ci
 # * msrv: the workspace builds with the rust-version of Cargo.toml.
 # * static: static musl binaries for x86_64 and aarch64, with their sizes.
 # * workflows: the rules of scripts/check-workflows.py.
+# * record: the tests of the checker of the work record (crates/podnet-todo),
+#   and `cargo todo check` (TODO/RULES.md).
 # * plant: each check above must fail on a planted fault.
 # * all: the one status to require. It fails when a job failed or was
 #   skipped.
@@ -61,7 +63,7 @@ jobs:
             grep -qx "$f" "$out/pkg-cfrs.txt" && grep -qx "$f" "$out/pkg-pod-netns.txt"
           done
           grep -qx 'shim/cfrsnet.c' "$out/pkg-cfrs.txt"
-          if grep -E '^(\.github|\.claude|docs|scripts|fuzz)/|^(err\.txt|CLAUDE\.md)$' "$out/pkg-cfrs.txt"; then
+          if grep -E '^(\.github|\.claude|docs|scripts|fuzz|TODO)/|^(err\.txt|CLAUDE\.md)$' "$out/pkg-cfrs.txt"; then
             echo "files of the repository in the package"; exit 1
           fi
       - name: The man page renders with groff and mandoc
@@ -199,6 +201,24 @@ jobs:
           shellcheck --version | head -2
           shellcheck -S warning scripts/*.sh scripts/*/*.sh
 
+  # The work record (TODO/): the tests of its checker, then the check of
+  # the record. The checker has no dependency.
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: The tests of the checker
+        run: cargo test --locked -p podnet-todo
+      - name: The record agrees (cargo todo check)
+        run: cargo run --locked -q -p podnet-todo -- check
+
   # #214: clippy of the newest stable Rust. A new lint of a new Rust does
   # not stop a release (the pinned toolchain decides); this job shows it.
   clippy-stable:
@@ -274,12 +294,24 @@ jobs:
           sed -i '0,/^  contents: read$/s//  contents: write/' "$w/ci.yml"
           must_fail "check-workflows.py, write at the top level" python3 scripts/check-workflows.py "$w"
 
+          # A number of TODO/github.txt that TODO/issues.md does not map.
+          sed -i '/^89 issue open$/d' TODO/github.txt
+          git diff --quiet -- TODO/github.txt && { echo "the plant did not change TODO/github.txt"; exit 1; }
+          must_fail "cargo todo check, a number dropped from TODO/github.txt" cargo run --locked -q -p podnet-todo -- check
+          git checkout -- TODO/github.txt
+
+          # An entry whose row in TODO/INDEX.md has another status.
+          sed -i '0,/^\*\*Status:\*\* blocked$/s//**Status:** open/' TODO/deferred.md
+          git diff --quiet -- TODO/deferred.md && { echo "the plant did not change TODO/deferred.md"; exit 1; }
+          must_fail "cargo todo check, a status that differs from its row" cargo run --locked -q -p podnet-todo -- check
+          git checkout -- TODO/deferred.md
+
           exit "$fail"
 
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [test, restricted-host, msrv, static, workflows, plant]
+    needs: [test, restricted-host, msrv, static, workflows, record, plant]
     if: always()
     steps:
       - name: Each job passed

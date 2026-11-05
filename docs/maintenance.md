@@ -40,7 +40,8 @@ state of the open work.
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
 * **Helper scripts of the agent** (in `scripts/agent/`):
-  * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push.
+  * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push,
+    and `cargo todo check`.
   * `watch-issues.sh [STATE_DIR]`: one line for each new issue
     (`new-issues.py` reads the issue list). It keeps a copy of each issue
     in `STATE_DIR/issues/NUMBER.json`. GitHub deletes the issues of a
@@ -98,6 +99,7 @@ state of the open work.
 | `release.yml` | a tag, or by hand | the release binaries; a dry run with no input |
 | `release-proofs.yml` | after a release | checks the release files, SHA256SUMS and the signatures |
 | `fuzz.yml`, `upstream.yml` | on a schedule | fuzz targets; changes of cloudflared |
+| `record-issues.yml` | each day, by hand | `TODO/github.txt` against GitHub (`scripts/check-github-numbers.py`) |
 
 Facts about `live.yml`:
 
@@ -181,6 +183,11 @@ Rules that the tests check:
 
 * **A handoff file** (HANDOFF.md in `docs/`, when a session leaves one):
   read it first. It has the state of unfinished work.
+* **The work record** (`TODO/`, `TODO/RULES.md`; `cargo todo check`,
+  `cargo todo next`, `cargo todo set T-NNN STATUS`): it holds the 7
+  deferred issues (T-001 to T-007). Import the items of this section,
+  the field and lab reports and the steps of the rename and the split as
+  entries (milestone M0).
 * **Next release**: `v0.3.0-beta.13`, unattended when a batch of fixes is
   green. Its note lists each "Breaking:" line of
   `git log v0.3.0-beta.12..main --grep Breaking`.
