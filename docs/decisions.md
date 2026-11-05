@@ -66,6 +66,7 @@ form of the rulings that apply to each session.
 | 2026-11-05 | ghcr package | The package `ghcr.io/podutils/podnet` takes the visibility of the public repository when the first release pushes it. No owner action. |
 | 2026-11-05 | Shared CI scripts | A CI script that podnet and podssh share (the zig fetch with its mirrors, T-133) lives in `PodUtils/podcrates`. podnet calls it from there; it does not copy it. |
 | 2026-11-05 | Relay contract watch | The weekly watch of the relay contract belongs to `pod-relay` in `PodUtils/podcrates` (T-134), not to podnet. |
+| 2026-11-05 | Services crate | Each list of relays and services of other parties that podnet holds (the relay hosts, the DoH resolvers and their pins, the edge discovery, the quick-tunnel API, the WARP API and endpoints, the sources of the edge roots, STUN and NTP hosts, the GitHub hosts of `podnet update`, others), the code and the scripts that measure or watch them, the watch workflows (`live.yml` and `scripts/live-*.sh`, the reads of services in `release-proofs.yml`) and their data files move to `pod-services` of `PodUtils/podcrates` (T-137). podnet adds no new hardcoded service. Until the take, podnet changes these places only for fixes, and tells the podcrates session of each fix. The relay contract watch stays in `pod-relay`. |
 
 ## Superseded
 

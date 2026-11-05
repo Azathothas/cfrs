@@ -561,3 +561,6 @@ Done so far:
   the `msrv` job has no plant step (no stable API is newer than 1.99).
 - Next: `pod-proxy` (`src/egress.rs`, `src/proxy_auth.rs`, `src/fetch.rs`), `pod-dns`
   (`src/resolve.rs`), `pod-ws` (`src/ws.rs`).
+- The owner, 2026-11-05 (`docs/decisions.md`, Services crate): the lists of services of other
+  parties, their measurements and the watch workflows move to `pod-services`. podnet takes it
+  like each other crate.
