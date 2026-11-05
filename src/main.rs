@@ -6095,7 +6095,7 @@ async fn net(args: NetArgs) -> Result<()> {
             print!("\n{}", podnet::vnet::doctor::NEEDS);
             println!("\n{verdict}");
             if verdict.starts_with("podnet-vnet: not ready") {
-                println!("podnet-vnet: the host conditions that podnet handles: https://github.com/Azathothas/podnet/blob/main/docs/target-environment.md");
+                println!("podnet-vnet: the host conditions that podnet handles: https://github.com/PodUtils/podnet/blob/main/docs/target-environment.md");
             }
             Ok(())
         }

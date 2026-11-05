@@ -332,7 +332,7 @@ fn latest_falls_back_to_releases_atom() {
     lab.curl_with(SERVE);
     std::fs::write(
         lab.root.join("release/releases.atom"),
-        "<feed><entry><link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/Azathothas/podnet/releases/tag/v9.9.9\"/></entry>\n<entry><link href=\"https://github.com/Azathothas/podnet/releases/tag/v9.9.8\"/></entry></feed>\n",
+        "<feed><entry><link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/PodUtils/podnet/releases/tag/v9.9.9\"/></entry>\n<entry><link href=\"https://github.com/PodUtils/podnet/releases/tag/v9.9.8\"/></entry></feed>\n",
     )
     .unwrap();
     let out = lab.run(&[("PODNET_VERSION", "latest")]);

@@ -3,7 +3,7 @@
 ## Report a vulnerability
 
 Do not open a public issue for a vulnerability. Use the private report of
-GitHub: open <https://github.com/Azathothas/podnet/security/advisories/new>
+GitHub: open <https://github.com/PodUtils/podnet/security/advisories/new>
 and write these items:
 
 * the version (`podnet --version`) and the system (`podnet status`);

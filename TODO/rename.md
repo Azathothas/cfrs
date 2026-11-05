@@ -44,7 +44,7 @@ state and run paths, the units, the metrics, the wire paths and the release asse
    In `src/vnet/addr.rs`: the longest abstract name is 59 bytes. In `src/warp/up.rs`: the sorted
    list of the proxy variables.
 5. Do the hand edits that no test catches, in `.github/workflows/live.yml`. The step "update to
-   v0.3.0-beta.1" asserts the refusal "not https://github.com/Azathothas/podnet/" until T-024.
+   v0.3.0-beta.1" asserts the refusal "not https://github.com/PodUtils/podnet/" until T-024.
    The A/B step keeps the old asset URL of v0.3.0-beta.6 and `RUST_LOG=cfrs=debug` for the old
    binary.
 6. Run `cargo fmt --all`. Move each citation of a moved file in the record.
@@ -303,7 +303,7 @@ T-019 is done.
 2026-11-05, the rename commit of 2026-11-05. The crate is `crates/podnet-netns`. The grep prints only the facts
 of the old releases (README, decisions, maintenance).
 
-# T-021: Verify the GitHub redirects after the repository rename
+# T-021: Verify the GitHub redirects after the transfer of the repository to PodUtils
 
 **Source:** `docs/research/podnet/rename.md`, sections 2 and 5, step 1.
 **Category:** chore
@@ -315,7 +315,7 @@ of the old releases (README, decisions, maintenance).
 ## Problem
 
 The binaries of cfrs, the old install line and old links name `Azathothas/cfrs`. GitHub
-redirects a renamed repository until a new repository takes the old name. The update code
+redirects a transferred or renamed repository until a new repository takes the old name. The update code
 follows up to five HTTPS redirects (`src/update.rs`).
 
 ## Premise
@@ -323,11 +323,12 @@ follows up to five HTTPS redirects (`src/update.rs`).
 - `docs/research/podnet/rename.md`, section 2: an installed v0.3.0-beta.12 reads the release list
   through the redirect and says "up to date" until a podnet release. After it, three checks
   refuse the podnet release: the asset name, the identity and the prefix of the version line.
-- `Azathothas/podnet` was free on 2026-11-05.
+- The owner moves each project to the GitHub organization `PodUtils` (ruling "Home" of
+  2026-11-05 in `docs/decisions.md`). The repository is `PodUtils/podnet`.
 
 ## Approach
 
-1. Set the remote: `git remote set-url origin https://github.com/Azathothas/podnet.git`.
+1. Set the remote: `git remote set-url origin https://github.com/PodUtils/podnet.git`.
 2. Run the five `curl` commands of `docs/research/podnet/rename.md`, section 5, step 1. Write each
    status in the Done section.
 3. Never create a new repository named `Azathothas/cfrs`: it stops each redirect.
@@ -339,15 +340,15 @@ curl -sI https://github.com/Azathothas/cfrs | head -3
 curl -sI "https://api.github.com/repos/Azathothas/cfrs/releases?per_page=1" | head -3
 curl -sIL https://github.com/Azathothas/cfrs/releases/download/v0.3.0-beta.12/SHA256SUMS | grep -i '^HTTP'
 curl -sI https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh | head -3
-curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet?n=$RANDOM" | head -c 200
+curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet?n=$RANDOM" | head -c 200
 ```
 
 Each of the first two prints a 301. The download ends in a 200.
 
 ## Blocker
 
-The owner renames the repository `Azathothas/cfrs` to `Azathothas/podnet` on GitHub (Settings,
-General, Repository name), after the push of T-016.
+The owner transfers the repository `Azathothas/cfrs` to the organization `PodUtils` and renames
+it `podnet` (Settings, General, Transfer ownership; then Repository name), after the push of T-016.
 
 # T-022: The version `0.4.0-beta.1`, and its release note with each breaking change
 
@@ -415,12 +416,12 @@ T-016, T-017, T-019 and T-020 are done.
 
 Between the code rename and the first podnet release, the install line of the README fails:
 `scripts/install.sh` resolves the latest release to v0.3.0-beta.12, which has no podnet asset,
-and the image `ghcr.io/azathothas/podnet:beta` does not exist.
+and the image `ghcr.io/podutils/podnet:beta` does not exist.
 
 ## Premise
 
 - `.github/workflows/release.yml` signs with the identity of `$GITHUB_REPOSITORY`. After the
-  rename it is the identity of `Azathothas/podnet`, with no change of the workflow.
+  rename it is the identity of `PodUtils/podnet`, with no change of the workflow.
 - `.github/workflows/release-proofs.yml` checks each file with cosign, runs
   `update --version TAG --force` on the published binary, and runs `scripts/rebuild.sh`.
 - `scripts/release-short.sh` checks the prefix of the version line.
@@ -444,7 +445,7 @@ dry run, then `publish=vX`, then a check of `release-proofs.yml`.
 gh workflow run release.yml --ref main
 gh workflow run release.yml --ref main -f publish=v0.4.0-beta.1
 gh workflow run release-proofs.yml -f tag=v0.4.0-beta.1
-curl -fsSL https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/install.sh | sh
 ```
 
 ## Start condition
@@ -493,7 +494,7 @@ The live step "update to v0.4.0-beta.1" passes.
 
 T-023 is done.
 
-# T-025: The image `ghcr.io/azathothas/podnet` is public
+# T-025: The image `ghcr.io/podutils/podnet` is public
 
 **Source:** `docs/research/podnet/rename.md`, sections 4 and 5, step 7.
 **Category:** chore
@@ -514,16 +515,16 @@ token of a workflow cannot change the visibility of a package.
 
 ## Approach
 
-1. After T-023, pull `ghcr.io/azathothas/podnet:beta` with no login.
+1. After T-023, pull `ghcr.io/podutils/podnet:beta` with no login.
 2. When the pull fails, the owner sets the package to public (the settings of the package).
-3. Optional: the owner writes "moved to ghcr.io/azathothas/podnet" in the description of the
+3. Optional: the owner writes "moved to ghcr.io/podutils/podnet" in the description of the
    package `cfrs`.
 
 ## Prove
 
 ```sh
 docker logout ghcr.io
-docker pull ghcr.io/azathothas/podnet:beta
+docker pull ghcr.io/podutils/podnet:beta
 ```
 
 ## Blocker

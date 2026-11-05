@@ -53,7 +53,7 @@ WARP registration, the detached `warp proxy` on a Unix socket, then
 ## Prove
 
 ```sh
-curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet/issues/89?n=$RANDOM" |
+curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet/issues/89?n=$RANDOM" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])'
 ```
 
@@ -406,6 +406,14 @@ cargo package --locked --list --workspace
 
 ## Blocker
 
-The owner. The ruling "crates.io" of 2026-11-05 in `docs/decisions.md`:
-publish nothing now. The name of the package comes from the rename
-(milestone M1).
+The owner: the placeholders of the seven other crate names, and the first
+publish of a real version (the ruling "crates.io" of 2026-11-05 in
+`docs/decisions.md`).
+
+## Correction
+
+Measured on 2026-11-05, after the rename: `https://crates.io/api/v1/crates/podnet`
+answers 200. The owner published the placeholder `podnet` 0.0.0 (repository
+`PodUtils/podnet`). `podnet-core`, `podnet-netns`, `podnet-vnet`,
+`podnet-relay`, `podnet-warp`, `podnet-serve` and `podnet-cloudflare`
+answer 404.

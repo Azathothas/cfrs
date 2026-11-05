@@ -39,7 +39,7 @@ form of the rulings that apply to each session.
 | 2026-11-04 | `path:` (#269 item 3) | An ingress `path:` is a regular expression, as in cloudflared. Add the `regex` dependency. |
 | 2026-11-04 | Library `StaticServer` (#276 item 1) | `StaticServer` streams the body of a file of any size. The response type gets a body reader. Breaking for the library. |
 | 2026-11-04 | Deferred issues | Keep #89, #140, #149, #151, #161, #222 and #224 open, each with a status comment. Close each other issue when it is fixed. |
-| 2026-11-05 | Name | The project is `podnet`. The GitHub repository `Azathothas/cfrs` becomes `Azathothas/podnet`. The Cloudflare tunnel code is one adapter of podnet. |
+| 2026-11-05 | Name | The project is `podnet`. The GitHub repository `Azathothas/cfrs` becomes `PodUtils/podnet`. The Cloudflare tunnel code is one adapter of podnet. |
 | 2026-11-05 | Rename | A clean break: no compatibility layer (no `CFRS_*` aliases, no move of old state, no `cfrs` alias), no bridge release. The code rename is the last push of the session of 2026-11-05. The first podnet release is `v0.4.0-beta.1`, after the rename of the repository. |
 | 2026-11-05 | Regressions | "No regression" means: no feature or capability of the code is lost. It does not mean compatibility for users of cfrs. A breaking change is allowed when it improves the project. |
 | 2026-11-05 | pod-netns | The crate becomes `podnet-netns`, a library only. The `pod-netns` binary is dropped; `podnet pod` is the only CLI. Its integration tests move to the root crate. |
@@ -54,7 +54,8 @@ form of the rulings that apply to each session.
 | 2026-11-05 | Git hosting | `podnet git serve` uses the installed `git` now (`git http-backend`, and upload-pack and receive-pack under a russh SSH server). A native server comes later. |
 | 2026-11-05 | Pod backend | After the fix of the TCP sockets of the seccomp backend and generic UDP in the netns backend, `warp exec` and `warp shell` try the netns backend first, then seccomp. They get `--backend` and a line that names the backend. |
 | 2026-11-05 | Live WARP devices | A live test of the router registers and deletes a WARP device in each run. |
-| 2026-11-05 | crates.io | Publish nothing yet. The packaging stays ready for a publish. |
+| 2026-11-05 | crates.io | Publish no real version yet. The owner reserves the crate names with 0.0.0 placeholders (`podnet` is reserved). The packaging stays ready for a publish. |
+| 2026-11-05 | Home | Each project moves to the GitHub organization `PodUtils`: the repository is `PodUtils/podnet` (a transfer of `Azathothas/cfrs` and a rename), the image is `ghcr.io/podutils/podnet`, podssh is `PodUtils/podssh`. The certificate identity of a release is `https://github.com/PodUtils/podnet/.github/workflows/release.yml@refs/tags/TAG`. |
 
 ## Superseded
 

@@ -240,7 +240,7 @@ pub fn render(manual: &Manual) -> String {
     out.push_str(&examples(manual));
     heading(&mut out, "SEE ALSO");
     out.push_str(&fill(
-        "podnet pod --help; cloudflared(1); https://github.com/Azathothas/podnet (README.md, docs/protocol.md, docs/virtual-network.md).",
+        "podnet pod --help; cloudflared(1); https://github.com/PodUtils/podnet (README.md, docs/protocol.md, docs/virtual-network.md).",
         4,
     ));
     out

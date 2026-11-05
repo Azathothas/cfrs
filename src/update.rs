@@ -24,7 +24,7 @@ use base64::Engine;
 use serde::Deserialize;
 
 /// The repository of the releases.
-pub const REPOSITORY: &str = "Azathothas/podnet";
+pub const REPOSITORY: &str = "PodUtils/podnet";
 /// The issuer of the GitHub Actions tokens.
 pub const ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// The Fulcio intermediate and root certificates of Sigstore (the public
@@ -983,7 +983,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("not https://github.com/Azathothas/podnet/.github"),
+            err.contains("not https://github.com/PodUtils/podnet/.github"),
             "{err}"
         );
     }
@@ -1052,7 +1052,7 @@ mod tests {
         for url in urls {
             assert!(
                 url.starts_with(
-                    "https://github.com/Azathothas/podnet/releases/download/v0.3.0-beta.9/"
+                    "https://github.com/PodUtils/podnet/releases/download/v0.3.0-beta.9/"
                 ),
                 "{url}"
             );
@@ -1064,8 +1064,8 @@ mod tests {
     // Issue 227: a tag with a path is not a tag.
     #[test]
     fn atom_tags_refuses_a_path_in_a_tag() {
-        let feed = r#"<link href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0-beta.9/../../x"/>
-<link href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0-beta.8"/>"#;
+        let feed = r#"<link href="https://github.com/PodUtils/podnet/releases/tag/v0.3.0-beta.9/../../x"/>
+<link href="https://github.com/PodUtils/podnet/releases/tag/v0.3.0-beta.8"/>"#;
         assert_eq!(atom_tags(feed), ["v0.3.0-beta.8"]);
         assert_eq!(
             newest_in_atom(feed, "v0.3.0-beta.1").as_deref(),
@@ -1107,8 +1107,8 @@ mod tests {
     #[test]
     fn the_newest_tag_of_releases_atom() {
         let feed = r#"<feed><entry><id>tag:github.com,2008:Repository/1/v0.4.0-beta.1</id>
-<link rel="alternate" type="text/html" href="https://github.com/Azathothas/podnet/releases/tag/v0.4.0-beta.1"/></entry>
-<entry><link rel="alternate" href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0"/></entry></feed>"#;
+<link rel="alternate" type="text/html" href="https://github.com/PodUtils/podnet/releases/tag/v0.4.0-beta.1"/></entry>
+<entry><link rel="alternate" href="https://github.com/PodUtils/podnet/releases/tag/v0.3.0"/></entry></feed>"#;
         assert_eq!(atom_tags(feed), ["v0.4.0-beta.1", "v0.3.0"]);
         assert_eq!(
             newest_in_atom(feed, "v0.3.0-beta.9").as_deref(),

@@ -31,7 +31,7 @@ case "$target" in
         ;;
 esac
 [ "$target" = "$host" ] || echo "rebuild.sh: $target on a $(uname -m) host runs the image under emulation" >&2
-repo=${PODNET_REPO:-Azathothas/podnet}
+repo=${PODNET_REPO:-PodUtils/podnet}
 engine=${CONTAINER:-docker}
 
 dir=$(mktemp -d)

@@ -332,7 +332,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
             "available (getsockname/getpeername: unavailable)"
         }
     );
-    println!("podnet-netns: the host conditions that podnet handles: https://github.com/Azathothas/podnet/blob/main/docs/target-environment.md");
+    println!("podnet-netns: the host conditions that podnet handles: https://github.com/PodUtils/podnet/blob/main/docs/target-environment.md");
     if any {
         0
     } else {

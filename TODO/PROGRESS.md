@@ -67,7 +67,8 @@ Each call is in its entry, and the work goes on with it until the owner rules ot
 
 | Entry | Action |
 | --- | --- |
-| T-021 | Rename the repository `Azathothas/cfrs` to `Azathothas/podnet`, after the push of T-016 |
+| T-021 | Transfer the repository `Azathothas/cfrs` to the organization `PodUtils` and rename it `podnet` |
+| T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`, `podnet-warp`, `podnet-serve`, `podnet-cloudflare` (0.0.0 placeholders, as `podnet`) |
 | T-025 | Set the ghcr package `podnet` to public, after T-023 |
 
 ## Questions for the owner

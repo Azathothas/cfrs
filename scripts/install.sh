@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install the static Linux binary of podnet from a GitHub release (issue 160).
 #
-#   s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh) && sh -c "$s"
-#   s=$(wget -qO- https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh) && sh -c "$s"
+#   s=$(curl -fsSL https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/install.sh) && sh -c "$s"
+#   s=$(wget -qO- https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/install.sh) && sh -c "$s"
 #
 # Do not use `curl ... | sh` in a script: a pipe has the exit status of sh,
 # and sh exits 0 when curl fails (issue 165).
@@ -22,7 +22,7 @@
 #                      quota). A tag needs neither.
 #   PODNET_INSTALL_DIR   The directory of the binary. Default: /usr/local/bin
 #                      for root, else $XDG_BIN_HOME, else ~/.local/bin.
-#   PODNET_REPO          OWNER/NAME of the releases (Azathothas/podnet). podnet
+#   PODNET_REPO          OWNER/NAME of the releases (PodUtils/podnet). podnet
 #                      update does not read it.
 #   PODNET_NO_VERIFY=1   Install with no SHA256 check (no tool for it).
 #   PODNET_DOWNLOADER    Use this downloader (one of the list above).
@@ -37,7 +37,7 @@ set -eu
 
 main() {
     if [ -n "${DEBUG:-}" ]; then set -x; fi
-    repo=${PODNET_REPO:-Azathothas/podnet}
+    repo=${PODNET_REPO:-PodUtils/podnet}
     version=${PODNET_VERSION:-latest}
 
     if [ -z "${NO_COLOR:-}" ] && [ -t 2 ]; then

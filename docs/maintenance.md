@@ -13,14 +13,14 @@ state of the open work.
 3. List the open issues:
 
    ```sh
-   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet/issues?state=open&per_page=50" |
+   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet/issues?state=open&per_page=50" |
      python3 -c 'import json,sys; [print(i["number"], i["user"]["login"], i["title"]) for i in json.load(sys.stdin) if "pull_request" not in i]'
    ```
 
 4. Read the last runs of `live` and `ci`:
 
    ```sh
-   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet/actions/runs?per_page=8" |
+   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet/actions/runs?per_page=8" |
      python3 -c 'import json,sys; [print(r["id"], r["head_sha"][:7], r["name"], r["status"], r["conclusion"]) for r in json.load(sys.stdin)["workflow_runs"]]'
    ```
 
@@ -46,7 +46,7 @@ state of the open work.
     (`new-issues.py` reads the issue list). It keeps a copy of each issue
     in `STATE_DIR/issues/NUMBER.json`. GitHub deletes the issues of a
     suspended account; then read the copy, or the `IssuesEvent` and
-    `IssueCommentEvent` payloads of `repos/Azathothas/podnet/events` (the
+    `IssueCommentEvent` payloads of `repos/PodUtils/podnet/events` (the
     last 300 events), and add the text to `docs/reports/`.
   * `watch-runs.sh FULL_SHA [MIN_RUNS]`: each run of a commit when it ends,
     with the failed jobs and steps (`runs.py` reads the run list). Give the
@@ -132,8 +132,8 @@ When a batch of fixes is green (`CLAUDE.md`):
    `tests/docs.rs` refuse a note with no such heading (issue 126).
    The heads of the notes up to v0.3.0-beta.12 name `cfrs` and
    `pod-netns`. A new head names the binaries `podnet-<target>` only, the
-   image `ghcr.io/azathothas/podnet` and the identity of
-   `Azathothas/podnet`.
+   image `ghcr.io/podutils/podnet` and the identity of
+   `PodUtils/podnet`.
 3. Commit, push, and wait until `ci` and `live` pass on that commit.
 4. Dispatch `release.yml` on `main` with `publish` empty: the dry run.
 5. When the dry run passes, dispatch `release.yml` with `publish` set to

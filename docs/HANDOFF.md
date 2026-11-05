@@ -13,9 +13,9 @@ then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
   check `scripts/check-size.py`.
 * The newest release is `v0.3.0-beta.12` of cfrs. The first podnet
   release is T-023.
-* The owner renames the GitHub repository `Azathothas/cfrs` to
-  `Azathothas/podnet` after the session of 2026-11-05. GitHub then
-  redirects the old URLs. Nobody may create a new `Azathothas/cfrs`: that
+* The owner transfers the GitHub repository `Azathothas/cfrs` to the
+  organization `PodUtils` and renames it `podnet` after the session of
+  2026-11-05. GitHub then redirects the old URLs. Nobody may create a new `Azathothas/cfrs`: that
   ends the redirects.
 
 ## First steps of the next session, in order
@@ -25,10 +25,12 @@ then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
    ```sh
    git remote get-url origin
    curl -sI https://github.com/Azathothas/cfrs | head -3
-   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet?n=$RANDOM" | head -c 200
+   curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet?n=$RANDOM" | head -c 200
    ```
 
-2. Read the CI runs of the head of `main`. Until the first podnet
+2. Read the CI runs of the head of `main`. Before the transfer, each step
+   that reads `PodUtils/podnet` fails with HTTP 404 (live run
+   41994001349: `podnet update` could not read the release list). Until the first podnet
    release, the live step of the update asserts that `podnet update`
    refuses `v0.3.0-beta.1` (the identity of the old repository). The
    install script and the README one-line install fail until the first
@@ -40,7 +42,7 @@ then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
    names, the shim names, `/__podnet/ws`, the asset names, the image, the
    dropped `pod-netns` binary. Users of cfrs install podnet fresh.
 4. After the release: the owner makes the image
-   `ghcr.io/azathothas/podnet` public if it is private (T-025); restore
+   `ghcr.io/podutils/podnet` public if it is private (T-025); restore
    the positive update check in `live.yml` (T-024).
 5. Arm the issue watcher (`scripts/agent/watch-issues.sh`). New issues
    become record entries (`CLAUDE.md`, "The plan").

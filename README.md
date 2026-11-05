@@ -5,7 +5,7 @@
 | Tool | `podnet` command |
 | --- | --- |
 | `cloudflared` quick tunnels and named tunnels | `podnet tunnel`, `podnet serve`, `podnet share`, `podnet connect` |
-| Try Cloudflare (`*.trycloudflare.com`) | `podnet tunnel` with no account. A quick tunnel is for tests and development: no uptime guarantee, at most 200 requests in flight (more get `429`), no Server-Sent Events, and the Cloudflare Online Services Terms ([limits and terms](https://github.com/Azathothas/podnet/blob/main/docs/protocol.md#7-limits-of-quick-tunnels)) |
+| Try Cloudflare (`*.trycloudflare.com`) | `podnet tunnel` with no account. A quick tunnel is for tests and development: no uptime guarantee, at most 200 requests in flight (more get `429`), no Server-Sent Events, and the Cloudflare Online Services Terms ([limits and terms](https://github.com/PodUtils/podnet/blob/main/docs/protocol.md#7-limits-of-quick-tunnels)) |
 | The Cloudflare WARP client | `podnet warp` |
 
 `podnet` is made for hosts with strong limits. The table gives each limit, the
@@ -37,7 +37,7 @@ The repository is a Cargo workspace:
 
 ### Release binaries
 
-Each [release](https://github.com/Azathothas/podnet/releases) has static
+Each [release](https://github.com/PodUtils/podnet/releases) has static
 Linux binaries of `podnet` for `x86_64`, `aarch64`, `armv7`,
 `riscv64gc`, `i686`, `arm` (ARMv6, hard float), `loongarch64` and
 `powerpc64le` (from v0.3.0-beta.2 on; v0.3.0-beta.1 has `x86_64`,
@@ -67,15 +67,15 @@ the two bundles to one directory. Then do these steps:
 
    ```sh
    cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-     --certificate-identity https://github.com/Azathothas/podnet/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+     --certificate-identity https://github.com/PodUtils/podnet/.github/workflows/release.yml@refs/tags/vX.Y.Z \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
    ```
 
 3. Check the provenance of the binary (gh 2.49 or later):
 
    ```sh
-   gh attestation verify podnet-x86_64-unknown-linux-musl --repo Azathothas/podnet \
-     --signer-workflow Azathothas/podnet/.github/workflows/release.yml
+   gh attestation verify podnet-x86_64-unknown-linux-musl --repo PodUtils/podnet \
+     --signer-workflow PodUtils/podnet/.github/workflows/release.yml
    ```
 
    With no network access to the GitHub API, give the bundle and a trusted
@@ -83,8 +83,8 @@ the two bundles to one directory. Then do these steps:
    (`gh attestation trusted-root > trusted_root.jsonl`), and copy it:
 
    ```sh
-   gh attestation verify podnet-x86_64-unknown-linux-musl --repo Azathothas/podnet \
-     --signer-workflow Azathothas/podnet/.github/workflows/release.yml \
+   gh attestation verify podnet-x86_64-unknown-linux-musl --repo PodUtils/podnet \
+     --signer-workflow PodUtils/podnet/.github/workflows/release.yml \
      --bundle provenance.sigstore.json --custom-trusted-root trusted_root.jsonl
    ```
 
@@ -106,7 +106,7 @@ fail.
 (prereleases too) for this machine. It is POSIX `sh`:
 
 ```sh
-s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh) && sh -c "$s"
+s=$(curl -fsSL https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/install.sh) && sh -c "$s"
 ```
 
 With wget: `s=$(wget -qO- URL) && sh -c "$s"`. Do not use `curl URL | sh`
@@ -170,7 +170,7 @@ import urllib.request
 
 KEEP = os.environ.get("PODNET_KEEP", os.path.expanduser("~/podnet-keep"))
 VERSION = "latest"  # A tag (for example v0.3.0-beta.11) uses no GitHub API.
-URL = "https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh"
+URL = "https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/install.sh"
 
 os.makedirs(os.path.join(KEEP, "bin"), exist_ok=True)
 script = os.path.join(KEEP, "install.sh")
@@ -188,7 +188,7 @@ print(subprocess.run(["podnet", "--version"], check=True, capture_output=True, t
 ### Container image
 
 Each release has an image for each Linux architecture of the binaries:
-`ghcr.io/azathothas/podnet:<tag>` (a manifest list), `:<tag>-<arch>` for one
+`ghcr.io/podutils/podnet:<tag>` (a manifest list), `:<tag>-<arch>` for one
 architecture (`amd64`, `arm64`, `armv7`, `armv6`, `386`, `riscv64`,
 `ppc64le`, `loong64`), and `:beta` for the newest prerelease. `:latest` is
 for the newest release that is not a prerelease. No such release exists
@@ -199,10 +199,10 @@ is `podnet`. In the container, podnet is PID 1 (no init): SIGTERM and SIGINT
 stop it at each stage, also before the ready line (exit 143 and 130).
 
 ```sh
-docker run --rm ghcr.io/azathothas/podnet:beta --version
+docker run --rm ghcr.io/podutils/podnet:beta --version
 docker run -d --name warp -v podnet-state:/var/lib/podnet -p 127.0.0.1:40000:40000 \
-    ghcr.io/azathothas/podnet:beta warp proxy --listen tcp://0.0.0.0:40000
-docker run --rm ghcr.io/azathothas/podnet:beta demo --exit-on-verify
+    ghcr.io/podutils/podnet:beta warp proxy --listen tcp://0.0.0.0:40000
+docker run --rm ghcr.io/podutils/podnet:beta demo --exit-on-verify
 ```
 
 The proxy listens on all addresses of the container: publish the port on
@@ -850,7 +850,7 @@ Two backends are available. `--backend auto` (the default) selects one.
 Both backends answer DNS from a fake-IP pool (`198.18.0.0/15`; the
 `seccomp` backend answers AAAA from `fd63:6672:7300::/96` too) and send the
 name to the upstream. Thus no DNS query leaves the host. See
-[`crates/podnet-netns/README.md`](https://github.com/Azathothas/podnet/blob/main/crates/podnet-netns/README.md) for all options.
+[`crates/podnet-netns/README.md`](https://github.com/PodUtils/podnet/blob/main/crates/podnet-netns/README.md) for all options.
 
 ## Virtual network: `podnet net`
 
@@ -885,7 +885,7 @@ or `?` (no answer in 3 s). It prints the commands that need each listener.
 `PODNET_UDP=off` makes a tunnel use no QUIC on UDP 7844; `PODNET_UDP=on` skips
 the probe at start.
 
-See [`docs/virtual-network.md`](https://github.com/Azathothas/podnet/blob/main/docs/virtual-network.md).
+See [`docs/virtual-network.md`](https://github.com/PodUtils/podnet/blob/main/docs/virtual-network.md).
 
 ## Tailscale on a sealed host
 
@@ -1346,16 +1346,16 @@ sh scripts/rebuild.sh <TAG>
 
 ## Documents
 
-* [`docs/protocol.md`](https://github.com/Azathothas/podnet/blob/main/docs/protocol.md): the edge protocol and the WARP protocol.
-* [`docs/virtual-network.md`](https://github.com/Azathothas/podnet/blob/main/docs/virtual-network.md): the shim, the stack and switch mode.
-* [`crates/podnet-netns/README.md`](https://github.com/Azathothas/podnet/blob/main/crates/podnet-netns/README.md): podnet-netns.
-* [`docs/target-environment.md`](https://github.com/Azathothas/podnet/blob/main/docs/target-environment.md): the measured
+* [`docs/protocol.md`](https://github.com/PodUtils/podnet/blob/main/docs/protocol.md): the edge protocol and the WARP protocol.
+* [`docs/virtual-network.md`](https://github.com/PodUtils/podnet/blob/main/docs/virtual-network.md): the shim, the stack and switch mode.
+* [`crates/podnet-netns/README.md`](https://github.com/PodUtils/podnet/blob/main/crates/podnet-netns/README.md): podnet-netns.
+* [`docs/target-environment.md`](https://github.com/PodUtils/podnet/blob/main/docs/target-environment.md): the measured
   hosts, the other host conditions, and the rules of podnet for them.
-* [`SECURITY.md`](https://github.com/Azathothas/podnet/blob/main/SECURITY.md): how to report a vulnerability, what
+* [`SECURITY.md`](https://github.com/PodUtils/podnet/blob/main/SECURITY.md): how to report a vulnerability, what
   Cloudflare can see, what listens, where secrets are kept.
 
 ## License
 
-0BSD. See [`LICENSE`](https://github.com/Azathothas/podnet/blob/main/LICENSE). See
-[`THIRD_PARTY_NOTICES.md`](https://github.com/Azathothas/podnet/blob/main/THIRD_PARTY_NOTICES.md) for the licenses of the
+0BSD. See [`LICENSE`](https://github.com/PodUtils/podnet/blob/main/LICENSE). See
+[`THIRD_PARTY_NOTICES.md`](https://github.com/PodUtils/podnet/blob/main/THIRD_PARTY_NOTICES.md) for the licenses of the
 included third-party files.
