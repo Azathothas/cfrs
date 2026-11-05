@@ -1,7 +1,7 @@
 //! Independent evidence that the shim keeps `AF_INET` away from the kernel.
 //!
 //! `tests/shim_direct.rs` proves two programs exchange data over the virtual
-//! network. It trusts the shim's own `CFRSNET_LOG` output for the claim that no
+//! network. It trusts the shim's own `PODNET_VNET_LOG` output for the claim that no
 //! `AF_INET` syscall was issued. These tests measure that claim from below the
 //! shim instead, and each one names what would falsify it.
 //!
@@ -52,7 +52,7 @@
 mod afinet_audit;
 
 use afinet_audit::HelperError;
-use cfrs::vnet::shim;
+use podnet::vnet::shim;
 
 /// The compiler, or skip with a printed reason.
 fn compiler_or_skip(test: &str) -> Option<String> {
@@ -158,7 +158,7 @@ fn without_the_shim_the_same_bind_fails() {
     // the control for the test above.
     let seen = afinet_audit::bind_then_locate_inode(
         &cc,
-        std::path::Path::new("/nonexistent/libcfrsnet.so"),
+        std::path::Path::new("/nonexistent/libpodnet-vnet.so"),
         "10.66.0.2",
         18093,
     )

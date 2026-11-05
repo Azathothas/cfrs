@@ -1,4 +1,4 @@
-//! `cfrs update`: replace this binary with the binary of a release, after
+//! `podnet update`: replace this binary with the binary of a release, after
 //! these checks:
 //!
 //! 1. `SHA256SUMS.sigstore.json` (the cosign bundle) holds a certificate
@@ -12,7 +12,7 @@
 //! 4. The SHA-256 of the downloaded binary is its line in `SHA256SUMS`.
 //! 5. The new binary runs and prints the version of the release.
 //!
-//! cfrs does not check the inclusion proof of the transparency log (Rekor).
+//! podnet does not check the inclusion proof of the transparency log (Rekor).
 //! All downloads use the TLS roots of [`crate::trust`] and the proxy of
 //! [`crate::egress`].
 
@@ -24,14 +24,14 @@ use base64::Engine;
 use serde::Deserialize;
 
 /// The repository of the releases.
-pub const REPOSITORY: &str = "Azathothas/cfrs";
+pub const REPOSITORY: &str = "Azathothas/podnet";
 /// The issuer of the GitHub Actions tokens.
 pub const ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// The Fulcio intermediate and root certificates of Sigstore (the public
 /// instance), from the trusted root of sigstore/root-signing.
 pub const FULCIO_PEM: &[u8] = include_bytes!("sigstore-fulcio.pem");
 /// The target triple of this binary.
-pub const TARGET: &str = env!("CFRS_BUILD_TARGET");
+pub const TARGET: &str = env!("PODNET_BUILD_TARGET");
 
 /// The release asset for the target `target`: the static musl binary of the
 /// same architecture (a release ships no glibc binary, and a static binary
@@ -77,7 +77,7 @@ impl Release {
             prerelease: tag.contains('-'),
             draft: false,
             assets: vec![
-                asset(format!("cfrs-{}", asset_target(TARGET))),
+                asset(format!("podnet-{}", asset_target(TARGET))),
                 asset("SHA256SUMS".into()),
                 asset("SHA256SUMS.sigstore.json".into()),
             ],
@@ -94,10 +94,15 @@ impl Release {
 
 /// The identity that the certificate of `tag` must name.
 pub fn identity(tag: &str) -> String {
-    format!("https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{tag}")
+    identity_in(REPOSITORY, tag)
 }
 
-/// The largest release binary that `cfrs update` downloads. The binaries are
+/// The identity of `tag` of the repository `repository`.
+pub fn identity_in(repository: &str, tag: &str) -> String {
+    format!("https://github.com/{repository}/.github/workflows/release.yml@refs/tags/{tag}")
+}
+
+/// The largest release binary that `podnet update` downloads. The binaries are
 /// about 14 MB; [`crate::fetch::MAX_BODY`] (16 MiB) is too near.
 pub const MAX_BINARY: usize = 128 << 20;
 
@@ -271,7 +276,7 @@ pub fn choose<'a>(
         .context("no release found")
 }
 
-/// The fields of the cosign bundle that cfrs checks.
+/// The fields of the cosign bundle that podnet checks.
 #[derive(Debug, Deserialize)]
 struct Bundle {
     #[serde(rename = "verificationMaterial")]
@@ -328,6 +333,11 @@ fn b64(text: &str) -> Result<Vec<u8>> {
 /// Check the cosign bundle `bundle` over `sums`, for the tag `tag`. See the
 /// checks 1 to 3 of the module.
 pub fn verify_bundle(bundle: &[u8], sums: &[u8], tag: &str) -> Result<()> {
+    verify_bundle_for(bundle, sums, &identity(tag))
+}
+
+/// [`verify_bundle`] for the certificate identity `want`.
+pub fn verify_bundle_for(bundle: &[u8], sums: &[u8], want: &str) -> Result<()> {
     use ring::digest::{digest, SHA256};
     let bundle: Bundle = serde_json::from_slice(bundle).context("decoding the cosign bundle")?;
     let leaf = match (&bundle.material.certificate, &bundle.material.chain) {
@@ -371,7 +381,7 @@ pub fn verify_bundle(bundle: &[u8], sums: &[u8], tag: &str) -> Result<()> {
     // 2. The identity and the issuer.
     let (_, cert) =
         x509_parser::parse_x509_certificate(&leaf).context("parsing the certificate")?;
-    let want = identity(tag);
+    let want = want.to_string();
     let mut uris = Vec::new();
     let mut issuer = None;
     for ext in cert.extensions() {
@@ -439,7 +449,7 @@ pub fn sum_of(sums: &[u8], name: &str) -> Result<Vec<u8>> {
     bail!("SHA256SUMS has no line for {name}")
 }
 
-/// What `cfrs update` did.
+/// What `podnet update` did.
 #[derive(Debug)]
 pub enum Outcome {
     UpToDate(String),
@@ -472,7 +482,7 @@ pub fn plan(tag: &str, current: &str, pinned: bool, check: bool, force: bool) ->
     if tag == current && !force {
         return if pinned { Plan::Same } else { Plan::UpToDate };
     }
-    // With no --version, an older release is not an update: cfrs never
+    // With no --version, an older release is not an update: podnet never
     // goes back on its own (--version goes back on purpose). `force` does
     // not change this.
     if !pinned
@@ -488,13 +498,13 @@ pub fn plan(tag: &str, current: &str, pinned: bool, check: bool, force: bool) ->
     }
 }
 
-/// The warning when CFRS_REPO is set (issue 168): the repository of
-/// `cfrs update` is fixed, because it names the signer of the binary.
+/// The warning when PODNET_REPO is set (issue 168): the repository of
+/// `podnet update` is fixed, because it names the signer of the binary.
 pub fn ignored_repo_warning(value: Option<std::ffi::OsString>) -> Option<String> {
     let value = value?;
     (value.to_string_lossy() != REPOSITORY).then(|| {
         format!(
-            "CFRS_REPO={} is for scripts/install.sh; cfrs update uses {REPOSITORY}",
+            "PODNET_REPO={} is for scripts/install.sh; podnet update uses {REPOSITORY}",
             value.to_string_lossy()
         )
     })
@@ -503,7 +513,7 @@ pub fn ignored_repo_warning(value: Option<std::ffi::OsString>) -> Option<String>
 /// Update this binary (`check`: only say what is available; `force`:
 /// install the version of this binary again).
 pub async fn run(tag: Option<&str>, check: bool, force: bool) -> Result<Outcome> {
-    if let Some(warning) = ignored_repo_warning(std::env::var_os("CFRS_REPO")) {
+    if let Some(warning) = ignored_repo_warning(std::env::var_os("PODNET_REPO")) {
         tracing::warn!("{warning}");
     }
     let current = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -516,7 +526,7 @@ pub async fn run(tag: Option<&str>, check: bool, force: bool) -> Result<Outcome>
         None => newest(&current).await?,
     };
     let step = plan(&release.tag_name, &current, tag.is_some(), check, force);
-    let name = format!("cfrs-{}", asset_target(TARGET));
+    let name = format!("podnet-{}", asset_target(TARGET));
     let sums_url = release.asset("SHA256SUMS")?.browser_download_url.clone();
     let sums = match step {
         Plan::UpToDate => return Ok(Outcome::UpToDate(current)),
@@ -578,7 +588,7 @@ pub async fn run(tag: Option<&str>, check: bool, force: bool) -> Result<Outcome>
 /// How long the new binary may take to print its version.
 pub const TRIAL_LIMIT: Duration = Duration::from_secs(10);
 
-/// The kept binary beside `path`: `cfrs.prev` for `cfrs`.
+/// The kept binary beside `path`: `podnet.prev` for `podnet`.
 pub fn previous_of(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".prev");
@@ -654,7 +664,7 @@ fn sync_dir(dir: &Path) {
 /// Keep a copy of `path` as `previous`: a hard link, or a copy when a link
 /// is not possible, put in place with a rename.
 fn keep(path: &Path, previous: &Path) -> Result<()> {
-    let tmp = previous.with_file_name(format!(".cfrs-prev-{}", std::process::id()));
+    let tmp = previous.with_file_name(format!(".podnet-prev-{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     if std::fs::hard_link(path, &tmp).is_err() {
         std::fs::copy(path, &tmp)
@@ -724,7 +734,7 @@ fn install_with(path: &Path, binary: &[u8], tag: &str, limit: Duration) -> Resul
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let dir = path.parent().context("the binary has no directory")?;
-    let tmp = dir.join(format!(".cfrs-update-{}", std::process::id()));
+    let tmp = dir.join(format!(".podnet-update-{}", std::process::id()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -740,7 +750,7 @@ fn install_with(path: &Path, binary: &[u8], tag: &str, limit: Duration) -> Resul
         let meta = file.metadata()?;
         let id = (meta.dev(), meta.ino());
         drop(file);
-        let want = format!("cfrs {} ", tag.trim_start_matches('v'));
+        let want = format!("podnet {} ", tag.trim_start_matches('v'));
         trial(&tmp, &want, limit).context("the new binary")?;
         after_trial(&tmp);
         same_file(&tmp, id).context("the new binary")?;
@@ -767,16 +777,16 @@ fn rollback_with(path: &Path, limit: Duration) -> Result<String> {
     let previous = previous_of(path);
     if !previous.exists() {
         bail!(
-            "no kept binary at {}: cfrs update keeps one from 0.3.0-beta.5 on",
+            "no kept binary at {}: podnet update keeps one from 0.3.0-beta.5 on",
             previous.display()
         );
     }
     let id = file_id(&previous)?;
-    trial(&previous, "cfrs ", limit).context("the kept binary")?;
+    trial(&previous, "podnet ", limit).context("the kept binary")?;
     after_trial(&previous);
     same_file(&previous, id).context("the kept binary")?;
     let dir = path.parent().context("the binary has no directory")?;
-    let held = dir.join(format!(".cfrs-rollback-{}", std::process::id()));
+    let held = dir.join(format!(".podnet-rollback-{}", std::process::id()));
     let _ = std::fs::remove_file(&held);
     if std::fs::hard_link(path, &held).is_err() {
         std::fs::copy(path, &held).with_context(|| format!("keeping {}", path.display()))?;
@@ -803,7 +813,7 @@ fn rollback_with(path: &Path, limit: Duration) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A shell script in the place of a cfrs binary.
+    /// A shell script in the place of a podnet binary.
     fn fake(version_line: &str, extra: &str) -> Vec<u8> {
         format!("#!/bin/sh\n{extra}\necho '{version_line}'\n").into_bytes()
     }
@@ -822,19 +832,24 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// An update keeps the binary before as cfrs.prev; a rollback puts it
+    /// An update keeps the binary before as podnet.prev; a rollback puts it
     /// back, and a second rollback goes forward again.
     #[test]
     fn install_keeps_the_binary_before_and_rollback_swaps() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cfrs");
-        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
-        install(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""), "v0.3.0-beta.5").unwrap();
-        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.5 (new)");
-        assert_eq!(version_of(&previous_of(&path)), "cfrs 0.3.0-beta.4 (old)");
-        assert_eq!(rollback(&path).unwrap(), "cfrs 0.3.0-beta.4 (old)");
-        assert_eq!(version_of(&previous_of(&path)), "cfrs 0.3.0-beta.5 (new)");
-        assert_eq!(rollback(&path).unwrap(), "cfrs 0.3.0-beta.5 (new)");
+        let path = dir.path().join("podnet");
+        put(&path, &fake("podnet 0.3.0-beta.4 (old)", ""));
+        install(
+            &path,
+            &fake("podnet 0.3.0-beta.5 (new)", ""),
+            "v0.3.0-beta.5",
+        )
+        .unwrap();
+        assert_eq!(version_of(&path), "podnet 0.3.0-beta.5 (new)");
+        assert_eq!(version_of(&previous_of(&path)), "podnet 0.3.0-beta.4 (old)");
+        assert_eq!(rollback(&path).unwrap(), "podnet 0.3.0-beta.4 (old)");
+        assert_eq!(version_of(&previous_of(&path)), "podnet 0.3.0-beta.5 (new)");
+        assert_eq!(rollback(&path).unwrap(), "podnet 0.3.0-beta.5 (new)");
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -848,22 +863,22 @@ mod tests {
     #[test]
     fn a_bad_new_binary_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cfrs");
-        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
+        let path = dir.path().join("podnet");
+        put(&path, &fake("podnet 0.3.0-beta.4 (old)", ""));
         let cases = [
-            fake("cfrs 0.3.0-beta.5 (new)", "exit 3"),
-            fake("cfrs 0.3.0-beta.5 (new)", "")
+            fake("podnet 0.3.0-beta.5 (new)", "exit 3"),
+            fake("podnet 0.3.0-beta.5 (new)", "")
                 .into_iter()
                 .chain(b"exit 1\n".iter().copied())
                 .collect(),
-            fake("cfrs 0.2.0 (other)", ""),
-            fake("cfrs 0.3.0-beta.5 (new)", "sleep 30"),
+            fake("podnet 0.2.0 (other)", ""),
+            fake("podnet 0.3.0-beta.5 (new)", "sleep 30"),
         ];
         for body in cases {
             let err = install_with(&path, &body, "v0.3.0-beta.5", Duration::from_millis(500))
                 .expect_err("a bad binary is refused");
             assert!(format!("{err:#}").contains("new binary"), "{err:#}");
-            assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
+            assert_eq!(version_of(&path), "podnet 0.3.0-beta.4 (old)");
             assert!(!previous_of(&path).exists());
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         }
@@ -875,26 +890,30 @@ mod tests {
     fn a_file_swapped_after_the_trial_is_not_installed() {
         fn swap(path: &Path) {
             let other = path.with_file_name("swapped");
-            put(&other, &fake("cfrs 0.3.0-beta.5 (swapped)", ""));
+            put(&other, &fake("podnet 0.3.0-beta.5 (swapped)", ""));
             std::fs::rename(&other, path).unwrap();
         }
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cfrs");
-        put(&path, &fake("cfrs 0.3.0-beta.4 (old)", ""));
+        let path = dir.path().join("podnet");
+        put(&path, &fake("podnet 0.3.0-beta.4 (old)", ""));
         AFTER_TRIAL.with(|h| h.set(Some(swap)));
-        let err = install(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""), "v0.3.0-beta.5")
-            .expect_err("a swapped file is refused");
+        let err = install(
+            &path,
+            &fake("podnet 0.3.0-beta.5 (new)", ""),
+            "v0.3.0-beta.5",
+        )
+        .expect_err("a swapped file is refused");
         AFTER_TRIAL.with(|h| h.set(None));
         assert!(
             format!("{err:#}").contains("changed after its trial"),
             "{err:#}"
         );
-        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
+        assert_eq!(version_of(&path), "podnet 0.3.0-beta.4 (old)");
         assert!(!previous_of(&path).exists());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 
         // The kept binary of a rollback is checked the same way.
-        put(&previous_of(&path), &fake("cfrs 0.3.0-beta.3 (kept)", ""));
+        put(&previous_of(&path), &fake("podnet 0.3.0-beta.3 (kept)", ""));
         AFTER_TRIAL.with(|h| h.set(Some(swap)));
         let err = rollback(&path).expect_err("a swapped kept binary is refused");
         AFTER_TRIAL.with(|h| h.set(None));
@@ -902,7 +921,7 @@ mod tests {
             format!("{err:#}").contains("changed after its trial"),
             "{err:#}"
         );
-        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.4 (old)");
+        assert_eq!(version_of(&path), "podnet 0.3.0-beta.4 (old)");
     }
 
     /// A rollback with no kept binary, or with a kept binary that fails its
@@ -910,17 +929,19 @@ mod tests {
     #[test]
     fn rollback_needs_a_kept_binary_that_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cfrs");
-        put(&path, &fake("cfrs 0.3.0-beta.5 (new)", ""));
+        let path = dir.path().join("podnet");
+        put(&path, &fake("podnet 0.3.0-beta.5 (new)", ""));
         assert!(format!("{:#}", rollback(&path).unwrap_err()).contains("no kept binary"));
         put(
             &previous_of(&path),
-            &fake("cfrs 0.3.0-beta.4 (old)", "exit 2"),
+            &fake("podnet 0.3.0-beta.4 (old)", "exit 2"),
         );
         assert!(rollback_with(&path, Duration::from_millis(500)).is_err());
-        assert_eq!(version_of(&path), "cfrs 0.3.0-beta.5 (new)");
+        assert_eq!(version_of(&path), "podnet 0.3.0-beta.5 (new)");
     }
 
+    /// The repository of the releases up to v0.3.0-beta.12 (the fixture).
+    const OLD: &str = "Azathothas/cfrs";
     const SUMS: &[u8] = include_bytes!("../tests/data/v0.3.0-beta.1.SHA256SUMS");
     const BUNDLE: &[u8] = include_bytes!("../tests/data/v0.3.0-beta.1.SHA256SUMS.sigstore.json");
 
@@ -929,16 +950,16 @@ mod tests {
     /// signature.
     #[test]
     fn the_bundle_of_a_release() {
-        verify_bundle(BUNDLE, SUMS, "v0.3.0-beta.1").unwrap();
+        verify_bundle_for(BUNDLE, SUMS, &identity_in(OLD, "v0.3.0-beta.1")).unwrap();
 
-        let err = verify_bundle(BUNDLE, SUMS, "v0.3.0-beta.2")
+        let err = verify_bundle_for(BUNDLE, SUMS, &identity_in(OLD, "v0.3.0-beta.2"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("not https://github.com/Azathothas/cfrs/.github/workflows/release.yml@refs/tags/v0.3.0-beta.2"), "{err}");
 
         let mut changed = SUMS.to_vec();
         changed[0] = if changed[0] == b'0' { b'1' } else { b'0' };
-        let err = verify_bundle(BUNDLE, &changed, "v0.3.0-beta.1")
+        let err = verify_bundle_for(BUNDLE, &changed, &identity_in(OLD, "v0.3.0-beta.1"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("digest"), "{err}");
@@ -952,10 +973,19 @@ mod tests {
         let last = raw.len() - 1;
         raw[last] ^= 1;
         let bad = text.replace(sig, &base64::engine::general_purpose::STANDARD.encode(raw));
-        let err = verify_bundle(bad.as_bytes(), SUMS, "v0.3.0-beta.1")
+        let err = verify_bundle_for(bad.as_bytes(), SUMS, &identity_in(OLD, "v0.3.0-beta.1"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("signature"), "{err}");
+
+        // The identity of this repository refuses a release of the old one.
+        let err = verify_bundle(BUNDLE, SUMS, "v0.3.0-beta.1")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not https://github.com/Azathothas/podnet/.github"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1022,20 +1052,20 @@ mod tests {
         for url in urls {
             assert!(
                 url.starts_with(
-                    "https://github.com/Azathothas/cfrs/releases/download/v0.3.0-beta.9/"
+                    "https://github.com/Azathothas/podnet/releases/download/v0.3.0-beta.9/"
                 ),
                 "{url}"
             );
         }
         assert!(r.asset("SHA256SUMS.sigstore.json").is_ok());
-        assert!(r.asset(&format!("cfrs-{}", asset_target(TARGET))).is_ok());
+        assert!(r.asset(&format!("podnet-{}", asset_target(TARGET))).is_ok());
     }
 
     // Issue 227: a tag with a path is not a tag.
     #[test]
     fn atom_tags_refuses_a_path_in_a_tag() {
-        let feed = r#"<link href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0-beta.9/../../x"/>
-<link href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0-beta.8"/>"#;
+        let feed = r#"<link href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0-beta.9/../../x"/>
+<link href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0-beta.8"/>"#;
         assert_eq!(atom_tags(feed), ["v0.3.0-beta.8"]);
         assert_eq!(
             newest_in_atom(feed, "v0.3.0-beta.1").as_deref(),
@@ -1077,8 +1107,8 @@ mod tests {
     #[test]
     fn the_newest_tag_of_releases_atom() {
         let feed = r#"<feed><entry><id>tag:github.com,2008:Repository/1/v0.4.0-beta.1</id>
-<link rel="alternate" type="text/html" href="https://github.com/Azathothas/cfrs/releases/tag/v0.4.0-beta.1"/></entry>
-<entry><link rel="alternate" href="https://github.com/Azathothas/cfrs/releases/tag/v0.3.0"/></entry></feed>"#;
+<link rel="alternate" type="text/html" href="https://github.com/Azathothas/podnet/releases/tag/v0.4.0-beta.1"/></entry>
+<entry><link rel="alternate" href="https://github.com/Azathothas/podnet/releases/tag/v0.3.0"/></entry></feed>"#;
         assert_eq!(atom_tags(feed), ["v0.4.0-beta.1", "v0.3.0"]);
         assert_eq!(
             newest_in_atom(feed, "v0.3.0-beta.9").as_deref(),
@@ -1148,14 +1178,14 @@ mod tests {
         );
     }
 
-    // Issue 168: CFRS_REPO is not used, and a warning says so.
+    // Issue 168: PODNET_REPO is not used, and a warning says so.
     #[test]
-    fn cfrs_repo_is_reported_as_ignored() {
+    fn podnet_repo_is_reported_as_ignored() {
         assert_eq!(ignored_repo_warning(None), None);
         assert_eq!(ignored_repo_warning(Some(REPOSITORY.into())), None);
         let w = ignored_repo_warning(Some("me/fork".into())).unwrap();
         assert!(
-            w.contains("CFRS_REPO=me/fork") && w.contains(REPOSITORY),
+            w.contains("PODNET_REPO=me/fork") && w.contains(REPOSITORY),
             "{w}"
         );
     }

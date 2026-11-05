@@ -1,4 +1,4 @@
-//! `cfrs status`: one line of JSON about this host, for a program to read
+//! `podnet status`: one line of JSON about this host, for a program to read
 //! before anything else. It opens no connection, asks no DNS, starts no
 //! process and writes nothing. It never shows a credential: the proxy is
 //! shown as its variable, host, port and kind, and the WARP identity as its
@@ -6,11 +6,11 @@
 
 use serde_json::{json, Value};
 
-/// The variables of the proxy, in the order that cfrs reads them.
+/// The variables of the proxy, in the order that podnet reads them.
 const PROXY_VARIABLES: &[&str] = &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
 
-/// The proxy that cfrs uses, by the choice of the dial: `--no-proxy`,
-/// `--proxy` (or `CFRS_PROXY`), else the first proxy variable that is set.
+/// The proxy that podnet uses, by the choice of the dial: `--no-proxy`,
+/// `--proxy` (or `PODNET_PROXY`), else the first proxy variable that is set.
 fn proxy() -> Value {
     use crate::egress::{Carrier, Proxy, ProxyChoice};
     let no_proxy = ["NO_PROXY", "no_proxy"]
@@ -54,7 +54,7 @@ fn proxy() -> Value {
 }
 
 fn edge_override() -> Value {
-    match std::env::var("CFRS_EDGE") {
+    match std::env::var("PODNET_EDGE") {
         Ok(list) if !list.trim().is_empty() => {
             let items: Vec<&str> = list
                 .split(',')
@@ -68,7 +68,7 @@ fn edge_override() -> Value {
             // Issue 252: tunnel and doctor exit 78 on it; status is a
             // report, so it warns and exits 0.
             for item in &bad {
-                eprintln!("cfrs: warning: CFRS_EDGE entry {item:?} is not IP:PORT; tunnel and doctor refuse it");
+                eprintln!("podnet: warning: PODNET_EDGE entry {item:?} is not IP:PORT; tunnel and doctor refuse it");
             }
             json!({ "addresses": items, "valid": bad.is_empty() })
         }
@@ -80,7 +80,7 @@ fn warp_identity() -> Value {
     // A read: the saved file where it exists, with no directory made
     // (podssh; before, status made the state directory).
     let Some(candidates) = crate::state::candidates(&|k| std::env::var_os(k)) else {
-        return json!({ "path": null, "reason": "CFRS_STATE_DIR=none" });
+        return json!({ "path": null, "reason": "PODNET_STATE_DIR=none" });
     };
     let path = match crate::state::find_existing("warp.json") {
         Ok(Some(path)) => path,
@@ -108,20 +108,20 @@ fn tty(fd: i32) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
-/// The version line of cfrs, as `cfrs --version` gives it.
+/// The version line of podnet, as `podnet --version` gives it.
 pub const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
-    env!("CFRS_BUILD_COMMIT"),
+    env!("PODNET_BUILD_COMMIT"),
     ")"
 );
 
-/// `doc` with `schema` (1) and `cfrs` (the version) when it is an object
-/// (E3): each JSON document of cfrs has the two keys.
+/// `doc` with `schema` (1) and `podnet` (the version) when it is an object
+/// (E3): each JSON document of podnet has the two keys.
 pub fn stamped(mut doc: Value) -> Value {
     if let Some(map) = doc.as_object_mut() {
         map.insert("schema".into(), json!(1));
-        map.insert("cfrs".into(), json!(VERSION));
+        map.insert("podnet".into(), json!(VERSION));
     }
     doc
 }
@@ -130,7 +130,7 @@ pub fn stamped(mut doc: Value) -> Value {
 pub fn document() -> Value {
     json!({
         "schema": 1,
-        "cfrs": concat!(env!("CARGO_PKG_VERSION"), " (", env!("CFRS_BUILD_COMMIT"), ")"),
+        "podnet": concat!(env!("CARGO_PKG_VERSION"), " (", env!("PODNET_BUILD_COMMIT"), ")"),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "proxy": proxy(),
@@ -184,7 +184,14 @@ mod tests {
     fn the_status_has_its_fields_and_no_credentials() {
         let doc = document();
         assert_eq!(doc["schema"], 1);
-        for key in ["cfrs", "os", "arch", "proxy", "warp_identity", "stdin_tty"] {
+        for key in [
+            "podnet",
+            "os",
+            "arch",
+            "proxy",
+            "warp_identity",
+            "stdin_tty",
+        ] {
             assert!(doc.get(key).is_some(), "{key}");
         }
         let text = doc.to_string();

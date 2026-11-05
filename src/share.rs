@@ -71,7 +71,7 @@ pub struct ShareConfig {
     /// Upload only: the most bytes of the session, over all files.
     pub max_total: u64,
     /// Upload only: the most bytes of one upload request (issue 92). A
-    /// larger `Content-Length` gets 413 before cfrs reads the body.
+    /// larger `Content-Length` gets 413 before podnet reads the body.
     pub max_request: u64,
     pub stop_after: bool,
     pub gate: Gate,
@@ -697,7 +697,7 @@ async fn upload_receive(
         staging.slots += 1;
 
         let part = state.dest.join(format!(
-            ".cfrs-upload-{}.part",
+            ".podnet-upload-{}.part",
             &crate::util::random_token()[..16]
         ));
         // Issue 233: an upload is for the operator only (mode 0600). The
@@ -789,7 +789,7 @@ async fn upload_receive(
     Html(format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>cfrs — uploaded</title></head><body>\
+         <title>podnet — uploaded</title></head><body>\
          <h1>Received {} file(s), {}</h1><ul>{list}</ul></body></html>",
         saved.len(),
         human_bytes(total)
@@ -801,7 +801,7 @@ fn upload_page(token: &str, max_bytes: u64, max_request: u64) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>cfrs — upload</title><style>\
+         <title>podnet — upload</title><style>\
          body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8ecf5;\
          display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}\
          main{{background:#161d33;padding:2rem;border-radius:12px;width:min(90vw,420px)}}\
@@ -888,7 +888,7 @@ async fn download_landing(
     Html(format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>cfrs — download</title></head><body>\
+         <title>podnet — download</title></head><body>\
          <h1>{}</h1><p><a href=\"/s/{}/file\">Download</a></p></body></html>",
         html_escape(&state.name),
         state.token

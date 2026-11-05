@@ -1,4 +1,4 @@
-//! The manual as plain text: what `cfrs man` writes. The lines are filled to
+//! The manual as plain text: what `podnet man` writes. The lines are filled to
 //! [`WIDTH`] columns, so the page reads in an 80-column terminal. The text is
 //! ASCII, so it reads on any terminal and in any log.
 
@@ -146,7 +146,7 @@ pub fn command(manual: &Manual, c: &CommandPage) -> String {
     out
 }
 
-/// Whether the example `line` is of the page `c`: its words after `cfrs`
+/// Whether the example `line` is of the page `c`: its words after `podnet`
 /// are the path of `c`, and the next word is no subcommand of `c`.
 fn example_of(line: &str, c: &CommandPage) -> bool {
     let words: Vec<&str> = line.split_whitespace().skip(1).collect();
@@ -204,7 +204,7 @@ pub fn render(manual: &Manual) -> String {
     out.push_str(&format!(
         "{}(1){:>width$}\n",
         manual.name.to_ascii_uppercase(),
-        format!("cfrs {}", manual.version),
+        format!("podnet {}", manual.version),
         width = WIDTH - manual.name.len() - 3
     ));
     heading(&mut out, "NAME");
@@ -240,7 +240,7 @@ pub fn render(manual: &Manual) -> String {
     out.push_str(&examples(manual));
     heading(&mut out, "SEE ALSO");
     out.push_str(&fill(
-        "pod-netns --help; cloudflared(1); https://github.com/Azathothas/cfrs (README.md, docs/protocol.md, docs/virtual-network.md).",
+        "podnet pod --help; cloudflared(1); https://github.com/Azathothas/podnet (README.md, docs/protocol.md, docs/virtual-network.md).",
         4,
     ));
     out

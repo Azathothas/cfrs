@@ -1,5 +1,5 @@
 //! The raw IP pod (issue 79): a user and network namespace whose TUN is
-//! given to the caller as a file descriptor of raw IP packets. `cfrs warp
+//! given to the caller as a file descriptor of raw IP packets. `podnet warp
 //! run --backend netns-raw` moves these packets through WARP, so the program
 //! has TCP, UDP, ICMP and IPv6 with no userspace TCP stack and no root.
 //!
@@ -97,8 +97,10 @@ struct Prepared {
 /// TUN fd that does not come.
 pub fn spawn(opts: &RawOptions) -> Result<RawPod> {
     let program = opts.program.first().context("no program to run")?;
-    let resolv =
-        std::env::temp_dir().join(format!("pod-netns-raw-resolv-{}.conf", std::process::id()));
+    let resolv = std::env::temp_dir().join(format!(
+        "podnet-netns-raw-resolv-{}.conf",
+        std::process::id()
+    ));
     std::fs::write(
         &resolv,
         format!("nameserver {}\noptions ndots:0\n", opts.nameserver),

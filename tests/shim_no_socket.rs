@@ -28,7 +28,7 @@ mod afinet_audit;
 
 use std::process::{Command, Stdio};
 
-use cfrs::vnet::shim;
+use podnet::vnet::shim;
 
 /// Compile `source` and run it under `shim`, returning (exit status, stdout).
 ///

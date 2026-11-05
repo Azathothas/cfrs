@@ -8,7 +8,7 @@
 #   sh tools/edge-facts.sh [ROOTS_PEM]
 #
 # Each line is "fact: result". The exit code is 1 when one of the facts that
-# cfrs needs is not true: TLS 1.3 on 7844 with SNI h2.cftunnel.com and no
+# podnet needs is not true: TLS 1.3 on 7844 with SNI h2.cftunnel.com and no
 # ALPN verifies against the edge roots, and the edge sends the HTTP/2
 # preface first.
 set -u
@@ -51,7 +51,7 @@ tls "port 443" 443 -servername h2.cftunnel.com
 tls "port 8443" 8443 -servername h2.cftunnel.com
 tls "port 80" 80 -servername h2.cftunnel.com
 
-# The fact that cfrs needs: TLS 1.3, verified, with no ALPN.
+# The fact that podnet needs: TLS 1.3, verified, with no ALPN.
 need=$(timeout 10 openssl s_client -connect "$ip:7844" -servername h2.cftunnel.com -CAfile "$roots" -brief < /dev/null 2>&1)
 if echo "$need" | grep -q 'Verification: OK' && echo "$need" | grep -q 'TLSv1.3' && ! echo "$need" | grep -q 'ALPN protocol'; then
     echo "need: TLS 1.3 with SNI h2.cftunnel.com and no ALPN verifies against $roots: yes"

@@ -12,8 +12,8 @@
 
 use std::net::SocketAddr;
 
-use cfrs::warp::{Identity, MasqueSession, StackConfig, WarpClient, WarpStack};
-use cfrs::{Service, Transport, Tunnel};
+use podnet::warp::{Identity, MasqueSession, StackConfig, WarpClient, WarpStack};
+use podnet::{Service, Transport, Tunnel};
 
 /// The `lib.rs` example: a quick tunnel around an HTTP origin.
 async fn quick_tunnel_example() -> anyhow::Result<()> {
@@ -64,7 +64,7 @@ fn identity_example() -> anyhow::Result<()> {
 async fn raw_session_example(addr: SocketAddr, pinned_spki: Vec<u8>) -> anyhow::Result<()> {
     let identity = Identity::generate()?;
     let _session: MasqueSession =
-        MasqueSession::connect(addr, &identity, pinned_spki, cfrs::warp::Dial::default()).await?;
+        MasqueSession::connect(addr, &identity, pinned_spki, podnet::warp::Dial::default()).await?;
     Ok(())
 }
 

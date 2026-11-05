@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| cfrs::fuzzing::ingress_rule(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| podnet::fuzzing::ingress_rule(data));

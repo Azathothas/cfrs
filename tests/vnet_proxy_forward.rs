@@ -1,4 +1,4 @@
-//! End-to-end check of the documented `cfrs net proxy --forward` path.
+//! End-to-end check of the documented `podnet net proxy --forward` path.
 //!
 //! `docs/virtual-network.md` section 5.2 describes a SOCKS5 front door on a
 //! unix socket that forwards a virtual endpoint to a real one. The unit test in
@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use cfrs::vnet::proxy::{serve, ProxyListen};
-use cfrs::vnet::{NetStack, VirtAddr};
+use podnet::vnet::proxy::{serve, ProxyListen};
+use podnet::vnet::{NetStack, VirtAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A "real" service that reads one request and answers it, then closes.

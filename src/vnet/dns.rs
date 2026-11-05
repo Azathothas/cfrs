@@ -16,7 +16,7 @@ use std::net::IpAddr;
 
 use anyhow::Result;
 
-pub use pod_netns::dns::*;
+pub use podnet_netns::dns::*;
 
 /// A name-to-address table with an optional upstream.
 #[derive(Clone, Debug, Default)]

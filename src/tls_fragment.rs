@@ -8,7 +8,7 @@
 //!
 //! The split applies to the first record that a connection writes, when it
 //! is a ClientHello. Any other first record, or one larger than 16 KiB, goes
-//! out unchanged. `cfrs warp` applies it to the MASQUE connection.
+//! out unchanged. `podnet warp` applies it to the MASQUE connection.
 
 use std::pin::Pin;
 use std::sync::OnceLock;

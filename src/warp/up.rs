@@ -1,37 +1,37 @@
-//! `cfrs warp up` and the ways that later shells join it (issue 78).
+//! `podnet warp up` and the ways that later shells join it (issue 78).
 //!
-//! `cfrs warp up` starts `cfrs warp proxy` detached (instance [`INSTANCE`])
+//! `podnet warp up` starts `podnet warp proxy` detached (instance [`INSTANCE`])
 //! with a TCP listener on 127.0.0.1 and a unix socket in the run directory,
 //! and writes `warp.env` there: the proxy variables for the tools that read
 //! them. Later shells join it in one of three ways:
 //!
-//! * `eval "$(cfrs warp env)"`: the proxy variables;
-//! * `cfrs warp exec -- CMD` and `cfrs warp shell`: the command runs under
+//! * `eval "$(podnet warp env)"`: the proxy variables;
+//! * `podnet warp exec -- CMD` and `podnet warp shell`: the command runs under
 //!   the pod of the socket (TCP, DNS and UDP, also static binaries);
-//! * `cfrs warp up --persist`: a marked block in `~/.bashrc` and
+//! * `podnet warp up --persist`: a marked block in `~/.bashrc` and
 //!   `~/.profile` loads the env file, and an interactive shell runs under
-//!   the pod. `cfrs warp down` removes it.
+//!   the pod. `podnet warp down` removes it.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
 
-/// The name of the detached instance of `cfrs warp up`.
+/// The name of the detached instance of `podnet warp up`.
 pub const INSTANCE: &str = "warp";
-/// The name of the detached instance of `cfrs warp up --tun`.
+/// The name of the detached instance of `podnet warp up --tun`.
 pub const TUN_INSTANCE: &str = "warp-tun";
-/// Set in a shell that `cfrs warp shell` started, so that the hook does not
+/// Set in a shell that `podnet warp shell` started, so that the hook does not
 /// start it again.
-pub const SHELL_VARIABLE: &str = "CFRS_WARP_SHELL";
-const BEGIN: &str = "# >>> cfrs warp up >>>";
-const END: &str = "# <<< cfrs warp up <<<";
+pub const SHELL_VARIABLE: &str = "PODNET_WARP_SHELL";
+const BEGIN: &str = "# >>> podnet warp up >>>";
+const END: &str = "# <<< podnet warp up <<<";
 
-/// The unix socket of the proxy of `cfrs warp up`.
+/// The unix socket of the proxy of `podnet warp up`.
 pub fn socket_path() -> Result<PathBuf> {
     Ok(crate::instances::run_dir()?.join("warp.sock"))
 }
 
-/// The env file of `cfrs warp up`.
+/// The env file of `podnet warp up`.
 pub fn env_path() -> Result<PathBuf> {
     Ok(crate::instances::run_dir()?.join("warp.env"))
 }
@@ -40,7 +40,7 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run `cfrs ARGV` (the command `label`, for example `cfrs warp proxy
+/// Run `podnet ARGV` (the command `label`, for example `podnet warp proxy
 /// --detach`), print its lines, and give its ready document (the last line).
 /// The lines of stderr go to stderr at once and are kept for the text of a
 /// failure ([`failure_text`]).
@@ -96,7 +96,7 @@ pub fn start(label: &str, argv: &[String]) -> Result<serde_json::Value> {
     serde_json::from_str(last).with_context(|| format!("the ready document: {last:?}"))
 }
 
-/// Why `cfrs warp tun` could not run, when stderr says it.
+/// Why `podnet warp tun` could not run, when stderr says it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TunFault {
     /// No right to make the TUN (CAP_NET_ADMIN, or the mode of /dev/net/tun).
@@ -123,13 +123,13 @@ fn tun_fault(stderr: &str) -> Option<TunFault> {
     }
 }
 
-/// The last error line of the child (a line `cfrs: TEXT`), without the
+/// The last error line of the child (a line `podnet: TEXT`), without the
 /// prefix. The log lines before it have no such prefix.
 fn cause_of(stderr: &str) -> Option<&str> {
     stderr
         .lines()
         .rev()
-        .filter_map(|l| l.strip_prefix("cfrs: "))
+        .filter_map(|l| l.strip_prefix("podnet: "))
         .find(|l| !l.starts_with("--detach:"))
 }
 
@@ -159,16 +159,16 @@ pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String 
         ),
         None => return text,
     };
-    text.push_str(&format!("\ncfrs: warp up --tun: {why}"));
+    text.push_str(&format!("\npodnet: warp up --tun: {why}"));
     if sudo {
-        text.push_str("\ncfrs: with root: sudo cfrs warp up --tun");
+        text.push_str("\npodnet: with root: sudo podnet warp up --tun");
     }
-    text.push_str("\ncfrs: with no root: cfrs warp up (proxy mode)");
-    text.push_str("\ncfrs: one command with no root: cfrs warp run -- CMD");
+    text.push_str("\npodnet: with no root: podnet warp up (proxy mode)");
+    text.push_str("\npodnet: one command with no root: podnet warp run -- CMD");
     text
 }
 
-/// The state of the instance of `cfrs warp up` (issue 116): for `warp
+/// The state of the instance of `podnet warp up` (issue 116): for `warp
 /// status`.
 pub fn instance_state() -> serde_json::Value {
     // Issue 178: a read makes no directory.
@@ -191,7 +191,7 @@ pub fn instance_state() -> serde_json::Value {
 /// The line of [`instance_state`] for `warp status`.
 pub fn instance_line(state: &serde_json::Value) -> String {
     if state["running"] != true {
-        return "not running (cfrs warp up starts it)".into();
+        return "not running (podnet warp up starts it)".into();
     }
     let listens: Vec<&str> = state["listens"]
         .as_array()
@@ -226,7 +226,7 @@ fn own_proxy_variables(
         })
         .collect();
     vars.filter(|(key, value)| {
-        key != "CFRS_WARP_SOCKET" && own.iter().any(|o| value.ends_with(o.as_str()))
+        key != "PODNET_WARP_SOCKET" && own.iter().any(|o| value.ends_with(o.as_str()))
     })
     .map(|(key, _)| key)
     .collect()
@@ -235,22 +235,22 @@ fn own_proxy_variables(
 /// The text of the env file for a proxy on `127.0.0.1:port` and `socket`.
 /// With no port (issue 97: the host refused the TCP listener), the file has
 /// no proxy variables for other tools: a program goes through WARP with
-/// `cfrs warp exec`. cfrs itself gets CFRS_PROXY on the unix socket (issue
+/// `podnet warp exec`. podnet itself gets PODNET_PROXY on the unix socket (issue
 /// 116).
 pub fn env_file_text(port: Option<u16>, socket: &Path) -> String {
-    let mut out = String::from("# cfrs warp up: the proxy variables of the WARP proxy\n");
+    let mut out = String::from("# podnet warp up: the proxy variables of the WARP proxy\n");
     let Some(port) = port else {
         out.push_str(
             "# The host refused the TCP listener: there are no proxy variables.\n\
-             # Run a program through WARP with: cfrs warp exec -- CMD\n\
-             # cfrs itself uses the unix socket (CFRS_PROXY).\n",
+             # Run a program through WARP with: podnet warp exec -- CMD\n\
+             # podnet itself uses the unix socket (PODNET_PROXY).\n",
         );
         out.push_str(&format!(
-            "export CFRS_WARP_SOCKET={}\n",
+            "export PODNET_WARP_SOCKET={}\n",
             quote(&socket.display().to_string())
         ));
         out.push_str(&format!(
-            "export CFRS_PROXY={}\n",
+            "export PODNET_PROXY={}\n",
             quote(&format!("socks5h+unix:{}", socket.display()))
         ));
         return out;
@@ -270,7 +270,7 @@ pub fn env_file_text(port: Option<u16>, socket: &Path) -> String {
         ("CARGO_HTTP_PROXY", http.as_str()),
         ("npm_config_proxy", http.as_str()),
         ("npm_config_https_proxy", http.as_str()),
-        ("CFRS_WARP_SOCKET", &socket.display().to_string()),
+        ("PODNET_WARP_SOCKET", &socket.display().to_string()),
     ] {
         out.push_str(&format!("export {k}={}\n", quote(v)));
     }
@@ -278,7 +278,7 @@ pub fn env_file_text(port: Option<u16>, socket: &Path) -> String {
 }
 
 /// The TCP port and whether the unix socket is up, from the ready document
-/// of the `warp proxy` of `cfrs warp up` (its `listens`).
+/// of the `warp proxy` of `podnet warp up` (its `listens`).
 pub fn listeners_of(doc: &serde_json::Value) -> (Option<u16>, bool) {
     let listens: Vec<&str> = doc["listens"]
         .as_array()
@@ -350,7 +350,7 @@ pub fn ca_fix(
         return None;
     };
     let mut merged =
-        String::from("# cfrs warp up: the bundle of the proxy and the system bundle\n");
+        String::from("# podnet warp up: the bundle of the proxy and the system bundle\n");
     let mut seen = std::collections::BTreeSet::new();
     for (_, text) in &small {
         if seen.insert(text.clone()) {
@@ -364,7 +364,7 @@ pub fn ca_fix(
     Some((merged, small.into_iter().map(|(v, _)| v).collect()))
 }
 
-/// The CA bundle of `cfrs warp up` in the run directory.
+/// The CA bundle of `podnet warp up` in the run directory.
 pub fn ca_path() -> Result<PathBuf> {
     Ok(crate::instances::run_dir()?.join("warp-ca.pem"))
 }
@@ -391,13 +391,13 @@ pub fn write_env(port: Option<u16>, socket: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The env file, when `cfrs warp up` runs.
+/// The env file, when `podnet warp up` runs.
 pub fn env_text() -> Result<String> {
     let dir = crate::instances::run_dir()?;
     if !crate::instances::is_alive(&dir, INSTANCE) {
         return Err(crate::exit::fault(
             crate::exit::Fault::Unavailable,
-            anyhow::anyhow!("cfrs warp up is not running; start it with: cfrs warp up"),
+            anyhow::anyhow!("podnet warp up is not running; start it with: podnet warp up"),
         ));
     }
     let path = env_path()?;
@@ -417,7 +417,7 @@ case \"$-\" in *i*) if [ -z \"${{{SHELL_VARIABLE}:-}}\" ] && [ -S {socket} ] && 
     )
 }
 
-/// `text` with no block of cfrs warp up.
+/// `text` with no block of podnet warp up.
 pub fn without_block(text: &str) -> String {
     let mut out = String::new();
     let mut inside = false;
@@ -464,7 +464,7 @@ fn fish_file() -> Option<PathBuf> {
     crate::state::check_own(&home).ok()?;
     let dir = home.join(".config/fish");
     let shell = std::env::var("SHELL").unwrap_or_default();
-    (shell.ends_with("fish") || dir.exists()).then(|| dir.join("conf.d/cfrs-warp.fish"))
+    (shell.ends_with("fish") || dir.exists()).then(|| dir.join("conf.d/podnet-warp.fish"))
 }
 
 /// The fish form of [`hook_block`]. fish has `export`, so the env file
@@ -509,18 +509,18 @@ pub fn persist(env: &Path) -> Result<Vec<PathBuf>> {
     Ok(done)
 }
 
-/// The first line of the environment.d file of cfrs (issue 138): only a
+/// The first line of the environment.d file of podnet (issue 138): only a
 /// file with it is changed or removed.
-pub const ENV_D_MARK: &str = "# cfrs warp up --env-d: the proxy of the WARP proxy";
+pub const ENV_D_MARK: &str = "# podnet warp up --env-d: the proxy of the WARP proxy";
 
-/// `$XDG_CONFIG_HOME/environment.d/90-cfrs-warp.conf`, or
-/// `~/.config/environment.d/90-cfrs-warp.conf`.
+/// `$XDG_CONFIG_HOME/environment.d/90-podnet-warp.conf`, or
+/// `~/.config/environment.d/90-podnet-warp.conf`.
 pub fn env_d_path() -> Result<PathBuf> {
     let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
     };
-    let path = config.join("environment.d/90-cfrs-warp.conf");
+    let path = config.join("environment.d/90-podnet-warp.conf");
     crate::state::check_own(&path)?;
     Ok(path)
 }
@@ -531,7 +531,7 @@ pub fn env_d_text(port: u16) -> String {
     let socks = format!("socks5h://127.0.0.1:{port}");
     let http = format!("http://127.0.0.1:{port}");
     let no_proxy = "localhost,127.0.0.1,::1";
-    let mut out = format!("{ENV_D_MARK}\n# cfrs warp down removes this file.\n");
+    let mut out = format!("{ENV_D_MARK}\n# podnet warp down removes this file.\n");
     for (k, v) in [
         ("ALL_PROXY", socks.as_str()),
         ("all_proxy", socks.as_str()),
@@ -547,19 +547,19 @@ pub fn env_d_text(port: u16) -> String {
     out
 }
 
-/// True when `text` is a file of cfrs (or there is no text).
+/// True when `text` is a file of podnet (or there is no text).
 fn env_d_is_ours(text: Option<&str>) -> bool {
     text.is_none_or(|t| t.lines().next() == Some(ENV_D_MARK))
 }
 
 /// The path of the environment.d file; an error when a file of that name
-/// is not a file of cfrs. `warp up` calls it before it starts the proxy.
+/// is not a file of podnet. `warp up` calls it before it starts the proxy.
 pub fn check_env_d() -> Result<PathBuf> {
     let path = env_d_path()?;
     let old = std::fs::read_to_string(&path).ok();
     if !env_d_is_ours(old.as_deref()) {
         bail!(
-            "{} exists and cfrs did not write it; remove it, or do not give --env-d",
+            "{} exists and podnet did not write it; remove it, or do not give --env-d",
             path.display()
         );
     }
@@ -567,7 +567,7 @@ pub fn check_env_d() -> Result<PathBuf> {
 }
 
 /// Write the environment.d file for the proxy on 127.0.0.1:`port`. A file
-/// of that name that cfrs did not write is an error, and stays.
+/// of that name that podnet did not write is an error, and stays.
 pub fn write_env_d(port: u16) -> Result<PathBuf> {
     let path = check_env_d()?;
     if let Some(dir) = path.parent() {
@@ -578,19 +578,19 @@ pub fn write_env_d(port: u16) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// `cfrs warp down`: stop the instance, remove the env file, the socket and
+/// `podnet warp down`: stop the instance, remove the env file, the socket and
 /// the blocks.
 pub fn down() -> Result<()> {
     let dir = crate::instances::run_dir()?;
     for name in [INSTANCE, TUN_INSTANCE] {
         if crate::instances::read(&dir, name).is_some() {
             crate::detach::stop(&dir, name, std::time::Duration::from_secs(10))?;
-            println!("cfrs: warp down: stopped the instance {name}");
+            println!("podnet: warp down: stopped the instance {name}");
         }
     }
     for path in [env_path()?, socket_path()?, ca_path()?] {
         if std::fs::remove_file(&path).is_ok() {
-            println!("cfrs: warp down: removed {}", path.display());
+            println!("podnet: warp down: removed {}", path.display());
         }
     }
     for file in shell_files()? {
@@ -600,27 +600,27 @@ pub fn down() -> Result<()> {
         let new = without_block(&old);
         if new != old {
             std::fs::write(&file, new).with_context(|| format!("writing {}", file.display()))?;
-            println!("cfrs: warp down: removed the block in {}", file.display());
+            println!("podnet: warp down: removed the block in {}", file.display());
         }
     }
     if let Some(file) = fish_file() {
         if std::fs::remove_file(&file).is_ok() {
-            println!("cfrs: warp down: removed {}", file.display());
+            println!("podnet: warp down: removed {}", file.display());
         }
     }
-    // Issue 138: the environment.d file, when cfrs wrote it.
+    // Issue 138: the environment.d file, when podnet wrote it.
     if let Ok(file) = env_d_path() {
         if let Ok(text) = std::fs::read_to_string(&file) {
             if env_d_is_ours(Some(&text)) {
                 if std::fs::remove_file(&file).is_ok() {
                     println!(
-                        "cfrs: warp down: removed {} (the programs of this login keep the variables until the next login)",
+                        "podnet: warp down: removed {} (the programs of this login keep the variables until the next login)",
                         file.display()
                     );
                 }
             } else {
                 println!(
-                    "cfrs: warp down: {} is not a file of cfrs; it stays",
+                    "podnet: warp down: {} is not a file of podnet; it stays",
                     file.display()
                 );
             }
@@ -629,7 +629,7 @@ pub fn down() -> Result<()> {
     Ok(())
 }
 
-/// The arguments of `cfrs pod` for the socket of `cfrs warp up`.
+/// The arguments of `podnet pod` for the socket of `podnet warp up`.
 pub fn pod_args(socket: &Path, rules: &[String], program: &[String]) -> Vec<String> {
     let mut argv = vec![
         "pod".to_string(),
@@ -663,7 +663,7 @@ fn socket_answers(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
-/// `cfrs warp exec -- CMD`: run CMD under the pod (this process becomes
+/// `podnet warp exec -- CMD`: run CMD under the pod (this process becomes
 /// it). Gives the error when it cannot.
 pub fn exec_in_pod(rules: &[String], program: &[String]) -> anyhow::Error {
     use std::os::unix::process::CommandExt as _;
@@ -675,7 +675,7 @@ pub fn exec_in_pod(rules: &[String], program: &[String]) -> anyhow::Error {
         return crate::exit::fault(
             crate::exit::Fault::Unavailable,
             anyhow::anyhow!(
-                "cfrs warp up is not running (no answer on {}); start it with: cfrs warp up",
+                "podnet warp up is not running (no answer on {}); start it with: podnet warp up",
                 socket.display()
             ),
         );
@@ -685,11 +685,11 @@ pub fn exec_in_pod(rules: &[String], program: &[String]) -> anyhow::Error {
         Err(e) => return e.into(),
     };
     let err = pod_command(exe, &socket, rules, program).exec();
-    anyhow::Error::new(err).context("running cfrs pod")
+    anyhow::Error::new(err).context("running podnet pod")
 }
 
 /// The command of `warp exec` (issue 116): the program gets
-/// CFRS_WARP_SOCKET, also when the shell did not read the env file.
+/// PODNET_WARP_SOCKET, also when the shell did not read the env file.
 fn pod_command(
     exe: std::path::PathBuf,
     socket: &Path,
@@ -699,12 +699,12 @@ fn pod_command(
     let mut command = std::process::Command::new(exe);
     command
         .args(pod_args(socket, rules, program))
-        .env("CFRS_WARP_SOCKET", socket)
+        .env("PODNET_WARP_SOCKET", socket)
         .envs(ca_exports());
     command
 }
 
-/// `cfrs warp shell`: `$SHELL` under the pod; when the proxy does not
+/// `podnet warp shell`: `$SHELL` under the pod; when the proxy does not
 /// answer, `$SHELL` as it is, with the proxy variables of the env file.
 pub fn shell() -> anyhow::Error {
     use std::os::unix::process::CommandExt as _;
@@ -719,10 +719,10 @@ pub fn shell() -> anyhow::Error {
             let err = pod_command(exe, socket, &[], std::slice::from_ref(&shell))
                 .env(SHELL_VARIABLE, "1")
                 .exec();
-            eprintln!("cfrs: warp shell: {err}; the shell starts with no pod");
+            eprintln!("podnet: warp shell: {err}; the shell starts with no pod");
         } else {
             eprintln!(
-                "cfrs: warp shell: cfrs warp up is not running; the shell starts with no pod"
+                "podnet: warp shell: podnet warp up is not running; the shell starts with no pod"
             );
         }
     }
@@ -763,12 +763,12 @@ mod tests {
 
     #[test]
     fn the_env_file_has_the_proxy_variables() {
-        let text = env_file_text(Some(40000), Path::new("/run/u/cfrs/run/warp.sock"));
+        let text = env_file_text(Some(40000), Path::new("/run/u/podnet/run/warp.sock"));
         assert!(text.contains("export ALL_PROXY='socks5h://127.0.0.1:40000'\n"));
         assert!(text.contains("export HTTPS_PROXY='http://127.0.0.1:40000'\n"));
         assert!(text.contains("export http_proxy='http://127.0.0.1:40000'\n"));
         assert!(text.contains("export NO_PROXY='localhost,127.0.0.1,::1'\n"));
-        assert!(text.contains("export CFRS_WARP_SOCKET='/run/u/cfrs/run/warp.sock'\n"));
+        assert!(text.contains("export PODNET_WARP_SOCKET='/run/u/podnet/run/warp.sock'\n"));
     }
 
     /// Issue 97: with no TCP listener, the env file has no proxy variables
@@ -776,14 +776,14 @@ mod tests {
     #[test]
     fn with_no_tcp_listener_the_env_file_has_the_socket_only() {
         let text = env_file_text(None, Path::new("/r/warp.sock"));
-        assert!(text.contains("export CFRS_WARP_SOCKET='/r/warp.sock'\n"));
-        // Issue 116: cfrs gets a proxy URL on the unix socket, and it parses.
-        assert!(text.contains("export CFRS_PROXY='socks5h+unix:/r/warp.sock'\n"));
+        assert!(text.contains("export PODNET_WARP_SOCKET='/r/warp.sock'\n"));
+        // Issue 116: podnet gets a proxy URL on the unix socket, and it parses.
+        assert!(text.contains("export PODNET_PROXY='socks5h+unix:/r/warp.sock'\n"));
         assert!(crate::egress::Proxy::parse("socks5h+unix:/r/warp.sock").is_ok());
         for var in ["ALL_PROXY", "HTTPS_PROXY", "http_proxy", "CARGO_HTTP_PROXY"] {
             assert!(!text.contains(var), "{var}: {text}");
         }
-        assert!(text.contains("cfrs warp exec"));
+        assert!(text.contains("podnet warp exec"));
         let doc = serde_json::json!({"listens": ["unix:/r/warp.sock"]});
         assert_eq!(listeners_of(&doc), (None, true));
         let doc = serde_json::json!({"listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"]});
@@ -816,27 +816,27 @@ mod tests {
         let fish = fish_block(
             Path::new("/r/warp.env"),
             Path::new("/r/warp.sock"),
-            Path::new("/b/cfrs"),
+            Path::new("/b/podnet"),
         );
         assert!(
             fish.contains("if test -f '/r/warp.env'; source '/r/warp.env'; end\n"),
             "{fish}"
         );
-        assert!(fish.contains("exec '/b/cfrs' warp shell; end"), "{fish}");
+        assert!(fish.contains("exec '/b/podnet' warp shell; end"), "{fish}");
     }
 
-    // Issue 116: the program of warp exec gets CFRS_WARP_SOCKET.
+    // Issue 116: the program of warp exec gets PODNET_WARP_SOCKET.
     #[test]
     fn warp_exec_gives_the_socket() {
         let command = pod_command(
-            "/b/cfrs".into(),
+            "/b/podnet".into(),
             Path::new("/r/warp.sock"),
             &[],
             &["sh".to_string()],
         );
         assert!(command
             .get_envs()
-            .any(|(k, v)| k == "CFRS_WARP_SOCKET" && v == Some("/r/warp.sock".as_ref())));
+            .any(|(k, v)| k == "PODNET_WARP_SOCKET" && v == Some("/r/warp.sock".as_ref())));
     }
 
     // Issue 116: warp up does not send its own session through the proxy
@@ -857,14 +857,14 @@ mod tests {
         let vars = [
             ("ALL_PROXY", "socks5h://127.0.0.1:40000"),
             ("HTTPS_PROXY", "http://127.0.0.1:40000"),
-            ("CFRS_PROXY", "socks5h+unix:/r/warp.sock"),
-            ("CFRS_WARP_SOCKET", "/r/warp.sock"),
+            ("PODNET_PROXY", "socks5h+unix:/r/warp.sock"),
+            ("PODNET_WARP_SOCKET", "/r/warp.sock"),
             ("http_proxy", "http://corp.example:3128"),
         ]
         .map(|(k, v)| (k.to_string(), v.to_string()));
         let mut own = own_proxy_variables(&argv, vars.into_iter());
         own.sort();
-        assert_eq!(own, ["ALL_PROXY", "CFRS_PROXY", "HTTPS_PROXY"]);
+        assert_eq!(own, ["ALL_PROXY", "HTTPS_PROXY", "PODNET_PROXY"]);
     }
 
     #[test]
@@ -872,11 +872,11 @@ mod tests {
         let block = hook_block(
             Path::new("/r/warp.env"),
             Path::new("/r/warp.sock"),
-            Path::new("/b/cfrs"),
+            Path::new("/b/podnet"),
         );
         assert!(block.starts_with(BEGIN) && block.trim_end().ends_with(END));
-        assert!(block.contains("exec '/b/cfrs' warp shell"));
-        assert!(block.contains("CFRS_WARP_SHELL"));
+        assert!(block.contains("exec '/b/podnet' warp shell"));
+        assert!(block.contains("PODNET_WARP_SHELL"));
         let user = "alias ll='ls -l'\nexport EDITOR=vi\n";
         let once = format!("{user}{block}");
         let twice = format!("{}{block}", without_block(&once));
@@ -889,7 +889,7 @@ mod tests {
         let block = hook_block(
             Path::new("/nonexistent/warp.env"),
             Path::new("/nonexistent/warp.sock"),
-            Path::new("/nonexistent/cfrs"),
+            Path::new("/nonexistent/podnet"),
         );
         let out = std::process::Command::new("sh")
             .arg("-n")
@@ -965,58 +965,58 @@ mod tests {
         );
     }
 
-    const TUN_LABEL: &str = "cfrs warp tun --default-route --detach";
+    const TUN_LABEL: &str = "podnet warp tun --default-route --detach";
     const NOISE: &str =
-        "2026-11-02T10:00:00Z  INFO cfrs: the routes and the resolver are as before tun=cfrs0\n";
+        "2026-11-02T10:00:00Z  INFO podnet: the routes and the resolver are as before tun=podnet0\n";
 
     /// Issue 106, case A: the last line names the recovery, and the first
     /// line names the real command (`warp tun`, not `warp proxy`).
     #[test]
     fn a_tun_refusal_names_the_command_and_the_recovery() {
         let stderr =
-            format!("{NOISE}cfrs: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n");
+            format!("{NOISE}podnet: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n");
         let text = failure_text(TUN_LABEL, 69, &stderr, false);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "cfrs warp tun --default-route --detach exited 69: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted"
+            "podnet warp tun --default-route --detach exited 69: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted"
         );
         assert!(!text.contains("warp proxy"), "{text}");
-        assert!(text.contains("sudo cfrs warp up --tun"), "{text}");
-        assert!(text.contains("cfrs warp up (proxy mode)"), "{text}");
+        assert!(text.contains("sudo podnet warp up --tun"), "{text}");
+        assert!(text.contains("podnet warp up (proxy mode)"), "{text}");
         assert_eq!(
             *lines.last().unwrap(),
-            "cfrs: one command with no root: cfrs warp run -- CMD"
+            "podnet: one command with no root: podnet warp run -- CMD"
         );
     }
 
     /// As root, sudo gives nothing: it is not advised.
     #[test]
     fn root_is_not_told_to_use_sudo() {
-        let stderr = "cfrs: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n";
+        let stderr = "podnet: TUNSETIFF (needs CAP_NET_ADMIN): Operation not permitted\n";
         let text = failure_text(TUN_LABEL, 69, stderr, true);
         assert!(!text.contains("sudo"), "{text}");
         assert!(text.contains("CAP_NET_ADMIN"), "{text}");
-        assert!(text.contains("cfrs warp run -- CMD"), "{text}");
+        assert!(text.contains("podnet warp run -- CMD"), "{text}");
     }
 
     /// Issue 106, case B: the route guard. sudo does not help.
     #[test]
     fn no_default_route_is_not_a_privilege_problem() {
-        let stderr = format!("{NOISE}cfrs: no IPv4 default route: cfrs cannot keep the MASQUE connection outside the tunnel\n");
+        let stderr = format!("{NOISE}podnet: no IPv4 default route: podnet cannot keep the MASQUE connection outside the tunnel\n");
         let text = failure_text(TUN_LABEL, 69, &stderr, false);
         assert!(text.contains("exited 69: no IPv4 default route"), "{text}");
         assert!(text.contains("needs an IPv4 default route"), "{text}");
-        assert!(!text.contains("sudo cfrs"), "{text}");
-        assert!(text.ends_with("cfrs warp run -- CMD"), "{text}");
+        assert!(!text.contains("sudo podnet"), "{text}");
+        assert!(text.ends_with("podnet warp run -- CMD"), "{text}");
     }
 
     #[test]
     fn a_missing_tun_device_is_named() {
-        let stderr = "cfrs: opening /dev/net/tun: No such file or directory (os error 2)\n";
+        let stderr = "podnet: opening /dev/net/tun: No such file or directory (os error 2)\n";
         let text = failure_text(TUN_LABEL, 69, stderr, false);
         assert!(text.contains("the host has no /dev/net/tun"), "{text}");
-        assert!(!text.contains("sudo cfrs"), "{text}");
+        assert!(!text.contains("sudo podnet"), "{text}");
     }
 
     /// A failure of the proxy, or a `warp tun` failure that is not a TUN
@@ -1024,20 +1024,25 @@ mod tests {
     #[test]
     fn other_failures_get_no_recovery_lines() {
         let proxy = failure_text(
-            "cfrs warp proxy --detach",
+            "podnet warp proxy --detach",
             69,
-            "cfrs: the MASQUE endpoint did not answer\n",
+            "podnet: the MASQUE endpoint did not answer\n",
             false,
         );
         assert_eq!(
             proxy,
-            "cfrs warp proxy --detach exited 69: the MASQUE endpoint did not answer"
+            "podnet warp proxy --detach exited 69: the MASQUE endpoint did not answer"
         );
-        let tun = failure_text(TUN_LABEL, 69, "cfrs: the device is not registered\n", false);
+        let tun = failure_text(
+            TUN_LABEL,
+            69,
+            "podnet: the device is not registered\n",
+            false,
+        );
         assert_eq!(tun.lines().count(), 1, "{tun}");
         assert_eq!(
-            failure_text("cfrs warp proxy --detach", 1, "", false),
-            "cfrs warp proxy --detach exited 1"
+            failure_text("podnet warp proxy --detach", 1, "", false),
+            "podnet warp proxy --detach exited 1"
         );
     }
 }

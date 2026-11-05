@@ -1,5 +1,5 @@
 fn main() {
-    use cfrs::cloudflare::http2::encode_headers;
+    use podnet::cloudflare::http2::encode_headers;
     let cases: Vec<Vec<(&str, &str)>> = vec![
         vec![("host", "a")],
         vec![("host", "example.com")],

@@ -1,4 +1,4 @@
-//! `cfrs warp proxy --l4` (issue 140): each TCP client of the proxy is one
+//! `podnet warp proxy --l4` (issue 140): each TCP client of the proxy is one
 //! HTTP/3 CONNECT stream (RFC 9114, section 4.4) to the L4 door of WARP,
 //! with no IP stack in between. The QUIC connection is one for all the
 //! flows, with the client certificate and the pinned key of the device.
@@ -19,7 +19,7 @@ pub const L4_SNI: &str = "consumer-masque-proxy.cloudflareclient.com";
 /// form that the door takes, issue 140): `plain` (RFC 9114, the default),
 /// `extended` (`:protocol cf-connect-tcp`, RFC 9220), or `header` (a plain
 /// CONNECT with `cf-connect-proto: cf-connect-tcp`).
-pub const FORM_VARIABLE: &str = "CFRS_WARP_L4_FORM";
+pub const FORM_VARIABLE: &str = "PODNET_WARP_L4_FORM";
 
 /// A length or an index with a prefix of 7 bits, after `flags`.
 fn put_len(out: &mut Vec<u8>, flags: u8, bits: u8, len: usize) {

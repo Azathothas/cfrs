@@ -8,7 +8,7 @@
 //! passes through a filter that would drop an unknown protocol on a bare port.
 //!
 //! This is the same trick `websocat` and `wstunnel` use, and it is the reason
-//! `cfrs` can serve traffic from a network where neither direct egress nor QUIC
+//! `podnet` can serve traffic from a network where neither direct egress nor QUIC
 //! nor a permitted CONNECT proxy is available.
 //!
 //! Two framing choices are deliberate:

@@ -135,7 +135,7 @@ pub async fn dial_any(
 }
 
 /// A QUIC connection in memory for tests: a local server (in the place of
-/// the edge) and a client with the edge transport config of cfrs.
+/// the edge) and a client with the edge transport config of podnet.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -143,7 +143,7 @@ pub(crate) mod testing {
     pub struct Pair {
         /// The connection on the side of the edge.
         pub edge: quinn::Connection,
-        /// The connection on the side of cfrs.
+        /// The connection on the side of podnet.
         pub client: quinn::Connection,
         _endpoints: (Endpoint, Endpoint),
     }
@@ -160,7 +160,7 @@ pub(crate) mod testing {
             .with_no_client_auth()
             .with_single_cert(vec![cert.der().clone()], key_der)
             .unwrap();
-        server_tls.alpn_protocols = vec![b"cfrs-test".to_vec()];
+        server_tls.alpn_protocols = vec![b"podnet-test".to_vec()];
         let server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls).unwrap();
         let server = Endpoint::server(
             quinn::ServerConfig::with_crypto(Arc::new(server_crypto)),
@@ -168,7 +168,7 @@ pub(crate) mod testing {
         )
         .unwrap();
         let addr = server.local_addr().unwrap();
-        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"cfrs-test"]).unwrap();
+        let tls = crate::trust::client_config(&[cert.pem().as_bytes()], &[b"podnet-test"]).unwrap();
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
         let mut config = ClientConfig::new(Arc::new(crypto));
         config.transport_config(Arc::new(transport_config(1252)));

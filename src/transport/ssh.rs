@@ -52,7 +52,7 @@ impl Default for SshRelay {
         Self {
             address: "free.pinggy.io:443".to_string(),
             proxy: None,
-            username: "cfrs".to_string(),
+            username: "podnet".to_string(),
             private_key: None,
             accept_any_host_key: true,
         }

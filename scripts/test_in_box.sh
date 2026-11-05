@@ -1,12 +1,12 @@
 #!/bin/sh
-# The test box: run cfrs as a Unix user whose only egress is a policy proxy,
+# The test box: run podnet as a Unix user whose only egress is a policy proxy,
 # as on the sandbox of docs/target-environment.md. It needs Linux, sudo and
 # iptables with the owner match (a GitHub runner). It makes no Podman box.
 #
-#   sh scripts/test_in_box.sh CFRS
+#   sh scripts/test_in_box.sh PODNET
 #
 # The box:
-#   * the user cfrsbox may open TCP to 127.0.0.1:BOX_PROXY_PORT (the proxy)
+#   * the user podnetbox may open TCP to 127.0.0.1:BOX_PROXY_PORT (the proxy)
 #     and to 127.0.0.1:BOX_SILENT_PORT (a fault stand-in) only. Each other
 #     packet of the user is refused: no UDP, no direct TCP, no DNS (the
 #     system resolver is UDP to 127.0.0.53), no IPv6;
@@ -19,12 +19,12 @@
 # and at once when the binary does not run. BOX_PLANT=exit3 puts a binary
 # that exits 3 in the box, to test that the box exits 1.
 #
-# The tunnel hosts are masked: each cfrs command runs through
+# The tunnel hosts are masked: each podnet command runs through
 # scripts/live-run.sh.
 set -u
-cfrs=$(realpath "$1")
+podnet=$(realpath "$1")
 here=$(cd "$(dirname "$0")" && pwd)
-box=cfrsbox
+box=podnetbox
 port=${BOX_PROXY_PORT:-3128}
 silent=${BOX_SILENT_PORT:-3129}
 work=$(mktemp -d)
@@ -37,9 +37,9 @@ cd "$work" || exit 1
 pass=0 fail=0 skip=0
 
 cleanup() {
-    sudo iptables -D OUTPUT -m owner --uid-owner "$box" -j CFRSBOX 2> /dev/null
-    sudo iptables -F CFRSBOX 2> /dev/null
-    sudo iptables -X CFRSBOX 2> /dev/null
+    sudo iptables -D OUTPUT -m owner --uid-owner "$box" -j PODNETBOX 2> /dev/null
+    sudo iptables -F PODNETBOX 2> /dev/null
+    sudo iptables -X PODNETBOX 2> /dev/null
     sudo ip6tables -D OUTPUT -m owner --uid-owner "$box" -j REJECT 2> /dev/null
     jobs -p | xargs -r kill 2> /dev/null
 }
@@ -59,16 +59,16 @@ id "$box" > /dev/null 2>&1 || sudo useradd -m "$box"
 home=$(getent passwd "$box" | cut -d: -f6)
 if [ "${BOX_PLANT:-}" = exit3 ]; then
     printf '#!/bin/sh\nexit 3\n' > "$work/planted"
-    sudo install -m 755 "$work/planted" "$home/cfrs"
+    sudo install -m 755 "$work/planted" "$home/podnet"
 else
-    sudo install -m 755 "$cfrs" "$home/cfrs"
+    sudo install -m 755 "$podnet" "$home/podnet"
 fi
-sudo iptables -N CFRSBOX
-sudo iptables -A CFRSBOX -o lo -p tcp -d 127.0.0.1 --dport "$port" -j ACCEPT
-sudo iptables -A CFRSBOX -o lo -p tcp -d 127.0.0.1 --dport "$silent" -j ACCEPT
-sudo iptables -A CFRSBOX -p tcp -j REJECT --reject-with tcp-reset
-sudo iptables -A CFRSBOX -j REJECT
-sudo iptables -I OUTPUT -m owner --uid-owner "$box" -j CFRSBOX
+sudo iptables -N PODNETBOX
+sudo iptables -A PODNETBOX -o lo -p tcp -d 127.0.0.1 --dport "$port" -j ACCEPT
+sudo iptables -A PODNETBOX -o lo -p tcp -d 127.0.0.1 --dport "$silent" -j ACCEPT
+sudo iptables -A PODNETBOX -p tcp -j REJECT --reject-with tcp-reset
+sudo iptables -A PODNETBOX -j REJECT
+sudo iptables -I OUTPUT -m owner --uid-owner "$box" -j PODNETBOX
 sudo ip6tables -I OUTPUT -m owner --uid-owner "$box" -j REJECT
 
 proxy() { # proxy PORT ARGUMENT... : start the policy proxy
@@ -90,15 +90,15 @@ while True:
 
 inbox() { # inbox COMMAND...: run as the box user, with the proxy
     sudo -u "$box" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8 \
-        HTTPS_PROXY="http://127.0.0.1:$port" CFRS_STATE_DIR="$home/state" "$@"
+        HTTPS_PROXY="http://127.0.0.1:$port" PODNET_STATE_DIR="$home/state" "$@"
 }
 
 # --- the steps -------------------------------------------------------------
-if inbox "$home/cfrs" --version > version.out 2>&1; then
+if inbox "$home/podnet" --version > version.out 2>&1; then
     verdict binary ok "$(cat version.out)"
 else
     rc=$?
-    verdict binary FAIL "cfrs --version exited $rc in the box"
+    verdict binary FAIL "podnet --version exited $rc in the box"
     echo "box: $pass ok, $fail FAIL, $skip skip"
     exit 1
 fi
@@ -116,7 +116,7 @@ else
     verdict planted-policy ok "the probe fails with a proxy that allows each target"
 fi
 
-if inbox sh "$here/live-run.sh" doctor "$home/cfrs" doctor --samples 3 --json; then
+if inbox sh "$here/live-run.sh" doctor "$home/podnet" doctor --samples 3 --json; then
     if jq -e '(.legs[] | select(.leg == "quic+warp") | .status == "ok")
         and (.legs[] | select(.leg == "http2") | .status == "fail")
         and (.legs[] | select(.leg == "quic") | .status == "fail")' doctor.out > /dev/null; then
@@ -125,12 +125,12 @@ if inbox sh "$here/live-run.sh" doctor "$home/cfrs" doctor --samples 3 --json; t
         verdict doctor FAIL "the legs are not quic refused, http2 refused, quic+warp ok"
     fi
 else
-    verdict doctor FAIL "cfrs doctor exited non-zero: no leg can work"
+    verdict doctor FAIL "podnet doctor exited non-zero: no leg can work"
 fi
 
 # Negative control: the direct legs cannot work in the box.
 start=$(date +%s)
-if inbox sh "$here/live-run.sh" direct timeout 90 "$home/cfrs" demo --exit-on-verify --transport direct; then
+if inbox sh "$here/live-run.sh" direct timeout 90 "$home/podnet" demo --exit-on-verify --transport direct; then
     verdict direct-fails FAIL "--transport direct registered in the box"
 else
     verdict direct-fails ok "--transport direct failed after $(($(date +%s) - start)) s"
@@ -139,7 +139,7 @@ fi
 # The leg under test: quic+warp through the proxy, with the fetch of the
 # public URL as the payload proof (demo checks the body "Hello, world").
 rc=0
-inbox sh "$here/live-run.sh" warp timeout 240 "$home/cfrs" demo --exit-on-verify || rc=$?
+inbox sh "$here/live-run.sh" warp timeout 240 "$home/podnet" demo --exit-on-verify || rc=$?
 if [ "$rc" = 0 ]; then
     if grep -q 'leg=quic+warp' warp.err; then
         verdict warp ok "quic+warp registered through the proxy, and the URL answered"
@@ -148,7 +148,7 @@ if [ "$rc" = 0 ]; then
     fi
 elif [ "$rc" = 75 ] && grep -q '1015' warp.err; then
     # Issue 182: the provision service limits the address of the runner
-    # (HTTP 429, error 1015). No leg was tried: not a fault of cfrs.
+    # (HTTP 429, error 1015). No leg was tried: not a fault of podnet.
     verdict warp skip "the quick-tunnel service refused the provision for now (429, error 1015)"
 else
     verdict warp FAIL "demo failed in the box (exit $rc)"
@@ -157,7 +157,7 @@ fi
 # Negative control: with the MASQUE address refused, no leg is left.
 proxy $((port + 20))
 if inbox env HTTPS_PROXY="http://127.0.0.1:$((port + 20))" sh "$here/live-run.sh" nowarp \
-    timeout 120 "$home/cfrs" demo --exit-on-verify; then
+    timeout 120 "$home/podnet" demo --exit-on-verify; then
     verdict no-masque FAIL "demo registered with the MASQUE address refused"
 else
     verdict no-masque ok "demo failed with the MASQUE address refused"
@@ -168,16 +168,16 @@ fi
 start=$(date +%s)
 # A named-tunnel token: no quick tunnel is provisioned.
 token=eyJhIjoiYWNjb3VudCIsInQiOiJmZmQ4NmJkNS0xYmZmLTQ1NmItOGMyYy03NWEwMTRjZGM0YzgiLCJzIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOD0ifQ==
-inbox env NO_PROXY=127.0.0.1 CFRS_EDGE="127.0.0.1:$silent" TUNNEL_TOKEN="$token" \
-    sh "$here/live-run.sh" silent timeout 120 "$home/cfrs" tunnel --hello-world --protocol http2 --transport direct
+inbox env NO_PROXY=127.0.0.1 PODNET_EDGE="127.0.0.1:$silent" TUNNEL_TOKEN="$token" \
+    sh "$here/live-run.sh" silent timeout 120 "$home/podnet" tunnel --hello-world --protocol http2 --transport direct
 rc=$?
 took=$(($(date +%s) - start))
 if [ "$rc" -eq 124 ]; then
-    verdict silent-edge FAIL "cfrs hung on a silent peer for 120 s"
+    verdict silent-edge FAIL "podnet hung on a silent peer for 120 s"
 elif [ "$rc" -ne 0 ]; then
-    verdict silent-edge ok "cfrs failed after $took s (exit $rc) on a silent peer"
+    verdict silent-edge ok "podnet failed after $took s (exit $rc) on a silent peer"
 else
-    verdict silent-edge FAIL "cfrs exited 0 with a silent peer"
+    verdict silent-edge FAIL "podnet exited 0 with a silent peer"
 fi
 
 if [ -e /dev/net/tun ]; then

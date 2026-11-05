@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| cfrs::fuzzing::proxy_url(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| podnet::fuzzing::proxy_url(data));

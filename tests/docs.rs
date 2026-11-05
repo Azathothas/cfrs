@@ -128,19 +128,19 @@ fn the_security_gaps_have_no_stale_yet() {
     assert!(root.join("fuzz").is_dir(), "SECURITY.md names fuzz/");
 }
 
-/// Issue 176: a flag of `cfrs warp` is not a global flag of cfrs. The
+/// Issue 176: a flag of `podnet warp` is not a global flag of podnet. The
 /// README called the flags of WarpArgs "global".
 #[test]
 fn the_readme_does_not_call_warp_flags_global() {
     let readme =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
     for line in readme.lines() {
-        if line.contains("(global") && line.contains("CFRS_WARP_") {
-            panic!("a flag of cfrs warp is called global: {line}");
+        if line.contains("(global") && line.contains("PODNET_WARP_") {
+            panic!("a flag of podnet warp is called global: {line}");
         }
     }
-    // A global flag before the command of cfrs is refused for a warp flag.
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    // A global flag before the command of podnet is refused for a warp flag.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["--cc", "cubic", "warp", "status"])
         .output()
         .unwrap();
@@ -205,14 +205,14 @@ fn the_notebook_is_the_cell_of_the_readme() {
     }
 }
 
-/// #223: the crate pod-netns ships the license text of the project.
+/// #223: the crate podnet-netns ships the license text of the project.
 #[test]
-fn pod_netns_ships_the_license() {
+fn podnet_netns_ships_the_license() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let main = std::fs::read(root.join("LICENSE")).unwrap();
-    let pod =
-        std::fs::read(root.join("crates/pod-netns/LICENSE")).expect("crates/pod-netns/LICENSE");
-    assert_eq!(main, pod, "crates/pod-netns/LICENSE is the root LICENSE");
+    let pod = std::fs::read(root.join("crates/podnet-netns/LICENSE"))
+        .expect("crates/podnet-netns/LICENSE");
+    assert_eq!(main, pod, "crates/podnet-netns/LICENSE is the root LICENSE");
 }
 
 /// #212: a relative link of the README is a 404 on the crate page, so
@@ -220,7 +220,7 @@ fn pod_netns_ships_the_license() {
 #[test]
 fn the_readme_has_no_relative_link() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in ["README.md", "crates/pod-netns/README.md"] {
+    for name in ["README.md", "crates/podnet-netns/README.md"] {
         let text = std::fs::read_to_string(root.join(name)).unwrap();
         let mut bad = Vec::new();
         for part in text.split("](").skip(1) {
@@ -237,12 +237,12 @@ fn the_readme_has_no_relative_link() {
     }
 }
 
-/// #256: the section "UDP in the stream" of the pod-netns README comes
+/// #256: the section "UDP in the stream" of the podnet-netns README comes
 /// after the list of the seccomp backend, not inside it.
 #[test]
-fn the_seccomp_list_of_pod_netns_is_one_list() {
+fn the_seccomp_list_of_podnet_netns_is_one_list() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(root.join("crates/pod-netns/README.md")).unwrap();
+    let text = std::fs::read_to_string(root.join("crates/podnet-netns/README.md")).unwrap();
     let needs = text
         .find("Needs: seccomp")
         .expect("the Needs line of seccomp");
@@ -275,7 +275,7 @@ fn the_readme_names_each_command_with_detach() {
         "net switch",
     ] {
         let args: Vec<&str> = command.split(' ').chain(["--help"]).collect();
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(&args)
             .output()
             .unwrap();

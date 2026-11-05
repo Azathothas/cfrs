@@ -11,7 +11,7 @@ sha=$1
 min=${2:-1}
 here=$(cd "$(dirname "$0")" && pwd)
 [ "${#sha}" -eq 40 ] || { echo "watch-runs.sh: give the full SHA (git rev-parse HEAD)"; exit 2; }
-api=https://forge.web.pkgforge.dev/github/repos/Azathothas/cfrs/actions
+api=https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet/actions
 done_ids=""
 n=0
 while true; do

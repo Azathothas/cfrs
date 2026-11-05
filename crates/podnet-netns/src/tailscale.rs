@@ -13,7 +13,7 @@
 //! carries the connection over the tailnet, running the same `UserDial` path
 //! the built-in SOCKS5 server uses. This module speaks that protocol and puts
 //! a SOCKS5 / HTTP `CONNECT` front door in front of it, on an `AF_UNIX`
-//! socket. `shim/cfrssocks.c` then redirects the `connect(2)` calls of an
+//! socket. `shim/podnet-socks.c` then redirects the `connect(2)` calls of an
 //! unmodified program to that front door.
 //!
 //! Nothing here patches, recompiles or re-links Tailscale. It is the daemon's
@@ -21,9 +21,9 @@
 //!
 //! ```text
 //! tailscaled --tun=userspace-networking --socket /run/tailscale/tailscaled.sock
-//! cfrs net tailscale --socket /run/tailscale/tailscaled.sock \
-//!                    --listen unix:/run/cfrssocks.sock
-//! LD_PRELOAD=libcfrssocks.so CFRSSOCKS_PROXY=/run/cfrssocks.sock \
+//! podnet net tailscale --socket /run/tailscale/tailscaled.sock \
+//!                    --listen unix:/run/podnet-socks.sock
+//! LD_PRELOAD=libpodnet-socks.so PODNET_SOCKS_PROXY=/run/podnet-socks.sock \
 //!     curl http://100.x.y.z:8080/
 //! ```
 
@@ -352,7 +352,7 @@ async fn handle_client_within<S>(
         Err(err) => {
             let message = err.to_string();
             crate::warn(&format!(
-                "pod-netns: tailscale: {host}:{port} failed: {message}"
+                "podnet-netns: tailscale: {host}:{port} failed: {message}"
             ));
             if is_socks {
                 let code = if err.kind() == io::ErrorKind::TimedOut {

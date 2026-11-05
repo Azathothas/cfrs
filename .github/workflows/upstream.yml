@@ -1,9 +1,9 @@
 name: upstream
 
-# The cloudflared files that cfrs follows (src/cloudflare/cloudflared-pin.txt),
+# The cloudflared files that podnet follows (src/cloudflare/cloudflared-pin.txt),
 # compared with the pinned release and with the newest release, each week:
 # tools/check-upstream.py. Then the check must fail on a planted sum, and the
-# header encoding of cfrs must match the Go code of cloudflared
+# header encoding of podnet must match the Go code of cloudflared
 # (tools/check-header-oracle.sh).
 
 on:

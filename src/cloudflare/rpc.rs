@@ -6,10 +6,10 @@
 //!
 //! | Direction | Messages |
 //! | --- | --- |
-//! | cfrs to edge | `Bootstrap` (question 0); `Call registerConnection` on the bootstrap capability (question 1); `Call unregisterConnection` at shutdown; `Finish` for each answer |
-//! | edge to cfrs | `Return` for each question; `Bootstrap` (cfrs answers with its capability, export 0); `Call` on that capability (cfrs answers with an `unimplemented` exception); `Finish`, `Release`, `Abort` |
+//! | podnet to edge | `Bootstrap` (question 0); `Call registerConnection` on the bootstrap capability (question 1); `Call unregisterConnection` at shutdown; `Finish` for each answer |
+//! | edge to podnet | `Return` for each question; `Bootstrap` (podnet answers with its capability, export 0); `Call` on that capability (podnet answers with an `unimplemented` exception); `Finish`, `Release`, `Abort` |
 //!
-//! The edge uses the bootstrap of cfrs as a liveness check. Without an answer,
+//! The edge uses the bootstrap of podnet as a liveness check. Without an answer,
 //! the edge marks the tunnel as down.
 
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the edge refused the registration: {} (retry: {}, after {} s; cfrs speaks {})",
+            "the edge refused the registration: {} (retry: {}, after {} s; podnet speaks {})",
             self.cause,
             if self.should_retry { "yes" } else { "no" },
             self.retry_after.as_secs(),
@@ -74,7 +74,7 @@ const CAP_SENDER_HOSTED: u16 = 1;
 const CAP_SENDER_PROMISE: u16 = 2;
 // `Exception.Type`.
 const EXCEPTION_UNIMPLEMENTED: u16 = 3;
-/// The capability that cfrs exports to the edge.
+/// The capability that podnet exports to the edge.
 const OUR_EXPORT: u32 = 0;
 
 /// What the edge answered to a question.
@@ -277,8 +277,8 @@ impl<W: AsyncWrite + Unpin> Session<W> {
                 let question = call.get_u32(0);
                 let interface = call.get_u64(1);
                 let method = call.get_u16(2);
-                debug!(interface = %format!("{interface:#x}"), method, "the edge called cfrs");
-                self.send(exception_return(question, "not implemented by cfrs"))
+                debug!(interface = %format!("{interface:#x}"), method, "the edge called podnet");
+                self.send(exception_return(question, "not implemented by podnet"))
                     .await?;
             }
             MSG_FINISH | MSG_RELEASE => {}
@@ -290,7 +290,7 @@ impl<W: AsyncWrite + Unpin> Session<W> {
                 warn!(%reason, "the edge aborted the control stream");
                 return Ok(false);
             }
-            MSG_UNIMPLEMENTED => debug!("the edge did not understand a message of cfrs"),
+            MSG_UNIMPLEMENTED => debug!("the edge did not understand a message of podnet"),
             other => debug!(kind = other, "ignored an RPC message"),
         }
         Ok(true)
@@ -418,11 +418,11 @@ impl<W: AsyncWrite + Unpin> Session<W> {
                 }
             }
             Answer::Exception(reason) => bail!(
-                "registerConnection failed: {reason} (cfrs speaks {})",
+                "registerConnection failed: {reason} (podnet speaks {})",
                 crate::cloudflare::SPEAKS
             ),
             Answer::Other(kind) => bail!(
-                "registerConnection answered with kind {kind} (cfrs speaks {})",
+                "registerConnection answered with kind {kind} (podnet speaks {})",
                 crate::cloudflare::SPEAKS
             ),
         }
@@ -538,7 +538,7 @@ mod tests {
     use super::*;
 
     /// A fake edge on the other end of an in-memory stream. It does what the
-    /// edge does: it bootstraps cfrs, answers the bootstrap of cfrs, and
+    /// edge does: it bootstraps podnet, answers the bootstrap of podnet, and
     /// answers registerConnection with connection details.
     async fn fake_edge(
         stream: tokio::io::DuplexStream,
@@ -546,7 +546,7 @@ mod tests {
     ) {
         let (mut read, mut write) = tokio::io::split(stream);
         let send = |b: Builder| b.to_bytes();
-        // The edge asks for the bootstrap of cfrs (question 7).
+        // The edge asks for the bootstrap of podnet (question 7).
         let mut b = Builder::new();
         let root = b.init_root(1, 1);
         b.set_u16(root, 0, MSG_BOOTSTRAP);
@@ -575,7 +575,7 @@ mod tests {
                     write.write_all(&send(b)).await.unwrap();
                 }
                 MSG_RETURN => {
-                    // The answer of cfrs to question 7: one capability.
+                    // The answer of podnet to question 7: one capability.
                     let ret = root.get_struct(0).unwrap().unwrap();
                     assert_eq!(ret.get_u32(0), 7);
                     let payload = ret.get_struct(0).unwrap().unwrap();
@@ -633,7 +633,7 @@ mod tests {
                 other => panic!("unexpected message {other}"),
             }
         }
-        assert!(unregistered, "cfrs unregisters at shutdown");
+        assert!(unregistered, "podnet unregisters at shutdown");
     }
 
     #[tokio::test]
@@ -646,7 +646,7 @@ mod tests {
             account_tag: "acct".into(),
             tunnel_secret: vec![1; 32],
         };
-        let options = ConnectionOptions::default_for_quick_tunnel("cfrs/test");
+        let options = ConnectionOptions::default_for_quick_tunnel("podnet/test");
         let (details, session) =
             register_connection_on(read, write, &auth, Uuid::new_v4(), 2, &options)
                 .await
@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(index, 2);
         assert_eq!(account, "acct");
         assert_eq!(features, ["support_datagram_v2".to_string()]);
-        assert!(answered, "cfrs answered the bootstrap of the edge first");
+        assert!(answered, "podnet answered the bootstrap of the edge first");
         session.shutdown_graceful(Duration::from_secs(2)).await;
         edge.await.unwrap();
     }

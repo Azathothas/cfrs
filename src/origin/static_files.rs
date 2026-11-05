@@ -80,7 +80,7 @@ impl StaticDir {
     /// because a lexical check alone does not survive a symlink.
     ///
     /// A component that starts with a dot (`.env`, `.git`, `.well-known`) is
-    /// refused, as in `cfrs serve`: such names often hold secrets.
+    /// refused, as in `podnet serve`: such names often hold secrets.
     fn resolve(&self, rel: &str) -> Option<(PathBuf, bool)> {
         let decoded = percent_decode(rel);
         let candidate = Path::new(&decoded);
@@ -133,9 +133,9 @@ impl StaticDir {
 /// The canned page cloudflared's `--hello-world` serves.
 pub const HELLO_WORLD: &str = "<!DOCTYPE html>\n\
 <html lang=\"en\">\n\
-<head><meta charset=\"utf-8\"><title>cfrs</title></head>\n\
+<head><meta charset=\"utf-8\"><title>podnet</title></head>\n\
 <body>\n\
-<h1>cfrs</h1>\n\
+<h1>podnet</h1>\n\
 <p>An anonymous Cloudflare quick tunnel, served from Rust.</p>\n\
 </body>\n\
 </html>\n";
@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn tmpdir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("cfrs-static-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("podnet-static-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("mkdir");
         d
@@ -525,12 +525,12 @@ mod tests {
     fn traversal_out_of_the_root_is_refused() {
         let d = tmpdir("traverse");
         std::fs::write(d.join("index.html"), b"idx").unwrap();
-        let secret = d.parent().unwrap().join("cfrs-secret-outside");
+        let secret = d.parent().unwrap().join("podnet-secret-outside");
         std::fs::write(&secret, b"SECRET").unwrap();
 
         let s = StaticDir::new(&d);
         // Both the raw and the percent-encoded form must be refused.
-        for attack in ["/../cfrs-secret-outside", "/%2e%2e/cfrs-secret-outside"] {
+        for attack in ["/../podnet-secret-outside", "/%2e%2e/podnet-secret-outside"] {
             let mut rec = Recorder::default();
             s.respond(&req(attack), &mut rec).unwrap();
             assert_eq!(rec.status, 404, "{attack} should not be served");
@@ -551,7 +551,7 @@ mod tests {
         // checks the path it constructed.
         let d = tmpdir("symlink");
         std::fs::write(d.join("index.html"), b"idx").unwrap();
-        let outside = d.parent().unwrap().join("cfrs-symlink-target");
+        let outside = d.parent().unwrap().join("podnet-symlink-target");
         std::fs::write(&outside, b"SECRET").unwrap();
 
         let link = d.join("leak");

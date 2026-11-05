@@ -1,19 +1,19 @@
-# pod-netns
+# podnet-netns
 
-`pod-netns` runs a program with all its network traffic sent through an
+`podnet-netns` runs a program with all its network traffic sent through an
 upstream: a SOCKS5 proxy, an HTTP `CONNECT` proxy, a chain of proxies, or a
 tailnet through `tailscaled`. It does not use `LD_PRELOAD`. The kernel enforces
 the redirection, so static binaries, Go binaries and programs that do not use
 libc `connect(3)` get the same treatment.
 
-`pod-netns` is a CLI and a library. `cfrs pod` runs the same code.
+`podnet-netns` is a library. `podnet pod` is its command line.
 
 ```sh
-pod-netns -x socks5://127.0.0.1:1080 -- curl https://example.com
-pod-netns -x socks5://unix:/run/proxy.sock -- ./static-binary
-pod-netns -x socks5://hop1:1080 -x socks5://hop2:1080 -- ssh host
-pod-netns -x tailscale:/run/tailscale/tailscaled.sock -- curl http://100.64.0.5/
-pod-netns doctor --json
+podnet pod -x socks5://127.0.0.1:1080 -- curl https://example.com
+podnet pod -x socks5://unix:/run/proxy.sock -- ./static-binary
+podnet pod -x socks5://hop1:1080 -x socks5://hop2:1080 -- ssh host
+podnet pod -x tailscale:/run/tailscale/tailscaled.sock -- curl http://100.64.0.5/
+podnet pod doctor --json
 ```
 
 ## Options
@@ -21,16 +21,16 @@ pod-netns doctor --json
 | Option | Function |
 | --- | --- |
 | `-x, --proxy SPEC` | An upstream. Repeat it to make a chain. Forms: `socks5://[user:pass@]host:port`, `http://[user:pass@]host:port`, `socks5://unix:/path`, `http://unix:/path`, `tailscale:/path/to/tailscaled.sock`. Default: `$ALL_PROXY`, `$HTTPS_PROXY` or `$HTTP_PROXY`. A SOCKS5 user or password longer than 255 bytes is an error (the limit of RFC 1929). A SOCKS5 target name longer than 255 bytes is refused. |
-| `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY`, `domain:.NAME=PROXY` (the name and each name under it) `cidr:ADDR/PREFIX=PROXY` (IPv4 or IPv6) or `cidr:@FILE=PROXY` (one prefix on each line of FILE; `#` starts a comment). PROXY can be `direct` (TCP from pod-netns, no proxy). The first rule that matches is used. |
+| `-r, --rule SPEC` | A route for some destinations: `domain:NAME=PROXY`, `domain:.NAME=PROXY` (the name and each name under it) `cidr:ADDR/PREFIX=PROXY` (IPv4 or IPv6) or `cidr:@FILE=PROXY` (one prefix on each line of FILE; `#` starts a comment). PROXY can be `direct` (TCP from podnet-netns, no proxy). The first rule that matches is used. |
 | `--map NAME=ADDR` | Resolve `NAME` to `ADDR`, with no upstream. |
 | `--backend NAME` | `auto` (default), `netns` or `seccomp`. |
-| `--prefer-udp` | With `auto`: `seccomp` first when it works, because it carries all UDP (`netns` carries DNS only). `cfrs warp run` sets it. |
+| `--prefer-udp` | With `auto`: `seccomp` first when it works, because it carries all UDP (`netns` carries DNS only). `podnet warp run` sets it. |
 | `--keep-proxy-env` | Keep `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case forms for the program. By default the program does not get them: the pod is its egress, and a program that used them would send to a host proxy that it cannot reach. |
-| `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). The default is `$XDG_RUNTIME_DIR/pod-netns-inbound` when that directory is of the user, else `$TMPDIR/pod-netns-inbound-<uid>`. A new directory gets mode 0700. A directory of another user, a symbolic link, or a directory that the group or others can write is refused (exit 3). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
+| `--inbound-dir DIR` | Seccomp backend only: where a port that the program listens on becomes a unix socket (`DIR/<port>.sock`). The default is `$XDG_RUNTIME_DIR/podnet-netns-inbound` when that directory is of the user, else `$TMPDIR/podnet-netns-inbound-<uid>`. A new directory gets mode 0700. A directory of another user, a symbolic link, or a directory that the group or others can write is refused (exit 3). With `--backend netns` it is a usage error (exit 64); when `auto` picks netns, a warning says that it is not used. |
 | `--serve LISTEN` | Serve SOCKS5, HTTP `CONNECT` and UDP ASSOCIATE on `unix:/path` or `tcp://host:port`, through the `-x` chain. |
 | `-v, --verbose` | Log each flow. |
 
-`pod-netns doctor` prints what the host permits. The exit status is 3 when no
+`podnet pod doctor` prints what the host permits. The exit status is 3 when no
 backend can run. The seccomp probe runs in a child process. It sets
 `no_new_privs` before it installs its filter, as the backend does: an
 unprivileged process cannot install the filter without it.
@@ -62,7 +62,7 @@ Needs: unprivileged user namespaces and `/dev/net/tun`. This backend carries
 TCP and DNS. It does not carry other UDP, and no backend of the pod carries
 ICMP (`ping`).
 
-A listener of the program (for example `cfrs connect -L tcp://127.0.0.1:8080`)
+A listener of the program (for example `podnet connect -L tcp://127.0.0.1:8080`)
 is in the network namespace of the pod: a process outside the pod does not
 see it. Use a unix socket for it (`-L unix:///path`).
 
@@ -153,8 +153,8 @@ datagram in each direction is one frame on the same connection:
 | 2 | The length of the datagram, big endian |
 | N | A SOCKS5 UDP datagram (RFC 1928, section 7): header and payload |
 
-The association ends when the connection closes. `cfrs warp proxy` and
-`pod-netns --serve` serve the command. A server that does not know it
+The association ends when the connection closes. `podnet warp proxy` and
+`podnet pod --serve` serve the command. A server that does not know it
 answers `0x07`.
 
 ## DNS
@@ -172,7 +172,7 @@ AAAA answer.
 
 ```rust
 // Run the command line in this process. Return the exit status.
-let status = pod_netns::main_with_args(&["-x".into(), "socks5://127.0.0.1:1080".into(),
+let status = podnet_netns::main_with_args(&["-x".into(), "socks5://127.0.0.1:1080".into(),
                                          "--".into(), "curl".into(), "https://example.com".into()]);
 ```
 

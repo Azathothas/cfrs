@@ -1,7 +1,7 @@
 //! Shared upstream logic: proxy specs, routing rules, SOCKS5/HTTP handshakes,
 //! UDP association, and chaining.
 //!
-//! Both `pod-netns` backends and any other caller use one implementation, so a
+//! Both `podnet-netns` backends and any other caller use one implementation, so a
 //! new transport is added once rather than per backend.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -579,7 +579,7 @@ where
 /// itself (issue 84): after the reply, each datagram in each direction is a
 /// frame of a 2-byte length (big endian) and a SOCKS5 UDP datagram (header
 /// and payload). No UDP socket is necessary at either end, so a host that
-/// refuses AF_INET sockets keeps UDP. cfrs (warp proxy, pod) serves it; a
+/// refuses AF_INET sockets keeps UDP. podnet (warp proxy, pod) serves it; a
 /// server that does not know it answers 0x07.
 pub const CMD_UDP_IN_STREAM: u8 = 0x83;
 
@@ -1009,7 +1009,7 @@ mod tests {
         assert!(Net::parse("10.0.0.0/33").is_err());
         assert!(Net::parse("2001:db8::/129").is_err());
         assert!(Net::parse("nothing/8").is_err());
-        let dir = std::env::temp_dir().join(format!("pod-netns-nets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-netns-nets-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("nets.txt");
         std::fs::write(&file, "# a country\n10.0.0.0/8\n\n2001:db8::/32  # v6\n").unwrap();

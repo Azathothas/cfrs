@@ -1,18 +1,18 @@
-//! The block of `cfrs warp ssh-config --write` in an SSH config file (issue
-//! 130). cfrs owns the lines between its two markers, and changes no other
+//! The block of `podnet warp ssh-config --write` in an SSH config file (issue
+//! 130). podnet owns the lines between its two markers, and changes no other
 //! byte of the file.
 //!
 //! ```text
-//! # >>> cfrs warp ssh-config: github.com >>>
+//! # >>> podnet warp ssh-config: github.com >>>
 //! Host github.com
-//!     ProxyCommand '/usr/local/bin/cfrs' warp nc %h %p
-//! # <<< cfrs warp ssh-config: github.com <<<
+//!     ProxyCommand '/usr/local/bin/podnet' warp nc %h %p
+//! # <<< podnet warp ssh-config: github.com <<<
 //! ```
 //!
 //! A new block goes before the first `Host` or `Match` line: SSH uses the
 //! first value of each option, and the lines at the top of the file stay
 //! global. A `Host` line outside the markers that names the same pattern is
-//! a conflict: cfrs changes nothing and names its line. Files of `Include`
+//! a conflict: podnet changes nothing and names its line. Files of `Include`
 //! are not read.
 
 use std::path::{Path, PathBuf};
@@ -20,15 +20,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 fn begin(host: &str) -> String {
-    format!("# >>> cfrs warp ssh-config: {host} >>>")
+    format!("# >>> podnet warp ssh-config: {host} >>>")
 }
 
 fn end(host: &str) -> String {
-    format!("# <<< cfrs warp ssh-config: {host} <<<")
+    format!("# <<< podnet warp ssh-config: {host} <<<")
 }
 
-const BEGIN_PREFIX: &str = "# >>> cfrs warp ssh-config: ";
-const END_PREFIX: &str = "# <<< cfrs warp ssh-config: ";
+const BEGIN_PREFIX: &str = "# >>> podnet warp ssh-config: ";
+const END_PREFIX: &str = "# <<< podnet warp ssh-config: ";
 
 /// A word for `sh`: in single quotes.
 fn shell_quote(word: &str) -> String {
@@ -67,7 +67,7 @@ pub fn block(exe: &Path, host: &str) -> String {
     )
 }
 
-/// A block of cfrs in a file: the host and the byte range (with the final
+/// A block of podnet in a file: the host and the byte range (with the final
 /// newline).
 struct Owned {
     host: String,
@@ -90,7 +90,7 @@ fn trimmed(line: &str) -> &str {
     line.trim_end_matches(['\n', '\r'])
 }
 
-/// The blocks of cfrs. A marker with no pair is an error.
+/// The blocks of podnet. A marker with no pair is an error.
 fn owned(text: &str) -> Result<Vec<Owned>> {
     let mut out = Vec::new();
     let mut open: Option<(String, usize, usize)> = None;
@@ -99,7 +99,7 @@ fn owned(text: &str) -> Result<Vec<Owned>> {
         if let Some(rest) = line_text.strip_prefix(BEGIN_PREFIX) {
             if let Some((_, _, l)) = open {
                 bail!(
-                    "line {}: a begin marker of cfrs with no end (line {})",
+                    "line {}: a begin marker of podnet with no end (line {})",
                     n + 1,
                     l
                 );
@@ -114,12 +114,12 @@ fn owned(text: &str) -> Result<Vec<Owned>> {
                     start,
                     stop: at + line.len(),
                 }),
-                _ => bail!("line {}: an end marker of cfrs with no begin", n + 1),
+                _ => bail!("line {}: an end marker of podnet with no begin", n + 1),
             }
         }
     }
     if let Some((_, _, l)) = open {
-        bail!("line {l}: a begin marker of cfrs with no end");
+        bail!("line {l}: a begin marker of podnet with no end");
     }
     Ok(out)
 }
@@ -166,7 +166,7 @@ pub fn write(text: &str, host: &str, block: &str) -> Result<String> {
     })
 }
 
-/// The text with the blocks of cfrs removed: the one of `host`, or all.
+/// The text with the blocks of podnet removed: the one of `host`, or all.
 pub fn remove(text: &str, host: Option<&str>) -> Result<String> {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
@@ -228,7 +228,7 @@ pub fn save(path: &Path, old: Option<&str>, text: &str) -> Result<bool> {
         .map(|m| m.permissions().mode() & 0o7777)
         .unwrap_or(0o600);
     let tmp = dir.join(format!(
-        ".{}.cfrs-{}",
+        ".{}.podnet-{}",
         path.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
@@ -248,7 +248,7 @@ pub fn save(path: &Path, old: Option<&str>, text: &str) -> Result<bool> {
 mod tests {
     use super::*;
 
-    const EXE: &str = "/opt/c f/cfrs";
+    const EXE: &str = "/opt/c f/podnet";
 
     fn b(host: &str) -> String {
         block(Path::new(EXE), host)
@@ -276,12 +276,12 @@ mod tests {
 
     #[test]
     fn the_block_quotes_the_binary() {
-        let text = block(Path::new("/a/it's/cfrs"), "github.com");
+        let text = block(Path::new("/a/it's/podnet"), "github.com");
         assert!(
-            text.contains("    ProxyCommand '/a/it'\\''s/cfrs' warp nc %h %p\n"),
+            text.contains("    ProxyCommand '/a/it'\\''s/podnet' warp nc %h %p\n"),
             "{text}"
         );
-        assert!(text.starts_with("# >>> cfrs warp ssh-config: github.com >>>\nHost github.com\n"));
+        assert!(text.starts_with("# >>> podnet warp ssh-config: github.com >>>\nHost github.com\n"));
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
         let text = "ServerAliveInterval 30\n\nHost box\n    User me\n";
         let out = write(text, "github.com", &b("github.com")).unwrap();
         assert!(
-            out.starts_with("ServerAliveInterval 30\n\n# >>> cfrs"),
+            out.starts_with("ServerAliveInterval 30\n\n# >>> podnet"),
             "{out}"
         );
         assert!(out.ends_with("Host box\n    User me\n"), "{out}");
@@ -309,10 +309,10 @@ mod tests {
         let once = write(text, "g", &b("g")).unwrap();
         assert_eq!(write(&once, "g", &b("g")).unwrap(), once);
         assert_eq!(state(&once, "g", &b("g")).unwrap(), State::Current);
-        let other = block(Path::new("/old/cfrs"), "g");
+        let other = block(Path::new("/old/podnet"), "g");
         assert_eq!(state(&once, "g", &other).unwrap(), State::Stale);
         let replaced = write(&once, "g", &other).unwrap();
-        assert!(replaced.contains("'/old/cfrs'") && !replaced.contains(EXE));
+        assert!(replaced.contains("'/old/podnet'") && !replaced.contains(EXE));
         assert!(replaced.ends_with("Host box\r\n  User me"));
         assert_eq!(state(text, "g", &b("g")).unwrap(), State::Missing);
     }

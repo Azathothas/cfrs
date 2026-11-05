@@ -38,7 +38,7 @@ const SETTINGS: &[(u64, u64)] = &[(0x08, 1), (0x33, 1), (0x276, 1)];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// The first UDP payload size. 1242 bytes reach the front door on each path
-/// that cfrs knows; MTU discovery then goes up.
+/// that podnet knows; MTU discovery then goes up.
 const INITIAL_MTU: u16 = 1242;
 /// The most bytes of a frame that the client reads (a DATA frame of
 /// capsules, or a HEADERS frame).

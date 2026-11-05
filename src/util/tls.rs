@@ -123,7 +123,7 @@ mod tests {
         let err = client_config(
             "example.com",
             false,
-            Some(Path::new("/tmp/cfrs-no-such-ca.pem")),
+            Some(Path::new("/tmp/podnet-no-such-ca.pem")),
         )
         .expect_err("missing ca must fail");
         assert!(err.contains("reading ca file"), "unexpected error: {err}");

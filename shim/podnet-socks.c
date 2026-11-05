@@ -1,17 +1,17 @@
 /*
- * libcfrssocks.so — send a program's tailnet TCP connections through a
+ * libpodnet-socks.so — send a program's tailnet TCP connections through a
  * userspace SOCKS5 front door on an AF_UNIX socket.
  *
  * A sealed host commonly denies AF_INET bind(2) outright and allows
  * connect(2) only to a short list of ports, so the SOCKS5 listener that
  * `tailscaled --tun=userspace-networking` opens on 127.0.0.1 is unreachable.
- * `cfrs net tailscale` re-exposes the same netstack over an AF_UNIX socket,
+ * `podnet net tailscale` re-exposes the same netstack over an AF_UNIX socket,
  * which the host does permit. This shim rewrites connect(2) to that socket.
  *
  * Only connections whose destination is a Tailscale address are rewritten:
  * 100.64.0.0/10 and fd7a:115c:a1e0::/48 (MagicDNS is 100.100.100.100). Every
  * other connect(2) is passed to the real libc untouched, so local services and
- * ordinary egress keep working. Set CFRSSOCKS_ALL=1 to route everything.
+ * ordinary egress keep working. Set PODNET_SOCKS_ALL=1 to route everything.
  *
  * The destination descriptor keeps its number. `dup2(2)` swaps the address
  * family of the existing descriptor for the AF_UNIX one after the SOCKS5
@@ -55,9 +55,9 @@ static int (*r_socket)(int, int, int);
 /* ── configuration ────────────────────────────────────────────────────────── */
 
 struct config {
-    char proxy[108];      /* CFRSSOCKS_PROXY: unix path, empty disables */
+    char proxy[108];      /* PODNET_SOCKS_PROXY: unix path, empty disables */
     int log;
-    int route_all;        /* CFRSSOCKS_ALL */
+    int route_all;        /* PODNET_SOCKS_ALL */
     int max_fds;
 };
 
@@ -82,10 +82,10 @@ static void parse_config(void) {
     const char *v;
     memset(&cfg, 0, sizeof cfg);
     cfg.max_fds = 65536;
-    if ((v = getenv("CFRSSOCKS_PROXY")) && *v) snprintf(cfg.proxy, sizeof cfg.proxy, "%s", v);
-    cfg.log = (v = getenv("CFRSSOCKS_LOG")) && *v && *v != '0';
-    cfg.route_all = (v = getenv("CFRSSOCKS_ALL")) && *v && *v != '0';
-    if ((v = getenv("CFRSSOCKS_MAX_FDS")) && *v) {
+    if ((v = getenv("PODNET_SOCKS_PROXY")) && *v) snprintf(cfg.proxy, sizeof cfg.proxy, "%s", v);
+    cfg.log = (v = getenv("PODNET_SOCKS_LOG")) && *v && *v != '0';
+    cfg.route_all = (v = getenv("PODNET_SOCKS_ALL")) && *v && *v != '0';
+    if ((v = getenv("PODNET_SOCKS_MAX_FDS")) && *v) {
         long n = strtol(v, NULL, 10);
         if (n > 0) cfg.max_fds = (int)n;
     }
@@ -100,7 +100,7 @@ static void logf_(const char *fmt, ...) {
     if (!cfg.log) return;
     va_list ap;
     va_start(ap, fmt);
-    fputs("[cfrssocks] ", stderr);
+    fputs("[podnet-socks] ", stderr);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }

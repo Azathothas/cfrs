@@ -1,9 +1,9 @@
 //! Full-device mode: a TUN interface whose packets go through WARP.
 //!
-//! This mode needs `CAP_NET_ADMIN` and `/dev/net/tun`. Use `cfrs warp proxy`
-//! or `cfrs warp run` where these are not available.
+//! This mode needs `CAP_NET_ADMIN` and `/dev/net/tun`. Use `podnet warp proxy`
+//! or `podnet warp run` where these are not available.
 //!
-//! `cfrs` makes the interface, sets the tunnel address and the MTU, and moves
+//! `podnet` makes the interface, sets the tunnel address and the MTU, and moves
 //! the packets between the interface and the MASQUE session. It does not
 //! change the routes. Add routes for the destinations to send through WARP.
 //! Do not send the MASQUE endpoint itself through the interface, or the
@@ -47,7 +47,7 @@ fn ifreq(name: &str) -> Result<libc::ifreq> {
 }
 
 impl Tun {
-    /// A TUN that another part made: the raw pod of `cfrs warp run
+    /// A TUN that another part made: the raw pod of `podnet warp run
     /// --backend netns-raw` (issue 79). The descriptor becomes non-blocking.
     pub fn from_fd(fd: OwnedFd, name: &str) -> Result<Self> {
         // SAFETY: fcntl on a descriptor that this value owns.
@@ -131,7 +131,7 @@ fn ioctl(fd: RawFd, request: libc::c_ulong, req: &mut libc::ifreq, what: &str) -
 }
 
 impl Tun {
-    /// Make the interface `name` (for example `cfrs0`), set `address/32` and
+    /// Make the interface `name` (for example `podnet0`), set `address/32` and
     /// `mtu`, and bring it up.
     pub fn create(name: &str, address: Ipv4Addr, mtu: usize) -> Result<Self> {
         let path = c"/dev/net/tun";
@@ -334,7 +334,7 @@ mod tests {
     /// Make an interface where the host permits it, and check the address.
     #[tokio::test]
     async fn creates_an_interface_with_the_address() {
-        let name = format!("cfrst{}", std::process::id() % 10_000);
+        let name = format!("podnett{}", std::process::id() % 10_000);
         let tun = match Tun::create(&name, Ipv4Addr::new(172, 16, 0, 2), 1280) {
             Ok(tun) => tun,
             Err(err) => {

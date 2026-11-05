@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use cfrs::vnet::device::LinkDevice;
+use podnet::vnet::device::LinkDevice;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;

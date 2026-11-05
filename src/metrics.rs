@@ -80,27 +80,27 @@ impl Metrics {
     pub fn prometheus(&self) -> String {
         let m = self.snapshot();
         format!(
-            "# HELP cfrs_streams_total Inbound streams handled.\n\
-             # TYPE cfrs_streams_total counter\n\
-             cfrs_streams_total {}\n\
-             # HELP cfrs_active_streams Streams currently being proxied.\n\
-             # TYPE cfrs_active_streams gauge\n\
-             cfrs_active_streams {}\n\
-             # HELP cfrs_bytes_in_total Bytes received from the edge.\n\
-             # TYPE cfrs_bytes_in_total counter\n\
-             cfrs_bytes_in_total {}\n\
-             # HELP cfrs_bytes_out_total Bytes sent to the edge.\n\
-             # TYPE cfrs_bytes_out_total counter\n\
-             cfrs_bytes_out_total {}\n\
-             # HELP cfrs_reconnects_total Edge reconnections.\n\
-             # TYPE cfrs_reconnects_total counter\n\
-             cfrs_reconnects_total {}\n\
-             # HELP cfrs_connections_total Edge connections registered.\n\
-             # TYPE cfrs_connections_total counter\n\
-             cfrs_connections_total {}\n\
-             # HELP cfrs_errors_total Stream or connection errors.\n\
-             # TYPE cfrs_errors_total counter\n\
-             cfrs_errors_total {}\n",
+            "# HELP podnet_streams_total Inbound streams handled.\n\
+             # TYPE podnet_streams_total counter\n\
+             podnet_streams_total {}\n\
+             # HELP podnet_active_streams Streams currently being proxied.\n\
+             # TYPE podnet_active_streams gauge\n\
+             podnet_active_streams {}\n\
+             # HELP podnet_bytes_in_total Bytes received from the edge.\n\
+             # TYPE podnet_bytes_in_total counter\n\
+             podnet_bytes_in_total {}\n\
+             # HELP podnet_bytes_out_total Bytes sent to the edge.\n\
+             # TYPE podnet_bytes_out_total counter\n\
+             podnet_bytes_out_total {}\n\
+             # HELP podnet_reconnects_total Edge reconnections.\n\
+             # TYPE podnet_reconnects_total counter\n\
+             podnet_reconnects_total {}\n\
+             # HELP podnet_connections_total Edge connections registered.\n\
+             # TYPE podnet_connections_total counter\n\
+             podnet_connections_total {}\n\
+             # HELP podnet_errors_total Stream or connection errors.\n\
+             # TYPE podnet_errors_total counter\n\
+             podnet_errors_total {}\n",
             m.streams_total,
             m.active_streams,
             m.bytes_in,
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(snap.bytes_in, 10);
         assert_eq!(snap.bytes_out, 20);
         let text = metrics.prometheus();
-        assert!(text.contains("cfrs_streams_total 1"));
-        assert!(text.contains("cfrs_bytes_out_total 20"));
+        assert!(text.contains("podnet_streams_total 1"));
+        assert!(text.contains("podnet_bytes_out_total 20"));
     }
 }

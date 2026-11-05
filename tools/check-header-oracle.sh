@@ -1,5 +1,5 @@
 #!/bin/sh
-# Check cfrs's header encoding against cloudflared's own Go implementation.
+# Check podnet's header encoding against cloudflared's own Go implementation.
 #
 # The oracle is a verbatim copy of SerializeHeaders from
 # cloudflared's connection/header.go, using the same
@@ -37,7 +37,7 @@ recorded_only=0
 scratch=""
 for candidate in "${CF_ORACLE_TMP:-}" "$CARGO_TARGET_DIR" "${TMPDIR:-}" /tmp; do
     [ -n "$candidate" ] || continue
-    probe="$candidate/.cfrs-exec-probe.$$"
+    probe="$candidate/.podnet-exec-probe.$$"
     # A noexec mount refuses execution whatever the file mode is. Thus run a
     # file to test the directory.
     printf '#!/bin/sh\nexit 0\n' >"$probe" 2>/dev/null && chmod +x "$probe" 2>/dev/null

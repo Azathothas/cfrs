@@ -20,7 +20,7 @@
 //!
 //! # Layers
 //!
-//! * [`addr`] — `cfrsnet/<family>/<address>/<port>` names and the `10.66.0.0/24`
+//! * [`addr`] — `podnet-vnet/<family>/<address>/<port>` names and the `10.66.0.0/24`
 //!   / `fd00:66::/64` plan.
 //! * [`framing`] — length-prefixed packet framing over a byte stream.
 //! * [`device`] — in-process link devices: queue, tunnel-backed, capture,
@@ -34,7 +34,7 @@
 //! * [`control`] — the shim/stack control protocol.
 //! * [`shim`] — build and locate the `LD_PRELOAD` library.
 //!
-//! The CLI exposes it as `cfrs net`; see the `net` command of the binary.
+//! The CLI exposes it as `podnet net`; see the `net` command of the binary.
 
 pub mod addr;
 pub mod control;
@@ -50,13 +50,13 @@ pub mod stack;
 pub mod switch;
 pub mod tailscale_ssh;
 
-pub use pod_netns::{socks, tailscale, upstream};
+pub use podnet_netns::{socks, tailscale, upstream};
 
 pub use addr::{Family, VirtAddr, VirtualSubnet};
 pub use control::{ControlMessage, ControlOp};
 pub use device::{DeviceStats, LinkDevice, TunnelDevice};
-pub use pod_netns::tailscale::{Dialer, TailscaleProxy};
-pub use pod_netns::upstream::{Proxy as UpstreamProxy, ProxyKind, Rule, Upstream};
+pub use podnet_netns::tailscale::{Dialer, TailscaleProxy};
+pub use podnet_netns::upstream::{Proxy as UpstreamProxy, ProxyKind, Rule, Upstream};
 pub use policy::{Acl, AclAction, AclRule};
 pub use proxy::{handle_connection, ProxyListen};
 pub use record::{PcapFile, RecordedPacket, Recorder, Replayer};
@@ -67,8 +67,8 @@ pub use tailscale_ssh::{LocalUser, Shims};
 // default (the local address, the gateway, their IPv6 counterparts, each
 // address of a virtual listener). .cargo/config.toml sets the limit for a
 // build in the repository; a build without it (cargo install, a crate that
-// depends on cfrs) fails here, not later with lost addresses.
+// depends on podnet) fails here, not later with lost addresses.
 const _: () = assert!(
     smoltcp::config::IFACE_MAX_ADDR_COUNT >= 8,
-    "build cfrs with the environment variable SMOLTCP_IFACE_MAX_ADDR_COUNT=8 (.cargo/config.toml of the repository sets it)"
+    "build podnet with the environment variable SMOLTCP_IFACE_MAX_ADDR_COUNT=8 (.cargo/config.toml of the repository sets it)"
 );

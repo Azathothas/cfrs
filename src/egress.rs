@@ -1,4 +1,4 @@
-//! Each outbound TCP connection of cfrs: directly, or through a proxy.
+//! Each outbound TCP connection of podnet: directly, or through a proxy.
 //!
 //! [`dial`] is the one path. It takes the proxy of [`ProxyChoice`]:
 //!
@@ -34,7 +34,7 @@ const MAX_HEADER_BYTES: usize = 8 * 1024;
 /// The time between the start of two attempts of a direct dial (RFC 8305).
 pub const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 
-/// The variables of the proxy, in the order that cfrs reads them.
+/// The variables of the proxy, in the order that podnet reads them.
 pub const PROXY_VARIABLES: &[&str] = &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
 /// The variables of the list of targets that do not use the proxy.
 pub const NO_PROXY_VARIABLES: &[&str] = &["NO_PROXY", "no_proxy"];
@@ -49,7 +49,7 @@ pub enum ProxyKind {
     Socks5 { remote_dns: bool },
 }
 
-/// How cfrs reaches the proxy (issue 129).
+/// How podnet reaches the proxy (issue 129).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Carrier {
     /// TCP to the host and the port of the proxy.
@@ -58,7 +58,7 @@ pub enum Carrier {
     Unix(std::path::PathBuf),
     /// The stdin and the stdout of a command (`sh -c`), one process for
     /// each connection, as the ProxyCommand of SSH: `http+exec:COMMAND`.
-    /// Only from `--proxy` and `CFRS_PROXY`.
+    /// Only from `--proxy` and `PODNET_PROXY`.
     Exec(String),
 }
 
@@ -115,7 +115,7 @@ impl Proxy {
         &self.host
     }
 
-    /// How cfrs reaches the proxy.
+    /// How podnet reaches the proxy.
     pub fn carrier(&self) -> &Carrier {
         &self.via
     }
@@ -131,7 +131,7 @@ impl Proxy {
         }
     }
 
-    /// Parse the value of `--proxy` or `CFRS_PROXY`: [`parse`](Self::parse),
+    /// Parse the value of `--proxy` or `PODNET_PROXY`: [`parse`](Self::parse),
     /// and also `SCHEME+exec:COMMAND` (issue 129). A command in the proxy
     /// variables of other tools is refused: a variable must not start a
     /// program.
@@ -219,7 +219,7 @@ impl Proxy {
             return Ok(proxy);
         }
         if spec.contains("+exec:") {
-            bail!("a proxy command (+exec:) is only taken from --proxy or CFRS_PROXY");
+            bail!("a proxy command (+exec:) is only taken from --proxy or PODNET_PROXY");
         }
         let (scheme, rest) = match spec.split_once("://") {
             Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
@@ -296,7 +296,7 @@ impl Proxy {
         self.kind
     }
 
-    /// The kind of the proxy as cfrs dials it: the scheme, with `+unix` or
+    /// The kind of the proxy as podnet dials it: the scheme, with `+unix` or
     /// `+exec` for a proxy that is not on TCP.
     pub fn kind_text(&self) -> String {
         match &self.via {
@@ -489,11 +489,11 @@ impl Proxy {
                 }
                 0xff => {
                     bail!(
-                    "the proxy accepts none of the methods that cfrs offers (no authentication{})",
+                    "the proxy accepts none of the methods that podnet offers (no authentication{})",
                     if self.auth.is_some() { ", user and password" } else { "" }
                 )
                 }
-                other => bail!("the proxy chose the method {other}, which cfrs did not offer"),
+                other => bail!("the proxy chose the method {other}, which podnet did not offer"),
             }
 
             let mut req = vec![5, 1, 0];
@@ -515,7 +515,7 @@ impl Proxy {
                     req.extend_from_slice(host.as_bytes());
                 }
                 Err(_) => {
-                    // The chain of cfrs: --resolve pins, the system
+                    // The chain of podnet: --resolve pins, the system
                     // resolver, DoH (issue 274).
                     let ip = *crate::resolve::resolve(host)
                         .await
@@ -664,7 +664,7 @@ fn socks5_reply(code: u8) -> &'static str {
 }
 
 /// The text for a `407` answer: the schemes in the `Proxy-Authenticate`
-/// headers, and what cfrs sent.
+/// headers, and what podnet sent.
 fn explain_407(head: &[u8], sent_basic: bool, digest_tried: bool) -> String {
     let text = String::from_utf8_lossy(head);
     let mut schemes: Vec<String> = Vec::new();
@@ -686,26 +686,26 @@ fn explain_407(head: &[u8], sent_basic: bool, digest_tried: bool) -> String {
     } else {
         format!("it asks for {}", schemes.join(" or "))
     };
-    // Issue 180: cfrs answers Digest too; the advice follows what cfrs
+    // Issue 180: podnet answers Digest too; the advice follows what podnet
     // sent and what the proxy asks for.
     let sent = if digest_tried {
-        "cfrs sent a Digest answer with the user and the password of the proxy URL, and the proxy refused it: check the user and the password"
+        "podnet sent a Digest answer with the user and the password of the proxy URL, and the proxy refused it: check the user and the password"
     } else if sent_basic {
-        "cfrs sent Basic with the user and the password of the proxy URL"
+        "podnet sent Basic with the user and the password of the proxy URL"
     } else {
-        "cfrs sent no credentials (put user:password@ in the proxy URL)"
+        "podnet sent no credentials (put user:password@ in the proxy URL)"
     };
     let has = |name: &str| schemes.iter().any(|s| s.eq_ignore_ascii_case(name));
     let advice = if schemes.is_empty() || has("basic") {
         ""
     } else if has("digest") {
         if sent_basic && !digest_tried {
-            "; the Digest challenge has an algorithm or a qop that cfrs does not answer (cfrs answers MD5, MD5-sess, SHA-256 and SHA-256-sess with qop auth)"
+            "; the Digest challenge has an algorithm or a qop that podnet does not answer (podnet answers MD5, MD5-sess, SHA-256 and SHA-256-sess with qop auth)"
         } else {
             ""
         }
     } else {
-        "; cfrs supports Basic and Digest only: ask for such an account, or use a local proxy that speaks the scheme (for example cntlm for NTLM)"
+        "; podnet supports Basic and Digest only: ask for such an account, or use a local proxy that speaks the scheme (for example cntlm for NTLM)"
     };
     format!("the proxy requires authentication (HTTP 407): {asks}; {sent}{advice}")
 }
@@ -935,7 +935,7 @@ fn detected_proxy() -> Option<Proxy> {
         .clone()
 }
 
-/// How cfrs reaches the network.
+/// How podnet reaches the network.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ProxyChoice {
     /// The proxy of the variables, if one is set (the default).
@@ -1134,7 +1134,7 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
                         errors.push((addrs[i], text));
                         if pending.is_empty() && next >= addrs.len() {
                             // Issue 180: the kind of the error stays (a
-                            // refusal is an answer for cfrs doctor).
+                            // refusal is an answer for podnet doctor).
                             return Err(anyhow::Error::new(std::io::Error::new(
                                 kind,
                                 group_errors(&errors),
@@ -1155,7 +1155,7 @@ pub async fn dial_addrs(addrs: &[SocketAddr], timeout: Duration) -> Result<(usiz
 }
 
 /// The stdin and the stdout of a command as one byte stream (issue 129).
-/// The command runs with `sh -c`; its stderr is the stderr of cfrs. The
+/// The command runs with `sh -c`; its stderr is the stderr of podnet. The
 /// end of the stream closes its stdin; a drop kills it.
 pub struct ChildIo {
     child: tokio::process::Child,
@@ -1374,7 +1374,7 @@ mod tests {
             let (mut first, head) = read_head(first).await;
             assert!(head.contains("Proxy-Authorization: Basic "), "{head}");
             first
-                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Digest realm=\"cfrs-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5\r\nContent-Length: 0\r\n\r\n")
+                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Digest realm=\"podnet-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
             drop(first);
@@ -1392,7 +1392,7 @@ mod tests {
                 rest[..rest.find(['"', ',']).unwrap_or(rest.len())].to_string()
             };
             let challenge = crate::proxy_auth::parse_challenge(
-                "Digest realm=\"cfrs-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5",
+                "Digest realm=\"podnet-test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5",
             )
             .unwrap();
             let want = crate::proxy_auth::authorization(
@@ -1642,7 +1642,7 @@ mod tests {
             text.contains("it asks for NTLM or Negotiate or Basic or Digest"),
             "{text}"
         );
-        assert!(text.contains("cfrs sent Basic"), "{text}");
+        assert!(text.contains("podnet sent Basic"), "{text}");
         let text = explain_407(
             b"HTTP/1.1 407 x\r\nProxy-Authenticate: NTLM, Negotiate\r\n\r\n",
             false,
@@ -1650,7 +1650,7 @@ mod tests {
         );
         assert!(
             text.contains("NTLM or Negotiate")
-                && text.contains("cfrs supports Basic and Digest only"),
+                && text.contains("podnet supports Basic and Digest only"),
             "{text}"
         );
         assert!(text.contains("sent no credentials"), "{text}");

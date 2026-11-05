@@ -1,10 +1,10 @@
-//! cfrs — expose anything on the public Electrosphere through Cloudflare
+//! podnet — expose anything on the public Electrosphere through Cloudflare
 //! tunnels, from Rust.
 //!
 //! The crate is usable as a library:
 //!
 //! ```no_run
-//! use cfrs::{Service, Tunnel};
+//! use podnet::{Service, Tunnel};
 //!
 //! # async fn run() -> anyhow::Result<()> {
 //! let handle = Tunnel::quick()

@@ -305,7 +305,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
         return if any { 0 } else { EXIT_NO_BACKEND };
     }
 
-    println!("pod-netns: capability report");
+    println!("podnet-netns: capability report");
     for p in &probes {
         println!(
             "  {:<34} {:<5} {}",
@@ -315,7 +315,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
         );
     }
     println!(
-        "pod-netns: backend netns:   {}",
+        "podnet-netns: backend netns:   {}",
         if netns_available {
             "available"
         } else {
@@ -323,7 +323,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
         }
     );
     println!(
-        "pod-netns: backend seccomp: {}",
+        "podnet-netns: backend seccomp: {}",
         if !seccomp_available {
             "unavailable"
         } else if probes[5].ok {
@@ -332,7 +332,7 @@ pub(crate) fn doctor(json: bool) -> i32 {
             "available (getsockname/getpeername: unavailable)"
         }
     );
-    println!("pod-netns: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
+    println!("podnet-netns: the host conditions that podnet handles: https://github.com/Azathothas/podnet/blob/main/docs/target-environment.md");
     if any {
         0
     } else {

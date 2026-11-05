@@ -1,14 +1,14 @@
-# The fuzz targets of cfrs (cargo-fuzz, libFuzzer). This is its own
+# The fuzz targets of podnet (cargo-fuzz, libFuzzer). This is its own
 # workspace: the main workspace excludes it, and it needs a nightly
 # toolchain and glibc (libFuzzer does not run on musl).
 #
 #   cargo +nightly fuzz run capnp_message -- -max_total_time=60
 #
-# Each target calls one function of cfrs::fuzzing. .github/workflows/fuzz.yml
+# Each target calls one function of podnet::fuzzing. .github/workflows/fuzz.yml
 # runs each target each week.
 
 [package]
-name = "cfrs-fuzz"
+name = "podnet-fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -19,7 +19,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-cfrs = { path = ".." }
+podnet = { path = ".." }
 
 [workspace]
 members = ["."]

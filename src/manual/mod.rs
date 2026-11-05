@@ -1,16 +1,16 @@
-//! `cfrs man`: the manual of this binary, generated from its command tree.
+//! `podnet man`: the manual of this binary, generated from its command tree.
 //!
 //! The manual must be enough on a host that has only the binary: no man(1),
-//! no groff, no pager, no network. Thus cfrs writes it itself, as plain text.
+//! no groff, no pager, no network. Thus podnet writes it itself, as plain text.
 //! [`model::build`] makes it from the clap command tree, which `--help` also
 //! uses, and from the tables of [`facts`] and [`crate::exit`]. The tests check
 //! those tables against the code.
 //!
-//! * `cfrs man` pages the text on a terminal, else writes it to stdout.
+//! * `podnet man` pages the text on a terminal, else writes it to stdout.
 //! * `--no-pager` writes it to stdout, also on a terminal.
 //! * `--roff` writes a man(7) page, for `man -l -` or a man directory.
 //! * `--json` writes the manual as one JSON object, for a program.
-//! * `cfrs man SECTION` writes one section: a command (`tunnel`, `warp run`)
+//! * `podnet man SECTION` writes one section: a command (`tunnel`, `warp run`)
 //!   or a topic (`environment`, `files`, `exit-status`, `examples`, `pod`).
 
 pub mod facts;
@@ -65,7 +65,7 @@ pub fn body(manual: &Manual, req: &Request) -> Result<String, String> {
             text::render(manual)
         });
     };
-    // More than one section (issue 95): `cfrs man tunnel serve` gives
+    // More than one section (issue 95): `podnet man tunnel serve` gives
     // both. The words split into names, the longest name first.
     if manual.command(section).is_none() && !is_topic(section) {
         if let Some(parts) = split_sections(manual, section) {
@@ -138,9 +138,9 @@ mod tests {
     use super::*;
 
     fn sample() -> clap::Command {
-        clap::Command::new("cfrs")
+        clap::Command::new("podnet")
             .version("1.0 (abc)")
-            .about("about cfrs")
+            .about("about podnet")
             .subcommand(
                 clap::Command::new("tunnel")
                     .about("Expose a service")
@@ -168,8 +168,8 @@ mod tests {
     fn the_text_has_each_command_and_flag() {
         let m = model::build(sample());
         let t = text::render(&m);
-        assert!(t.starts_with("CFRS(1)"));
-        assert!(t.contains("cfrs tunnel"), "{t}");
+        assert!(t.starts_with("PODNET(1)"));
+        assert!(t.contains("podnet tunnel"), "{t}");
         assert!(
             t.contains("--url <url>") || t.contains("--url <URL>"),
             "{t}"
@@ -221,7 +221,7 @@ mod tests {
     fn the_roff_page_uses_standard_macros_and_escapes() {
         let m = model::build(sample());
         let r = roff::render(&m);
-        assert!(r.starts_with(".TH CFRS 1"));
+        assert!(r.starts_with(".TH PODNET 1"));
         // Issue 181: the date field is not empty (here: the commit date).
         let th = r.lines().next().unwrap();
         assert!(!th.contains(" 1 \"\" "), "{th}");

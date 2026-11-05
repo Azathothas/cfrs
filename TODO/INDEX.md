@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**135 entries: 125 open, 0 partial, 10 blocked, 0 done.**
+**135 entries: 118 open, 1 partial, 9 blocked, 7 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 13 | 0 | 1 | 0 | 14 |
-| P2 | 84 | 0 | 7 | 0 | 91 |
+| P1 | 9 | 0 | 1 | 4 | 14 |
+| P2 | 81 | 1 | 6 | 3 | 91 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 125 | 0 | 10 | 0 | 135 |
+| **All** | 118 | 1 | 9 | 7 | 135 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -51,21 +51,21 @@ M8 Overlays, M9 Later.
 | [T-003](deferred.md) | P2 | S | M9 | feature | blocked | `warp register`: enrol through a Zero Trust team token (GitHub #149) |
 | [T-004](deferred.md) | P3 | M | M9 | feature | blocked | TLS: send an encrypted ClientHello on the hops that publish a config (GitHub #151) |
 | [T-005](deferred.md) | P2 | S | M9 | release | blocked | crates.io: publish the library and the CLI (GitHub #161) |
-| [T-006](deferred.md) | P2 | S | M9 | release | blocked | crates.io: the workspace version and the `pod-netns` requirement are prereleases (GitHub #222) |
+| [T-006](deferred.md) | P2 | S | M9 | release | blocked | crates.io: the workspace version and the `podnet-netns` requirement are prereleases (GitHub #222) |
 | [T-007](deferred.md) | P2 | S | M9 | release | blocked | crates.io: the name `cfrs` belongs to another project; choose a package name (GitHub #224) |
 | [T-008](record.md) | P1 | S | M0 | chore | open | A parity snapshot: the command tree, the public items and the test list, with a diff of two runs |
-| [T-009](record.md) | P1 | S | M0 | chore | open | A size check: at most 800 lines in each source file, with an allowlist that can only shrink |
+| [T-009](record.md) | P1 | S | M0 | chore | done | A size check: at most 800 lines in each source file, with an allowlist that can only shrink |
 | [T-010](record.md) | P1 | M | M0 | chore | open | A layer check: no module refers to a module of a higher layer, with an allowlist of 18 references that can only shrink |
 | [T-011](record.md) | P2 | M | M0 | chore | open | Loopback tests for the commands that have no behaviour test, before the splits |
 | [T-012](record.md) | P2 | L | M0 | chore | open | WARP stand-ins on the loopback: the registration API and a MASQUE edge, with tests of the WARP commands |
-| [T-013](record.md) | P2 | S | M0 | chore | open | A daily check that the record's list of GitHub numbers agrees with GitHub |
-| [T-014](record.md) | P2 | S | M0 | docs | open | The milestones M0 to M9 in a roadmap, and the open work of the maintenance page in the record |
+| [T-013](record.md) | P2 | S | M0 | chore | done | A daily check that the record's list of GitHub numbers agrees with GitHub |
+| [T-014](record.md) | P2 | S | M0 | docs | done | The milestones M0 to M9 in a roadmap, and the open work of the maintenance page in the record |
 | [T-015](record.md) | P3 | S | M2 | chore | open | CI checks that each pushed commit moved the citations of the files that it changed |
-| [T-016](rename.md) | P1 | M | M1 | chore | open | Rename `cfrs` to `podnet` in the code, the tests, the workflows, the scripts and the documents |
-| [T-017](rename.md) | P2 | S | M1 | docs | open | The documents and the scripts state the facts of the old name |
-| [T-018](rename.md) | P2 | S | M1 | docs | blocked | `CLAUDE.md` names `podnet`, its crates and the record |
-| [T-019](rename.md) | P1 | M | M1 | chore | open | Drop the `pod-netns` binary, and move its integration tests to the root crate |
-| [T-020](rename.md) | P1 | S | M1 | chore | open | Rename the crate `pod-netns` to `podnet-netns` |
+| [T-016](rename.md) | P1 | M | M1 | chore | done | Rename `cfrs` to `podnet` in the code, the tests, the workflows, the scripts and the documents |
+| [T-017](rename.md) | P2 | S | M1 | docs | partial | The documents and the scripts state the facts of the old name |
+| [T-018](rename.md) | P2 | S | M1 | docs | done | `CLAUDE.md` names `podnet`, its crates and the record |
+| [T-019](rename.md) | P1 | M | M1 | chore | done | Drop the `pod-netns` binary, and move its integration tests to the root crate |
+| [T-020](rename.md) | P1 | S | M1 | chore | done | Rename the crate `pod-netns` to `podnet-netns` |
 | [T-021](rename.md) | P1 | S | M1 | chore | blocked | Verify the GitHub redirects after the repository rename |
 | [T-022](rename.md) | P1 | S | M1 | release | open | The version `0.4.0-beta.1`, and its release note with each breaking change |
 | [T-023](rename.md) | P1 | S | M1 | release | open | Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs |
@@ -180,4 +180,4 @@ M8 Overlays, M9 Later.
 | [T-132](later.md) | P3 | S | M9 | chore | open | `try_update` in place of the macro `update_atomic!` |
 | [T-133](later.md) | P3 | S | M9 | chore | open | Zig from the community mirrors in the release workflow |
 | [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the copied podssh files and of the relay contract |
-| [T-135](fixes.md) | P3 | S | M5 | defect | open | `cfrs pod` prints its own program name in each message and in `--version` |
+| [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |

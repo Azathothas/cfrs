@@ -35,7 +35,7 @@ cargo test --workspace -- --list 2>/dev/null | grep -c ': test$'
 
 Nine files are over 800 lines only because of their test module: `src/config.rs`,
 `src/cloudflare/http2.rs`, `src/vnet/switch.rs`, `src/warp/up.rs`,
-`crates/pod-netns/src/upstream.rs`, `src/ws_relay.rs`, `src/cloudflare/capnp.rs`,
+`crates/podnet-netns/src/upstream.rs`, `src/ws_relay.rs`, `src/cloudflare/capnp.rs`,
 `src/warp/register.rs` and `src/quicktunnel.rs`.
 
 ## Premise
@@ -616,7 +616,7 @@ T-008 and T-009 are done.
 
 ## Problem
 
-`crates/pod-netns/src/seccomp.rs` has 1,900 lines and `crates/pod-netns/src/netns.rs` 1,199,
+`crates/podnet-netns/src/seccomp.rs` has 1,900 lines and `crates/podnet-netns/src/netns.rs` 1,199,
 with no test module. The fixes of M5 (T-063 to T-067) and the features of M7 change both files.
 
 ## Premise
@@ -625,13 +625,13 @@ with no test module. The fixes of M5 (T-063 to T-067) and the features of M7 cha
   supervisor, the filter, the memory access, the notification helpers, the connect, the UDP
   relay, the listen and accept, and the socket options; for netns, the run, the TUN, the
   descriptor passing, the backend and the packet builders.
-- `tests/docs.rs::the_seccomp_list_of_pod_netns_is_one_list` reads the README, not this file.
+- `tests/docs.rs::the_seccomp_list_of_podnet_netns_is_one_list` reads the README, not this file.
 - Two series of changes on one file conflict.
 
 ## Approach
 
-1. Split `crates/pod-netns/src/seccomp.rs` into a seccomp directory, one commit for each new file.
-2. Split `crates/pod-netns/src/netns.rs` into a netns directory, one commit for each new file.
+1. Split `crates/podnet-netns/src/seccomp.rs` into a seccomp directory, one commit for each new file.
+2. Split `crates/podnet-netns/src/netns.rs` into a netns directory, one commit for each new file.
 3. Do this entry before T-063 starts, or after T-067 is done.
 
 ## Prove

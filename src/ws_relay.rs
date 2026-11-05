@@ -4,12 +4,12 @@
 //! Some hosts reach the internet only through an HTTPS proxy on port 443,
 //! and the proxy does not carry port 7844 of the edge. A relay on port 443
 //! (a Cloudflare Worker, for example `tcp.ssh.relay.ajam.dev`) takes a
-//! WebSocket at `/connect/{ip}/{port}` and opens TCP to that address. cfrs
+//! WebSocket at `/connect/{ip}/{port}` and opens TCP to that address. podnet
 //! sends the TLS of the HTTP/2 leg (SNI `h2.cftunnel.com`, the edge roots)
 //! in the WebSocket, so the relay sees only TLS bytes. The tunnel token does
 //! not go to the relay.
 //!
-//! The token of the relay comes from [`TOKEN_VARIABLE`], or cfrs mints one with
+//! The token of the relay comes from [`TOKEN_VARIABLE`], or podnet mints one with
 //! `POST /v1/mint`. It goes only in the `X-Relay-Token` header (not in the
 //! URL), and no log or error has it.
 //!
@@ -18,9 +18,9 @@
 //! * TCP only: no QUIC leg.
 //! * IPv4 only: the relay has no IPv6 egress.
 //! * The relay can end a session after 180 s with no payload (a limit of
-//!   the relay, not of cfrs). The PING of the HTTP/2
+//!   the relay, not of podnet). The PING of the HTTP/2
 //!   leg (each 30 s) is payload.
-//! * A session ends at 64 MiB (both directions) or after 12 h. cfrs
+//! * A session ends at 64 MiB (both directions) or after 12 h. podnet
 //!   connects a replacement before that: at `SESSION_BYTES` or
 //!   `SESSION_AGE` the old connection takes no new stream, and its open
 //!   streams go on until they end.
@@ -38,17 +38,17 @@ use crate::net::BoxedIo;
 /// The relay of `--transport relay` when no other is given.
 pub const DEFAULT_RELAY: &str = "https://tcp.ssh.relay.ajam.dev";
 /// The environment variable with the relay URL.
-pub const RELAY_VARIABLE: &str = "CFRS_RELAY";
+pub const RELAY_VARIABLE: &str = "PODNET_RELAY";
 /// The environment variable with a token for the relay.
-pub const TOKEN_VARIABLE: &str = "CFRS_RELAY_TOKEN";
+pub const TOKEN_VARIABLE: &str = "PODNET_RELAY_TOKEN";
 /// A minted token is minted again when it has less time than this.
 const MINT_MARGIN: Duration = Duration::from_secs(10 * 60);
-/// The largest WebSocket message and frame that cfrs takes from the relay.
+/// The largest WebSocket message and frame that podnet takes from the relay.
 const MAX_MESSAGE: usize = 16 << 20;
-/// The bytes (both directions, TLS included) after which cfrs replaces an
+/// The bytes (both directions, TLS included) after which podnet replaces an
 /// edge connection through the relay. The relay ends a session at 64 MiB.
 pub const SESSION_BYTES: u64 = 60 << 20;
-/// The age after which cfrs replaces an edge connection through the relay.
+/// The age after which podnet replaces an edge connection through the relay.
 /// The relay ends a session after 12 h.
 pub const SESSION_AGE: Duration = Duration::from_secs(11 * 3600 + 30 * 60);
 /// The budget of one session through the relay: spent at [`SESSION_BYTES`]
@@ -227,7 +227,7 @@ enum Refusal {
 impl Relay {
     /// A relay at `url` (`https://host[:port]`; `wss://` is the same). Plain
     /// `http://` or `ws://` is taken only for a loopback host (tests).
-    /// `token` is used as it is; with no token, cfrs mints one.
+    /// `token` is used as it is; with no token, podnet mints one.
     pub fn new(url: &str, token: Option<String>) -> Result<Self> {
         let mut hosts = Vec::new();
         for item in url.split(',').map(str::trim).filter(|i| !i.is_empty()) {

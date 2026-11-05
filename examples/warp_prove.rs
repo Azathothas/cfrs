@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use cfrs::warp::WarpClient;
+use podnet::warp::WarpClient;
 
 /// Build a minimal DNS query: one question, `A`, `IN`.
 fn dns_query(name: &str, id: u16) -> Vec<u8> {

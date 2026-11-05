@@ -223,7 +223,7 @@ pub enum Next {
     Stop(String),
 }
 
-/// The longest `retry_after` that cfrs obeys.
+/// The longest `retry_after` that podnet obeys.
 pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 impl ReconnectPolicy {
@@ -294,7 +294,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             service_url: crate::quicktunnel::DEFAULT_QUICK_SERVICE.to_string(),
-            user_agent: format!("cfrs/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: format!("podnet/{}", env!("CARGO_PKG_VERSION")),
             credentials: Credentials::Quick,
             protocol: Protocol::Auto,
             transport: Transport::default(),
@@ -340,7 +340,7 @@ struct RawConfig {
     hello_world: Option<bool>,
 }
 
-/// The top-level keys of a cloudflared config.yml. cfrs reads `tunnel`,
+/// The top-level keys of a cloudflared config.yml. podnet reads `tunnel`,
 /// `credentials-file`, `token`, `ingress`, `url`, `hello-world`, `protocol`
 /// and `ha-connections`, and ignores the others. A key outside this list is a typo: an error.
 pub const CLOUDFLARED_KEYS: &[&str] = &[
@@ -376,7 +376,7 @@ pub const CLOUDFLARED_KEYS: &[&str] = &[
 /// The keys of an ingress rule.
 pub const RULE_KEYS: &[&str] = &["hostname", "path", "service", "originRequest"];
 
-/// The keys of `originRequest` that cloudflared knows. cfrs reads
+/// The keys of `originRequest` that cloudflared knows. podnet reads
 /// `noTLSVerify`, `httpHostHeader`, `connectTimeout`, `tlsTimeout`,
 /// `keepAliveTimeout`, `disableChunkedEncoding` and its own
 /// `stripAcceptEncoding`, and ignores the others.
@@ -509,7 +509,7 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
     Ok(())
 }
 
-/// The types of the values of `originRequest` that cfrs reads (issue 172):
+/// The types of the values of `originRequest` that podnet reads (issue 172):
 /// a time needs a unit, a flag is true or false.
 fn check_origin_values(
     file: &std::path::Path,
@@ -546,7 +546,7 @@ fn check_origin_values(
     Ok(())
 }
 
-/// The types of the top-level values that cfrs reads (issue 172).
+/// The types of the top-level values that podnet reads (issue 172).
 fn check_top_values(file: &std::path::Path, value: &serde_json::Value) -> Result<()> {
     let map = match value {
         serde_json::Value::Null => bail!(
@@ -615,7 +615,7 @@ fn nearest_key(key: &str, known: &[&'static str]) -> Option<&'static str> {
 /// * With `tunnel:` only, it is a named-tunnel token.
 /// * With `token:`, the value is the named-tunnel token. `credentials-file:`
 ///   is then an error. A `tunnel:` must then be the tunnel id of the token.
-/// * With none of the three, cfrs starts a quick tunnel, and says so.
+/// * With none of the three, podnet starts a quick tunnel, and says so.
 /// * A key that cloudflared does not know is an error: at the top level,
 ///   in an ingress rule and in `originRequest`.
 /// * The top-level `originRequest` is the default of each rule.
@@ -744,7 +744,7 @@ fn credentials_of_file(
         }
         (None, None) => {
             tracing::info!(
-                "{} has no tunnel:, no credentials-file: and no token:; cfrs starts a quick tunnel",
+                "{} has no tunnel:, no credentials-file: and no token:; podnet starts a quick tunnel",
                 path.display()
             );
         }
@@ -769,7 +769,10 @@ mod tests {
             .context("registering")
         };
         let text = format!("{:#}", refused(false, 0));
-        assert!(text.contains("cfrs speaks cloudflared 2026.10.7"), "{text}");
+        assert!(
+            text.contains("podnet speaks cloudflared 2026.10.7"),
+            "{text}"
+        );
         match policy.next(1, &refused(false, 0)) {
             Next::Stop(reason) => assert!(reason.contains("tunnel not found"), "{reason}"),
             other => panic!("{other:?}"),
@@ -851,7 +854,7 @@ mod tests {
             "{err}"
         );
 
-        // Keys of cloudflared that cfrs does not use are accepted.
+        // Keys of cloudflared that podnet does not use are accepted.
         load(format!("credentials-file: {c}\nmetrics: localhost:2000\nno-autoupdate: true\nwarp-routing:\n  enabled: true\n{catch_all}")).unwrap();
     }
 
@@ -1095,7 +1098,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("not a key of originRequest"), "{err}");
 
-        // Keys of cloudflared that cfrs does not read still load.
+        // Keys of cloudflared that podnet does not read still load.
         load("ingress:\n  - service: http://127.0.0.1:1\n    originRequest:\n      tcpKeepAlive: 30s\n      caPool: /x.pem\n").unwrap();
     }
 

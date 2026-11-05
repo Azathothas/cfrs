@@ -32,7 +32,7 @@ pub const TUNNEL_MTU: usize = 1280;
 const TCP_BUFFER: usize = 512 * 1024;
 /// The variable with the TCP window of the userspace stack, in segments of
 /// the MTU, or `none` for no limit (issue 100). For a measurement.
-pub const TCP_BURST_VARIABLE: &str = "CFRS_WARP_TCP_BURST";
+pub const TCP_BURST_VARIABLE: &str = "PODNET_WARP_TCP_BURST";
 
 /// The default TCP window (issue 100): no limit. With smoltcp 0.11, a
 /// window over 1 segment stalled on the direct path (live run
@@ -48,7 +48,7 @@ const TCP_BURST_MAX: usize = TCP_BUFFER.div_ceil(TUNNEL_MTU - 60);
 
 /// The variable of the congestion controller of the TCP connections of the
 /// stack (issue 134): `none` (the default), `reno` or `cubic`.
-pub const CC_VARIABLE: &str = "CFRS_WARP_CC";
+pub const CC_VARIABLE: &str = "PODNET_WARP_CC";
 
 static CC: std::sync::OnceLock<smoltcp::socket::tcp::CongestionControl> =
     std::sync::OnceLock::new();

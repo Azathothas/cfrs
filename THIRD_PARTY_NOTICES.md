@@ -1,6 +1,6 @@
 # Third-party notices
 
-`cfrs` is 0BSD (see `LICENSE`). These files are from `cloudflared`
+`podnet` is 0BSD (see `LICENSE`). These files are from `cloudflared`
 (<https://github.com/cloudflare/cloudflared>), release 2026.10.7
 (`src/cloudflare/cloudflared-pin.txt`), and have the Apache License 2.0:
 
@@ -11,7 +11,7 @@
 | `src/cloudflare/cf-edge-roots.pem` | `tlsconfig/cloudflare_ca.go` (`cloudflareRootCA`) |
 | `tools/header-oracle.txt`, the Go program in `tools/check-header-oracle.sh` | `connection/header.go` (`SerializeHeaders`) |
 
-The schemas are the wire format. `cfrs` does not compile them: the layouts in
+The schemas are the wire format. `podnet` does not compile them: the layouts in
 `src/cloudflare/schema.rs` follow from them.
 
 The Rust dependencies are listed in `Cargo.lock`. Each has its own license.

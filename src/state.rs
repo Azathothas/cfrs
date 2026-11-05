@@ -1,18 +1,18 @@
-//! Where cfrs keeps its files: the WARP identity, and the shims that it
+//! Where podnet keeps its files: the WARP identity, and the shims that it
 //! builds.
 //!
-//! The state directory is the first of these that cfrs can create and write:
+//! The state directory is the first of these that podnet can create and write:
 //!
-//! 1. `CFRS_STATE_DIR` (only this one when it is set; `none` keeps no file);
-//! 2. `$XDG_STATE_HOME/cfrs`;
-//! 3. `$HOME/.local/state/cfrs`;
-//! 4. `$XDG_RUNTIME_DIR/cfrs`;
-//! 5. `cfrs-<uid>` in the temporary directory.
+//! 1. `PODNET_STATE_DIR` (only this one when it is set; `none` keeps no file);
+//! 2. `$XDG_STATE_HOME/podnet`;
+//! 3. `$HOME/.local/state/podnet`;
+//! 4. `$XDG_RUNTIME_DIR/podnet`;
+//! 5. `podnet-<uid>` in the temporary directory.
 //!
-//! cfrs never takes the current directory unless the user names it. Each
+//! podnet never takes the current directory unless the user names it. Each
 //! directory is made with mode 0700. A directory of the temporary directory
 //! that belongs to another user, or that other users can write, is refused.
-//! cfrs reads the home only from `HOME`, never from the user database, so a
+//! podnet reads the home only from `HOME`, never from the user database, so a
 //! uid with no passwd entry works.
 
 use std::ffi::OsString;
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context as _, Result};
 
 /// The variable that names the state directory.
-pub const STATE_DIR_VARIABLE: &str = "CFRS_STATE_DIR";
+pub const STATE_DIR_VARIABLE: &str = "PODNET_STATE_DIR";
 
 /// The candidates, with the name of their source, from the variables of
 /// `env`.
@@ -38,19 +38,19 @@ pub fn candidates(env: &dyn Fn(&str) -> Option<OsString>) -> Option<Vec<(String,
     if let Some(dir) = var("XDG_STATE_HOME") {
         out.push((
             "$XDG_STATE_HOME".to_string(),
-            PathBuf::from(dir).join("cfrs"),
+            PathBuf::from(dir).join("podnet"),
         ));
     }
     if let Some(home) = var("HOME") {
         out.push((
             "$HOME".to_string(),
-            PathBuf::from(home).join(".local/state/cfrs"),
+            PathBuf::from(home).join(".local/state/podnet"),
         ));
     }
     if let Some(dir) = var("XDG_RUNTIME_DIR") {
         out.push((
             "$XDG_RUNTIME_DIR".to_string(),
-            PathBuf::from(dir).join("cfrs"),
+            PathBuf::from(dir).join("podnet"),
         ));
     }
     let tmp = var("TMPDIR")
@@ -59,13 +59,13 @@ pub fn candidates(env: &dyn Fn(&str) -> Option<OsString>) -> Option<Vec<(String,
     let uid = unsafe { libc::geteuid() };
     out.push((
         "the temporary directory".to_string(),
-        tmp.join(format!("cfrs-{uid}")),
+        tmp.join(format!("podnet-{uid}")),
     ));
     Some(out)
 }
 
-/// `CFRS_FOREIGN_HOME=allow`: write in a directory of another user anyway.
-pub const FOREIGN_HOME_VARIABLE: &str = "CFRS_FOREIGN_HOME";
+/// `PODNET_FOREIGN_HOME=allow`: write in a directory of another user anyway.
+pub const FOREIGN_HOME_VARIABLE: &str = "PODNET_FOREIGN_HOME";
 
 /// The owner of `path`, or of its nearest directory that exists.
 fn owner_of(path: &Path) -> Option<u32> {
@@ -80,11 +80,11 @@ fn owner_of(path: &Path) -> Option<u32> {
     None
 }
 
-/// An error when `path`, a file or a directory that cfrs is to write (or
+/// An error when `path`, a file or a directory that podnet is to write (or
 /// its nearest directory that exists), belongs to another user (podssh
 /// #118: root with the HOME of a user made root-owned files in that home,
 /// and OpenSSH then refused the user's ~/.ssh/config).
-/// `CFRS_FOREIGN_HOME=allow` writes anyway, with a warning.
+/// `PODNET_FOREIGN_HOME=allow` writes anyway, with a warning.
 pub fn check_own(path: &Path) -> Result<()> {
     check_own_with(
         path,
@@ -104,21 +104,21 @@ fn check_own_with(path: &Path, me: u32, allow: bool) -> Result<()> {
         tracing::warn!(
             path = %path.display(),
             owner,
-            "{FOREIGN_HOME_VARIABLE}=allow: cfrs writes in a directory of another user"
+            "{FOREIGN_HOME_VARIABLE}=allow: podnet writes in a directory of another user"
         );
         return Ok(());
     }
     Err(crate::exit::fault(
         crate::exit::Fault::Config,
         anyhow::anyhow!(
-            "{} belongs to the user {owner}, not to this user ({me}): cfrs writes no file of another user (a file of root in the home of a user breaks it). Run as that user (sudo -u USER, or sudo -H), give another path, or set {FOREIGN_HOME_VARIABLE}=allow",
+            "{} belongs to the user {owner}, not to this user ({me}): podnet writes no file of another user (a file of root in the home of a user breaks it). Run as that user (sudo -u USER, or sudo -H), give another path, or set {FOREIGN_HOME_VARIABLE}=allow",
             path.display()
         ),
     ))
 }
 
-/// The state directory of this process, or `None` with `CFRS_STATE_DIR=none`.
-/// The error names each path that cfrs tried, and why it failed.
+/// The state directory of this process, or `None` with `PODNET_STATE_DIR=none`.
+/// The error names each path that podnet tried, and why it failed.
 pub fn state_dir() -> Result<Option<PathBuf>> {
     choose(&|key| std::env::var_os(key))
 }
@@ -133,7 +133,7 @@ pub fn choose(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Option<PathBuf>>
         // A HOME of another user is skipped, with a warning (podssh #118).
         if source == "$HOME" || source == "$XDG_STATE_HOME" {
             if let Err(err) = check_own(&dir) {
-                tracing::warn!("{err:#}; cfrs uses the next state directory");
+                tracing::warn!("{err:#}; podnet uses the next state directory");
                 failures.push(format!("{} ({source}): {err:#}", dir.display()));
                 continue;
             }
@@ -152,7 +152,7 @@ pub fn choose(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Option<PathBuf>>
 /// True when `path` exists, false when it does not. Any other error of the
 /// stat (EACCES, ENOTDIR, ELOOP) is returned with the path: before (issue
 /// 178), `Path::exists` gave false for it, and a new WARP device could be
-/// written over a file that cfrs could not read.
+/// written over a file that podnet could not read.
 pub fn exists(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -163,7 +163,7 @@ pub fn exists(path: &Path) -> Result<bool> {
 
 /// The file `name` in the first candidate directory that has it, with no
 /// directory made (issue 178: `warp status` made the state directory).
-/// `Ok(None)` when no candidate has it, or with `CFRS_STATE_DIR=none`.
+/// `Ok(None)` when no candidate has it, or with `PODNET_STATE_DIR=none`.
 pub fn find_existing(name: &str) -> Result<Option<PathBuf>> {
     find_existing_in(&|key| std::env::var_os(key), name)
 }
@@ -212,7 +212,7 @@ pub fn prepare(dir: &Path) -> Result<()> {
 
 /// Write and remove a file in `dir`.
 pub fn writable(dir: &Path) -> Result<()> {
-    let probe = dir.join(format!(".cfrs-probe-{}", std::process::id()));
+    let probe = dir.join(format!(".podnet-probe-{}", std::process::id()));
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -222,7 +222,7 @@ pub fn writable(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check that cfrs can write the file `path` later: its directory can be
+/// Check that podnet can write the file `path` later: its directory can be
 /// made and written. Call it before work that the file must keep (a WARP
 /// registration), so that a failure costs nothing.
 pub fn check_file_writable(path: &Path) -> Result<()> {
@@ -238,7 +238,7 @@ pub fn check_file_writable(path: &Path) -> Result<()> {
         .with_context(|| format!("{} cannot be written", dir.display()))
 }
 
-/// True when the file system of `dir` lets cfrs run or map code from it
+/// True when the file system of `dir` lets podnet run or map code from it
 /// (no `noexec` mount).
 pub fn allows_exec(dir: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
@@ -268,7 +268,7 @@ pub fn exec_dir(name: &str) -> Result<PathBuf> {
 
 /// [`exec_dir`] with the candidates in `candidates`. Issue 247: a
 /// directory that exists already must be a directory of this user (not a
-/// symlink) that other users cannot write, because cfrs loads the code in
+/// symlink) that other users cannot write, because podnet loads the code in
 /// it.
 fn exec_dir_from(candidates: Vec<PathBuf>) -> Result<PathBuf> {
     let mut tried = Vec::new();
@@ -390,7 +390,7 @@ mod tests {
         let err = check_own_with(&path, me + 1, false).unwrap_err();
         assert_eq!(crate::exit::code_of(&err), 78);
         assert!(
-            format!("{err:#}").contains("CFRS_FOREIGN_HOME=allow"),
+            format!("{err:#}").contains("PODNET_FOREIGN_HOME=allow"),
             "{err:#}"
         );
         assert!(check_own_with(&path, me + 1, true).is_ok());
@@ -399,7 +399,7 @@ mod tests {
     // Issue 178: a stat error is not a missing file.
     #[test]
     fn a_stat_error_is_not_a_missing_file() {
-        let dir = std::env::temp_dir().join(format!("cfrs-exists-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-exists-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("plain");
         std::fs::write(&file, "x").unwrap();
@@ -413,7 +413,7 @@ mod tests {
     // Issue 178: a search makes no directory.
     #[test]
     fn find_existing_creates_nothing() {
-        let root = std::env::temp_dir().join(format!("cfrs-find-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("podnet-find-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let env = |key: &str| match key {
             "XDG_STATE_HOME" => Some(root.join("state").into_os_string()),
@@ -424,7 +424,7 @@ mod tests {
         assert!(find_existing_in(&env, "warp.json").unwrap().is_none());
         assert!(!root.exists());
         // A file in the second candidate is found.
-        let second = root.join("home/.local/state/cfrs");
+        let second = root.join("home/.local/state/podnet");
         std::fs::create_dir_all(&second).unwrap();
         std::fs::write(second.join("warp.json"), "{}").unwrap();
         assert_eq!(
@@ -455,7 +455,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("cfrs-"));
+            .starts_with("podnet-"));
         let cwd = std::env::current_dir().unwrap();
         assert!(!chosen.starts_with(&cwd) || cwd.starts_with(tmp));
         let mode = std::fs::metadata(&chosen).unwrap().mode() & 0o777;
@@ -471,9 +471,9 @@ mod tests {
         let chosen = choose(&env(&[("XDG_STATE_HOME", &state), ("HOME", &home)]))
             .unwrap()
             .unwrap();
-        assert_eq!(chosen, PathBuf::from(&state).join("cfrs"));
+        assert_eq!(chosen, PathBuf::from(&state).join("podnet"));
         let chosen = choose(&env(&[("HOME", &home)])).unwrap().unwrap();
-        assert_eq!(chosen, PathBuf::from(&home).join(".local/state/cfrs"));
+        assert_eq!(chosen, PathBuf::from(&home).join(".local/state/podnet"));
         let own = format!("{base}/own");
         let chosen = choose(&env(&[(STATE_DIR_VARIABLE, &own), ("HOME", &home)]))
             .unwrap()
@@ -510,7 +510,7 @@ mod tests {
             "$HOME",
             "$XDG_RUNTIME_DIR",
             "the temporary directory",
-            "CFRS_STATE_DIR",
+            "PODNET_STATE_DIR",
         ] {
             assert!(err.contains(want), "{want} is not in: {err}");
         }

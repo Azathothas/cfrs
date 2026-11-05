@@ -1,9 +1,9 @@
-//! Name resolution for each direct dial of cfrs ([`crate::egress`]).
+//! Name resolution for each direct dial of podnet ([`crate::egress`]).
 //!
 //! The chain, in order:
 //!
 //! 1. An IP address is used as it is.
-//! 2. A pin of `--resolve HOST=IP` or `CFRS_RESOLVE` (a comma-separated list
+//! 2. A pin of `--resolve HOST=IP` or `PODNET_RESOLVE` (a comma-separated list
 //!    of `HOST=IP`). TLS still checks the name of the certificate.
 //! 3. The system resolver (`/etc/resolv.conf`), with a time limit of
 //!    [`STEP_TIMEOUT`].
@@ -30,7 +30,7 @@ use anyhow::{bail, Context as _, Result};
 use serde::Deserialize;
 
 /// The variable of the pins.
-pub const PINS_VARIABLE: &str = "CFRS_RESOLVE";
+pub const PINS_VARIABLE: &str = "PODNET_RESOLVE";
 /// The time limit of one step of the chain, and of one DoH server.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -117,7 +117,7 @@ fn by_family(servers: &[DohServer], ipv4_route: bool) -> Vec<DohServer> {
     }
 }
 
-/// The DoH servers by name. cfrs asks them only through a proxy, which
+/// The DoH servers by name. podnet asks them only through a proxy, which
 /// resolves the name: some proxies refuse a CONNECT to an IP address. With
 /// no proxy, the name would need the chain that it is part of.
 pub const DOH_SERVERS_BY_NAME: &[DohServer] = &[
@@ -152,7 +152,7 @@ pub fn doh_servers() -> Vec<DohServer> {
 static PINS: OnceLock<HashMap<String, Vec<IpAddr>>> = OnceLock::new();
 
 /// Set the pins of `--resolve`. Call it before the first dial; a later call
-/// has no effect. The pins of `CFRS_RESOLVE` are added to them.
+/// has no effect. The pins of `PODNET_RESOLVE` are added to them.
 pub fn set_pins(list: &str) -> Result<()> {
     let mut pins = parse_pins(list)?;
     if let Ok(env) = std::env::var(PINS_VARIABLE) {
@@ -429,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_in_the_no_doh_scope_does_not_ask_doh() {
         assert!(doh_allowed());
-        let err = resolve_no_doh("cfrs-test.invalid").await.unwrap_err();
+        let err = resolve_no_doh("podnet-test.invalid").await.unwrap_err();
         assert!(
             format!("{err:#}").contains("DNS over HTTPS: not asked"),
             "{err:#}"

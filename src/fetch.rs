@@ -1,4 +1,4 @@
-//! A small HTTP/1.1 client for the requests of cfrs: the quick-tunnel API,
+//! A small HTTP/1.1 client for the requests of podnet: the quick-tunnel API,
 //! DNS over HTTPS, the WARP API and the fetch of the public URL.
 //!
 //! Each request opens one connection with [`crate::egress::dial`] (so each
@@ -142,7 +142,7 @@ fn target(url: &str) -> Result<Target> {
     };
     let path = path.split('#').next().unwrap_or("/").to_string();
     if authority.contains('@') {
-        bail!("the URL has a user part, which cfrs does not send");
+        bail!("the URL has a user part, which podnet does not send");
     }
     let default = if tls { 443 } else { 80 };
     let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
@@ -243,7 +243,7 @@ where
     }
     if !has_agent {
         head.push_str(&format!(
-            "User-Agent: cfrs/{}\r\n",
+            "User-Agent: podnet/{}\r\n",
             env!("CARGO_PKG_VERSION")
         ));
     }

@@ -1,4 +1,4 @@
-//! The routes and the resolver of `cfrs warp tun --default-route` (issue
+//! The routes and the resolver of `podnet warp tun --default-route` (issue
 //! 77): with CAP_NET_ADMIN, the whole host goes through WARP.
 //!
 //! * Host routes through the gateway of the default route for each
@@ -442,7 +442,7 @@ impl Routes {
             };
             if unreachable && needed {
                 bail!(
-                    "no route to {ip}, an address of the MASQUE connection: cfrs cannot keep it outside the tunnel (use a proxy on a reachable address, or run without --default-route)"
+                    "no route to {ip}, an address of the MASQUE connection: podnet cannot keep it outside the tunnel (use a proxy on a reachable address, or run without --default-route)"
                 );
             }
             if unreachable {
@@ -558,7 +558,7 @@ pub fn nameservers() -> Vec<std::net::IpAddr> {
 
 /// The text of a resolv.conf with `servers`.
 pub fn resolv_text(servers: &[std::net::IpAddr]) -> String {
-    let mut text = String::from("# cfrs warp tun --default-route: DNS through WARP\n");
+    let mut text = String::from("# podnet warp tun --default-route: DNS through WARP\n");
     for s in servers {
         text.push_str(&format!("nameserver {s}\n"));
     }
@@ -610,7 +610,7 @@ fn install_all<T>(items: &[T], mut apply: impl FnMut(&T, bool) -> Result<()>) ->
 /// over the file is not possible (a bind mount: EBUSY, EXDEV), the file is
 /// written in place.
 fn replace_file(path: &std::path::Path, text: &str) -> Result<()> {
-    let temp = path.with_extension(format!("cfrs-{}", std::process::id()));
+    let temp = path.with_extension(format!("podnet-{}", std::process::id()));
     std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
     match std::fs::rename(&temp, path) {
         Ok(()) => Ok(()),
@@ -691,7 +691,7 @@ mod tests {
         let mut text = String::from(
             "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
              eth0\t000200C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n\
-             cfrs0\t00000000\t00000000\t0001\t0\t0\t0\t00000080\n",
+             podnet0\t00000000\t00000000\t0001\t0\t0\t0\t00000080\n",
         );
         if default {
             text.push_str("eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\n");
@@ -705,7 +705,7 @@ mod tests {
         let mut text = String::from(
             "fd000077000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth0\n\
              00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n\
-             00000000000000000000000000000000 01 00000000000000000000000000000000 00 00000000000000000000000000000000 00000001 00000000 00000000 00000001    cfrs0\n",
+             00000000000000000000000000000000 01 00000000000000000000000000000000 00 00000000000000000000000000000000 00000001 00000000 00000000 00000001    podnet0\n",
         );
         if default {
             text.push_str("00000000000000000000000000000000 00 00000000000000000000000000000000 00 fd000077000000000000000000000001 00000400 00000001 00000000 00000003     eth0\n");
@@ -722,17 +722,20 @@ mod tests {
         let with = table6(true);
         assert_eq!(with.len(), 4);
         assert_eq!(
-            plan_exempt6(ip("2606:4700:103::2"), &with, "cfrs0"),
+            plan_exempt6(ip("2606:4700:103::2"), &with, "podnet0"),
             Exempt6::Via {
                 dev: "eth0".into(),
                 gateway: Some(ip("fd00:77::1")),
             }
         );
-        assert_eq!(plan_exempt6(ip("fd00:77::9"), &with, "cfrs0"), Exempt6::No);
-        assert_eq!(plan_exempt6(ip("::1"), &with, "cfrs0"), Exempt6::No);
+        assert_eq!(
+            plan_exempt6(ip("fd00:77::9"), &with, "podnet0"),
+            Exempt6::No
+        );
+        assert_eq!(plan_exempt6(ip("::1"), &with, "podnet0"), Exempt6::No);
         let none = table6(false);
         assert_eq!(
-            plan_exempt6(ip("2606:4700:103::2"), &none, "cfrs0"),
+            plan_exempt6(ip("2606:4700:103::2"), &none, "podnet0"),
             Exempt6::Unreachable
         );
     }
@@ -746,21 +749,21 @@ mod tests {
         let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
         let none = table(false);
         assert_eq!(parse_route_table("Iface\n"), None);
-        assert_eq!(plan_exempt(ip("127.0.0.1"), &none, "cfrs0"), Exempt::No);
-        assert_eq!(plan_exempt(ip("192.0.2.10"), &none, "cfrs0"), Exempt::No);
+        assert_eq!(plan_exempt(ip("127.0.0.1"), &none, "podnet0"), Exempt::No);
+        assert_eq!(plan_exempt(ip("192.0.2.10"), &none, "podnet0"), Exempt::No);
         assert_eq!(
-            plan_exempt(ip("198.51.100.7"), &none, "cfrs0"),
+            plan_exempt(ip("198.51.100.7"), &none, "podnet0"),
             Exempt::Unreachable
         );
         let with = table(true);
         assert_eq!(
-            plan_exempt(ip("198.51.100.7"), &with, "cfrs0"),
+            plan_exempt(ip("198.51.100.7"), &with, "podnet0"),
             Exempt::Via {
                 dev: "eth0".into(),
                 gateway: Some(ip("192.0.2.1"))
             }
         );
-        assert_eq!(plan_exempt(ip("192.0.2.10"), &with, "cfrs0"), Exempt::No);
+        assert_eq!(plan_exempt(ip("192.0.2.10"), &with, "podnet0"), Exempt::No);
     }
 
     #[test]

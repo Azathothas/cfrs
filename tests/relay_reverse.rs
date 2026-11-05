@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cfrs::relay_reverse::{connect, node, run_node, save, Pair, Target};
-use cfrs::ws_relay::Relay;
 use futures::{SinkExt as _, StreamExt as _};
+use podnet::relay_reverse::{connect, node, run_node, save, Pair, Target};
+use podnet::ws_relay::Relay;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -262,7 +262,7 @@ async fn hello() -> String {
     addr
 }
 
-// Issue 109: an input that ends at once (printf PING | cfrs relay connect)
+// Issue 109: an input that ends at once (printf PING | podnet relay connect)
 // still gets the answer of the target. Before, the close of the input
 // closed the session, and the output was empty.
 #[tokio::test(flavor = "multi_thread")]
@@ -301,14 +301,14 @@ async fn a_session_ends_after_the_idle_time_when_the_input_ended() {
     let mut out = Vec::new();
     let start = std::time::Instant::now();
     tokio::time::timeout(
-        cfrs::relay_reverse::EOF_IDLE + Duration::from_secs(10),
+        podnet::relay_reverse::EOF_IDLE + Duration::from_secs(10),
         connect(&relay, NAME, "connect", &b"PING\n"[..], &mut out),
     )
     .await
     .expect("the session ends")
     .unwrap();
     assert_eq!(out, b"PING\n");
-    assert!(start.elapsed() >= cfrs::relay_reverse::EOF_IDLE);
+    assert!(start.elapsed() >= podnet::relay_reverse::EOF_IDLE);
 }
 
 async fn wait_for_node(state: &Arc<Mutex<State>>, sockets: usize) {
@@ -396,7 +396,7 @@ async fn a_wrong_connect_token_is_a_config_error() {
     let err = connect(&relay, NAME, "wrong", tokio::io::empty(), tokio::io::sink())
         .await
         .unwrap_err();
-    assert_eq!(cfrs::exit::code_of(&err), cfrs::exit::CONFIG);
+    assert_eq!(podnet::exit::code_of(&err), podnet::exit::CONFIG);
 }
 
 /// A relay that sends ready, part of an answer, then the close `code`.
@@ -440,7 +440,7 @@ async fn a_close_with_an_error_code_after_the_input_ends_is_an_error() {
     .expect("the session ends")
     .unwrap_err();
     assert_eq!(out, b"part");
-    assert_eq!(cfrs::exit::code_of(&err), 69, "{err:#}");
+    assert_eq!(podnet::exit::code_of(&err), 69, "{err:#}");
     assert!(format!("{err:#}").contains("1009"), "{err:#}");
     // A normal close is a success.
     let url = closing_relay(1000).await;
@@ -563,6 +563,6 @@ async fn a_named_node_ends_at_the_expiry() {
         .await
         .expect("the node ends")
         .unwrap_err();
-    assert_eq!(cfrs::exit::code_of(&err), 78, "{err:#}");
+    assert_eq!(podnet::exit::code_of(&err), 78, "{err:#}");
     assert!(format!("{err:#}").contains("expired"), "{err:#}");
 }

@@ -1,4 +1,4 @@
-//! The TLS roots of cfrs, end to end: a local HTTPS server with a private CA
+//! The TLS roots of podnet, end to end: a local HTTPS server with a private CA
 //! stands in for the quick-tunnel API (as a TLS-inspecting proxy would).
 
 mod test_host;
@@ -22,7 +22,7 @@ fn ca(expired: bool) -> Ca {
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "cfrs test CA");
+        .push(rcgen::DnType::CommonName, "podnet test CA");
     let ca_cert = params.self_signed(&ca_key).unwrap();
     let issuer = rcgen::Issuer::new(params, ca_key);
 
@@ -85,15 +85,15 @@ fn serve(ca: &Ca) -> u16 {
     port
 }
 
-/// Run `cfrs tunnel` with the quick-tunnel API at `https://localhost:port`.
+/// Run `podnet tunnel` with the quick-tunnel API at `https://localhost:port`.
 fn tunnel(port: u16, env: &[(&str, &str)], args: &[&str]) -> String {
     let url = format!("https://localhost:{port}");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args(["tunnel", "--hello-world", "--service-url", &url])
         .args(args)
-        .env("CFRS_EDGE", "127.0.0.1:9")
+        .env("PODNET_EDGE", "127.0.0.1:9")
         .env_remove("SSL_CERT_FILE")
-        .env_remove("CFRS_ERROR_PROGRAM");
+        .env_remove("PODNET_ERROR_PROGRAM");
     for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
         cmd.env_remove(key);
     }

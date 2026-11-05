@@ -1,5 +1,5 @@
 #!/bin/sh
-# The checks of cfrs on the IPv6-only host of scripts/v6only/up.sh (issue
+# The checks of podnet on the IPv6-only host of scripts/v6only/up.sh (issue
 # 163), from the IPv6-only kit of 2026-11-02. Each check that fails stops
 # the script (exit 1). The output goes through scripts/live-run.sh, which
 # masks tunnel names, UUIDs and the WARP device.
@@ -47,12 +47,12 @@ say "warp tun --default-route with the IPv6 front door"
 # The files of the redirect belong to this user, not to root (SC2024 is
 # the wanted behaviour here).
 # shellcheck disable=SC2024
-sudo ip netns exec v6only env CFRS_STATE_DIR=none RUST_LOG=cfrs=info \
+sudo ip netns exec v6only env PODNET_STATE_DIR=none RUST_LOG=podnet=info \
     timeout 60 "$bin" warp --ephemeral --masque-endpoint '[2606:4700:103::2]:443' \
-    tun --default-route --interface cfrs1 > v6tun.out 2> v6tun.err &
+    tun --default-route --interface podnet1 > v6tun.out 2> v6tun.err &
 tunpid=$!
 i=0
-until sudo ip netns exec v6only ip -6 route | grep -q '^::/1 dev cfrs1'; do
+until sudo ip netns exec v6only ip -6 route | grep -q '^::/1 dev podnet1'; do
     i=$((i + 1))
     if [ "$i" -gt 45 ] || ! kill -0 "$tunpid" 2> /dev/null; then
         sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/<id>/g' v6tun.err | tail -15
@@ -61,17 +61,17 @@ until sudo ip netns exec v6only ip -6 route | grep -q '^::/1 dev cfrs1'; do
     fi
     sleep 1
 done
-grep -E '^cfrs: routes' v6tun.out | sed -E 's/[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}/<v6>/g'
+grep -E '^podnet: routes' v6tun.out | sed -E 's/[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}/<v6>/g'
 sudo ip netns exec v6only ip -6 route | grep -E '^2606:4700:103::2 ' > /dev/null
-echo "the front door has a host route outside cfrs1"
+echo "the front door has a host route outside podnet1"
 sudo ip netns exec v6only curl -fsS -4 --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep '^warp='
 sudo kill -INT "$tunpid" 2> /dev/null || true
 wait "$tunpid" 2> /dev/null || true
-if sudo ip netns exec v6only ip -6 route | grep -q 'cfrs1'; then
-    echo "routes of cfrs1 are left"
+if sudo ip netns exec v6only ip -6 route | grep -q 'podnet1'; then
+    echo "routes of podnet1 are left"
     exit 1
 fi
-echo "the routes of cfrs1 are gone"
+echo "the routes of podnet1 are gone"
 
 say "survive: a detached tunnel is started again after a kill"
 $run "$bin" demo --detach --name v6survive --ready-timeout 120 > v6survive.json 2> v6survive.err

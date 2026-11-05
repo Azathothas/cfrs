@@ -16,7 +16,7 @@
 //!    is.
 //!
 //! An SSH `forwarded-tcpip` channel is a raw byte pipe that the relay opens
-//! per visitor. cfrs splices that pipe to the unix socket, so the blocked TCP
+//! per visitor. podnet splices that pipe to the unix socket, so the blocked TCP
 //! path is never used. That is the whole trick, and it is why the origin can be
 //! a unix socket at all.
 
@@ -60,7 +60,7 @@ impl Default for RelayConfig {
         Self {
             address: DEFAULT_RELAY.to_string(),
             proxy: None,
-            username: "cfrs".to_string(),
+            username: "podnet".to_string(),
             unix_socket: default_origin_socket(),
             connect_timeout: Duration::from_secs(15),
         }
@@ -71,10 +71,10 @@ impl Default for RelayConfig {
 /// directory of this user (`state::exec_dir`, mode 0700), not a fixed path
 /// in the shared `/tmp` that another user can make first.
 pub fn default_origin_socket() -> std::path::PathBuf {
-    match crate::state::exec_dir("cfrs-relay") {
+    match crate::state::exec_dir("podnet-relay") {
         Ok(dir) => dir.join("origin.sock"),
         Err(_) => {
-            std::env::temp_dir().join(format!("cfrs-origin-{}.sock", unsafe { libc::geteuid() }))
+            std::env::temp_dir().join(format!("podnet-origin-{}.sock", unsafe { libc::geteuid() }))
         }
     }
 }
@@ -173,8 +173,8 @@ impl Handler for Client {
         let served = self.served.clone();
         let peer = format!("{connected_address}:{connected_port}");
 
-        if std::env::var_os("CFRS_DEBUG").is_some() {
-            eprintln!("cfrs: visitor channel opened from {peer} -> {origin:?}");
+        if std::env::var_os("PODNET_DEBUG").is_some() {
+            eprintln!("podnet: visitor channel opened from {peer} -> {origin:?}");
         }
 
         reply.accept().await;
@@ -187,11 +187,11 @@ impl Handler for Client {
                     }
                 }
                 Err(e) => {
-                    eprintln!("cfrs: visitor {peer} failed: {e}");
+                    eprintln!("podnet: visitor {peer} failed: {e}");
                 }
             }
-            if std::env::var_os("CFRS_DEBUG").is_some() {
-                eprintln!("cfrs: visitor {peer} channel closed");
+            if std::env::var_os("PODNET_DEBUG").is_some() {
+                eprintln!("podnet: visitor {peer} channel closed");
             }
         });
 
@@ -305,7 +305,7 @@ where
     OR: tokio::io::AsyncRead + Unpin,
     OW: tokio::io::AsyncWrite + Unpin,
 {
-    let debug = std::env::var_os("CFRS_DEBUG").is_some();
+    let debug = std::env::var_os("PODNET_DEBUG").is_some();
 
     // Both directions run concurrently to completion.
     let up = async {
@@ -317,7 +317,7 @@ where
             }
             if debug {
                 eprintln!(
-                    "cfrs: channel->origin {n} bytes: {:?}",
+                    "podnet: channel->origin {n} bytes: {:?}",
                     String::from_utf8_lossy(&buf[..n.min(160)])
                 );
             }
@@ -337,7 +337,7 @@ where
             }
             if debug {
                 eprintln!(
-                    "cfrs: origin->channel {n} bytes: {:?}",
+                    "podnet: origin->channel {n} bytes: {:?}",
                     String::from_utf8_lossy(&buf[..n.min(160)])
                 );
             }
@@ -522,7 +522,7 @@ mod tests {
     fn the_default_origin_socket_is_private() {
         use std::os::unix::fs::MetadataExt as _;
         let path = RelayConfig::default().unix_socket;
-        assert_ne!(path, std::path::PathBuf::from("/tmp/cfrs-origin.sock"));
+        assert_ne!(path, std::path::PathBuf::from("/tmp/podnet-origin.sock"));
         if let Some(dir) = path
             .parent()
             .filter(|d| d.is_dir() && *d != std::env::temp_dir())
@@ -605,10 +605,10 @@ https://jcydy-2400-1a00-5b2f-821c-869e-56ff-fe03-2b71.run.pinggy-free.link\n";
     async fn copy_bidirectional_carries_request_and_response_on_one_origin_connection() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-        // cfrs_channel: the SSH channel the relay opened (relay <-> cfrs).
-        let (mut relay, mut cfrs_channel) = tokio::io::duplex(4096);
-        // cfrs_origin: the unix-socket origin (origin <-> cfrs).
-        let (mut origin, mut cfrs_origin) = tokio::io::duplex(4096);
+        // podnet_channel: the SSH channel the relay opened (relay <-> podnet).
+        let (mut relay, mut podnet_channel) = tokio::io::duplex(4096);
+        // podnet_origin: the unix-socket origin (origin <-> podnet).
+        let (mut origin, mut podnet_origin) = tokio::io::duplex(4096);
 
         // The relay writes the visitor's request, then reads the reply back.
         let relay_task = tokio::spawn(async move {
@@ -635,10 +635,10 @@ https://jcydy-2400-1a00-5b2f-821c-869e-56ff-fe03-2b71.run.pinggy-free.link\n";
             request
         });
 
-        // cfrs splices the channel into the origin, both directions, bounded so
+        // podnet splices the channel into the origin, both directions, bounded so
         // a regression fails the test instead of hanging the suite.
-        let (mut cr, mut cw) = tokio::io::split(&mut cfrs_channel);
-        let (mut or, mut ow) = tokio::io::split(&mut cfrs_origin);
+        let (mut cr, mut cw) = tokio::io::split(&mut podnet_channel);
+        let (mut or, mut ow) = tokio::io::split(&mut podnet_origin);
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             copy_bidirectional(&mut cr, &mut cw, &mut or, &mut ow),

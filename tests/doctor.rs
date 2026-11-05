@@ -1,4 +1,4 @@
-//! `cfrs doctor` against a local test proxy that refuses, carries nothing,
+//! `podnet doctor` against a local test proxy that refuses, carries nothing,
 //! or terminates TLS with its own CA (issue 11). No test uses the network.
 
 mod test_host;
@@ -28,7 +28,7 @@ fn tls_config() -> Arc<rustls::ServerConfig> {
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "cfrs doctor test CA");
+        .push(rcgen::DnType::CommonName, "podnet doctor test CA");
     let issuer = rcgen::Issuer::new(params, ca_key);
     let leaf_key = rcgen::KeyPair::generate().unwrap();
     let leaf = rcgen::CertificateParams::new(vec!["api.trycloudflare.com".to_string()])
@@ -103,10 +103,10 @@ fn handle(mut stream: TcpStream, rule: fn(&str) -> Action, config: Arc<rustls::S
     }
 }
 
-/// Run `cfrs doctor --json` through the proxy on `port`. Gives the exit code,
+/// Run `podnet doctor --json` through the proxy on `port`. Gives the exit code,
 /// the JSON document and all the output.
 fn doctor(port: u16) -> (Option<i32>, serde_json::Value, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args([
         "--proxy",
         &format!("http://tester:{PASSWORD}@127.0.0.1:{port}"),
@@ -118,8 +118,8 @@ fn doctor(port: u16) -> (Option<i32>, serde_json::Value, String) {
         "1",
     ])
     // A TEST-NET address: no answer, and no proxy rule exempts it.
-    .env("CFRS_EDGE", "192.0.2.1:7844")
-    .env_remove("CFRS_ERROR_PROGRAM")
+    .env("PODNET_EDGE", "192.0.2.1:7844")
+    .env_remove("PODNET_ERROR_PROGRAM")
     .env_remove("SSL_CERT_FILE");
     for key in ["NO_PROXY", "no_proxy"] {
         cmd.env_remove(key);
@@ -186,7 +186,7 @@ fn a_proxy_that_refuses_7844_and_terminates_tls() {
     assert!(api["tls"]["issuer"]
         .as_str()
         .unwrap()
-        .contains("cfrs doctor test CA"));
+        .contains("podnet doctor test CA"));
     assert!(api["tls"]["detail"]
         .as_str()
         .unwrap()

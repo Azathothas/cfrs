@@ -59,9 +59,9 @@ impl std::fmt::Display for ProxyListen {
 }
 
 /// The default directory of the inbound sockets of the seccomp backend
-/// (issue 306): `$XDG_RUNTIME_DIR/pod-netns-inbound` when that directory is
-/// of this user, else `pod-netns-inbound-UID` in the temporary directory.
-/// Before, the default was `/tmp/pod-netns-inbound`, one name for all users.
+/// (issue 306): `$XDG_RUNTIME_DIR/podnet-netns-inbound` when that directory is
+/// of this user, else `podnet-netns-inbound-UID` in the temporary directory.
+/// Before, the default was `/tmp/podnet-netns-inbound`, one name for all users.
 pub fn default_inbound_dir() -> PathBuf {
     use std::os::unix::fs::MetadataExt;
     // SAFETY: geteuid() has no precondition.
@@ -72,10 +72,10 @@ pub fn default_inbound_dir() -> PathBuf {
             .map(|m| m.is_dir() && m.uid() == uid)
             .unwrap_or(false);
         if runtime.is_absolute() && mine {
-            return runtime.join("pod-netns-inbound");
+            return runtime.join("podnet-netns-inbound");
         }
     }
-    std::env::temp_dir().join(format!("pod-netns-inbound-{uid}"))
+    std::env::temp_dir().join(format!("podnet-netns-inbound-{uid}"))
 }
 
 /// Make `dir` a private directory of this user, or check the directory that
@@ -212,12 +212,12 @@ mod tests {
     #[test]
     fn the_default_inbound_directory_is_of_this_user() {
         let dir = default_inbound_dir();
-        assert_ne!(dir, PathBuf::from("/tmp/pod-netns-inbound"));
+        assert_ne!(dir, PathBuf::from("/tmp/podnet-netns-inbound"));
         // SAFETY: geteuid() has no precondition.
         let uid = unsafe { libc::geteuid() };
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
-            name == "pod-netns-inbound" || name == format!("pod-netns-inbound-{uid}"),
+            name == "podnet-netns-inbound" || name == format!("podnet-netns-inbound-{uid}"),
             "{}",
             dir.display()
         );

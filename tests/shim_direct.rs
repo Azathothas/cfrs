@@ -3,7 +3,7 @@
 //! They compile the shim from its embedded source, compile two ordinary C
 //! programs that use `AF_INET` sockets, and run them with the shim preloaded.
 //! The kernel never sees an `AF_INET` bind or connect; the programs still
-//! exchange data over `\0cfrsnet/...` abstract names.
+//! exchange data over `\0podnet-vnet/...` abstract names.
 //!
 //! If no C compiler is available the tests report that and pass, so they do
 //! not fail on a host that cannot build the shim at all.
@@ -12,7 +12,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use cfrs::vnet::shim;
+use podnet::vnet::shim;
 
 fn have_compiler() -> bool {
     shim::compiler().is_ok()
@@ -193,11 +193,11 @@ int main(void){
     let mut server_cmd = Command::new(&server);
     server_cmd
         .env("LD_PRELOAD", &shim.path)
-        .env("CFRSNET_LOG", "1");
+        .env("PODNET_VNET_LOG", "1");
     let mut client_cmd = Command::new(&client);
     client_cmd
         .env("LD_PRELOAD", &shim.path)
-        .env("CFRSNET_LOG", "1");
+        .env("PODNET_VNET_LOG", "1");
     let (server_output, output) = run_pair(&mut server_cmd, &mut client_cmd);
 
     assert!(
@@ -226,11 +226,11 @@ int main(void){
     let server_stderr = String::from_utf8_lossy(&server_output.stderr);
     let client_stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        server_stderr.contains("bind -> cfrsnet/4/10.66.0.2/18080"),
+        server_stderr.contains("bind -> podnet-vnet/4/10.66.0.2/18080"),
         "{server_stderr}"
     );
     assert!(
-        client_stderr.contains("connect -> cfrsnet/4/10.66.0.2/18080"),
+        client_stderr.contains("connect -> podnet-vnet/4/10.66.0.2/18080"),
         "{client_stderr}"
     );
 }
@@ -318,11 +318,11 @@ int main(void){
 #[test]
 fn piped_output_is_small() {
     let mut sink = Vec::new();
-    sink.write_all(b"cfrsnet").unwrap();
-    assert_eq!(sink, b"cfrsnet");
+    sink.write_all(b"podnet-vnet").unwrap();
+    assert_eq!(sink, b"podnet-vnet");
 }
 
-/// `CFRSNET_MAP_LOOPBACK` must encode `::1` as the same RFC 5952 literal the
+/// `PODNET_VNET_MAP_LOOPBACK` must encode `::1` as the same RFC 5952 literal the
 /// Rust side would produce for the v4-mapped local address.
 #[test]
 fn ipv6_loopback_mapping_matches_the_rust_encoder() {
@@ -375,12 +375,12 @@ int main(void){
     let mut server_cmd = Command::new(&server);
     server_cmd
         .env("LD_PRELOAD", &shim.path)
-        .env("CFRSNET_MAP_LOOPBACK", "1");
+        .env("PODNET_VNET_MAP_LOOPBACK", "1");
     let mut client_cmd = Command::new(&client);
     client_cmd
         .env("LD_PRELOAD", &shim.path)
-        .env("CFRSNET_MAP_LOOPBACK", "1")
-        .env("CFRSNET_LOG", "1");
+        .env("PODNET_VNET_MAP_LOOPBACK", "1")
+        .env("PODNET_VNET_LOG", "1");
     let (server_output, output) = run_pair(&mut server_cmd, &mut client_cmd);
 
     assert!(
@@ -393,7 +393,7 @@ int main(void){
     // ::1 maps to ::ffff:10.66.0.2, which RFC 5952 renders ::ffff:a42:2.
     let client_stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        client_stderr.contains("cfrsnet/6/::ffff:a42:2/18081"),
+        client_stderr.contains("podnet-vnet/6/::ffff:a42:2/18081"),
         "unexpected abstract name: {client_stderr}"
     );
 }
@@ -642,7 +642,7 @@ fn a_built_shim_needs_no_compiler_later() {
     let dir = tempfile::tempdir().unwrap();
     let first = shim::build(dir.path()).unwrap();
     assert!(matches!(first.origin, shim::ShimOrigin::Compiled));
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["net", "shim", "--out"])
         .arg(dir.path())
         .env("PATH", "/nonexistent")
@@ -772,7 +772,7 @@ int main(int argc,char**argv){{
     };
     let abstract_name = |port: u16| {
         std::os::unix::net::SocketAddr::from_abstract_name(
-            format!("cfrsnet/4/10.66.0.2/{port}").as_bytes(),
+            format!("podnet-vnet/4/10.66.0.2/{port}").as_bytes(),
         )
         .unwrap()
     };

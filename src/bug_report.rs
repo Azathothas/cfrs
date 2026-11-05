@@ -1,9 +1,9 @@
-//! `cfrs bug-report` (issue 117): one text with what a report needs, and no
+//! `podnet bug-report` (issue 117): one text with what a report needs, and no
 //! secret. It opens no connection unless `--doctor` is given.
 //!
-//! The text has the version, the document of `cfrs status`, the detached
+//! The text has the version, the document of `podnet status`, the detached
 //! instances, the last lines of the log of each instance, and the names of
-//! the variables of cfrs and of the proxies that are set (not their values).
+//! the variables of podnet and of the proxies that are set (not their values).
 //! Each line goes through [`scrub`]: the credentials of [`crate::report`],
 //! UUIDs (device ids, tunnel ids), tokens (`eyJ...`, `t.` tokens, runs of 32
 //! or more hex characters, `Authorization` values) and the
@@ -81,13 +81,12 @@ fn scrub_word(word: &str) -> String {
     word.to_string()
 }
 
-/// The names of the variables of cfrs and of the proxies that are set.
+/// The names of the variables of podnet and of the proxies that are set.
 fn variables() -> Vec<String> {
     let mut names: Vec<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
         .filter(|k| {
-            k.starts_with("CFRS_")
-                || k.starts_with("POD_NETNS_")
+            k.starts_with("PODNET_")
                 || k.to_ascii_uppercase().ends_with("_PROXY")
                 || k == "TUNNEL_TOKEN"
                 || k == "SSL_CERT_FILE"
@@ -110,14 +109,14 @@ fn tail(path: &str, n: usize) -> Vec<String> {
         .collect()
 }
 
-/// The text of the report. `doctor` is the JSON of `cfrs doctor`, when it
+/// The text of the report. `doctor` is the JSON of `podnet doctor`, when it
 /// ran.
 pub fn text(doctor: Option<&serde_json::Value>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "cfrs bug-report\n\ncfrs {} ({})\n\n## status\n\n{}\n",
+        "podnet bug-report\n\npodnet {} ({})\n\n## status\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
-        env!("CFRS_BUILD_COMMIT"),
+        env!("PODNET_BUILD_COMMIT"),
         serde_json::to_string_pretty(&crate::status::document()).unwrap_or_default()
     ));
     out.push_str("\n## variables that are set (no values)\n\n");
@@ -151,7 +150,7 @@ pub fn text(doctor: Option<&serde_json::Value>) -> String {
         }
     }
     if let Some(doctor) = doctor {
-        out.push_str("\n## cfrs doctor --json\n\n");
+        out.push_str("\n## podnet doctor --json\n\n");
         out.push_str(&serde_json::to_string_pretty(doctor).unwrap_or_default());
         out.push('\n');
     }
@@ -189,7 +188,7 @@ mod tests {
     fn the_report_has_its_parts() {
         let text = text(None);
         for part in [
-            "cfrs bug-report",
+            "podnet bug-report",
             "## status",
             "## variables",
             "## detached instances",

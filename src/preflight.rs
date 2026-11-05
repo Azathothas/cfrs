@@ -1,7 +1,7 @@
 //! The preflight check (`--check`) of `tunnel`, `serve`, `share` and `demo`.
 //!
 //! The check reads the plan of a tunnel and tests each local part of it:
-//! the origins, the files and the directories, the edge legs, `CFRS_EDGE`.
+//! the origins, the files and the directories, the edge legs, `PODNET_EDGE`.
 //! It makes no call to the Cloudflare API, opens no edge connection, opens
 //! no listening socket, sends no HTTP request to an origin, and writes no
 //! file. It makes one DNS lookup: the SRV record of the edge, with the
@@ -119,7 +119,7 @@ impl Report {
             ));
         }
         if self.ok() {
-            out.push_str("cfrs: the check passed; nothing was started\n");
+            out.push_str("podnet: the check passed; nothing was started\n");
         }
         out
     }
@@ -193,7 +193,7 @@ pub async fn check(config: &Config) -> Report {
         Ok(Some(list)) => report.push(
             "edge",
             Status::Pass,
-            format!("CFRS_EDGE gives {} address(es)", list.len()),
+            format!("PODNET_EDGE gives {} address(es)", list.len()),
         ),
         Ok(None) => {
             // #277: the row names a lookup, so it makes the lookup.
@@ -214,7 +214,7 @@ pub async fn check(config: &Config) -> Report {
             let proxy = crate::egress::proxy_for(crate::tunnel::EDGE_REGION_NAME, 7844);
             let (plan, mut note) =
                 crate::tunnel::plan_with_proxy(plan, config.protocol, proxy.as_ref());
-            // The check sends no UDP probe: only CFRS_UDP=off applies here.
+            // The check sends no UDP probe: only PODNET_UDP=off applies here.
             let udp = crate::udp::Choice::from_env().map_err(|e| format!("{e:#}"));
             match udp.and_then(|u| {
                 crate::tunnel::plan_with_udp(plan, u, None).map_err(|e| format!("{e:#}"))
@@ -229,9 +229,9 @@ pub async fn check(config: &Config) -> Report {
                         crate::race::Failover::Serial => "serial".to_string(),
                     };
                     // Issue 182: the row is the plan; the check makes no
-                    // edge connection (cfrs doctor tests the reach).
+                    // edge connection (podnet doctor tests the reach).
                     let mut detail = format!(
-                        "planned: {} ({failover}); no edge connection is made (cfrs doctor tests the reach)",
+                        "planned: {} ({failover}); no edge connection is made (podnet doctor tests the reach)",
                         names.join(", then ")
                     );
                     if let Some(note) = note {
@@ -296,7 +296,7 @@ pub async fn check(config: &Config) -> Report {
             (Ok(detail), Service::Tcp(_), Credentials::Quick) => report.push(
                 name,
                 Status::Warn,
-                format!("{detail}; a quick tunnel receives HTTP, and a raw TCP origin answers 501 to a browser or curl (use --forward and cfrs connect)"),
+                format!("{detail}; a quick tunnel receives HTTP, and a raw TCP origin answers 501 to a browser or curl (use --forward and podnet connect)"),
             ),
             _ => report.result(name, result),
         }
@@ -414,7 +414,7 @@ fn upload_dir(dest: &Path) -> Result<String, String> {
             if writable(dest) {
                 Ok(format!("{shown}: a writable directory"))
             } else {
-                Err(format!("--dir {shown}: cfrs cannot write in it"))
+                Err(format!("--dir {shown}: podnet cannot write in it"))
             }
         }
         Ok(_) => Err(format!("--dir {shown}: not a directory")),
@@ -436,7 +436,7 @@ fn upload_dir(dest: &Path) -> Result<String, String> {
                             ))
                         } else {
                             Err(format!(
-                                "--dir {shown}: does not exist, and cfrs cannot write in {}",
+                                "--dir {shown}: does not exist, and podnet cannot write in {}",
                                 p.display()
                             ))
                         };
@@ -463,14 +463,14 @@ fn regular_file(file: &Path) -> Result<String, String> {
     Ok(format!("{shown}: a readable file of {} bytes", meta.len()))
 }
 
-/// The WARP identity: a file that cfrs can read, or a path that cfrs can
+/// The WARP identity: a file that podnet can read, or a path that podnet can
 /// write on the first run.
 fn identity_file(path: &Path) -> Result<String, String> {
     let shown = path.display();
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {
             std::fs::read(path).map_err(|e| format!("{shown}: cannot read it: {e}"))?;
-            Ok(format!("{shown}: present; cfrs resumes this device"))
+            Ok(format!("{shown}: present; podnet resumes this device"))
         }
         Ok(_) => Err(format!("{shown}: not a regular file")),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -484,7 +484,7 @@ fn identity_file(path: &Path) -> Result<String, String> {
                 ))
             } else {
                 Err(format!(
-                    "{shown}: absent, and cfrs cannot write in {}",
+                    "{shown}: absent, and podnet cannot write in {}",
                     parent.display()
                 ))
             }

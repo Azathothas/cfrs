@@ -29,7 +29,7 @@ use crate::proxy::{header_value, write_response_meta, EdgeReader, EdgeWriter};
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// Default path for a `--forward` WebSocket endpoint.
-pub const DEFAULT_PATH: &str = "/__cfrs/ws";
+pub const DEFAULT_PATH: &str = "/__podnet/ws";
 
 /// The path of the first `--forward` rule of `ingress` (issue 203).
 /// `None` also when the `path:` of the rule is a regular expression with a
@@ -90,7 +90,7 @@ pub async fn serve_websocket(
     let io = match net::dial(&service, &OriginOptions::default()).await {
         Ok(io) => io,
         Err(err) => {
-            const TEXT: &str = "cfrs: the forward target does not answer\n";
+            const TEXT: &str = "podnet: the forward target does not answer\n";
             write_response_meta(&mut writer, 502, &plain(TEXT)).await?;
             futures::io::AsyncWriteExt::write_all(&mut writer, TEXT.as_bytes()).await?;
             futures::io::AsyncWriteExt::close(&mut writer).await?;
@@ -118,9 +118,9 @@ pub async fn serve_websocket(
 pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// A client WebSocket to `url` (ws:// or wss://). The TCP goes through
-/// the egress layer of cfrs (issue 191): `--proxy`, NO_PROXY,
+/// the egress layer of podnet (issue 191): `--proxy`, NO_PROXY,
 /// `--resolve`, the system resolver and DoH. TLS trusts the roots of
-/// cfrs (`--ca-file`, SSL_CERT_FILE).
+/// podnet (`--ca-file`, SSL_CERT_FILE).
 pub async fn dial(
     url: &str,
     timeout: std::time::Duration,
@@ -314,7 +314,7 @@ fn plain(message: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// A local listener specification for `cfrs connect`.
+/// A local listener specification for `podnet connect`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalSpec {
     /// `tcp://[bind:]port`
@@ -371,7 +371,7 @@ mod tests {
         let addr = closed.local_addr().unwrap();
         drop(closed);
         let request = cqstream::ConnectRequest {
-            dest: "https://x/__cfrs/ws".into(),
+            dest: "https://x/__podnet/ws".into(),
             conn_type: cqstream::ConnectionType::Websocket,
             metadata: vec![(
                 "HttpHeader:Sec-Websocket-Key".into(),
@@ -577,7 +577,7 @@ mod forward_tests {
     fn the_forward_url_of_a_public_url() {
         assert_eq!(
             forward_url("https://a-b.trycloudflare.com", DEFAULT_PATH).as_deref(),
-            Some("wss://a-b.trycloudflare.com/__cfrs/ws")
+            Some("wss://a-b.trycloudflare.com/__podnet/ws")
         );
         assert_eq!(
             forward_url("https://h.example/x/", "raw").as_deref(),

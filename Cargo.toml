@@ -1,15 +1,15 @@
 [package]
-name = "cfrs"
+name = "podnet"
 version.workspace = true
 edition = "2021"
 rust-version = "1.89"
 license = "0BSD"
 build = "build.rs"
-description = "Cloudflare quick and named tunnels, and the Cloudflare WARP client, in one Rust binary for hosts with strong network limits."
-repository = "https://github.com/Azathothas/cfrs"
-homepage = "https://github.com/Azathothas/cfrs"
+description = "podnet: bring your own network to restricted hosts. Tunnels, WARP, relays, pods, virtual networks, file serving and transfer, from one static binary."
+repository = "https://github.com/Azathothas/podnet"
+homepage = "https://github.com/Azathothas/podnet"
 readme = "README.md"
-keywords = ["cloudflare", "tunnel", "trycloudflare", "quic", "reverse-proxy"]
+keywords = ["network", "tunnel", "proxy", "warp", "sandbox"]
 categories = ["network-programming", "command-line-utilities"]
 # The files of the repository that the build and the tests of the crate do
 # not read (#221).
@@ -33,23 +33,23 @@ targets = ["x86_64-unknown-linux-gnu"]
 [workspace]
 # crates/podnet-todo checks the work record in TODO/ (`cargo todo`). It is
 # not a default member: no release builds it.
-members = [".", "crates/pod-netns", "crates/podnet-todo"]
+members = [".", "crates/podnet-netns", "crates/podnet-todo"]
 exclude = ["fuzz"]
-default-members = [".", "crates/pod-netns"]
+default-members = [".", "crates/podnet-netns"]
 
 [workspace.package]
 version = "0.3.0-beta.12"
 
 [lib]
-name = "cfrs"
+name = "podnet"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cfrs"
+name = "podnet"
 path = "src/main.rs"
 
 [dependencies]
-pod-netns = { path = "crates/pod-netns", version = "0.3.0-beta.12" }
+podnet-netns = { path = "crates/podnet-netns", version = "0.3.0-beta.12" }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"
@@ -97,7 +97,7 @@ smoltcp = { version = "=0.12.0", default-features = false, features = [
     "proto-ipv6",
     "socket-tcp",
     "socket-udp",
-    # The congestion controllers of issue 134 (cfrs warp --cc).
+    # The congestion controllers of issue 134 (podnet warp --cc).
     "socket-tcp-reno",
     "socket-tcp-cubic",
     # 32 out-of-order ranges in a TCP receive buffer (the default is 4):

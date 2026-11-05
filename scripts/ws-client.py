@@ -1,8 +1,8 @@
 """A WebSocket client for scripts/live-throughput.sh: it sends a GET of the
 file through a --forward endpoint and counts the bytes of the answer. It
-measures the server half of the bridge with no `cfrs connect`.
+measures the server half of the bridge with no `podnet connect`.
 
-    python3 -I scripts/ws-client.py wss://HOST/__cfrs/ws SIZE_MIB
+    python3 -I scripts/ws-client.py wss://HOST/__podnet/ws SIZE_MIB
 """
 
 import asyncio

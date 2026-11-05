@@ -1,5 +1,5 @@
 //! `--detach` (issues 70, 71, 72): an instance in the background, with no
-//! network. `cfrs net switch` is ready when its listener is bound.
+//! network. `podnet net switch` is ready when its listener is bound.
 
 mod test_host;
 
@@ -28,11 +28,11 @@ impl Env {
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(args)
-            .env("CFRS_RUN_DIR", &self.run)
+            .env("PODNET_RUN_DIR", &self.run)
             .env_remove("RUST_LOG")
-            .env_remove("CFRS_ERROR_PROGRAM");
+            .env_remove("PODNET_ERROR_PROGRAM");
         cmd
     }
 
@@ -98,7 +98,7 @@ fn connects(sock: &Path) -> bool {
 fn a_detached_instance_outlives_the_shell_that_started_it() {
     let env = Env::new();
     let switch = env.switch();
-    // A shell in its own process group starts cfrs and exits; then the
+    // A shell in its own process group starts podnet and exits; then the
     // group gets SIGHUP and SIGKILL, as when a terminal or an agent's
     // shell closes.
     let mut shell = Command::new("sh");
@@ -106,9 +106,9 @@ fn a_detached_instance_outlives_the_shell_that_started_it() {
         .arg("-c")
         .arg(format!(
             "{} net switch --listen {switch} --detach --name t",
-            env!("CARGO_BIN_EXE_cfrs")
+            env!("CARGO_BIN_EXE_podnet")
         ))
-        .env("CFRS_RUN_DIR", &env.run)
+        .env("PODNET_RUN_DIR", &env.run)
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -152,9 +152,9 @@ fn the_start_returns_and_releases_the_streams_of_the_caller() {
     cmd.arg("-c")
         .arg(format!(
             "exec 7>&1; exec {} net switch --listen {switch} --detach --name s",
-            env!("CARGO_BIN_EXE_cfrs")
+            env!("CARGO_BIN_EXE_podnet")
         ))
-        .env("CFRS_RUN_DIR", &env.run)
+        .env("PODNET_RUN_DIR", &env.run)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = cmd.spawn().unwrap();
@@ -482,7 +482,7 @@ fn the_supervisor_starts_a_killed_child_again() {
     for line in &lines {
         assert!(seen.insert(*line), "a line two times: {line}\n{log}");
     }
-    // SIGTERM to the supervisor (cfrs stop) ends both, with no new start.
+    // SIGTERM to the supervisor (podnet stop) ends both, with no new start.
     let child = instance(&env, "sup")["pid"].as_i64().unwrap() as i32;
     assert!(env.run(&["stop", "sup"]).status.success());
     wait_until("both end", || !alive(child) && !alive(supervisor));
@@ -808,5 +808,5 @@ fn detach_prints_only_the_ready_document_on_stdout() {
     serde_json::from_str::<serde_json::Value>(stdout.trim())
         .unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
     let stderr = String::from_utf8_lossy(&start.stderr);
-    assert!(stderr.contains("cfrs: switch"), "{stderr}");
+    assert!(stderr.contains("podnet: switch"), "{stderr}");
 }

@@ -77,7 +77,7 @@ pub enum Service {
 }
 
 impl Service {
-    /// Parse a cloudflared-style service string, plus cfrs extensions
+    /// Parse a cloudflared-style service string, plus podnet extensions
     /// (`static:` / `spa:` / `metrics`).
     pub fn parse(value: &str) -> Result<Self> {
         let value = value.trim();

@@ -10,17 +10,17 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("cfrs-signals-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-signals-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// `cfrs net proxy --run-for 300` on a unix socket in `dir`; ready when the
+/// `podnet net proxy --run-for 300` on a unix socket in `dir`; ready when the
 /// socket is there.
 fn start(dir: &Path, ignore_hup: bool) -> Child {
     let socket = dir.join("s.sock");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_podnet"));
     command
         .args(["net", "proxy", "--run-for", "300", "--listen"])
         .arg(format!("unix:{}", socket.display()))
@@ -122,11 +122,11 @@ fn child_of(pid: u32) -> Option<u32> {
     text.split_whitespace().next()?.parse().ok()
 }
 
-// Issue 208: cfrs as PID 1 of a PID namespace (a container with no init)
+// Issue 208: podnet as PID 1 of a PID namespace (a container with no init)
 // stops on SIGTERM before the ready line. Before, the kernel dropped the
-// raised signal, and cfrs went on.
+// raised signal, and podnet went on.
 #[test]
-fn a_sigterm_to_pid_1_during_provisioning_stops_cfrs() {
+fn a_sigterm_to_pid_1_during_provisioning_stops_podnet() {
     test_host::need_loopback!();
     let ok = Command::new("unshare")
         .args([
@@ -158,10 +158,10 @@ fn a_sigterm_to_pid_1_during_provisioning_stops_cfrs() {
             "--map-root-user",
             "--mount-proc",
         ])
-        .arg(env!("CARGO_BIN_EXE_cfrs"))
+        .arg(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--port", &port, "--no-verify", "--service-url"])
         .arg(format!("http://127.0.0.1:{service}"))
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env_remove("PODNET_ERROR_PROGRAM")
         .env("NO_PROXY", "*")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -175,22 +175,22 @@ fn a_sigterm_to_pid_1_during_provisioning_stops_cfrs() {
             break;
         }
         if let Some(status) = child.try_wait().unwrap() {
-            panic!("cfrs ended before the retry: {status:?}\n{log}");
+            panic!("podnet ended before the retry: {status:?}\n{log}");
         }
         assert!(Instant::now() < deadline, "no retry line\n{log}");
         std::thread::sleep(Duration::from_millis(100));
     }
-    let cfrs = child_of(child.id()).expect("the cfrs process");
+    let podnet = child_of(child.id()).expect("the podnet process");
     // SAFETY: kill() to our own grandchild.
-    unsafe { libc::kill(cfrs as i32, libc::SIGTERM) };
+    unsafe { libc::kill(podnet as i32, libc::SIGTERM) };
     let status = wait(&mut child, Duration::from_secs(5));
     let log = std::fs::read_to_string(&err).unwrap_or_default();
     if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
-        unsafe { libc::kill(cfrs as i32, libc::SIGKILL) };
+        unsafe { libc::kill(podnet as i32, libc::SIGKILL) };
     }
-    let status = status.unwrap_or_else(|| panic!("cfrs did not stop\n{log}"));
+    let status = status.unwrap_or_else(|| panic!("podnet did not stop\n{log}"));
     assert_eq!(status.code(), Some(143), "{status:?}\n{log}");
     let _ = std::fs::remove_dir_all(&dir);
 }

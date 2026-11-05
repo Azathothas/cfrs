@@ -1,6 +1,6 @@
 name: live
 
-# cfrs against the real Cloudflare edge and WARP, on each push to main, each
+# podnet against the real Cloudflare edge and WARP, on each push to main, each
 # day, and by hand. No pull request runs it. The public log holds no tunnel
 # host and no WARP device id: scripts/live-run.sh masks them. After two
 # failed runs in a row, the job report opens one issue, and no second one
@@ -38,7 +38,7 @@ concurrency:
 env:
   RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: never
-  RUST_LOG: cfrs=info
+  RUST_LOG: podnet=info
 
 jobs:
   live:
@@ -69,18 +69,18 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
       - name: Build
         timeout-minutes: 20
-        run: cargo build --locked --release --bin cfrs
+        run: cargo build --locked --release --bin podnet
       # The edge facts of docs/protocol.md section 6 (issue 14).
       - name: Edge facts
         timeout-minutes: 4
         run: sh tools/edge-facts.sh
-      # cfrs doctor (issue 11): on the runner each leg can work.
-      - name: cfrs doctor
+      # podnet doctor (issue 11): on the runner each leg can work.
+      - name: podnet doctor
         timeout-minutes: 3
         run: |
           set -eu
-          target/release/cfrs doctor
-          target/release/cfrs doctor --json > doctor.json
+          target/release/podnet doctor
+          target/release/podnet doctor --json > doctor.json
           for leg in quic http2 quic+warp; do
             jq -e --arg leg "$leg" '.legs[] | select(.leg == $leg) | .status == "ok"' doctor.json
           done
@@ -93,15 +93,15 @@ jobs:
           jq -e '.paths[] | select(.id == "api") | .dns.addresses | length > 0' doctor.json
       - name: Quick tunnel, QUIC (UDP 7844)
         timeout-minutes: 4
-        run: sh scripts/live-run.sh quic target/release/cfrs demo --exit-on-verify --protocol quic --transport direct
+        run: sh scripts/live-run.sh quic target/release/podnet demo --exit-on-verify --protocol quic --transport direct
       - name: Quick tunnel, HTTP/2 (TCP 7844)
         timeout-minutes: 4
-        run: sh scripts/live-run.sh h2 target/release/cfrs demo --exit-on-verify --protocol http2 --transport direct
+        run: sh scripts/live-run.sh h2 target/release/podnet demo --exit-on-verify --protocol http2 --transport direct
       - name: Quick tunnel, JSON lines (--json)
         timeout-minutes: 4
         run: |
           set -eu
-          sh scripts/live-run.sh json target/release/cfrs demo --exit-on-verify --json
+          sh scripts/live-run.sh json target/release/podnet demo --exit-on-verify --json
           jq -e 'select(.event == "ready") | .url | test("^https://.*\\.trycloudflare\\.com$")' json.out
           jq -e 'select(.event == "ready") | .leg | test("^(quic|http2|quic\\+warp|http2\\+relay)$")' json.out
           jq -e 'select(.event == "verified") | .url | test("trycloudflare")' json.out
@@ -114,7 +114,7 @@ jobs:
         timeout-minutes: 3
         run: |
           set -eu
-          target/release/cfrs tunnel --hello-world --run-for 60 --json > sig.out 2> sig.err &
+          target/release/podnet tunnel --hello-world --run-for 60 --json > sig.out 2> sig.err &
           pid=$!
           i=0
           until grep -q '"event":"ready"' sig.out; do
@@ -133,39 +133,39 @@ jobs:
         timeout-minutes: 4
         run: |
           set -eu
-          export CFRS_RUN_DIR="$RUNNER_TEMP/run"
-          sh scripts/live-run.sh detach timeout 120 target/release/cfrs tunnel --hello-world --detach --name live
+          export PODNET_RUN_DIR="$RUNNER_TEMP/run"
+          sh scripts/live-run.sh detach timeout 120 target/release/podnet tunnel --hello-world --detach --name live
           url=$(tail -1 detach.out | jq -r .url)
           pid=$(tail -1 detach.out | jq -r .pid)
           test "$(tail -1 detach.out | jq -r .verified)" = true
-          # The runner can fail one connect just after the verify of cfrs
+          # The runner can fail one connect just after the verify of podnet
           # (curl exit 7 in 2 ms): try again.
           curl -fsS --retry 5 --retry-all-errors --retry-delay 2 "$url" | grep -q 'Hello, world'
-          target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "live") | .state == "ready"'
+          target/release/podnet ps --json | jq -e '.instances[] | select(.name == "live") | .state == "ready"'
           kill -0 "$pid"
-          target/release/cfrs logs live -n 5 > /dev/null
-          target/release/cfrs stop live
+          target/release/podnet logs live -n 5 > /dev/null
+          target/release/podnet stop live
           ! kill -0 "$pid" 2> /dev/null
-          target/release/cfrs ps --json | jq -e '.instances | length == 0'
+          target/release/podnet ps --json | jq -e '.instances | length == 0'
       # Issue 205: --auth-user in front of a quick tunnel. No credential and
-      # a wrong one get 401 from cfrs; the right one gets the origin.
+      # a wrong one get 401 from podnet; the right one gets the origin.
       - name: Quick tunnel with --auth-user
         timeout-minutes: 4
         run: |
           set -eu
-          export CFRS_RUN_DIR="$RUNNER_TEMP/run"
+          export PODNET_RUN_DIR="$RUNNER_TEMP/run"
           umask 077
           pass="$RUNNER_TEMP/auth-pass"
           head -c 18 /dev/urandom | base64 > "$pass"
           echo "::add-mask::$(cat "$pass")"
-          sh scripts/live-run.sh auth timeout 120 target/release/cfrs tunnel --hello-world --auth-user live --auth-password-file "$pass" --detach --name auth
+          sh scripts/live-run.sh auth timeout 120 target/release/podnet tunnel --hello-world --auth-user live --auth-password-file "$pass" --detach --name auth
           url=$(tail -1 auth.out | jq -r .url)
           code() { curl -sS --retry 5 --retry-all-errors --retry-delay 2 -o /dev/null -w '%{http_code}' "$@"; }
           test "$(code "$url")" = 401
           test "$(code -u live:wrong "$url")" = 401
           test "$(code -u "live:$(cat "$pass")" "$url")" = 200
           curl -fsS -u "live:$(cat "$pass")" "$url" | grep -q 'Hello, world'
-          target/release/cfrs stop auth
+          target/release/podnet stop auth
       # UDP 7844 dropped: --protocol auto registers over HTTP/2 after the
       # stagger, and the log names the leg that won.
       - name: Quick tunnel with UDP 7844 dropped (HTTP/2 fallback)
@@ -173,7 +173,7 @@ jobs:
         run: |
           set -eu
           sudo iptables -I OUTPUT -p udp --dport 7844 -j DROP
-          sh scripts/live-run.sh udpdrop target/release/cfrs demo --exit-on-verify
+          sh scripts/live-run.sh udpdrop target/release/podnet demo --exit-on-verify
           grep 'the leg won the race' udpdrop.err
           grep -q 'leg=http2' udpdrop.err
       - name: Remove the UDP rule
@@ -186,15 +186,15 @@ jobs:
         timeout-minutes: 4
         run: |
           set -eu
-          target/release/cfrs net doctor | tee doctor.out
+          target/release/podnet net doctor | tee doctor.out
           grep -E '^UDP egress .* ok +answered' doctor.out
           sudo iptables -I OUTPUT -p udp --dport 7844 -j REJECT
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j REJECT' EXIT
-          target/release/cfrs net doctor | grep -E '^UDP egress .* fail +refused'
-          sh scripts/live-run.sh udpreject target/release/cfrs demo --exit-on-verify
+          target/release/podnet net doctor | grep -E '^UDP egress .* fail +refused'
+          sh scripts/live-run.sh udpreject target/release/podnet demo --exit-on-verify
           grep 'the UDP probe was refused' udpreject.err
           grep -q 'leg=http2' udpreject.err
-      # Each connection of cfrs goes through a local CONNECT proxy, which
+      # Each connection of podnet goes through a local CONNECT proxy, which
       # counts its targets.
       - name: Quick tunnel through a local CONNECT proxy
         timeout-minutes: 4
@@ -202,7 +202,7 @@ jobs:
           set -eu
           python3 -I scripts/connect-proxy.py 18080 "$RUNNER_TEMP/connect.log" &
           sleep 1
-          HTTPS_PROXY=http://127.0.0.1:18080 sh scripts/live-run.sh viaproxy target/release/cfrs demo --exit-on-verify
+          HTTPS_PROXY=http://127.0.0.1:18080 sh scripts/live-run.sh viaproxy target/release/podnet demo --exit-on-verify
           grep -q 'no proxy carries UDP' viaproxy.err
           sed -E 's/[a-z0-9-]+\.trycloudflare\.com/<tunnel>.trycloudflare.com/' "$RUNNER_TEMP/connect.log" | sort | uniq -c
           grep -q '^api.trycloudflare.com:443$' "$RUNNER_TEMP/connect.log"
@@ -211,38 +211,38 @@ jobs:
           # Issue 129: the same proxy at the stdin and the stdout of a
           # command (one nc for each connection).
           : > "$RUNNER_TEMP/connect.log"
-          sh scripts/live-run.sh viaexec target/release/cfrs --proxy 'http+exec:nc 127.0.0.1 18080' demo --exit-on-verify
+          sh scripts/live-run.sh viaexec target/release/podnet --proxy 'http+exec:nc 127.0.0.1 18080' demo --exit-on-verify
           grep -q '^api.trycloudflare.com:443$' "$RUNNER_TEMP/connect.log"
           grep -c ':7844$' "$RUNNER_TEMP/connect.log" | sed 's/^/edge connections through the command: /'
-      # The rate of a GET and a POST on the HTTP path, through cfrs connect,
+      # The rate of a GET and a POST on the HTTP path, through podnet connect,
       # and through a WebSocket client in Python (issue 51).
       - name: Throughput of the HTTP path and of a --forward WebSocket
         timeout-minutes: 15
         run: |
           set -eu
           sh scripts/retry.sh sudo python3 -m pip install -q --break-system-packages websockets || true
-          sh scripts/live-throughput.sh target/release/cfrs quic 16
-          sh scripts/live-throughput.sh target/release/cfrs http2 16
+          sh scripts/live-throughput.sh target/release/podnet quic 16
+          sh scripts/live-throughput.sh target/release/podnet http2 16
       # Issue 92: share uploads of 20 and 64 MiB on each leg give 200 and
       # the file; a request over --max-request gets 413; the session stays.
       - name: Large share uploads, QUIC and HTTP/2
         timeout-minutes: 12
         run: |
           set -eu
-          sh scripts/live-share.sh target/release/cfrs quic "20 64"
-          sh scripts/live-share.sh target/release/cfrs http2 "20 64"
+          sh scripts/live-share.sh target/release/podnet quic "20 64"
+          sh scripts/live-share.sh target/release/podnet http2 "20 64"
       # Issue 56: a WebSocket through a --url origin, on each leg.
       - name: WebSocket through a --url origin
         timeout-minutes: 6
         run: |
           set -eu
-          sh scripts/live-ws-url.sh target/release/cfrs quic
-          sh scripts/live-ws-url.sh target/release/cfrs http2
+          sh scripts/live-ws-url.sh target/release/podnet quic
+          sh scripts/live-ws-url.sh target/release/podnet http2
       # Issue 32: 1, 4 and 16 MiB over QUIC inside WARP, and the tunnel must
       # still answer after them.
       - name: Throughput through WARP, 1 to 16 MiB
         timeout-minutes: 15
-        run: sh scripts/live-throughput.sh target/release/cfrs quic "1 4 16" warp
+        run: sh scripts/live-throughput.sh target/release/podnet quic "1 4 16" warp
       # No system resolver: names come from DNS over HTTPS by IP address.
       # Then with Cloudflare's DoH addresses blocked, from Google's.
       - name: Quick tunnel with no system DNS, then with 1.1.1.1 blocked
@@ -270,49 +270,51 @@ jobs:
           sudo rm -f /etc/resolv.conf
           echo "nameserver 192.0.2.1" | sudo tee /etc/resolv.conf > /dev/null
           if timeout 15 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
-          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns timeout 180 target/release/cfrs demo --exit-on-verify --protocol http2 ||
+          RUST_LOG=podnet=debug sh scripts/live-run.sh dns timeout 180 target/release/podnet demo --exit-on-verify --protocol http2 ||
             { tail -40 dns.err; exit 1; }
-          grep 'cfrs::resolve' dns.err | head -10 || true
+          grep 'podnet::resolve' dns.err | head -10 || true
           grep -q 'step="doh"' dns.err
           sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
           sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
-          RUST_LOG=cfrs=debug sh scripts/live-run.sh dns2 timeout 240 target/release/cfrs demo --exit-on-verify --protocol http2 ||
+          RUST_LOG=podnet=debug sh scripts/live-run.sh dns2 timeout 240 target/release/podnet demo --exit-on-verify --protocol http2 ||
             { tail -40 dns2.err; exit 1; }
-          grep 'cfrs::resolve' dns2.err | head -10 || true
+          grep 'podnet::resolve' dns2.err | head -10 || true
           grep -q 'server="https://8\.8\.' dns2.err
       - name: A wrong --resolve pin fails at the TLS name check
         timeout-minutes: 2
         run: |
           set -u
-          if sh scripts/live-run.sh pin timeout 60 target/release/cfrs --resolve api.trycloudflare.com=8.8.8.8 demo --exit-on-verify; then
+          if sh scripts/live-run.sh pin timeout 60 target/release/podnet --resolve api.trycloudflare.com=8.8.8.8 demo --exit-on-verify; then
             echo "a wrong pin was accepted"; exit 1
           fi
           grep -E 'NotValidForName|not valid for' pin.err
-      # cfrs update against the real release v0.3.0-beta.1: the signature,
-      # the identity and the SHA-256 are checked, and the copy replaces
-      # itself with the binary of the release.
-      - name: cfrs update to v0.3.0-beta.1
+      # podnet update against the real release v0.3.0-beta.1 of cfrs: the
+      # download, the Fulcio chain and the check of the identity run, and
+      # the identity of Azathothas/podnet refuses the release. This refusal
+      # is the check until the first podnet release.
+      - name: podnet update refuses v0.3.0-beta.1 of cfrs
         timeout-minutes: 6
         run: |
           set -eu
-          mkdir -p "$RUNNER_TEMP/update"
-          cp target/release/cfrs "$RUNNER_TEMP/update/cfrs"
-          "$RUNNER_TEMP/update/cfrs" update --check
-          timeout 300 "$RUNNER_TEMP/update/cfrs" update --version v0.3.0-beta.1
-          got=$("$RUNNER_TEMP/update/cfrs" --version)
-          echo "$got"
-          case "$got" in "cfrs 0.3.0-beta.1 (361d1d769d00041602d8e04a4860c11ca71288aa)") ;; *) exit 1 ;; esac
-          # The binary before is kept as cfrs.prev. beta.1 has no --rollback,
-          # so the test puts beta.1 in cfrs.prev and this build in cfrs; then
-          # --rollback (no network) swaps them.
           d="$RUNNER_TEMP/update"
-          cmp "$d/cfrs.prev" target/release/cfrs
-          mv "$d/cfrs" "$d/cfrs.prev"
-          cp target/release/cfrs "$d/cfrs"
-          "$d/cfrs" update --rollback
-          "$d/cfrs" --version | grep -q 'cfrs 0.3.0-beta.1 (361d1d7'
-          cmp "$d/cfrs.prev" target/release/cfrs
-      # cfrs autostart with a systemd user manager (issue 23): systemd starts
+          mkdir -p "$d"
+          cp target/release/podnet "$d/podnet"
+          "$d/podnet" update --check
+          if timeout 300 "$d/podnet" update --version v0.3.0-beta.1 2> "$d/update.err"; then
+            echo "podnet installed a release of cfrs"; exit 1
+          fi
+          cat "$d/update.err"
+          grep -q 'not https://github.com/Azathothas/podnet/' "$d/update.err"
+          cmp "$d/podnet" target/release/podnet
+          # --rollback (no network) swaps the binary and podnet.prev. The
+          # kept binary is a copy of this build with one more byte.
+          cp target/release/podnet "$d/podnet.prev"
+          printf x >> "$d/podnet.prev"
+          "$d/podnet" update --rollback
+          "$d/podnet" --version | grep -q '^podnet '
+          cmp "$d/podnet.prev" target/release/podnet
+          if cmp -s "$d/podnet" target/release/podnet; then echo "no swap"; exit 1; fi
+      # podnet autostart with a systemd user manager (issue 23): systemd starts
       # a quick tunnel, the URL answers, and no token is in the unit or in ps.
       - name: Autostart with a systemd user unit
         timeout-minutes: 9
@@ -325,16 +327,16 @@ jobs:
             i=$((i + 1)); [ "$i" -lt 30 ] || { echo "no user manager"; exit 1; }; sleep 1
           done
           mkdir -p "$HOME/.local/bin"
-          cp target/release/cfrs "$HOME/.local/bin/cfrs"
-          cfrs=$HOME/.local/bin/cfrs
-          "$cfrs" autostart add live -- tunnel --hello-world --json
+          cp target/release/podnet "$HOME/.local/bin/podnet"
+          podnet=$HOME/.local/bin/podnet
+          "$podnet" autostart add live -- tunnel --hello-world --json
           token=eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=
-          TUNNEL_TOKEN=$token "$cfrs" autostart add secret -- status --proxy=http://u:pw@127.0.0.1:9
+          TUNNEL_TOKEN=$token "$podnet" autostart add secret -- status --proxy=http://u:pw@127.0.0.1:9
           i=0
-          until journalctl --user -u cfrs-live -o cat 2> /dev/null | grep -q '"event":"ready"'; do
-            i=$((i + 1)); [ "$i" -lt 90 ] || { systemctl --user status cfrs-live | tail -5; exit 1; }; sleep 1
+          until journalctl --user -u podnet-live -o cat 2> /dev/null | grep -q '"event":"ready"'; do
+            i=$((i + 1)); [ "$i" -lt 90 ] || { systemctl --user status podnet-live | tail -5; exit 1; }; sleep 1
           done
-          url=$(journalctl --user -u cfrs-live -o cat | grep '"event":"ready"' | tail -1 | jq -r .url)
+          url=$(journalctl --user -u podnet-live -o cat | grep '"event":"ready"' | tail -1 | jq -r .url)
           echo "::add-mask::${url#https://}"
           # Issue 119: the resolver of the runner keeps a negative answer
           # for a new quick-tunnel name (run 41849329729).
@@ -344,18 +346,18 @@ jobs:
             i=$((i + 1)); [ "$i" -lt 30 ] || { echo "the URL of the unit does not answer"; exit 1; }; sleep 2
           done
           echo "systemd started the quick tunnel, and its URL answers"
-          systemctl --user is-active cfrs-live
-          if systemctl --user cat cfrs-secret cfrs-live | grep -E "$token|pw@"; then echo "a secret is in a unit"; exit 1; fi
+          systemctl --user is-active podnet-live
+          if systemctl --user cat podnet-secret podnet-live | grep -E "$token|pw@"; then echo "a secret is in a unit"; exit 1; fi
           if ps auxww | grep -v grep | grep -E "$token|pw@"; then echo "a secret is in ps"; exit 1; fi
-          stat -c '%a %n' "$HOME"/.local/state/cfrs/autostart/*.env
-          test "$(stat -c %a "$HOME/.local/state/cfrs/autostart/secret.env")" = 600
-          "$cfrs" autostart remove live
-          "$cfrs" autostart remove secret
-          if systemctl --user cat cfrs-live > /dev/null 2>&1; then echo "the unit is still there"; exit 1; fi
-          test -z "$(ls "$HOME/.local/state/cfrs/autostart")"
+          stat -c '%a %n' "$HOME"/.local/state/podnet/autostart/*.env
+          test "$(stat -c %a "$HOME/.local/state/podnet/autostart/secret.env")" = 600
+          "$podnet" autostart remove live
+          "$podnet" autostart remove secret
+          if systemctl --user cat podnet-live > /dev/null 2>&1; then echo "the unit is still there"; exit 1; fi
+          test -z "$(ls "$HOME/.local/state/podnet/autostart")"
       - name: Quick tunnel, QUIC through WARP (TCP 443)
         timeout-minutes: 5
-        run: sh scripts/live-run.sh warpleg target/release/cfrs demo --exit-on-verify --protocol quic --transport warp
+        run: sh scripts/live-run.sh warpleg target/release/podnet demo --exit-on-verify --protocol quic --transport warp
       # UDP and TCP 7844 dropped with no answer: the staggered race starts
       # WARP after two 2 s steps, not after the serial time limits.
       - name: Quick tunnel with UDP and TCP 7844 dropped (staggered legs)
@@ -366,18 +368,18 @@ jobs:
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
           # The doctor names the legs that cannot work, and quic+warp can.
-          target/release/cfrs doctor --samples 3 || true
-          target/release/cfrs doctor --samples 3 --json > doctor-drop.json || true
+          target/release/podnet doctor --samples 3 || true
+          target/release/podnet doctor --samples 3 --json > doctor-drop.json || true
           jq -e '.legs[] | select(.leg == "quic+warp") | .status == "ok"' doctor-drop.json
           jq -e '.legs[] | select(.leg == "http2") | .status != "ok"' doctor-drop.json
           jq -e '.legs[] | select(.leg == "quic") | .status != "ok"' doctor-drop.json
-          sh scripts/live-run.sh race timeout 240 target/release/cfrs demo --exit-on-verify ||
+          sh scripts/live-run.sh race timeout 240 target/release/podnet demo --exit-on-verify ||
             { tail -40 race.err; exit 1; }
           grep 'the leg won the race' race.err
           grep -q 'leg=quic+warp' race.err
       # The WebSocket-to-TCP relay (--transport relay): UDP and TCP 7844 are
       # dropped on the host, so the HTTP/2 leg must go in a WebSocket to the
-      # relay on TCP 443. cfrs mints the relay token itself; no log has it.
+      # relay on TCP 443. podnet mints the relay token itself; no log has it.
       - name: Quick tunnel through the WebSocket relay (7844 dropped)
         timeout-minutes: 5
         run: |
@@ -385,15 +387,15 @@ jobs:
           sudo iptables -A OUTPUT -p udp --dport 7844 -j DROP
           sudo iptables -A OUTPUT -p tcp --dport 7844 -j DROP
           trap 'sudo iptables -D OUTPUT -p udp --dport 7844 -j DROP; sudo iptables -D OUTPUT -p tcp --dport 7844 -j DROP' EXIT
-          target/release/cfrs demo --check --transport relay | tee relay-check.out
+          target/release/podnet demo --check --transport relay | tee relay-check.out
           grep -q 'http2+relay' relay-check.out
-          sh scripts/live-run.sh relay timeout 240 target/release/cfrs demo --exit-on-verify --transport relay ||
+          sh scripts/live-run.sh relay timeout 240 target/release/podnet demo --exit-on-verify --transport relay ||
             { tail -40 relay.err; exit 1; }
           grep -q 'leg=http2+relay' relay.err
           grep -q 'registered over HTTP/2' relay.err
           ! grep -E 'ephm1\.' relay.out relay.err
       # Issue 88: SSH into this runner through the reverse relay: a pair, a
-      # detached node for 127.0.0.1:22, and ssh with a ProxyCommand of cfrs
+      # detached node for 127.0.0.1:22, and ssh with a ProxyCommand of podnet
       # relay connect. The host key check is on (StrictHostKeyChecking=yes).
       - name: SSH through the reverse relay
         timeout-minutes: 5
@@ -405,19 +407,19 @@ jobs:
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/relay_key"
           cat "$RUNNER_TEMP/relay_key.pub" >> ~/.ssh/authorized_keys
           chmod 600 ~/.ssh/authorized_keys
-          export CFRS_RUN_DIR="$RUNNER_TEMP/relay-run"
-          target/release/cfrs relay pair --json > pair.json
+          export PODNET_RUN_DIR="$RUNNER_TEMP/relay-run"
+          target/release/podnet relay pair --json > pair.json
           name=$(jq -r .name pair.json)
           token=$(jq -r .connect_token pair.json)
           echo "::add-mask::$name"
           echo "::add-mask::$token"
-          target/release/cfrs relay node "$name" --to 127.0.0.1:22 --detach --name relaynode | tail -1 | jq -c '{target}'
+          target/release/podnet relay node "$name" --to 127.0.0.1:22 --detach --name relaynode | tail -1 | jq -c '{target}'
           echo "$name $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$RUNNER_TEMP/relay_known"
-          export CFRS_RELAY_CONNECT_TOKEN="$token"
+          export PODNET_RELAY_CONNECT_TOKEN="$token"
           ssh -i "$RUNNER_TEMP/relay_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/relay_known" -o HostKeyAlias="$name" \
             -o HostKeyAlgorithms=ssh-ed25519 \
-            -o ProxyCommand="$PWD/target/release/cfrs relay connect $name" \
+            -o ProxyCommand="$PWD/target/release/podnet relay connect $name" \
             "$USER@$name" 'echo relay-ssh-ok; uname -s' | tee relayssh.out
           grep -qx relay-ssh-ok relayssh.out
           # Two sessions at the same time through the one node.
@@ -425,7 +427,7 @@ jobs:
             ssh -i "$RUNNER_TEMP/relay_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
               -o UserKnownHostsFile="$RUNNER_TEMP/relay_known" -o HostKeyAlias="$name" \
               -o HostKeyAlgorithms=ssh-ed25519 \
-              -o ProxyCommand="$PWD/target/release/cfrs relay connect $name" \
+              -o ProxyCommand="$PWD/target/release/podnet relay connect $name" \
               "$USER@$name" "echo parallel-$i" > "relay-$i.out" &
           done
           wait
@@ -433,53 +435,53 @@ jobs:
           grep -qx parallel-2 relay-2.out
           # Issue 109: an input that ends at once still gets the answer
           # (the SSH banner of the target).
-          printf 'SSH-2.0-cfrs-live\r\n' | timeout 30 target/release/cfrs relay connect "$name" > banner.out || true
+          printf 'SSH-2.0-podnet-live\r\n' | timeout 30 target/release/podnet relay connect "$name" > banner.out || true
           grep -q '^SSH-2.0-' banner.out
           echo "relay connect: the answer came after the end of the input"
           # Issue 119: the ready document names the pair; relay stop stops
           # the node instance too.
-          target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "relaynode") | .ready.pair' > /dev/null
-          target/release/cfrs relay stop "$name" | sed "s/$name/<pair>/"
-          if target/release/cfrs ps --json | jq -e '.instances[] | select(.name == "relaynode")' > /dev/null; then
+          target/release/podnet ps --json | jq -e '.instances[] | select(.name == "relaynode") | .ready.pair' > /dev/null
+          target/release/podnet relay stop "$name" | sed "s/$name/<pair>/"
+          if target/release/podnet ps --json | jq -e '.instances[] | select(.name == "relaynode")' > /dev/null; then
             echo "the node instance runs after relay stop"; exit 1
           fi
       - name: WARP account and probe
         timeout-minutes: 4
         run: |
           set -eu
-          sh scripts/live-run.sh register target/release/cfrs warp register
-          sh scripts/live-run.sh status target/release/cfrs warp status
-          sh scripts/live-run.sh probe timeout 120 target/release/cfrs warp probe
+          sh scripts/live-run.sh register target/release/podnet warp register
+          sh scripts/live-run.sh status target/release/podnet warp status
+          sh scripts/live-run.sh probe timeout 120 target/release/podnet warp probe
           grep 'OK          udp 1.1.1.1:53' probe.out
           # Issue 115: warp nc -u with no warp up: a DNS query and its answer
           # (the id 0x1234 comes back).
           python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('123401000001000000000000') + b'\x07example\x03com\x00\x00\x01\x00\x01')" |
-            timeout 60 target/release/cfrs warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp.txt
+            timeout 60 target/release/podnet warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp.txt
           grep -q '12 34' nc-udp.txt
       # The second name of the WARP API (owner ruling of 2026-11-04): a
       # device registers, reads its status and is deleted through
-      # api.devices.cloudflare.com only (CFRS_WARP_API). Exit 75 (error
+      # api.devices.cloudflare.com only (PODNET_WARP_API). Exit 75 (error
       # 1015, the limit of new devices for each address) skips the step.
       - name: WARP API through its second host
         timeout-minutes: 3
         run: |
           set -eu
-          export CFRS_WARP_API=https://api.devices.cloudflare.com
+          export PODNET_WARP_API=https://api.devices.cloudflare.com
           ident="$RUNNER_TEMP/second-api.json"
-          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" register 2> second-reg.err || rc=$?
+          rc=0; timeout 60 target/release/podnet warp --identity "$ident" register 2> second-reg.err || rc=$?
           if [ "$rc" = 75 ] && grep -q 1015 second-reg.err; then
             echo "the WARP service limits new devices for this address (1015): skipped"; exit 0
           fi
           tail -3 second-reg.err
           test "$rc" = 0
-          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" status > second-status.out 2>&1 || rc=$?
-          rc2=0; timeout 60 target/release/cfrs warp --identity "$ident" delete 2> second-del.err || rc2=$?
+          rc=0; timeout 60 target/release/podnet warp --identity "$ident" status > second-status.out 2>&1 || rc=$?
+          rc2=0; timeout 60 target/release/podnet warp --identity "$ident" delete 2> second-del.err || rc2=$?
           echo "status: exit $rc; delete: exit $rc2"
           grep -E '^(type|account)' second-status.out || true
           test "$rc" = 0
           test "$rc2" = 0
           # The other host was not asked: a failure of the first host would
-          # log "cfrs tries the next host".
+          # log "podnet tries the next host".
           ! grep -q 'tries the next host' second-reg.err second-del.err
       # Issue 102: an unavailable path exits 69 in each command: warp tun
       # with no CAP_NET_ADMIN (no root here), and warp proxy whose only
@@ -488,22 +490,22 @@ jobs:
         timeout-minutes: 3
         run: |
           set -eu
-          ident="$HOME/.local/state/cfrs/warp.json"
-          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" tun 2> tun102.err || rc=$?
+          ident="$HOME/.local/state/podnet/warp.json"
+          rc=0; timeout 60 target/release/podnet warp --identity "$ident" tun 2> tun102.err || rc=$?
           echo "warp tun (no root): exit $rc"; tail -1 tun102.err
           test "$rc" = 69
           python3 -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 40102)); s.listen(); time.sleep(60)" &
           sleep 1
-          rc=0; timeout 60 target/release/cfrs warp --identity "$ident" proxy --listen tcp://127.0.0.1:40102 2> proxy102.err || rc=$?
+          rc=0; timeout 60 target/release/podnet warp --identity "$ident" proxy --listen tcp://127.0.0.1:40102 2> proxy102.err || rc=$?
           echo "warp proxy (port held): exit $rc"; tail -1 proxy102.err
           test "$rc" = 69
           # Issue 106: warp up --tun with no root names its command, the
           # cause and the recovery.
-          rc=0; CFRS_RUN_DIR="$RUNNER_TEMP/run106" timeout 60 target/release/cfrs warp --identity "$ident" up --tun 2> up106.err || rc=$?
-          echo "warp up --tun (no root): exit $rc"; grep '^cfrs: ' up106.err | tail -5
+          rc=0; PODNET_RUN_DIR="$RUNNER_TEMP/run106" timeout 60 target/release/podnet warp --identity "$ident" up --tun 2> up106.err || rc=$?
+          echo "warp up --tun (no root): exit $rc"; grep '^podnet: ' up106.err | tail -5
           test "$rc" = 69
-          grep -q 'cfrs warp tun --default-route --detach exited' up106.err
-          grep -q 'with root: sudo cfrs warp up --tun' up106.err
+          grep -q 'podnet warp tun --default-route --detach exited' up106.err
+          grep -q 'with root: sudo podnet warp up --tun' up106.err
           ! grep -q 'warp proxy --detach' up106.err
       # Issue 76: TCP 443 to the MASQUE front doors is dropped; the WARP
       # client falls back to the WebSocket relay, with the same pinned key.
@@ -513,7 +515,7 @@ jobs:
           set -eu
           sudo iptables -A OUTPUT -p tcp -d 162.159.198.0/24 --dport 443 -j DROP
           trap 'sudo iptables -D OUTPUT -p tcp -d 162.159.198.0/24 --dport 443 -j DROP' EXIT
-          sh scripts/live-run.sh warprelay timeout 180 target/release/cfrs warp probe ||
+          sh scripts/live-run.sh warprelay timeout 180 target/release/podnet warp probe ||
             { tail -30 warprelay.err; exit 1; }
           grep -q 'MASQUE goes through the WebSocket relay' warprelay.err
           ! grep -E 'ephm1\.' warprelay.out warprelay.err
@@ -526,12 +528,12 @@ jobs:
         timeout-minutes: 4
         run: |
           set -eu
-          export CFRS_RUN_DIR="$RUNNER_TEMP/run-up97"
-          ident="$HOME/.local/state/cfrs/warp.json"
+          export PODNET_RUN_DIR="$RUNNER_TEMP/run-up97"
+          ident="$HOME/.local/state/podnet/warp.json"
           python3 -c "import socket, time; s = socket.socket(); s.bind(('127.0.0.1', 40097)); s.listen(); time.sleep(240)" &
           holder=$!
           sleep 1
-          target/release/cfrs warp --identity "$ident" up --port 40097 2> up97.err | tail -1 > up97.json
+          target/release/podnet warp --identity "$ident" up --port 40097 2> up97.err | tail -1 > up97.json
           jq -e '.tcp == false' up97.json
           # Issue 115: the first line names the unix socket that works.
           grep 'runs on unix:' up97.err | sed -E 's#unix:[^;]*#unix:<socket>#'
@@ -539,28 +541,28 @@ jobs:
           # Issue 255: warp env with no proxy variables exits 69 and
           # prints nothing on stdout.
           rc=0
-          target/release/cfrs warp env > env97.txt 2> env97.err || rc=$?
+          target/release/podnet warp env > env97.txt 2> env97.err || rc=$?
           test "$rc" -eq 69
           test ! -s env97.txt
-          grep 'cfrs warp exec' env97.err
-          target/release/cfrs warp exec -- curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
-          target/release/cfrs warp down
+          grep 'podnet warp exec' env97.err
+          target/release/podnet warp exec -- curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
+          target/release/podnet warp down
           kill "$holder"
       - name: warp up, env, exec, --persist and down
         timeout-minutes: 5
         run: |
           set -eu
-          export CFRS_RUN_DIR="$RUNNER_TEMP/run-up"
+          export PODNET_RUN_DIR="$RUNNER_TEMP/run-up"
           home="$RUNNER_TEMP/home-up"
           mkdir -p "$home"
           printf 'export KEEP=1\n' > "$home/.profile"
           # The WARP device of the other steps, not a new one in $home.
-          ident="$HOME/.local/state/cfrs/warp.json"
-          HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 --persist | tail -1 > up.json
+          ident="$HOME/.local/state/podnet/warp.json"
+          HOME="$home" target/release/podnet warp --identity "$ident" up --port 40100 --persist | tail -1 > up.json
           jq -e '.name == "warp" and .persist == true' up.json
-          grep -q '>>> cfrs warp up >>>' "$home/.profile" "$home/.bashrc"
+          grep -q '>>> podnet warp up >>>' "$home/.profile" "$home/.bashrc"
           (
-            eval "$(target/release/cfrs warp env)"
+            eval "$(target/release/podnet warp env)"
             curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
             # An http:// URL through HTTP_PROXY (the forward request).
             curl -fsS --max-time 30 http://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
@@ -568,7 +570,7 @@ jobs:
           # A later non-interactive shell loads the env file from .profile.
           HOME="$home" sh -c '. "$HOME/.profile"; test "$HTTPS_PROXY" = http://127.0.0.1:40100'
           # warp exec: the program has no proxy variables, the pod carries it.
-          target/release/cfrs warp exec -- sh -c 'test -z "${HTTPS_PROXY:-}" && curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace' | grep -q '^warp=on'
+          target/release/podnet warp exec -- sh -c 'test -z "${HTTPS_PROXY:-}" && curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace' | grep -q '^warp=on'
           # Issue 85: SSH to github.com with TCP 22 dropped on the host,
           # through warp nc (WARP) and through warp nc --via-relay. The
           # server answers at the key step: the SSH handshake went through.
@@ -576,47 +578,47 @@ jobs:
           for nc in "warp nc" "warp nc --via-relay"; do
             out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-              -o ProxyCommand="$PWD/target/release/cfrs $nc %h %p" -T git@github.com 2>&1 || true)
+              -o ProxyCommand="$PWD/target/release/podnet $nc %h %p" -T git@github.com 2>&1 || true)
             echo "$nc: $out" | tail -1
             echo "$out" | grep -q 'Permission denied (publickey)'
           done
           # Issue 115: warp nc -u through the running warp up.
           python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('567801000001000000000000') + b'\x07example\x03com\x00\x00\x01\x00\x01')" |
-            timeout 30 target/release/cfrs warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp-up.txt
+            timeout 30 target/release/podnet warp nc -u 1.1.1.1 53 | head -c 2 | od -An -tx1 | tee nc-udp-up.txt
           grep -q '56 78' nc-udp-up.txt
           # Issue 82: the agent doctor sees SSH fail direct and work
           # through the running warp up.
-          target/release/cfrs doctor --agent --json > agent.json
+          target/release/podnet doctor --agent --json > agent.json
           jq -e '.warp_up == true' agent.json
           jq -e '.rows[] | select(.task == "git (SSH)") | .direct != "ok" and .warp == "ok"' agent.json
           jq -e '.rows[] | select(.task == "git (HTTPS)") | .warp == "ok"' agent.json
-          target/release/cfrs doctor --agent
+          target/release/podnet doctor --agent
           sudo iptables -D OUTPUT -p tcp --dport 22 -j DROP
-          target/release/cfrs warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
+          target/release/podnet warp ssh-config --host github.com | grep -q 'ProxyCommand .* warp nc %h %p'
           # Issue 130: the block in a config file; ssh reads it.
           conf="$RUNNER_TEMP/ssh130/config"
-          target/release/cfrs warp ssh-config --write --host github.com --config "$conf"
-          ssh -G -F "$conf" github.com | grep -i '^proxycommand .*warp nc' | sed -E "s#'[^']*'#<cfrs>#"
-          target/release/cfrs warp ssh-config --check --host github.com --config "$conf"
-          target/release/cfrs warp ssh-config --remove --config "$conf"
-          if target/release/cfrs warp ssh-config --check --host github.com --config "$conf"; then exit 1; fi
+          target/release/podnet warp ssh-config --write --host github.com --config "$conf"
+          ssh -G -F "$conf" github.com | grep -i '^proxycommand .*warp nc' | sed -E "s#'[^']*'#<podnet>#"
+          target/release/podnet warp ssh-config --check --host github.com --config "$conf"
+          target/release/podnet warp ssh-config --remove --config "$conf"
+          if target/release/podnet warp ssh-config --check --host github.com --config "$conf"; then exit 1; fi
           # A second warp up is the same instance.
-          HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
+          HOME="$home" target/release/podnet warp --identity "$ident" up --port 40100 | tail -1 | jq -e --argjson pid "$(jq .pid up.json)" '.pid == $pid'
           # Issue 86: a bundle with one root (as of a proxy that terminates
           # TLS) in SSL_CERT_FILE: warp up names a merged bundle in the env
           # file, and curl through WARP works with it.
           awk '/BEGIN CERTIFICATE/{n++} n==1' /etc/ssl/certs/ca-certificates.crt > "$RUNNER_TEMP/one-root.pem"
-          SSL_CERT_FILE="$RUNNER_TEMP/one-root.pem" HOME="$home" target/release/cfrs warp --identity "$ident" up --port 40100 > /dev/null
-          grep -q "export SSL_CERT_FILE='$CFRS_RUN_DIR/warp-ca.pem'" "$CFRS_RUN_DIR/warp.env"
-          test "$(grep -c 'BEGIN CERTIFICATE' "$CFRS_RUN_DIR/warp-ca.pem")" -gt 10
+          SSL_CERT_FILE="$RUNNER_TEMP/one-root.pem" HOME="$home" target/release/podnet warp --identity "$ident" up --port 40100 > /dev/null
+          grep -q "export SSL_CERT_FILE='$PODNET_RUN_DIR/warp-ca.pem'" "$PODNET_RUN_DIR/warp.env"
+          test "$(grep -c 'BEGIN CERTIFICATE' "$PODNET_RUN_DIR/warp-ca.pem")" -gt 10
           (
-            eval "$(target/release/cfrs warp env)"
+            eval "$(target/release/podnet warp env)"
             curl -fsS --max-time 30 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'
           )
-          HOME="$home" target/release/cfrs warp down
-          ! grep -q 'cfrs warp up' "$home/.profile" "$home/.bashrc"
+          HOME="$home" target/release/podnet warp down
+          ! grep -q 'podnet warp up' "$home/.profile" "$home/.bashrc"
           grep -q 'export KEEP=1' "$home/.profile"
-          ! target/release/cfrs warp env
+          ! target/release/podnet warp env
       # Issue 87: one command on a host with port 22 and the edge port 7844
       # dropped: WARP starts, a local server gets a public URL, git over
       # SSH works through WARP; agent down removes each part.
@@ -624,7 +626,7 @@ jobs:
         timeout-minutes: 6
         run: |
           set -eu
-          export CFRS_RUN_DIR="$RUNNER_TEMP/run-agent"
+          export PODNET_RUN_DIR="$RUNNER_TEMP/run-agent"
           home="$RUNNER_TEMP/home-agent"
           mkdir -p "$home/srv"
           echo 'served by agent up' > "$home/srv/index.html"
@@ -636,7 +638,7 @@ jobs:
           # Issue 119: port 18097 has no origin: no tunnel for it. Issue
           # 173: a failed expose exits 69, with the document on stdout.
           rc=0
-          sh scripts/live-run.sh agent timeout 300 target/release/cfrs agent up --expose 18096 --expose 18097 || rc=$?
+          sh scripts/live-run.sh agent timeout 300 target/release/podnet agent up --expose 18096 --expose 18097 || rc=$?
           test "$rc" = 69 || { echo "agent up exited $rc, not 69"; tail -30 agent.err; exit 1; }
           grep -q '1 of 2 exposes failed' agent.err
           tail -1 agent.out > agent.json
@@ -647,8 +649,8 @@ jobs:
           jq -e '.works["git (SSH)"] | index("warp") != null' agent.json
           url=$(jq -r '.exposed[0].url' agent.json)
           curl -fsS --max-time 30 "$url" | grep -q 'served by agent up'
-          target/release/cfrs agent down
-          target/release/cfrs ps --json | jq -e '.instances | length == 0'
+          target/release/podnet agent down
+          target/release/podnet ps --json | jq -e '.instances | length == 0'
       # Issue 79: the raw IP pod. The runner limits unprivileged user
       # namespaces with AppArmor: the step allows them first. In the pod:
       # HTTPS through WARP, a UDP DNS query to 1.1.1.1, a name through the
@@ -671,7 +673,7 @@ jobs:
           getent hosts example.com > /dev/null && echo 'resolv.conf ok'
           curl -fsS --max-time 20 'https://[2606:4700:4700::1111]/cdn-cgi/trace' | grep '^warp=' | sed 's/^/ipv6 /'
           CHECK
-          sh scripts/live-run.sh rawrun timeout 120 target/release/cfrs warp run --backend netns-raw -- sh "$RUNNER_TEMP/raw-check.sh" ||
+          sh scripts/live-run.sh rawrun timeout 120 target/release/podnet warp run --backend netns-raw -- sh "$RUNNER_TEMP/raw-check.sh" ||
             { tail -20 rawrun.err; exit 1; }
           grep -q 'the program runs in a raw pod' rawrun.err
           grep -q '^warp=on' rawrun.out
@@ -685,12 +687,12 @@ jobs:
         timeout-minutes: 4
         run: |
           set -eu
-          run=/tmp/cfrs-run-root
+          run=/tmp/podnet-run-root
           sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv.before"
           ip route > "$RUNNER_TEMP/routes.before"
-          sudo env CFRS_RUN_DIR="$run" target/release/cfrs warp --ephemeral tun --default-route --detach --name tun | tail -1 > tun.json
+          sudo env PODNET_RUN_DIR="$run" target/release/podnet warp --ephemeral tun --default-route --detach --name tun | tail -1 > tun.json
           jq -e '.default_route == true' tun.json
-          ip route | grep 'dev cfrs0'
+          ip route | grep 'dev podnet0'
           curl -fsS --max-time 15 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
           python3 -c "
           import socket
@@ -698,9 +700,9 @@ jobs:
           s.sendto(bytes.fromhex('123401000001000000000000076578616d706c6503636f6d0000010001'), ('1.1.1.1', 53))
           print('udp-dns', 'ok' if s.recv(512)[:2] == bytes.fromhex('1234') else 'bad')
           " | grep 'udp-dns ok'
-          sudo env CFRS_RUN_DIR="$run" target/release/cfrs stop tun
-          sudo env CFRS_RUN_DIR="$run" target/release/cfrs logs tun | grep 'the routes and the resolver are as before'
-          ! ip route | grep -q 'dev cfrs0'
+          sudo env PODNET_RUN_DIR="$run" target/release/podnet stop tun
+          sudo env PODNET_RUN_DIR="$run" target/release/podnet logs tun | grep 'the routes and the resolver are as before'
+          ! ip route | grep -q 'dev podnet0'
           ip route | diff "$RUNNER_TEMP/routes.before" -
           sudo cmp /etc/resolv.conf "$RUNNER_TEMP/resolv.before"
       # Issue 105: warp tun --default-route on a host with no default route,
@@ -728,15 +730,15 @@ jobs:
           sudo mkdir -p /etc/netns/r105
           echo 'nameserver 1.1.1.1' | sudo tee /etc/netns/r105/resolv.conf > /dev/null
           python3 -I scripts/connect-proxy.py 3128 "$RUNNER_TEMP/connect105.log" 10.105.0.1 &
-          # The proxy listens before cfrs starts (run 41592154695: refused).
+          # The proxy listens before podnet starts (run 41592154695: refused).
           i=0
           until nc -z 10.105.0.1 3128 2> /dev/null; do
             i=$((i + 1)); [ "$i" -lt 40 ] || { echo "the test proxy does not listen"; exit 1; }
             sleep 0.25
           done
           sudo cp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
-          sudo ip netns exec r105 env HTTPS_PROXY=http://10.105.0.1:3128 CFRS_RUN_DIR=/tmp/cfrs-run-105 \
-            timeout 120 target/release/cfrs warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out 2> tun105.err ||
+          sudo ip netns exec r105 env HTTPS_PROXY=http://10.105.0.1:3128 PODNET_RUN_DIR=/tmp/podnet-run-105 \
+            timeout 120 target/release/podnet warp --ephemeral --no-relay tun --default-route --detach --name tun105 > tun105.out 2> tun105.err ||
             { cat tun105.err; exit 1; }
           cat tun105.err
           tail -1 tun105.out > tun105.json
@@ -744,23 +746,23 @@ jobs:
           # Issue 263: stdout of --detach is one JSON document; the human
           # lines are on stderr.
           grep 'outside: none needed' tun105.err
-          sudo ip netns exec r105 ip route | grep 'dev cfrs0'
+          sudo ip netns exec r105 ip route | grep 'dev podnet0'
           sudo ip netns exec r105 cat /etc/resolv.conf
           sudo ip netns exec r105 curl -fsS --max-time 20 https://www.cloudflare.com/cdn-cgi/trace | grep '^warp=on'
-          sudo ip netns exec r105 env CFRS_RUN_DIR=/tmp/cfrs-run-105 target/release/cfrs stop tun105
-          ! sudo ip netns exec r105 ip route | grep -q 'dev cfrs0'
+          sudo ip netns exec r105 env PODNET_RUN_DIR=/tmp/podnet-run-105 target/release/podnet stop tun105
+          ! sudo ip netns exec r105 ip route | grep -q 'dev podnet0'
           sudo cmp /etc/resolv.conf "$RUNNER_TEMP/resolv105.before"
       - name: WARP run
         timeout-minutes: 3
         run: |
           set -eu
-          sh scripts/live-run.sh warprun timeout 120 target/release/cfrs warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace
+          sh scripts/live-run.sh warprun timeout 120 target/release/podnet warp run --backend seccomp -- curl -sS https://www.cloudflare.com/cdn-cgi/trace
           grep -q '^warp=on' warprun.out
           # Issue 84: UDP of the seccomp pod goes to warp proxy as frames on
           # the unix control connection (no kernel UDP socket). NTP, not DNS:
           # the pod answers port 53 itself.
           # RUST_LOG of the job (info) has priority over -v: set debug here.
-          RUST_LOG=cfrs=debug sh scripts/live-run.sh warpudp timeout 120 target/release/cfrs warp run --backend seccomp -- python3 -c "
+          RUST_LOG=podnet=debug sh scripts/live-run.sh warpudp timeout 120 target/release/podnet warp run --backend seccomp -- python3 -c "
           import socket
           s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(10)
           s.sendto(b'\x1b' + bytes(47), ('162.159.200.123', 123))
@@ -773,7 +775,7 @@ jobs:
         timeout-minutes: 9
         run: |
           set -eu
-          target/release/cfrs warp proxy --listen tcp://127.0.0.1:40000 --dns 127.0.0.1:15353 --run-for 150 > warpproxy.log 2>&1 &
+          target/release/podnet warp proxy --listen tcp://127.0.0.1:40000 --dns 127.0.0.1:15353 --run-for 150 > warpproxy.log 2>&1 &
           # The proxy listens after the WARP registration: wait for it.
           i=0
           until nc -z 127.0.0.1 40000 2> /dev/null; do
@@ -821,27 +823,30 @@ jobs:
           awk '{ exit !($3 >= 27) }' atyp3.txt
           # Issues 93 and 100: one TCP download of 20 MB through the
           # userspace stack and MASQUE, for each TCP window
-          # (CFRS_WARP_TCP_BURST, in segments; the default is 1, issue 100).
+          # (PODNET_WARP_TCP_BURST, in segments; the default is 1, issue 100).
           # Run 41567562797 (direct leg): 4, 16 and none stalled; 1 carried
           # 20 MB at 0.46 MB/s. A stalled run prints its last warnings. The
           # step needs 1 MB/s from the better of the two runs of the
           # default.
           # The binary of beta.6 runs the same download (A/B on this runner,
-          # at this time): its default window is 1, as in this binary.
-          old="$RUNNER_TEMP/cfrs-beta6"
-          sh scripts/retry.sh curl -fsSL -o "$old" https://github.com/Azathothas/cfrs/releases/download/v0.3.0-beta.6/cfrs-x86_64-unknown-linux-musl && chmod +x "$old" || old=""
+          # at this time): its default window is 1, as in this binary. Its
+          # asset is cfrs-<target>, and its tracing target is cfrs.
+          old="$RUNNER_TEMP/podnet-beta6"
+          sh scripts/retry.sh curl -fsSL -o "$old" https://github.com/Azathothas/podnet/releases/download/v0.3.0-beta.6/cfrs-x86_64-unknown-linux-musl && chmod +x "$old" || old=""
           port=40200
           for spec in new:default old:default new:4 new:none old:default new:default; do
             bin=${spec%%:*}
             burst=${spec#*:}
             port=$((port + 1))
-            exe=target/release/cfrs
+            exe=target/release/podnet
+            log=podnet=debug
             if [ "$bin" = old ]; then
               [ -n "$old" ] || continue
               exe=$old
+              log=cfrs=debug
             fi
-            if [ "$burst" = default ]; then unset CFRS_WARP_TCP_BURST; else export CFRS_WARP_TCP_BURST=$burst; fi
-            RUST_LOG=cfrs=debug "$exe" warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$port.log" 2>&1 &
+            if [ "$burst" = default ]; then unset PODNET_WARP_TCP_BURST; else export PODNET_WARP_TCP_BURST=$burst; fi
+            RUST_LOG=$log "$exe" warp proxy --listen "tcp://127.0.0.1:$port" --run-for 90 > "burst-$port.log" 2>&1 &
             bp=$!
             i=0
             until nc -z 127.0.0.1 "$port" 2> /dev/null; do
@@ -864,7 +869,7 @@ jobs:
               default=$(awk -v a="${default:-0}" -v b="${r:-0}" 'BEGIN { print (b > a) ? b : a }')
             fi
           done
-          unset CFRS_WARP_TCP_BURST
+          unset PODNET_WARP_TCP_BURST
           awk -v r="${default:-0}" 'BEGIN { exit !(r >= 1000000) }'
           # Issue 75: the MASQUE connection is killed (ss -K); the proxy
           # opens a new session, and a new client goes through it.
@@ -899,9 +904,9 @@ jobs:
       # export, and a QUIC probe of the front door.
       - name: The commands of the second batch
         timeout-minutes: 10
-        run: sh scripts/live-batch2.sh target/release/cfrs
+        run: sh scripts/live-batch2.sh target/release/podnet
       # Issue 163: an IPv6-only host (the IPv6-only kit of 2026-11-02). The
-      # namespace v6up has IPv4 to the runner and cfrs warp tun; v6only
+      # namespace v6up has IPv4 to the runner and podnet warp tun; v6only
       # behind it has IPv6 only, with NAT66 out of the TUN. The routes of
       # the runner do not change.
       - name: An IPv6-only host
@@ -909,24 +914,24 @@ jobs:
         run: |
           set -eu
           trap 'sh scripts/v6only/down.sh' EXIT
-          sh scripts/v6only/up.sh target/release/cfrs
-          sh scripts/v6only/acceptance.sh target/release/cfrs
+          sh scripts/v6only/up.sh target/release/podnet
+          sh scripts/v6only/acceptance.sh target/release/podnet
       # The test box (issue 21): a user whose only egress is a policy proxy.
       - name: The test box
         timeout-minutes: 15
-        run: sh scripts/test_in_box.sh target/release/cfrs
+        run: sh scripts/test_in_box.sh target/release/podnet
       - name: The test box fails with a binary that exits 3
         timeout-minutes: 3
         run: |
-          if BOX_PLANT=exit3 sh scripts/test_in_box.sh target/release/cfrs; then
+          if BOX_PLANT=exit3 sh scripts/test_in_box.sh target/release/podnet; then
             echo "the box passed a planted binary"; exit 1
           fi
       - name: Remove the WARP device
         if: always()
         timeout-minutes: 2
         run: |
-          if [ -x target/release/cfrs ]; then
-            sh scripts/live-run.sh delete target/release/cfrs warp delete && echo "the WARP device is deleted" || echo "cfrs warp delete failed"
+          if [ -x target/release/podnet ]; then
+            sh scripts/live-run.sh delete target/release/podnet warp delete && echo "the WARP device is deleted" || echo "podnet warp delete failed"
           fi
 
   # After two failed runs in a row, open one issue. Do not open a second one

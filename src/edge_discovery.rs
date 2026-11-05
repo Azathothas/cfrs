@@ -19,7 +19,7 @@
 //! The port comes from the SRV record, not from a constant, so a future change
 //! at Cloudflare is followed rather than guessed. An SRV answer of another
 //! shape (more than two targets, a target outside `argotunnel.com`, two
-//! ports) is not used: cfrs takes [`FIXED_TARGETS`] and says why.
+//! ports) is not used: podnet takes [`FIXED_TARGETS`] and says why.
 
 use std::net::IpAddr;
 
@@ -76,7 +76,7 @@ pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
         }
         Some(reason) => {
             tracing::warn!(
-                "the SRV answer of {EDGE_SRV} has an unexpected shape: {reason}; cfrs uses region1 and region2.v2.argotunnel.com on port 7844"
+                "the SRV answer of {EDGE_SRV} has an unexpected shape: {reason}; podnet uses region1 and region2.v2.argotunnel.com on port 7844"
             );
             FIXED_TARGETS
                 .iter()

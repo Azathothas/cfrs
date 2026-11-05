@@ -15,8 +15,8 @@ pub const MAX_FAILURES: u32 = 10;
 /// The largest body of an unlock request.
 pub const MAX_UNLOCK_BODY: u64 = 4096;
 
-pub const UNLOCK_PATH: &str = "/__cfrs/unlock";
-pub const COOKIE_NAME: &str = "cfrs_pin";
+pub const UNLOCK_PATH: &str = "/__podnet/unlock";
+pub const COOKIE_NAME: &str = "podnet_pin";
 
 #[derive(Clone, Debug)]
 enum Mode {
@@ -221,7 +221,7 @@ impl Gate {
         format!(
             "<!doctype html><html><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-             <title>cfrs — locked</title><style>\
+             <title>podnet — locked</title><style>\
              body{{font-family:system-ui,sans-serif;background:#0b1020;color:#e8ecf5;\
              display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}\
              form{{background:#161d33;padding:2rem;border-radius:12px;width:min(90vw,320px)}}\
@@ -237,7 +237,7 @@ impl Gate {
              maxlength=\"6\" autofocus autocomplete=\"one-time-code\">\
              <input type=\"hidden\" name=\"next\" value=\"{next}\">\
              <button type=\"submit\">Unlock</button>\
-             <p>The code is shown on the computer running cfrs.</p></form></body></html>"
+             <p>The code is shown on the computer running podnet.</p></form></body></html>"
         )
     }
 }

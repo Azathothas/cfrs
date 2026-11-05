@@ -1,7 +1,7 @@
 //! Switch mode: connect userspace stacks on one host or on different hosts.
 //!
 //! A switch is a hub. Each peer connects to it with a byte stream (a unix
-//! socket, a TCP connection, or a `cfrs` WebSocket forward through a tunnel)
+//! socket, a TCP connection, or a `podnet` WebSocket forward through a tunnel)
 //! and sends IP packets in the framing of [`crate::vnet::framing`]. The switch
 //! learns the source address of each peer and sends each packet to the peer
 //! that owns its destination address. It floods a packet for an address that
@@ -16,7 +16,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use pod_netns::listen::ProxyListen;
+use podnet_netns::listen::ProxyListen;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -210,11 +210,11 @@ fn peer_is(stream: &tokio::net::UnixStream, owner: u32) -> bool {
 }
 
 /// The variable with the shared token of a TCP switch (issue 309).
-pub const TOKEN_VARIABLE: &str = "CFRS_SWITCH_TOKEN";
+pub const TOKEN_VARIABLE: &str = "PODNET_SWITCH_TOKEN";
 
 /// The first line that a peer of a TCP switch sends: this text, the token
 /// and a line feed. The switch answers `ok` and a line feed, or closes.
-const HELLO: &str = "cfrs-switch/1 ";
+const HELLO: &str = "podnet-switch/1 ";
 
 /// The longest first line that a TCP switch reads.
 const HELLO_MAX: usize = 4096;
@@ -370,7 +370,7 @@ async fn serve_for(listen: ProxyListen, token: Option<String>, owner: u32) -> Re
         }
         ProxyListen::Unix(path) => {
             crate::net::claim_socket_path(path, false)?;
-            let listener = pod_netns::listen::bind_private(path)
+            let listener = podnet_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
@@ -534,7 +534,7 @@ fn abstract_connect(name: &str) -> Result<tokio::net::UnixStream> {
     Ok(tokio::net::UnixStream::from_std(stream)?)
 }
 
-/// Serve the control socket of the shim (`CFRSNET_CONTROL=name`).
+/// Serve the control socket of the shim (`PODNET_VNET_CONTROL=name`).
 ///
 /// When a shim program binds a virtual address, the shim sends
 /// `RegisterBind`. The stack then listens on the same virtual address and
@@ -986,8 +986,8 @@ mod tests {
                 .unwrap();
         };
         let pid = std::process::id();
-        let foreign = format!("cfrsnet/test-ctl/{pid}/foreign");
-        let own = format!("cfrsnet/test-ctl/{pid}/own");
+        let foreign = format!("podnet-vnet/test-ctl/{pid}/foreign");
+        let own = format!("podnet-vnet/test-ctl/{pid}/own");
         let a = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8081);
         let b = VirtAddr::new(IpAddr::V4(Ipv4Addr::new(10, 66, 0, 2)), 8082);
         let _foreign =

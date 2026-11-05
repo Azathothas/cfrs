@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check that the test box has the properties of the measured sandbox,
-before any test of cfrs runs in it. Each line of REPORT is "NAME EXPECTED".
+before any test of podnet runs in it. Each line of REPORT is "NAME EXPECTED".
 Each probe gives a result; the probe prints "ok" or "FAIL" for each line,
 and exits 1 when one result is not the expected one.
 

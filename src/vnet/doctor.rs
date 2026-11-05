@@ -93,13 +93,13 @@ listen(AF_INET): warp proxy --listen tcp://, connect -L tcp://, net proxy
 listen(AF_UNIX): warp proxy --listen unix:, connect -L unix://
 no listener: tunnel, serve, share and demo (the edge carries each request)
 UDP egress: refused makes --protocol auto skip QUIC on UDP 7844; unknown keeps the
-  order (the next leg starts after 2 s); CFRS_UDP=off|on|probe sets it
+  order (the next leg starts after 2 s); PODNET_UDP=off|on|probe sets it
 ";
 
-/// The last line of `cfrs net doctor`. "not ready" only when the shim is
+/// The last line of `podnet net doctor`. "not ready" only when the shim is
 /// needed (AF_INET bind is refused) and a condition of it fails. A host that
-/// allows AF_INET needs no shim; `cfrs pod doctor` tests another thing (the
-/// backends of `cfrs pod`), so the two do not contradict.
+/// allows AF_INET needs no shim; `podnet pod doctor` tests another thing (the
+/// backends of `podnet pod`), so the two do not contradict.
 pub fn verdict(probes: &[Probe]) -> String {
     let ok = |name: &str| {
         probes
@@ -108,10 +108,10 @@ pub fn verdict(probes: &[Probe]) -> String {
             .is_some_and(|p| p.result.is_ok())
     };
     if ok("bind(AF_INET, 127.0.0.1:0)") && ok("listen(AF_INET, 127.0.0.1:0)") {
-        return "cfrsnet: not needed: this host allows AF_INET bind and listen, so programs use real addresses (cfrs pod doctor tests the backends of cfrs pod)".into();
+        return "podnet-vnet: not needed: this host allows AF_INET bind and listen, so programs use real addresses (podnet pod doctor tests the backends of podnet pod)".into();
     }
     if ready(probes) {
-        return "cfrsnet: ready".into();
+        return "podnet-vnet: ready".into();
     }
     let mut missing = Vec::new();
     if !ok("bind(AF_UNIX, path)") {
@@ -137,7 +137,7 @@ pub fn verdict(probes: &[Probe]) -> String {
         };
         missing.push(compiler.as_str());
     }
-    format!("cfrsnet: not ready: no {}", missing.join(", no "))
+    format!("podnet-vnet: not ready: no {}", missing.join(", no "))
 }
 
 /// True when the core requirements hold: no `AF_INET` bind, `AF_UNIX` binds
@@ -451,7 +451,7 @@ mod linux {
             Some(path) => {
                 // Compile a trivial shared object to prove the whole path works.
                 let dir =
-                    std::env::temp_dir().join(format!("cfrsnet-probe-{}", std::process::id()));
+                    std::env::temp_dir().join(format!("podnet-vnet-probe-{}", std::process::id()));
                 let source = dir.join("probe.c");
                 let output = dir.join("probe.so");
                 if std::fs::create_dir_all(&dir).is_err() {
@@ -460,7 +460,7 @@ mod linux {
                         result: ProbeResult::Fail("cannot create a scratch dir".into()),
                     };
                 }
-                if std::fs::write(&source, "int cfrsnet_probe(void){return 0;}\n").is_err() {
+                if std::fs::write(&source, "int podnet_vnet_probe(void){return 0;}\n").is_err() {
                     return Probe {
                         name: "cc -shared -fPIC",
                         result: ProbeResult::Fail("cannot write probe.c".into()),
@@ -552,7 +552,8 @@ mod linux {
                 result: bind_netlink(),
             },
         ]);
-        let path = std::env::temp_dir().join(format!("cfrsnet-probe-{}.sock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("podnet-vnet-probe-{}.sock", std::process::id()));
         let path_result = bind_unix_path(&path);
         let _ = std::fs::remove_file(&path);
         pair(
@@ -565,7 +566,7 @@ mod linux {
             &mut probes,
             "bind(AF_UNIX, \\0abstract)",
             "listen(AF_UNIX, \\0abstract)",
-            bind_unix_abstract(format!("cfrsnet-probe-{}", std::process::id()).as_bytes()),
+            bind_unix_abstract(format!("podnet-vnet-probe-{}", std::process::id()).as_bytes()),
         );
         probes.push(option(
             "/dev/net/tun",
@@ -624,7 +625,7 @@ mod tests {
             allowed("bind(AF_INET, 127.0.0.1:0)"),
             allowed("listen(AF_INET, 127.0.0.1:0)"),
         ];
-        assert!(verdict(&open).starts_with("cfrsnet: not needed"));
+        assert!(verdict(&open).starts_with("podnet-vnet: not needed"));
         let sealed = [
             Probe {
                 name: "bind(AF_INET, 127.0.0.1:0)",
@@ -634,7 +635,7 @@ mod tests {
         ];
         assert_eq!(
             verdict(&sealed),
-            "cfrsnet: not ready: no C compiler for the shim"
+            "podnet-vnet: not ready: no C compiler for the shim"
         );
         // Issue 181: the detail of the probe, and the advice for a scratch
         // directory.

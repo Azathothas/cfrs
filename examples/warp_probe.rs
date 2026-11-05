@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use cfrs::warp::WarpClient;
+use podnet::warp::WarpClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

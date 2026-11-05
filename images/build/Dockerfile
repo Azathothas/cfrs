@@ -1,4 +1,4 @@
-# The image that builds the static Linux binaries of cfrs (release.yml). This
+# The image that builds the static Linux binaries of podnet (release.yml). This
 # line is the one place that names it; the workflow reads it. The digest is
 # that of the multi-platform index (linux/amd64 and linux/arm64), so two runs
 # of one commit use one compiler, on each architecture.

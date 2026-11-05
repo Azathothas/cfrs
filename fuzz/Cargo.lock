@@ -386,61 +386,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
-name = "cfrs"
-version = "0.3.0-beta.12"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "bytes",
- "clap",
- "clap_complete",
- "curve25519-dalek",
- "futures",
- "getrandom 0.3.4",
- "h2",
- "hickory-resolver",
- "http",
- "http-body-util",
- "httparse",
- "libc",
- "pod-netns",
- "qrcode",
- "quinn",
- "rcgen",
- "regex",
- "ring",
- "russh",
- "rustls",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "sha1",
- "smoltcp",
- "ssh-key",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "webpki-roots",
- "x509-parser",
-]
-
-[[package]]
-name = "cfrs-fuzz"
-version = "0.0.0"
-dependencies = [
- "cfrs",
- "libfuzzer-sys",
-]
-
-[[package]]
 name = "chacha20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2156,7 +2101,62 @@ dependencies = [
 ]
 
 [[package]]
-name = "pod-netns"
+name = "podnet"
+version = "0.3.0-beta.12"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bytes",
+ "clap",
+ "clap_complete",
+ "curve25519-dalek",
+ "futures",
+ "getrandom 0.3.4",
+ "h2",
+ "hickory-resolver",
+ "http",
+ "http-body-util",
+ "httparse",
+ "libc",
+ "podnet-netns",
+ "qrcode",
+ "quinn",
+ "rcgen",
+ "regex",
+ "ring",
+ "russh",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "sha1",
+ "smoltcp",
+ "ssh-key",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webpki-roots",
+ "x509-parser",
+]
+
+[[package]]
+name = "podnet-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "podnet",
+]
+
+[[package]]
+name = "podnet-netns"
 version = "0.3.0-beta.12"
 dependencies = [
  "anyhow",

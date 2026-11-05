@@ -1,17 +1,17 @@
 //! The reverse mode of the WebSocket relay (issue 88): inbound access to a
 //! host that has outbound HTTPS only.
 //!
-//! * `cfrs relay pair` asks the relay for a pair (`POST /v1/pair`): a name,
-//!   a node token, a connect token and a stop token. cfrs keeps the pair in
+//! * `podnet relay pair` asks the relay for a pair (`POST /v1/pair`): a name,
+//!   a node token, a connect token and a stop token. podnet keeps the pair in
 //!   a file of mode 0600 and prints the connect token for the operator.
-//! * `cfrs relay node` holds the WebSocket `/v1/node/NAME`. For each
+//! * `podnet relay node` holds the WebSocket `/v1/node/NAME`. For each
 //!   `open {id}`, it connects to the local target and answers `ready {id}`
 //!   or `reject {id, reason}`. Each binary frame is the 32 hex characters of
 //!   the session id and at most 64 KiB of bytes. A lost socket is opened
 //!   again with a backoff (1 s to 30 s, with jitter). A close for cause
 //!   (the pair expired, the operator stopped it, a refused token) stops the
 //!   node: a new pair is necessary.
-//! * `cfrs relay connect NAME` opens `/v1/connect/NAME` for the operator,
+//! * `podnet relay connect NAME` opens `/v1/connect/NAME` for the operator,
 //!   waits for `ready`, and then copies raw bytes: stdin and stdout (for an
 //!   SSH `ProxyCommand`), or each connection of a local listener.
 //!
@@ -33,7 +33,7 @@ use crate::exit::{fault, Fault};
 use crate::ws_relay::Relay;
 
 /// The environment variable with the connect token of the operator.
-pub const CONNECT_TOKEN_VARIABLE: &str = "CFRS_RELAY_CONNECT_TOKEN";
+pub const CONNECT_TOKEN_VARIABLE: &str = "PODNET_RELAY_CONNECT_TOKEN";
 /// The most bytes in one data frame.
 const FRAME: usize = 64 * 1024;
 /// The length of a session id: 32 lowercase hex characters.
@@ -167,7 +167,7 @@ pub fn load(dir: &Path, name: Option<&str>) -> Result<Pair> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 return Err(fault(
                     Fault::Unavailable,
-                    anyhow::anyhow!("no pair at {} (cfrs relay pair)", path.display()),
+                    anyhow::anyhow!("no pair at {} (podnet relay pair)", path.display()),
                 ))
             }
             Err(err) => {
@@ -187,7 +187,7 @@ pub fn load(dir: &Path, name: Option<&str>) -> Result<Pair> {
     }
     let mut best: Option<Pair> = None;
     for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("no pair in {} (cfrs relay pair)", dir.display()))
+        .with_context(|| format!("no pair in {} (podnet relay pair)", dir.display()))
         .map_err(|e| fault(Fault::Unavailable, e))?
         .flatten()
     {
@@ -204,7 +204,7 @@ pub fn load(dir: &Path, name: Option<&str>) -> Result<Pair> {
     best.ok_or_else(|| {
         fault(
             Fault::Unavailable,
-            anyhow::anyhow!("no pair in {} (cfrs relay pair)", dir.display()),
+            anyhow::anyhow!("no pair in {} (podnet relay pair)", dir.display()),
         )
     })
 }
@@ -291,7 +291,7 @@ pub async fn node(relay: &Relay, pair: &Pair, target: &Target) -> Result<()> {
             return Err(fault(
                 Fault::Config,
                 anyhow::anyhow!(
-                    "the pair {} expired; make a new pair (cfrs relay pair)",
+                    "the pair {} expired; make a new pair (podnet relay pair)",
                     pair.name
                 ),
             ));
@@ -319,7 +319,7 @@ pub async fn node(relay: &Relay, pair: &Pair, target: &Target) -> Result<()> {
                     name = %pair.name,
                     %reason,
                     again_in = ?(backoff + jitter),
-                    "the node socket ended; cfrs opens it again"
+                    "the node socket ended; podnet opens it again"
                 );
                 tokio::time::sleep(backoff + jitter).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -363,9 +363,9 @@ pub fn expiry_line(pair: &Pair, left: Duration, follow: bool) -> String {
         crate::warp::register::utc_minutes(pair.expires / 1000)
     );
     if follow {
-        format!("{when}; make the next pair now (cfrs relay pair): this node takes it at the expiry, and its operators need its name and connect token")
+        format!("{when}; make the next pair now (podnet relay pair): this node takes it at the expiry, and its operators need its name and connect token")
     } else {
-        format!("{when}; the next pair needs cfrs relay pair and a new start of the node (a node with no pair name takes the next pair at the expiry)")
+        format!("{when}; the next pair needs podnet relay pair and a new start of the node (a node with no pair name takes the next pair at the expiry)")
     }
 }
 
@@ -416,7 +416,7 @@ pub async fn run_node(follow: Option<&Path>, pair: Pair, target: &Target) -> Res
             result = node(&relay, &pair, target) => result,
             _ = tokio::time::sleep(pair.left()) => Err(fault(
                 Fault::Config,
-                anyhow::anyhow!("the pair {} expired; make a new pair (cfrs relay pair)", pair.name),
+                anyhow::anyhow!("the pair {} expired; make a new pair (podnet relay pair)", pair.name),
             )),
         };
         warnings.abort();
@@ -526,7 +526,7 @@ async fn node_once(relay: &Relay, pair: &Pair, target: &Target) -> Result<NodeEn
                             sessions.remove(&id);
                         }
                         "hello" => tracing::debug!("hello from the relay"),
-                        other => tracing::debug!(kind = other, "a control message that cfrs does not use"),
+                        other => tracing::debug!(kind = other, "a control message that podnet does not use"),
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {

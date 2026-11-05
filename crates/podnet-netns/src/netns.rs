@@ -498,7 +498,7 @@ impl Backend {
         let chain = select_chain(&self.rules, &self.proxies, target).to_vec();
         if self.verbose {
             let hops: Vec<String> = chain.iter().map(Proxy::endpoint).collect();
-            eprintln!("pod-netns: {target} via {}", hops.join(" -> "));
+            eprintln!("podnet-netns: {target} via {}", hops.join(" -> "));
         }
         let dial_target = target.to_string();
         tokio::spawn(async move {
@@ -570,7 +570,7 @@ impl Backend {
                 Err(e) => {
                     if self.verbose {
                         eprintln!(
-                            "pod-netns: upstream for {} failed: {e:#}; the connect of the program is refused",
+                            "podnet-netns: upstream for {} failed: {e:#}; the connect of the program is refused",
                             held.target
                         );
                     }
@@ -614,7 +614,7 @@ impl Backend {
                     let handle = self.sockets.add(socket);
                     self.listeners.insert(handle, port);
                     if self.verbose {
-                        eprintln!("pod-netns: listening for outbound port {port}");
+                        eprintln!("podnet-netns: listening for outbound port {port}");
                     }
                 }
             }
@@ -742,14 +742,14 @@ impl Backend {
                 }
                 Ok(Err(e)) => {
                     if self.verbose {
-                        eprintln!("pod-netns: upstream for {target} failed: {e:#}");
+                        eprintln!("podnet-netns: upstream for {target} failed: {e:#}");
                     }
                     self.sockets.get_mut::<tcp::Socket>(handle).abort();
                     self.aborting.push(handle);
                 }
                 Err(e) => {
                     if self.verbose {
-                        eprintln!("pod-netns: dial task for {target} failed: {e}");
+                        eprintln!("podnet-netns: dial task for {target} failed: {e}");
                     }
                     self.sockets.get_mut::<tcp::Socket>(handle).abort();
                     self.aborting.push(handle);
@@ -832,7 +832,7 @@ pub(crate) fn tcp_socket() -> tcp::Socket<'static> {
     let mut socket = tcp::Socket::new(rx, tx);
     socket.set_nagle_enabled(false);
     // As before smoltcp 0.12: no congestion controller. A build of the
-    // workspace turns on the controllers of cfrs, and smoltcp then takes
+    // workspace turns on the controllers of podnet, and smoltcp then takes
     // cubic by default.
     socket.set_congestion_control(tcp::CongestionControl::None);
     socket
@@ -982,7 +982,7 @@ pub(crate) fn run(args: Args) -> Result<i32> {
         let result = child_setup(child, &args);
         // child_setup only returns on error; it execs on success.
         if let Err(e) = result {
-            eprintln!("pod-netns: {e:#}");
+            eprintln!("podnet-netns: {e:#}");
             unsafe { libc::_exit(EXIT_NO_BACKEND) };
         }
         unsafe { libc::_exit(0) };
@@ -1134,7 +1134,8 @@ fn private_resolv_conf() -> Result<()> {
             std::io::Error::last_os_error()
         );
     }
-    let file = std::env::temp_dir().join(format!("pod-netns-resolv-{}.conf", std::process::id()));
+    let file =
+        std::env::temp_dir().join(format!("podnet-netns-resolv-{}.conf", std::process::id()));
     std::fs::write(&file, format!("nameserver {TUN_GW}\noptions ndots:0\n"))
         .context("writing the resolv.conf of the pod")?;
     let source = CString::new(file.as_os_str().as_encoded_bytes())?;

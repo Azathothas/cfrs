@@ -1,4 +1,4 @@
-//! The rules of `cfrs warp proxy` (issues 132 and 136): for each
+//! The rules of `podnet warp proxy` (issues 132 and 136): for each
 //! destination, go through the tunnel, connect directly from the host, or
 //! refuse.
 //!
@@ -22,8 +22,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context as _, Result};
-use pod_netns::socks::ProxyHost;
-use pod_netns::RuleMatch;
+use podnet_netns::socks::ProxyHost;
+use podnet_netns::RuleMatch;
 
 /// What to do with a destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -399,7 +399,7 @@ mod tests {
         ] {
             assert!(Rule::parse(bad).is_err(), "{bad}");
         }
-        let dir = std::env::temp_dir().join(format!("cfrs-rules-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-rules-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("rules");
         std::fs::write(

@@ -1,12 +1,12 @@
 #!/bin/sh
 # A WebSocket through a --url origin (issue 56): a WebSocket echo server in
-# Python is the origin of `cfrs tunnel --url`, and a client sends one message
+# Python is the origin of `podnet tunnel --url`, and a client sends one message
 # through the public URL and must get it back. The tunnel host is masked
 # before any output.
 #
-#   sh scripts/live-ws-url.sh CFRS PROTOCOL
+#   sh scripts/live-ws-url.sh PODNET PROTOCOL
 set -eu
-cfrs=$1
+podnet=$1
 protocol=$2
 dir=$(mktemp -d)
 port=18095
@@ -24,7 +24,7 @@ asyncio.run(main())
 ' "$port" &
 sleep 1
 
-"$cfrs" tunnel --url "http://127.0.0.1:$port" --protocol "$protocol" --transport direct \
+"$podnet" tunnel --url "http://127.0.0.1:$port" --protocol "$protocol" --transport direct \
     --json --no-verify > "$dir/tunnel.out" 2> "$dir/tunnel.err" &
 i=0
 until grep -q '"event":"ready"' "$dir/tunnel.out" 2> /dev/null; do

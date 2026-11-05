@@ -1,11 +1,11 @@
-//! `cfrs warp export` (issue 148): a WireGuard device of the WARP service,
+//! `podnet warp export` (issue 148): a WireGuard device of the WARP service,
 //! as a config that other clients read (wg-quick, or JSON).
 //!
 //! The exported device is a new device with its own X25519 key. It is not
 //! the MASQUE device of `warp.json`, which this module never reads or
 //! writes. Its data plane is WireGuard on UDP (port 2408 of the front door
 //! by default), not MASQUE on TCP 443: on a network that permits only TCP
-//! 443, the exported config does not work, and cfrs itself does.
+//! 443, the exported config does not work, and podnet itself does.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,7 @@ fn b64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-/// `<state dir>/warp-wg.json`; `None` with `CFRS_STATE_DIR=none`.
+/// `<state dir>/warp-wg.json`; `None` with `PODNET_STATE_DIR=none`.
 pub fn default_path() -> Result<Option<PathBuf>> {
     Ok(crate::state::state_dir()?.map(|dir| dir.join(FILE_NAME)))
 }
@@ -113,7 +113,7 @@ pub fn check_sink(out: Option<&Path>, stdout_is_terminal: bool) -> Result<()> {
 }
 
 /// Issue 177: when stdout is a regular file of this user that others can
-/// read (`cfrs warp export > warp.conf` with a umask of 022), set its mode
+/// read (`podnet warp export > warp.conf` with a umask of 022), set its mode
 /// to 0600 before the key is written. True when the mode changed.
 pub fn tighten_stdout() -> bool {
     use std::os::fd::AsRawFd as _;
@@ -185,7 +185,7 @@ impl Config {
             addresses.push(format!("{v6}/128"));
         }
         let mut out = String::from(
-            "# cfrs warp export: a WireGuard device of WARP (UDP). cfrs warp export --delete removes it.\n",
+            "# podnet warp export: a WireGuard device of WARP (UDP). podnet warp export --delete removes it.\n",
         );
         if let Some([a, b, c]) = self.reserved {
             out.push_str(&format!(
@@ -259,7 +259,7 @@ mod tests {
     fn a_redirected_file_is_tightened_to_0600() {
         use std::os::fd::AsRawFd as _;
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("cfrs-tighten-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-tighten-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("warp.conf");
         let file = std::fs::File::create(&path).unwrap();

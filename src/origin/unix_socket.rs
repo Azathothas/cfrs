@@ -53,7 +53,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_regular_file_is_not_a_socket() {
-        let p = std::env::temp_dir().join(format!("cfrs-notasocket-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("podnet-notasocket-{}", std::process::id()));
         std::fs::write(&p, b"x").expect("write");
         assert!(!is_live(&p), "a regular file must not pass is_live");
         let _ = std::fs::remove_file(&p);
@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn a_bound_socket_is_live() {
-        let p = std::env::temp_dir().join(format!("cfrs-issocket-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("podnet-issocket-{}", std::process::id()));
         let _ = std::fs::remove_file(&p);
         let l = std::os::unix::net::UnixListener::bind(&p).expect("bind");
         assert!(is_live(&p), "a bound unix socket must pass is_live");

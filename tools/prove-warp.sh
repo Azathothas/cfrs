@@ -16,15 +16,15 @@ set -u
 
 SECS=${1:-60}
 # The build tree can be in CARGO_TARGET_DIR.
-if [ -z "${CFRS_BIN:-}" ]; then
-    for candidate in ./target/debug/cfrs "${CARGO_TARGET_DIR:-}/debug/cfrs"; do
+if [ -z "${PODNET_BIN:-}" ]; then
+    for candidate in ./target/debug/podnet "${CARGO_TARGET_DIR:-}/debug/podnet"; do
         if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-            CFRS_BIN=$candidate
+            PODNET_BIN=$candidate
             break
         fi
     done
 fi
-BIN=${CFRS_BIN:-./target/debug/cfrs}
+BIN=${PODNET_BIN:-./target/debug/podnet}
 EDGES="198.41.192.27 198.41.200.13"
 
 fail=0
@@ -57,7 +57,7 @@ trap 'kill $TUNNEL_PID 2>/dev/null; rm -f "$LOG"' EXIT INT TERM
 i=0
 while [ $i -lt "$SECS" ]; do
     grep -q "verified public URL" "$LOG" && break
-    grep -q "cfrs: tunnel failed\|error:" "$LOG" && break
+    grep -q "podnet: tunnel failed\|error:" "$LOG" && break
     sleep 1
     i=$((i + 1))
 done
@@ -69,7 +69,7 @@ else
     bad "no WARP transport line in the log"
 fi
 
-URL=$(sed -n 's/.*cfrs: public *\(https:[^ ]*\).*/\1/p' "$LOG" | head -1)
+URL=$(sed -n 's/.*podnet: public *\(https:[^ ]*\).*/\1/p' "$LOG" | head -1)
 if printf '%s' "$URL" | grep -q '^https://'; then
     ok "public URL issued: $URL"
 else
@@ -93,10 +93,10 @@ fi
 echo
 echo "== 4. control: with direct made impossible, WARP still carries it =="
 # This host happens to permit UDP 7844, so "direct fails" cannot be shown by the
-# firewall here. CFRS_EDGE pins discovery to an address nothing answers on,
+# firewall here. PODNET_EDGE pins discovery to an address nothing answers on,
 # which makes the direct attempt fail for a reason this script controls.
 DL=$(mktemp)
-CFRS_EDGE=127.0.0.1:9 timeout 200 "$BIN" tunnel --hello-world --run-for 45 >"$DL" 2>&1
+PODNET_EDGE=127.0.0.1:9 timeout 200 "$BIN" tunnel --hello-world --run-for 45 >"$DL" 2>&1
 if grep -q "falling back to WARP" "$DL" && grep -q "verified public URL" "$DL"; then
     ok "direct was unreachable and the tunnel still served the public URL through WARP"
 else

@@ -10,17 +10,17 @@ use serde::Serialize;
 pub struct EnvVar {
     /// The names: the first is the main name, the others are aliases.
     pub names: &'static [&'static str],
-    /// The part of cfrs that reads it.
+    /// The part of podnet that reads it.
     pub used_by: &'static str,
     pub meaning: &'static str,
 }
 
-/// Each variable that cfrs, pod-netns or the shims read.
+/// Each variable that podnet, podnet-netns or the shims read.
 pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
         used_by: "tunnel, warp, edge discovery, pod",
-        meaning: "The proxy for each connection of cfrs, when --proxy and --no-proxy are not given: http://, socks5:// (this host resolves the name) or socks5h:// (the proxy resolves it), [user:password@]host[:port]. The first variable that is set and can be parsed is used. With a proxy, --protocol auto does not try QUIC on UDP 7844. pod-netns uses the value as its default upstream.",
+        meaning: "The proxy for each connection of podnet, when --proxy and --no-proxy are not given: http://, socks5:// (this host resolves the name) or socks5h:// (the proxy resolves it), [user:password@]host[:port]. The first variable that is set and can be parsed is used. With a proxy, --protocol auto does not try QUIC on UDP 7844. podnet pod uses the value as its default upstream.",
     },
     EnvVar {
         names: &["NO_PROXY", "no_proxy"],
@@ -28,14 +28,14 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The targets that do not use the proxy, separated by commas: * (all), a name (it matches the names under it too), .name, an IP address, a network (10.0.0.0/8), each with an optional :port.",
     },
     EnvVar {
-        names: &["CFRS_RESOLVE"],
+        names: &["PODNET_RESOLVE"],
         used_by: "all commands",
-        meaning: "Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. --resolve adds to it. Without a pin, cfrs asks the system resolver, then DNS over HTTPS at 1.1.1.1, 1.0.0.1, 8.8.8.8 and 8.8.4.4. A bad value is a configuration error (exit 78) for each command.",
+        meaning: "Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. --resolve adds to it. Without a pin, podnet asks the system resolver, then DNS over HTTPS at 1.1.1.1, 1.0.0.1, 8.8.8.8 and 8.8.4.4. A bad value is a configuration error (exit 78) for each command.",
     },
     EnvVar {
         names: &["HTTP_PROXY", "http_proxy"],
         used_by: "pod",
-        meaning: "The default upstream of pod-netns when HTTPS_PROXY and ALL_PROXY are not set.",
+        meaning: "The default upstream of podnet pod when HTTPS_PROXY and ALL_PROXY are not set.",
     },
     EnvVar {
         names: &["TUNNEL_TOKEN"],
@@ -50,25 +50,25 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["SSL_CERT_FILE"],
         used_by: "all commands",
-        meaning: "The only file of TLS roots (PEM), when --ca-file is not given. Without both, cfrs trusts cfrs-ca.pem beside the binary, the first system bundle that it can read, and the roots compiled into cfrs.",
+        meaning: "The only file of TLS roots (PEM), when --ca-file is not given. Without both, podnet trusts podnet-ca.pem beside the binary, the first system bundle that it can read, and the roots compiled into podnet.",
     },
     EnvVar {
-        names: &["CFRS_STATE_DIR"],
+        names: &["PODNET_STATE_DIR"],
         used_by: "warp, tunnel --transport warp",
-        meaning: "The state directory (the WARP identity). The value none keeps no file. Without it, cfrs takes the first directory that it can write of $XDG_STATE_HOME/cfrs, $HOME/.local/state/cfrs, $XDG_RUNTIME_DIR/cfrs and cfrs-<uid> in the temporary directory.",
+        meaning: "The state directory (the WARP identity). The value none keeps no file. Without it, podnet takes the first directory that it can write of $XDG_STATE_HOME/podnet, $HOME/.local/state/podnet, $XDG_RUNTIME_DIR/podnet and podnet-<uid> in the temporary directory.",
     },
     EnvVar {
         names: &["XDG_STATE_HOME", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"],
         used_by: "warp, net shim, net socksify, autostart",
-        meaning: "The candidates of the state directory, and of the directory of a shim (a directory that is not noexec). cfrs reads the home from HOME only, not from the user database.",
+        meaning: "The candidates of the state directory, and of the directory of a shim (a directory that is not noexec). podnet reads the home from HOME only, not from the user database.",
     },
     EnvVar {
         names: &["XDG_CONFIG_HOME"],
         used_by: "autostart",
-        meaning: "The base of the systemd user unit: $XDG_CONFIG_HOME/systemd/user/cfrs-NAME.service, else $HOME/.config/systemd/user.",
+        meaning: "The base of the systemd user unit: $XDG_CONFIG_HOME/systemd/user/podnet-NAME.service, else $HOME/.config/systemd/user.",
     },
     EnvVar {
-        names: &["CFRS_LEG_FAILOVER"],
+        names: &["PODNET_LEG_FAILOVER"],
         used_by: "tunnel, serve, share, demo",
         meaning: "The value of --leg-failover when the flag is not given: staggered or serial.",
     },
@@ -78,184 +78,184 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "When set, the log has no colours. The log has colours only when stderr is a terminal.",
     },
     EnvVar {
-        names: &["CFRS_EDGE"],
+        names: &["PODNET_EDGE"],
         used_by: "tunnel, serve, share, demo, doctor, net doctor",
         meaning: "A comma-separated list of ip:port edge addresses. It replaces edge discovery. A value that cannot be parsed is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_PROXY"],
+        names: &["PODNET_PROXY"],
         used_by: "all commands",
-        meaning: "The value of --proxy when the flag is not given: http://, socks5:// or socks5h://HOST:PORT, SCHEME+unix:/PATH, or SCHEME+exec:COMMAND (a proxy at the stdin and stdout of a command). It keeps a proxy password out of the command line; cfrs autostart puts it in the private env file of an entry. The env file of cfrs warp up with no TCP listener sets it to the unix socket.",
+        meaning: "The value of --proxy when the flag is not given: http://, socks5:// or socks5h://HOST:PORT, SCHEME+unix:/PATH, or SCHEME+exec:COMMAND (a proxy at the stdin and stdout of a command). It keeps a proxy password out of the command line; podnet autostart puts it in the private env file of an entry. The env file of podnet warp up with no TCP listener sets it to the unix socket.",
     },
     EnvVar {
-        names: &["CFRS_WARP_SHELL"],
+        names: &["PODNET_WARP_SHELL"],
         used_by: "warp shell, the block of warp up --persist",
-        meaning: "Set in a shell that cfrs warp shell started; the block of --persist then does not start it again.",
+        meaning: "Set in a shell that podnet warp shell started; the block of --persist then does not start it again.",
     },
     EnvVar {
         names: &["SHELL"],
         used_by: "warp shell",
-        meaning: "The shell that cfrs warp shell runs (default /bin/sh).",
+        meaning: "The shell that podnet warp shell runs (default /bin/sh).",
     },
     EnvVar {
-        names: &["CFRS_RUN_DIR"],
+        names: &["PODNET_RUN_DIR"],
         used_by: "--detach, ps, stop, logs, wait",
-        meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each, and NAME.secrets (mode 0600) for an instance with a token or a proxy password. Default: $XDG_RUNTIME_DIR/cfrs/run, else run in the state directory.",
+        meaning: "The directory of the detached instances (mode 0700): NAME.json, NAME.lock and NAME.log for each, and NAME.secrets (mode 0600) for an instance with a token or a proxy password. Default: $XDG_RUNTIME_DIR/podnet/run, else run in the state directory.",
     },
     EnvVar {
-        names: &["CFRS_DETACH_NAME", "CFRS_DETACH_HASH", "CFRS_DETACH_COMMAND", "CFRS_DETACH_SUPERVISED", "CFRS_DETACH_READY_TIMEOUT"],
+        names: &["PODNET_DETACH_NAME", "PODNET_DETACH_HASH", "PODNET_DETACH_COMMAND", "PODNET_DETACH_SUPERVISED", "PODNET_DETACH_READY_TIMEOUT"],
         used_by: "--detach",
-        meaning: "cfrs sets them for the child of --detach: the name of the instance, the hash of its arguments, the command, whether a supervisor runs it, and the --ready-timeout of the first start (a provision of a quick tunnel does not wait past it). Do not set them.",
+        meaning: "podnet sets them for the child of --detach: the name of the instance, the hash of its arguments, the command, whether a supervisor runs it, and the --ready-timeout of the first start (a provision of a quick tunnel does not wait past it). Do not set them.",
     },
     EnvVar {
-        names: &["CFRS_RELAY"],
+        names: &["PODNET_RELAY"],
         used_by: "tunnel, serve, share, demo, relay",
-        meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host), or a comma list of hosts of one deployment. The default is https://tcp.ssh.relay.ajam.dev; when a host does not answer, cfrs tries hosts of its pool.",
+        meaning: "The value of --relay when the flag is not given: the WebSocket-to-TCP relay of --transport relay (https:// and a host), or a comma list of hosts of one deployment. The default is https://tcp.ssh.relay.ajam.dev; when a host does not answer, podnet tries hosts of its pool.",
     },
     EnvVar {
-        names: &["CFRS_REPO"],
+        names: &["PODNET_REPO"],
         used_by: "update",
-        meaning: "OWNER/NAME of the releases for scripts/install.sh. cfrs update does not use it: its repository names the signer of the binary. A warning says so.",
+        meaning: "OWNER/NAME of the releases for scripts/install.sh. podnet update does not use it: its repository names the signer of the binary. A warning says so.",
     },
     EnvVar {
-        names: &["CFRS_FOREIGN_HOME"],
+        names: &["PODNET_FOREIGN_HOME"],
         used_by: "the state directory, warp ssh-config --write, warp up --persist and --env-d, autostart",
-        meaning: "allow: write in a directory of another user anyway (with a warning). By default, cfrs writes no file in a directory that belongs to another user (root with the HOME of a user): the state directory skips that HOME, and the other commands exit 78.",
+        meaning: "allow: write in a directory of another user anyway (with a warning). By default, podnet writes no file in a directory that belongs to another user (root with the HOME of a user): the state directory skips that HOME, and the other commands exit 78.",
     },
     EnvVar {
-        names: &["CFRS_AUTH_USER", "CFRS_AUTH_PASSWORD_FILE"],
+        names: &["PODNET_AUTH_USER", "PODNET_AUTH_PASSWORD_FILE"],
         used_by: "tunnel, serve, share, demo, connect",
-        meaning: "The values of --auth-user and --auth-password-file: each visitor of the tunnel must give this user and password (HTTP Basic); cfrs connect sends them in the WebSocket upgrade. The file has the password on its first line and mode 0600.",
+        meaning: "The values of --auth-user and --auth-password-file: each visitor of the tunnel must give this user and password (HTTP Basic); podnet connect sends them in the WebSocket upgrade. The file has the password on its first line and mode 0600.",
     },
     EnvVar {
-        names: &["CFRS_RELAY_TOKEN"],
+        names: &["PODNET_RELAY_TOKEN"],
         used_by: "tunnel, serve, share, demo",
-        meaning: "A token for the relay of --transport relay. It goes only in the X-Relay-Token header. Without it, cfrs mints a token with POST /v1/mint on the relay and keeps it in relay-token-HOST.json (mode 0600) in the state directory.",
+        meaning: "A token for the relay of --transport relay. It goes only in the X-Relay-Token header. Without it, podnet mints a token with POST /v1/mint on the relay and keeps it in relay-token-HOST.json (mode 0600) in the state directory.",
     },
     EnvVar {
-        names: &["CFRS_RELAY_CONNECT_TOKEN"],
+        names: &["PODNET_RELAY_CONNECT_TOKEN"],
         used_by: "relay connect",
-        meaning: "The connect token of a pair, for the operator side of the reverse relay. It goes only in the X-Relay-Token header. Without it, cfrs reads the local pair file.",
+        meaning: "The connect token of a pair, for the operator side of the reverse relay. It goes only in the X-Relay-Token header. Without it, podnet reads the local pair file.",
     },
     EnvVar {
-        names: &["POD_NETNS_TEST_MEM"],
+        names: &["PODNET_NETNS_TEST_MEM"],
         used_by: "pod (tests only)",
         meaning: "A test hook of the seccomp backend: no-fd does not open the memory of the program for writing (process_vm_writev is used); none also does not use process_vm_writev (getsockname and getpeername fail with EOPNOTSUPP).",
     },
     EnvVar {
-        names: &["CFRS_WARP_API"],
+        names: &["PODNET_WARP_API"],
         used_by: "warp (each command that calls the WARP API)",
-        meaning: "The one base of the WARP API: https://HOST[:PORT] (http:// for a loopback host only). Without it, cfrs tries https://api.cloudflareclient.com, then https://api.devices.cloudflare.com after a dial, TLS or 5xx failure. Another value is a configuration error (exit 78).",
+        meaning: "The one base of the WARP API: https://HOST[:PORT] (http:// for a loopback host only). Without it, podnet tries https://api.cloudflareclient.com, then https://api.devices.cloudflare.com after a dial, TLS or 5xx failure. Another value is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_WARP_TCP_BURST"],
+        names: &["PODNET_WARP_TCP_BURST"],
         used_by: "warp proxy, warp run, warp up, agent up",
         meaning: "The TCP window of the userspace stack of WARP, in segments of the MTU: a number from 1 to 430, or none (no limit, the default): for a measurement of throughput. Another value is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_WARP_MASQUE_TRANSPORT"],
+        names: &["PODNET_WARP_MASQUE_TRANSPORT"],
         used_by: "warp (each command that opens a MASQUE session), warp up (its proxy)",
         meaning: "The value of --masque-transport: h2 (HTTP/2 on TCP 443, the default) or h3 (HTTP/3 on UDP 443; each IP packet is an HTTP datagram). h3 has no relay and no proxy.",
     },
     EnvVar {
-        names: &["CFRS_WARP_TRANSPORT", "CFRS_WARP_WG_ENDPOINT"],
+        names: &["PODNET_WARP_TRANSPORT", "PODNET_WARP_WG_ENDPOINT"],
         used_by: "warp (each command that opens a session), warp up (its proxy)",
-        meaning: "The value of --transport (masque, the default, or wireguard) and of --wireguard-endpoint (IP:PORT). wireguard carries the tunnel on UDP to the WireGuard front door (port 2408 of the record) with the device of warp export (warp-wg.json of the state directory), which cfrs registers when the file has none. It has no relay and no proxy.",
+        meaning: "The value of --transport (masque, the default, or wireguard) and of --wireguard-endpoint (IP:PORT). wireguard carries the tunnel on UDP to the WireGuard front door (port 2408 of the record) with the device of warp export (warp-wg.json of the state directory), which podnet registers when the file has none. It has no relay and no proxy.",
     },
     EnvVar {
-        names: &["CFRS_WARP_CARRY", "CFRS_WARP_CARRY_ENDPOINT"],
+        names: &["PODNET_WARP_CARRY", "PODNET_WARP_CARRY_ENDPOINT"],
         used_by: "warp (each command with a userspace stack), warp up (its proxy)",
         meaning: "The value of --carry (none, or wg) and of --carry-endpoint (IP:PORT). wg: a second WireGuard device (warp-carry.json of the state directory, registered when the file has none) goes inside the tunnel, on a UDP socket of the first stack; the tools use the stack of the second device (IPv4, MTU 1200). Its exit is the exit of the second device. With --transport wireguard, both hops are WireGuard.",
     },
     EnvVar {
-        names: &["CFRS_WARP_L4_FORM"],
+        names: &["PODNET_WARP_L4_FORM"],
         used_by: "warp proxy --l4",
         meaning: "The form of the CONNECT of the L4 door, for a test of the door: plain (RFC 9114, the default), extended (:protocol cf-connect-tcp) or header (cf-connect-proto: cf-connect-tcp).",
     },
     EnvVar {
-        names: &["CFRS_WARP_L4"],
+        names: &["PODNET_WARP_L4"],
         used_by: "warp proxy",
         meaning: "Set to true: the value of --l4. Each TCP client of the proxy is one HTTP/3 CONNECT stream to the L4 door of WARP on UDP 443 (TLS name of --l4-sni), with no IP stack; UDP is not served.",
     },
     EnvVar {
-        names: &["CFRS_WARP_SESSION_MAX_AGE"],
+        names: &["PODNET_WARP_SESSION_MAX_AGE"],
         used_by: "warp proxy, warp forward, warp run, warp up",
         meaning: "The value of --session-max-age: each MASQUE session is closed on purpose at this age (seconds), and a new one opens, with a new egress address. The TCP flows of the old session end. Off when not set.",
     },
     EnvVar {
-        names: &["CFRS_WARP_CC"],
+        names: &["PODNET_WARP_CC"],
         used_by: "warp (each command with a userspace stack), warp up (its proxy), tunnel --transport warp",
         meaning: "The value of --cc: the congestion controller of the TCP connections of the userspace stack of WARP, for the data that the stack sends: none (the default; only the window of the peer limits it), reno (RFC 5681) or cubic (RFC 9438). Another value is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_WARP_NO_CHECK"],
+        names: &["PODNET_WARP_NO_CHECK"],
         used_by: "warp proxy, warp run, warp up, warp probe, warp exit, warp nc, agent up",
-        meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and cfrs tries again. For a measurement.",
+        meaning: "Set and not empty: a new MASQUE session is used with no check of its data path. By default, one DNS query through the session must get an answer (5 s) before the session is up; else the session is closed and podnet tries again. For a measurement.",
     },
     EnvVar {
-        names: &["POD_NETNS_QUIET"],
+        names: &["PODNET_NETNS_QUIET"],
         used_by: "pod, warp exec, warp shell, warp run",
-        meaning: "Set and not empty: the pod prints no warnings (errors stay). cfrs -q sets it.",
+        meaning: "Set and not empty: the pod prints no warnings (errors stay). podnet -q sets it.",
     },
     EnvVar {
-        names: &["CFRS_PROXY_USER", "CFRS_PROXY_PASSWORD_FILE"],
+        names: &["PODNET_PROXY_USER", "PODNET_PROXY_PASSWORD_FILE"],
         used_by: "warp proxy, warp up",
         meaning: "The value of --proxy-user and --proxy-password-file: each client of the proxy must give this user and the password on the first line of the file (mode 0600), with SOCKS5 (RFC 1929) or HTTP Basic. A client with no or wrong credentials gets 0xff, 0x01 or 407.",
     },
     EnvVar {
-        names: &["CFRS_WARP_DEVICE_NAME", "CFRS_WARP_DEVICE_MODEL", "CFRS_WARP_DEVICE_LOCALE"],
+        names: &["PODNET_WARP_DEVICE_NAME", "PODNET_WARP_DEVICE_MODEL", "PODNET_WARP_DEVICE_LOCALE"],
         used_by: "warp (each command that registers a device), tunnel --transport warp",
         meaning: "The value of --device-name, --device-model and --device-locale: what a new device declares at its registration (a name of 1 to 64 characters, a model of 1 to 32, a locale as en_US). With none, the request is as before (model PC, locale en_US, no name). A bad value is a usage error (exit 64). A saved device does not change.",
     },
     EnvVar {
-        names: &["CFRS_WARP_FRAGMENT", "CFRS_WARP_FRAGMENT_SIZE"],
+        names: &["PODNET_WARP_FRAGMENT", "PODNET_WARP_FRAGMENT_SIZE"],
         used_by: "warp (each command that opens a MASQUE session), warp up (its proxy)",
         meaning: "The value of --fragment-client-hello (off, record or sni) and --fragment-size (N or MIN-MAX, 16 to 4096 bytes; default 64-160): the TLS ClientHello of the MASQUE connection goes in more than one record. sni ends the first record in the server name. A bad value is a configuration error (exit 78).",
     },
     EnvVar {
-        names: &["CFRS_WARP_RULES", "CFRS_WARP_RULES_FILE"],
+        names: &["PODNET_WARP_RULES", "PODNET_WARP_RULES_FILE"],
         used_by: "warp proxy, warp up (its proxy reads them)",
         meaning: "The value of -r/--rule (comma-separated KIND:VALUE=ACTION) and of --rules-file: the rules of the destinations of the proxy. KIND is domain or cidr (IPv4, IPv6, or @FILE of prefixes); ACTION is tunnel, direct or reject. The file is read again when it changes. A bad rule is a usage error (exit 64).",
     },
     EnvVar {
-        names: &["CFRS_WARP_FORWARD"],
+        names: &["PODNET_WARP_FORWARD"],
         used_by: "warp forward",
         meaning: "The value of -L/--local, comma-separated: LISTEN=HOST:PORT. Each connection to LISTEN (PORT on 127.0.0.1, ADDR:PORT, tcp://ADDR:PORT or unix:/PATH) goes through WARP to HOST:PORT; HOST is resolved inside the tunnel. A loopback target is a usage error (exit 64).",
     },
     EnvVar {
-        names: &["CFRS_WARP_RESOLVERS"],
+        names: &["PODNET_WARP_RESOLVERS"],
         used_by: "warp proxy, warp up, warp run, warp tun, warp probe, warp nc, tunnel --transport warp",
         meaning: "The value of --resolver: the DNS resolvers inside the tunnel, comma-separated, in place of 1.1.1.1:53. IP[:PORT] is DNS on UDP; tls://IP[:PORT][#NAME] is DNS over TLS (RFC 7858, port 853), with the certificate checked for NAME or the IP address. The first that answers wins. warp tun --default-route writes the UDP ones on port 53 to resolv.conf.",
     },
     EnvVar {
-        names: &["CFRS_UDP"],
+        names: &["PODNET_UDP"],
         used_by: "tunnel, serve, share, demo, doctor",
-        meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, cfrs sends one QUIC packet to the edge while it starts; when the send or the path refuses it, cfrs does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). cfrs doctor shows the quic leg refused with off; cfrs net doctor always sends its probe.",
+        meaning: "QUIC on UDP 7844: off (no QUIC on UDP 7844), on (no probe), or probe (the default). With probe and --protocol auto, podnet sends one QUIC packet to the edge while it starts; when the send or the path refuses it, podnet does not try QUIC on UDP 7844. No answer keeps the order of the legs. Another value is a configuration error (exit 78). podnet doctor shows the quic leg refused with off; podnet net doctor always sends its probe.",
     },
     EnvVar {
-        names: &["CFRS_ERROR_PROGRAM"],
+        names: &["PODNET_ERROR_PROGRAM"],
         used_by: "all commands",
-        meaning: "A program that gets a JSON report on its stdin when cfrs fails (exit code not 0). It runs with no shell and no arguments, for at most 30 s. The report has the version, the system, the command, the exit code, the error (\"error\": the error and its causes, once) and the log lines before it (\"messages\": at most 64), with credentials masked. A usage error (exit 64) sends a report too. The program does not get TUNNEL_TOKEN, the relay tokens, or a proxy variable with a user and a password.",
+        meaning: "A program that gets a JSON report on its stdin when podnet fails (exit code not 0). It runs with no shell and no arguments, for at most 30 s. The report has the version, the system, the command, the exit code, the error (\"error\": the error and its causes, once) and the log lines before it (\"messages\": at most 64), with credentials masked. A usage error (exit 64) sends a report too. The program does not get TUNNEL_TOKEN, the relay tokens, or a proxy variable with a user and a password.",
     },
     EnvVar {
         names: &["RUST_LOG"],
         used_by: "all commands",
-        meaning: "The log filter, for example cfrs=debug. The default is cfrs=info.",
+        meaning: "The log filter, for example podnet=debug. The default is podnet=info.",
     },
     EnvVar {
-        names: &["CFRS_DEBUG"],
+        names: &["PODNET_DEBUG"],
         used_by: "serve (SSH relay)",
         meaning: "When set, log each visitor channel of the SSH relay transport.",
     },
     EnvVar {
         names: &["PAGER", "TERM", "LESS", "LINES"],
         used_by: "man",
-        meaning: "The pager of cfrs man on a terminal: PAGER (empty or cat: no pager), else less when PATH has it and TERM is not dumb, else the built-in pager. When LESS is not set, less gets LESS=FRX. The built-in pager shows LINES lines (default: the terminal height).",
+        meaning: "The pager of podnet man on a terminal: PAGER (empty or cat: no pager), else less when PATH has it and TERM is not dumb, else the built-in pager. When LESS is not set, less gets LESS=FRX. The built-in pager shows LINES lines (default: the terminal height).",
     },
     EnvVar {
         names: &["PATH"],
         used_by: "pod, man, net shim",
-        meaning: "pod-netns finds the program to run in PATH. cfrs man finds less, and cfrs net shim finds the C compiler.",
+        meaning: "podnet pod finds the program to run in PATH. podnet man finds less, and podnet net shim finds the C compiler.",
     },
     EnvVar {
         names: &["CC"],
@@ -273,23 +273,23 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The printed environment adds the shim in front of the current value.",
     },
     EnvVar {
-        names: &["CFRS_SWITCH_TOKEN"],
+        names: &["PODNET_SWITCH_TOKEN"],
         used_by: "net switch, net proxy --switch",
         meaning: "The shared token of a TCP switch, when --switch-token-file is not given. net switch --listen tcp://... needs it (else exit 64), and each TCP peer sends it first; a peer with no token or a wrong one is closed. A unix switch needs no token: it takes the same user only.",
     },
     EnvVar {
-        names: &["CFRSNET_SHIM", "CFRSSOCKS_SHIM"],
+        names: &["PODNET_VNET_SHIM", "PODNET_SOCKS_SHIM"],
         used_by: "net shim, net socksify",
-        meaning: "The path of a shim that is already built. cfrs uses it instead of a build.",
+        meaning: "The path of a shim that is already built. podnet uses it instead of a build.",
     },
     EnvVar {
-        names: &["CFRSNET_LOG", "CFRSNET_MAP_LOOPBACK", "CFRSNET_LOCAL_ADDR", "CFRSNET_PREFIX", "CFRSNET_HOSTS", "CFRSNET_CONTROL", "CFRSNET_MAX_FDS"],
-        used_by: "libcfrsnet.so",
+        names: &["PODNET_VNET_LOG", "PODNET_VNET_MAP_LOOPBACK", "PODNET_VNET_LOCAL_ADDR", "PODNET_VNET_PREFIX", "PODNET_VNET_HOSTS", "PODNET_VNET_CONTROL", "PODNET_VNET_MAX_FDS"],
+        used_by: "libpodnet-vnet.so",
         meaning: "The shim of the virtual network: log each translation; map 127.0.0.1 to the local virtual address; the local virtual IPv4 address; the prefix of the abstract names; a name=address table; the abstract name of the control socket; the size of the descriptor table.",
     },
     EnvVar {
-        names: &["CFRSSOCKS_PROXY", "CFRSSOCKS_LOG", "CFRSSOCKS_ALL", "CFRSSOCKS_MAX_FDS"],
-        used_by: "libcfrssocks.so",
+        names: &["PODNET_SOCKS_PROXY", "PODNET_SOCKS_LOG", "PODNET_SOCKS_ALL", "PODNET_SOCKS_MAX_FDS"],
+        used_by: "libpodnet-socks.so",
         meaning: "The tailnet shim: the unix socket of the SOCKS5 front door; log each redirect; redirect each connect, not only tailnet addresses; the size of the descriptor table.",
     },
     EnvVar {
@@ -298,14 +298,14 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         meaning: "The passwd file that fakepwd.so reads; log each connection of unixsockd.",
     },
     EnvVar {
-        names: &["CFRS_BUILD_COMMIT"],
+        names: &["PODNET_BUILD_COMMIT"],
         used_by: "the build",
-        meaning: "Read when cfrs is compiled: the commit that --version prints.",
+        meaning: "Read when podnet is compiled: the commit that --version prints.",
     },
     EnvVar {
         names: &["SOURCE_DATE_EPOCH"],
         used_by: "the build",
-        meaning: "Read when cfrs is compiled: the date of the manual (cfrs man --roff). Without it, the date of the commit.",
+        meaning: "Read when podnet is compiled: the date of the manual (podnet man --roff). Without it, the date of the commit.",
     },
 ];
 
@@ -316,19 +316,19 @@ pub struct FileEntry {
     pub meaning: &'static str,
 }
 
-/// Each file that cfrs reads or writes.
+/// Each file that podnet reads or writes.
 pub const FILES: &[FileEntry] = &[
     FileEntry {
         path: "<state directory>/warp.json",
-        meaning: "The WARP device, its token and its MASQUE key (mode 0600, directory mode 0700). The state directory is the first that cfrs can write of CFRS_STATE_DIR, $XDG_STATE_HOME/cfrs, $HOME/.local/state/cfrs, $XDG_RUNTIME_DIR/cfrs and cfrs-<uid> in the temporary directory; never the current directory. cfrs warp writes it; cfrs warp delete removes it. --identity names another file.",
+        meaning: "The WARP device, its token and its MASQUE key (mode 0600, directory mode 0700). The state directory is the first that podnet can write of PODNET_STATE_DIR, $XDG_STATE_HOME/podnet, $HOME/.local/state/podnet, $XDG_RUNTIME_DIR/podnet and podnet-<uid> in the temporary directory; never the current directory. podnet warp writes it; podnet warp delete removes it. --identity names another file.",
     },
     FileEntry {
-        path: "cfrs-ca.pem (beside the binary)",
-        meaning: "Extra TLS roots (PEM), for example the root of a TLS-inspecting proxy. cfrs reads it when --ca-file and SSL_CERT_FILE are not set.",
+        path: "podnet-ca.pem (beside the binary)",
+        meaning: "Extra TLS roots (PEM), for example the root of a TLS-inspecting proxy. podnet reads it when --ca-file and SSL_CERT_FILE are not set.",
     },
     FileEntry {
         path: "/etc/ssl/certs/ca-certificates.crt",
-        meaning: "The first system bundle of TLS roots. cfrs also tries /etc/pki/tls/certs/ca-bundle.crt, /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem, /etc/ssl/ca-bundle.pem, /etc/ssl/cert.pem and /usr/local/share/certs/ca-root-nss.crt, and reads the first that it can.",
+        meaning: "The first system bundle of TLS roots. podnet also tries /etc/pki/tls/certs/ca-bundle.crt, /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem, /etc/ssl/ca-bundle.pem, /etc/ssl/cert.pem and /usr/local/share/certs/ca-root-nss.crt, and reads the first that it can.",
     },
     FileEntry {
         path: "config.yml (--config)",
@@ -339,27 +339,27 @@ pub const FILES: &[FileEntry] = &[
         meaning: "The credentials of a named tunnel, as cloudflared writes them.",
     },
     FileEntry {
-        path: "/tmp/cfrsnet.socks",
-        meaning: "The default listen address of cfrs net proxy.",
+        path: "/tmp/podnet-vnet.socks",
+        meaning: "The default listen address of podnet net proxy.",
     },
     FileEntry {
-        path: "/tmp/cfrsnet.switch",
-        meaning: "The default listen address of cfrs net switch.",
+        path: "/tmp/podnet-vnet.switch",
+        meaning: "The default listen address of podnet net switch.",
     },
     FileEntry {
-        path: "/tmp/cfrssocks.sock",
-        meaning: "The default listen address of cfrs net tailscale.",
+        path: "/tmp/podnet-socks.sock",
+        meaning: "The default listen address of podnet net tailscale.",
     },
     FileEntry {
-        path: "/tmp/cfrs-warp-<pid>.sock",
-        meaning: "The proxy socket of cfrs warp run, for the life of the command.",
+        path: "/tmp/podnet-warp-<pid>.sock",
+        meaning: "The proxy socket of podnet warp run, for the life of the command.",
     },
     FileEntry {
-        path: "$XDG_RUNTIME_DIR/pod-netns-inbound/<port>.sock, else $TMPDIR/pod-netns-inbound-<uid>/<port>.sock",
-        meaning: "A port that a program under cfrs pod listens on (--inbound-dir). The directory has mode 0700; a directory of another user, or one that the group or others can write, is refused.",
+        path: "$XDG_RUNTIME_DIR/podnet-netns-inbound/<port>.sock, else $TMPDIR/podnet-netns-inbound-<uid>/<port>.sock",
+        meaning: "A port that a program under podnet pod listens on (--inbound-dir). The directory has mode 0700; a directory of another user, or one that the group or others can write, is refused.",
     },
     FileEntry {
-        path: "$TMPDIR/cfrsnet, $TMPDIR/cfrssocks, $TMPDIR/cfrs-ts-shims",
+        path: "$TMPDIR/podnet-vnet, $TMPDIR/podnet-socks, $TMPDIR/podnet-ts-shims",
         meaning: "The default build directories of the shims.",
     },
 ];
@@ -371,123 +371,123 @@ pub struct Example {
     pub meaning: &'static str,
 }
 
-/// The examples. Each `cfrs` line is parsed by the parser of the binary in
+/// The examples. Each `podnet` line is parsed by the parser of the binary in
 /// the tests of `main.rs`.
 pub const EXAMPLES: &[Example] = &[
     Example {
-        command: "cfrs doctor",
+        command: "podnet doctor",
         meaning: "Test the path from this host to the edge; the last line names the step to take.",
     },
     Example {
-        command: "cfrs agent up",
+        command: "podnet agent up",
         meaning: "In a sandbox: test what works, start WARP when it is needed, and print the commands to use.",
     },
     Example {
-        command: "cfrs tunnel --url http://127.0.0.1:8080 --detach",
+        command: "podnet tunnel --url http://127.0.0.1:8080 --detach",
         meaning: "A quick tunnel in the background: one JSON document with the URL, then exit 0.",
     },
     Example {
-        command: "cfrs ps --json",
+        command: "podnet ps --json",
         meaning: "The instances that run in the background, as one JSON document.",
     },
     Example {
-        command: "cfrs relay pair",
+        command: "podnet relay pair",
         meaning: "Ask the relay for a pair: a name, and the tokens of the node and of the operator.",
     },
     Example {
-        command: "cfrs relay node --to 127.0.0.1:22",
+        command: "podnet relay node --to 127.0.0.1:22",
         meaning: "Give the SSH server of this host to the operators of the pair, through the relay.",
     },
     Example {
-        command: "cfrs update --check",
-        meaning: "Say whether a newer release exists. cfrs update installs it after it checks the cosign signature and the SHA-256.",
+        command: "podnet update --check",
+        meaning: "Say whether a newer release exists. podnet update installs it after it checks the cosign signature and the SHA-256.",
     },
     Example {
-        command: "cfrs demo --exit-on-verify",
+        command: "podnet demo --exit-on-verify",
         meaning: "Make a quick tunnel to the built-in origin, and fetch its public URL.",
     },
     Example {
-        command: "cfrs tunnel --url http://127.0.0.1:8080",
+        command: "podnet tunnel --url http://127.0.0.1:8080",
         meaning: "A quick tunnel to a local HTTP server.",
     },
     Example {
-        command: "cfrs tunnel --unix /run/app.sock",
+        command: "podnet tunnel --unix /run/app.sock",
         meaning: "A quick tunnel to an HTTP server on a unix socket.",
     },
     Example {
-        command: "cfrs tunnel --protocol http2 --url http://127.0.0.1:8080",
+        command: "podnet tunnel --protocol http2 --url http://127.0.0.1:8080",
         meaning: "Use the HTTP/2 edge leg on TCP 7844 (no UDP).",
     },
     Example {
-        command: "cfrs tunnel --transport warp --hello-world",
+        command: "podnet tunnel --transport warp --hello-world",
         meaning: "Reach the edge through WARP on TCP 443 only.",
     },
     Example {
-        command: "cfrs tunnel --token TOKEN --url http://127.0.0.1:8080",
+        command: "podnet tunnel --token TOKEN --url http://127.0.0.1:8080",
         meaning: "A named tunnel.",
     },
     Example {
-        command: "cfrs tunnel --config config.yml",
+        command: "podnet tunnel --config config.yml",
         meaning: "Ingress rules from a cloudflared configuration file.",
     },
     Example {
-        command: "cfrs tunnel --forward unix:/run/app.sock",
+        command: "podnet tunnel --forward unix:/run/app.sock",
         meaning: "Carry a raw stream through the quick tunnel.",
     },
     Example {
-        command: "cfrs connect wss://NAME.trycloudflare.com/__cfrs/ws -L tcp://127.0.0.1:8080",
+        command: "podnet connect wss://NAME.trycloudflare.com/__podnet/ws -L tcp://127.0.0.1:8080",
         meaning: "The client side of --forward.",
     },
     Example {
-        command: "cfrs serve --dir ./public",
+        command: "podnet serve --dir ./public",
         meaning: "Serve a directory.",
     },
     Example {
-        command: "cfrs serve --dir ./public --local 127.0.0.1:8080",
+        command: "podnet serve --dir ./public --local 127.0.0.1:8080",
         meaning: "Serve a directory to this host only, on a local listener. No tunnel.",
     },
     Example {
-        command: "cfrs serve --dir ./public --local unix:/run/site.sock",
+        command: "podnet serve --dir ./public --local unix:/run/site.sock",
         meaning: "Serve a directory on a unix socket. No tunnel.",
     },
     Example {
-        command: "cfrs share --mode upload --password",
+        command: "podnet share --mode upload --password",
         meaning: "Receive files, with a PIN.",
     },
     Example {
-        command: "cfrs share --mode proxy --unix /run/api.sock",
+        command: "podnet share --mode proxy --unix /run/api.sock",
         meaning: "Share an HTTP server on a unix socket, behind a PIN.",
     },
     Example {
-        command: "cfrs warp status",
+        command: "podnet warp status",
         meaning: "The WARP device and account.",
     },
     Example {
-        command: "cfrs warp proxy --listen tcp://127.0.0.1:40000",
+        command: "podnet warp proxy --listen tcp://127.0.0.1:40000",
         meaning: "A SOCKS5 and HTTP CONNECT proxy through WARP.",
     },
     Example {
-        command: "cfrs warp run -- curl https://www.cloudflare.com/cdn-cgi/trace",
+        command: "podnet warp run -- curl https://www.cloudflare.com/cdn-cgi/trace",
         meaning: "Run a program with its traffic through WARP.",
     },
     Example {
-        command: "cfrs pod -x socks5://127.0.0.1:1080 -- curl https://example.com",
+        command: "podnet pod -x socks5://127.0.0.1:1080 -- curl https://example.com",
         meaning: "Run a program with all its traffic through a proxy.",
     },
     Example {
-        command: "cfrs net proxy --forward 10.66.0.2:8080=unix:/run/app.sock",
+        command: "podnet net proxy --forward 10.66.0.2:8080=unix:/run/app.sock",
         meaning: "A virtual address for a real service.",
     },
     Example {
-        command: "cfrs net switch --listen tcp://127.0.0.1:7000 --switch-token-file /run/secrets/switch",
-        meaning: "A switch on TCP. Each stack gives the same token: --switch-token-file, or CFRS_SWITCH_TOKEN.",
+        command: "podnet net switch --listen tcp://127.0.0.1:7000 --switch-token-file /run/secrets/switch",
+        meaning: "A switch on TCP. Each stack gives the same token: --switch-token-file, or PODNET_SWITCH_TOKEN.",
     },
     Example {
-        command: "cfrs status",
+        command: "podnet status",
         meaning: "One JSON line about this host, for a program.",
     },
     Example {
-        command: "cfrs man --roff",
+        command: "podnet man --roff",
         meaning: "This manual as a man(7) page.",
     },
 ];
@@ -502,11 +502,11 @@ mod tests {
     fn names_in_source() -> BTreeSet<String> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
-        for dir in ["src", "crates/pod-netns/src", "shim"] {
+        for dir in ["src", "crates/podnet-netns/src", "shim"] {
             collect(&root.join(dir), &mut files);
         }
         files.push(root.join("build.rs"));
-        // Cargo sets these for build.rs; they are not variables of cfrs.
+        // Cargo sets these for build.rs; they are not variables of podnet.
         const CARGO_BUILD: &[&str] = &["TARGET"];
         let mut names = BTreeSet::new();
         for file in files {

@@ -146,7 +146,7 @@ async fn fingerprint(
         .map_err(|e| format!("channel refused: {e}"))?;
     let mut writer = channel.make_writer();
     writer
-        .write_all(b"cfrs-direct-tcpip-probe\r\n\r\n")
+        .write_all(b"podnet-direct-tcpip-probe\r\n\r\n")
         .await
         .map_err(|e| format!("write: {e}"))?;
     let mut reader = channel.make_reader();
@@ -159,7 +159,7 @@ async fn fingerprint(
 }
 
 async fn connect(proxy: &str, host: &str, port: u16) -> Option<russh::client::Handle<Client>> {
-    let raw = match cfrs::proxy::connect_tunnel(proxy, host, port, Duration::from_secs(20)) {
+    let raw = match podnet::proxy::connect_tunnel(proxy, host, port, Duration::from_secs(20)) {
         Ok(v) => v,
         Err(e) => {
             println!("proxy    : FAILED {e}");
@@ -204,7 +204,7 @@ async fn connect(proxy: &str, host: &str, port: u16) -> Option<russh::client::Ha
     };
 
     match handle
-        .authenticate_publickey("cfrs", PrivateKeyWithHashAlg::new(Arc::new(key), None))
+        .authenticate_publickey("podnet", PrivateKeyWithHashAlg::new(Arc::new(key), None))
         .await
     {
         Ok(a) if a.success() => Some(handle),

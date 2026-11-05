@@ -182,7 +182,7 @@ async fn trace_at(stack: &super::WarpStack, address: std::net::IpAddr) -> Result
     let work = async {
         let stream = super::proxy::dial(
             Arc::new(stack.clone()),
-            pod_netns::socks::ProxyHost::Ip(address),
+            podnet_netns::socks::ProxyHost::Ip(address),
             443,
         )
         .await?;
@@ -194,7 +194,7 @@ async fn trace_at(stack: &super::WarpStack, address: std::net::IpAddr) -> Result
             .with_context(|| format!("TLS with {address} through WARP"))?;
         // HTTP/1.0: the body is not chunked, and ends with the connection.
         let request = format!(
-            "GET /cdn-cgi/trace HTTP/1.0\r\nHost: {TRACE_NAME}\r\nUser-Agent: cfrs\r\n\r\n"
+            "GET /cdn-cgi/trace HTTP/1.0\r\nHost: {TRACE_NAME}\r\nUser-Agent: podnet\r\n\r\n"
         );
         tls.write_all(request.as_bytes()).await?;
         tls.flush().await?;

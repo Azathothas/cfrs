@@ -1,4 +1,4 @@
-//! Local forwards into WARP (issue 143): `cfrs warp forward -L
+//! Local forwards into WARP (issue 143): `podnet warp forward -L
 //! LISTEN=HOST:PORT`. Each connection to LISTEN goes through the WARP
 //! session to HOST:PORT. A name is resolved inside the tunnel.
 
@@ -6,8 +6,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::{bail, Context as _, Result};
-use pod_netns::listen::ProxyListen;
-use pod_netns::socks::ProxyHost;
+use podnet_netns::listen::ProxyListen;
+use podnet_netns::socks::ProxyHost;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, warn};
 

@@ -24,11 +24,11 @@ pub struct TunnelAuth {
     pub tunnel_secret: Vec<u8>,
 }
 
-/// The features that cfrs sends at registration: the default features of
+/// The features that podnet sends at registration: the default features of
 /// cloudflared 2026.10.7 (`features/features.go`). cloudflared removes the
 /// legacy features `serialized_headers`, `quick_reconnects`,
 /// `allow_remote_config`, `support_quic_eof` and `management_logs` before it
-/// sends the list (TUN-10904: the edge supports them with no flag). cfrs
+/// sends the list (TUN-10904: the edge supports them with no flag). podnet
 /// does not send `postquantum` (it uses classical key exchange) and does
 /// not send `support_datagram_v3_2` (it carries no UDP or ICMP datagram for
 /// a visitor).
@@ -327,7 +327,7 @@ mod tests {
             account_tag: "acct".into(),
             tunnel_secret: vec![9; 32],
         };
-        let options = ConnectionOptions::default_for_quick_tunnel("cfrs/test");
+        let options = ConnectionOptions::default_for_quick_tunnel("podnet/test");
         assert!(options
             .features
             .iter()
@@ -347,6 +347,6 @@ mod tests {
         let client = o.get_struct(0).unwrap().unwrap();
         assert_eq!(client.get_data(0).unwrap(), options.client_id);
         assert_eq!(client.get_text_list(1).unwrap(), options.features);
-        assert_eq!(client.get_text(2).unwrap(), "cfrs/test");
+        assert_eq!(client.get_text(2).unwrap(), "podnet/test");
     }
 }

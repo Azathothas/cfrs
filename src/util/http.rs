@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn parses_a_simple_request() {
-        let raw = b"GET /hello?x=1 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: cfrs\r\n\r\n";
+        let raw = b"GET /hello?x=1 HTTP/1.1\r\nHost: example.com\r\nUser-Agent: podnet\r\n\r\n";
         let (head, used) = RequestHead::parse(raw).expect("parse");
         assert_eq!(head.method, "GET");
         assert_eq!(head.path, "/hello?x=1");

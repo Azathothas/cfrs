@@ -158,7 +158,7 @@ impl<T: Closable> Live<T> {
                         Err(err) => {
                             warn!(
                                 error = %format!("{err:#}"),
-                                "the WARP session nears the relay limit; a new one failed, cfrs tries again"
+                                "the WARP session nears the relay limit; a new one failed, podnet tries again"
                             );
                             tokio::time::sleep(base.max(Duration::from_secs(1))).await;
                         }
@@ -186,7 +186,7 @@ impl<T: Closable> Live<T> {
                     let reason = live.current.lock().await.reason();
                     info!(
                         reason = reason.as_deref().unwrap_or("unknown"),
-                        "the WARP session is closed; cfrs opens a new one"
+                        "the WARP session is closed; podnet opens a new one"
                     );
                 } else {
                     tokio::time::sleep(delay).await;

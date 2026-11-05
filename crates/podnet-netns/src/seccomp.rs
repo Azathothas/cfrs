@@ -141,7 +141,7 @@ pub(crate) const AUDIT_ARCH_NATIVE: u32 = 0xC000_0015;
     target_arch = "loongarch64",
     all(target_arch = "powerpc64", target_endian = "little")
 )))]
-compile_error!("pod-netns: add the AUDIT_ARCH value for this target");
+compile_error!("podnet-netns: add the AUDIT_ARCH value for this target");
 
 /// The x32 system-call bit on x86_64. Zero on other targets.
 #[cfg(target_arch = "x86_64")]
@@ -385,7 +385,7 @@ pub(crate) fn process_vm_writable(pid: u32) -> bool {
 /// of `/proc/<pid>/mem`; `none` also skips `process_vm_writev`.
 fn mem_test_hook() -> &'static str {
     static HOOK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HOOK.get_or_init(|| std::env::var("POD_NETNS_TEST_MEM").unwrap_or_default())
+    HOOK.get_or_init(|| std::env::var("PODNET_NETNS_TEST_MEM").unwrap_or_default())
 }
 
 pub(crate) fn sockaddr_in(family: u16, ip: IpAddr, port: u16) -> Vec<u8> {
@@ -595,7 +595,7 @@ pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
     crate::with_single_request(&mut env);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
-        .name("pod-netns-filter".into())
+        .name("podnet-netns-filter".into())
         .spawn(move || {
             // Built before fork so the child allocates nothing.
             let path = match CString::new(resolved.into_os_string().into_encoded_bytes()) {
@@ -821,7 +821,7 @@ pub(crate) async fn supervise_seccomp(
         };
         if let Err(e) = outcome {
             if verbose {
-                eprintln!("pod-netns: notif {nr}: {e:#}");
+                eprintln!("podnet-netns: notif {nr}: {e:#}");
             }
             // A handler that fails before it answers must not leave the child
             // blocked. If the handler answered already, the kernel refuses
@@ -1040,13 +1040,13 @@ pub(crate) async fn handle_connect(
         // Loopback does not go to the proxy (issue 80): a listener of the
         // program itself (its inbound socket), else TCP on this host.
         if verbose {
-            eprintln!("pod-netns: connect {target} direct (loopback)");
+            eprintln!("podnet-netns: connect {target} direct (loopback)");
         }
         within_timeout("loopback connect", connect_loopback(inbound_dir, ip, port)).await
     } else {
         let chain = select_chain(rules, proxies, &target);
         if verbose {
-            eprintln!("pod-netns: connect {target} via {}", chain[0].endpoint());
+            eprintln!("podnet-netns: connect {target} via {}", chain[0].endpoint());
         }
         within_timeout("upstream connect", connect_upstream_async(chain, &target)).await
     };
@@ -1061,7 +1061,7 @@ pub(crate) async fn handle_connect(
         }
         Err(e) => {
             if verbose {
-                eprintln!("pod-netns: upstream for {target} failed: {e:#}");
+                eprintln!("podnet-netns: upstream for {target} failed: {e:#}");
             }
             // Keep the error for SO_ERROR, as the kernel does (issue 302).
             if let Some(Sock::Stream { error, .. }) = map.get_mut(&fd) {
@@ -1583,7 +1583,7 @@ pub(crate) async fn handle_listen(
     notif_respond(lfd, id, 0, 0)?;
     // The listener is a real unix socket; say where it is.
     eprintln!(
-        "pod-netns: listening on unix:{} (port {port})",
+        "podnet-netns: listening on unix:{} (port {port})",
         path.display()
     );
     Ok(())

@@ -1,6 +1,6 @@
 //! Packet framing for a byte-oriented link.
 //!
-//! A stream link (QUIC, TLS, a unix socket, a `cfrs` forward WebSocket carried
+//! A stream link (QUIC, TLS, a unix socket, a `podnet` forward WebSocket carried
 //! as a byte pipe) has no message boundaries, but the stack hands the device
 //! one IP packet at a time. Every packet is therefore written as:
 //!

@@ -11,7 +11,7 @@
 //! * unknown: no answer before the deadline. A firewall that drops UDP gives
 //!   this result, and so does a lost packet.
 //!
-//! `CFRS_UDP` selects what a tunnel does with UDP: `off` (no QUIC on UDP
+//! `PODNET_UDP` selects what a tunnel does with UDP: `off` (no QUIC on UDP
 //! 7844), `on` (no probe), or `probe` (the default: a short probe; the
 //! `quic` leg of `--protocol auto` is skipped only when the result is
 //! refused).
@@ -21,14 +21,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-/// The deadline of the probe of `cfrs net doctor`.
+/// The deadline of the probe of `podnet net doctor`.
 pub const DOCTOR_DEADLINE: Duration = Duration::from_secs(3);
 
 /// The deadline of the probe at the start of a tunnel. A local refusal (a
 /// firewall rule on this host) comes back in less than this.
 pub const START_DEADLINE: Duration = Duration::from_millis(150);
 
-/// The edge address of the probe when `CFRS_EDGE` is not set: an anycast
+/// The edge address of the probe when `PODNET_EDGE` is not set: an anycast
 /// address of the edge, so the probe needs no DNS.
 pub const PROBE_TARGET: &str = "198.41.192.167:7844";
 
@@ -56,7 +56,7 @@ impl Egress {
     }
 }
 
-/// What a tunnel does with UDP (`CFRS_UDP`).
+/// What a tunnel does with UDP (`PODNET_UDP`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     /// No QUIC on UDP 7844.
@@ -73,13 +73,13 @@ impl Choice {
             "off" | "0" | "no" => Ok(Choice::Off),
             "on" | "1" | "yes" => Ok(Choice::On),
             "probe" | "" => Ok(Choice::Probe),
-            other => bail!("CFRS_UDP={other:?}: give off, on or probe"),
+            other => bail!("PODNET_UDP={other:?}: give off, on or probe"),
         }
     }
 
-    /// The choice of `CFRS_UDP`; `probe` when it is not set.
+    /// The choice of `PODNET_UDP`; `probe` when it is not set.
     pub fn from_env() -> Result<Self> {
-        match std::env::var("CFRS_UDP") {
+        match std::env::var("PODNET_UDP") {
             Ok(value) => {
                 Self::parse(&value).map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))
             }
@@ -88,27 +88,27 @@ impl Choice {
     }
 }
 
-/// Check `CFRS_EDGE` as `tunnel` does: each entry must be ip:port. The
+/// Check `PODNET_EDGE` as `tunnel` does: each entry must be ip:port. The
 /// doctors call it, so a bad value is exit 78 there too (issue 66).
 pub fn check_edge_env() -> Result<()> {
-    let Ok(list) = std::env::var("CFRS_EDGE") else {
+    let Ok(list) = std::env::var("PODNET_EDGE") else {
         return Ok(());
     };
     for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
         if item.parse::<SocketAddr>().is_err() {
             return Err(crate::exit::fault(
                 crate::exit::Fault::Config,
-                anyhow::anyhow!("CFRS_EDGE entry {item:?} is not ip:port"),
+                anyhow::anyhow!("PODNET_EDGE entry {item:?} is not ip:port"),
             ));
         }
     }
     Ok(())
 }
 
-/// The target of the probe: the first address of `CFRS_EDGE`, else
+/// The target of the probe: the first address of `PODNET_EDGE`, else
 /// [`PROBE_TARGET`].
 pub fn probe_target() -> SocketAddr {
-    std::env::var("CFRS_EDGE")
+    std::env::var("PODNET_EDGE")
         .ok()
         .and_then(|list| {
             list.split(',')

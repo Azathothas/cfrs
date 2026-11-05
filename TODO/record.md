@@ -20,7 +20,7 @@ library item or a test is lost by a move. A lost item is a regression, and the o
 
 ## Premise
 
-- `cfrs man --json` prints the command tree with each flag (`src/manual/mod.rs`).
+- `podnet man --json` prints the command tree with each flag (`src/manual/mod.rs`).
 - `docs/research/podnet/parity-checklist.md` lists 63 commands, 316 own flags and arguments,
   1,127 public items and 1,004 tests, read at `3bed023`.
 - `cargo test --workspace -- --list` prints the name of each test.
@@ -55,7 +55,7 @@ Plant: remove the flag `--run-for` of `tunnel`. The second run must exit 1 and n
 **Milestone:** M0
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -90,11 +90,18 @@ smaller.
 
 ```sh
 python3 -I scripts/check-size.py
-python3 -I scripts/check-size.py --plant-empty   # must exit 1
+python3 -I scripts/check-size.py --self-test
 sh scripts/agent/check.sh
 ```
 
 Plant: add a file of 801 lines in `src/`. The check must fail and name the file.
+
+## Done
+
+2026-11-05, commit 23aae7a (`check-size: 800 lines for each Rust file, with an allowlist that only
+shrinks`). `scripts/check-size.py` and `scripts/size-allow.txt` (32 files over 800 lines);
+`--self-test` plants each fault. CI runs it in the `workflows` and `plant` jobs;
+`sh scripts/agent/check.sh` runs it: size 0.
 
 # T-010: A layer check: no module refers to a module of a higher layer, with an allowlist of 18 references that can only shrink
 
@@ -205,16 +212,16 @@ device, and the service limits the new devices of each address.
   loopback services, counters, a key change, and a "silenced" mode that takes the CONNECT and
   relays nothing. It has an API stand-in for `/reg`
   (`Azathothas/podssh:crates/podssh-warp/src/tests/api.rs`).
-- cfrs reads `CFRS_WARP_API` for the base of the API (`src/warp/register.rs`). The unit tests of
-  cfrs have only echo front doors (`src/warp/session.rs`).
-- podssh uses smoltcp 0.14. cfrs pins smoltcp 0.12 (`Cargo.toml`).
+- podnet reads `PODNET_WARP_API` for the base of the API (`src/warp/register.rs`). The unit tests of
+  podnet have only echo front doors (`src/warp/session.rs`).
+- podssh uses smoltcp 0.14. podnet pins smoltcp 0.12 (`Cargo.toml`).
 
 ## Approach
 
 1. Copy the API stand-in into a test module of `src/warp/`. Adapt it to the requests of
    `src/warp/register.rs`. Add loopback tests of `warp register`, `warp status`,
    `warp license`, `warp rotate` and `warp delete` with the API variable set to the stand-in.
-2. Copy the edge stand-in. Adapt it to smoltcp 0.12, to the cfrs `Identity` and to an override
+2. Copy the edge stand-in. Adapt it to smoltcp 0.12, to the podnet `Identity` and to an override
    of the endpoint with a test root. Add loopback tests of `warp proxy` (a SOCKS5 client reaches
    a loopback HTTP server), `warp forward -L`, `warp nc` and `warp shell`.
 3. Keep the "silenced" mode: the probe of T-068 uses it.
@@ -244,7 +251,7 @@ The test of `warp proxy` must fail on the pin.
 **Milestone:** M0
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -283,6 +290,12 @@ python3 -I scripts/check-github-numbers.py --plant-drop 1   # must exit 1
 gh workflow run record-issues.yml
 ```
 
+## Done
+
+2026-11-05, commits 2474f28 and 1c41cf0. `scripts/check-github-numbers.py` and
+`.github/workflows/record-issues.yml` (daily, 05:43 UTC). The check starts at #311; the 7 open
+older issues are in `TODO/github.txt`. `--plant-drop 89` exits 1.
+
 # T-014: The milestones M0 to M9 in a roadmap, and the open work of the maintenance page in the record
 
 **Source:** `docs/research/podnet/podssh.md`, section 3 (Roadmap);
@@ -292,7 +305,7 @@ work"; `CLAUDE.md` (keep "Open work" current).
 **Milestone:** M0
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -326,6 +339,12 @@ now. Two lists of one work go stale. No document gives the exit criterion of eac
 cargo todo check
 cargo test --test docs
 ```
+
+## Done
+
+2026-11-05, the rename commit of 2026-11-05. `TODO/ROADMAP.md` has the milestones M0 to M9. The section
+"Open work" of `docs/maintenance.md` names the record and keeps only facts. `cargo todo check`:
+the record agrees.
 
 # T-015: CI checks that each pushed commit moved the citations of the files that it changed
 

@@ -1,4 +1,4 @@
-//! `cfrs autostart`: start a cfrs command at boot and after a logout, with
+//! `podnet autostart`: start a podnet command at boot and after a logout, with
 //! no root.
 //!
 //! The way is found by a probe, in this order:
@@ -12,10 +12,10 @@
 //!
 //! Each entry has two private files (mode 0600) in `<state>/autostart/`:
 //! `NAME.args` (the arguments of the command, one JSON list) and `NAME.env`
-//! (`KEY=VALUE` lines: the token, the proxy and the variables of cfrs). The
-//! unit and the cron line run `cfrs autostart run NAME --dir DIR`, so they
+//! (`KEY=VALUE` lines: the token, the proxy and the variables of podnet). The
+//! unit and the cron line run `podnet autostart run NAME --dir DIR`, so they
 //! hold no secret. `--token` and a `--proxy` with a password move from the
-//! arguments to `TUNNEL_TOKEN` and `CFRS_PROXY` in the env file, so `ps`
+//! arguments to `TUNNEL_TOKEN` and `PODNET_PROXY` in the env file, so `ps`
 //! shows no secret either.
 //!
 //! `remove` deletes only what `add` wrote: the unit file has a marker
@@ -162,7 +162,7 @@ pub fn check_name(name: &str) -> Result<()> {
 /// The directory of the entries.
 pub fn dir() -> Result<PathBuf> {
     let state = crate::state::state_dir()?
-        .context("autostart needs a state directory (CFRS_STATE_DIR is none)")?;
+        .context("autostart needs a state directory (PODNET_STATE_DIR is none)")?;
     let dir = state.join("autostart");
     crate::state::prepare(&dir)?;
     Ok(dir)
@@ -176,7 +176,7 @@ pub fn split_secrets(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> (
         .filter_map(|k| env(k).map(|v| (k.to_string(), v)))
         .collect();
     for (k, v) in std::env::vars() {
-        if k.starts_with("CFRS_") && k != "CFRS_ERROR_PROGRAM" && env(&k).is_some() {
+        if k.starts_with("PODNET_") && k != "PODNET_ERROR_PROGRAM" && env(&k).is_some() {
             vars.push((k, v));
         }
     }
@@ -194,7 +194,7 @@ pub fn split_secrets(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> (
         };
         let secret_key = match flag {
             "--token" => Some("TUNNEL_TOKEN"),
-            "--proxy" => Some("CFRS_PROXY"),
+            "--proxy" => Some("PODNET_PROXY"),
             _ => None,
         };
         if let Some(key) = secret_key {
@@ -206,7 +206,7 @@ pub fn split_secrets(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> (
                 }
             };
             if let Some(value) = value {
-                if key == "CFRS_PROXY" && !value.contains('@') {
+                if key == "PODNET_PROXY" && !value.contains('@') {
                     kept.push("--proxy".to_string());
                     kept.push(value);
                 } else {
@@ -238,7 +238,7 @@ fn write_private(path: &Path, text: &str) -> Result<()> {
 
 /// The text of the env file. A value with a newline is refused.
 pub fn env_text(vars: &[(String, String)]) -> Result<String> {
-    let mut out = String::from("# cfrs autostart: the variables of this entry. Mode 0600.\n");
+    let mut out = String::from("# podnet autostart: the variables of this entry. Mode 0600.\n");
     for (k, v) in vars {
         if v.contains('\n') || v.contains('\r') {
             bail!("the variable {k} has a newline");
@@ -260,7 +260,7 @@ pub fn parse_env(text: &str) -> Vars {
 
 /// The marker of the unit and of the cron line.
 pub fn marker(name: &str) -> String {
-    format!("# cfrs autostart {name}")
+    format!("# podnet autostart {name}")
 }
 
 /// The command that the cron line runs (words quoted for `sh`).
@@ -318,7 +318,7 @@ fn quote(s: &str) -> String {
 /// another start cannot fix them (issue 74).
 pub fn unit_text(name: &str, line: &str) -> String {
     format!(
-        "{}\n[Unit]\nDescription=cfrs autostart {name}\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nExecStart={line}\nRestart=on-failure\nRestartSec=5\nRestartPreventExitStatus=64 78\n\n[Install]\nWantedBy=default.target\n",
+        "{}\n[Unit]\nDescription=podnet autostart {name}\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nExecStart={line}\nRestart=on-failure\nRestartSec=5\nRestartPreventExitStatus=64 78\n\n[Install]\nWantedBy=default.target\n",
         marker(name)
     )
 }
@@ -355,7 +355,7 @@ fn unit_path(name: &str) -> Result<PathBuf> {
     };
     let unit = base
         .join("systemd/user")
-        .join(format!("cfrs-{name}.service"));
+        .join(format!("podnet-{name}.service"));
     crate::state::check_own(&unit)?;
     Ok(unit)
 }
@@ -382,7 +382,7 @@ pub struct Added {
     pub detail: String,
 }
 
-/// Add the entry `name` that runs `cfrs ARGS`. The variables of `extra`
+/// Add the entry `name` that runs `podnet ARGS`. The variables of `extra`
 /// (the secrets of an instance, for `--from`) replace those of the
 /// environment.
 pub fn add(
@@ -396,11 +396,11 @@ pub fn add(
     let usage = |err: anyhow::Error| crate::exit::fault(crate::exit::Fault::Usage, err);
     check_name(name).map_err(usage)?;
     let Some(first) = args.first() else {
-        return Err(usage(anyhow::anyhow!("give the command after --, for example: cfrs autostart add web -- tunnel --config /etc/cfrs.yml")));
+        return Err(usage(anyhow::anyhow!("give the command after --, for example: podnet autostart add web -- tunnel --config /etc/podnet.yml")));
     };
     if ["autostart", "pod", "update", "man", "completions"].contains(&first.as_str()) {
         return Err(usage(anyhow::anyhow!(
-            "cfrs {first} cannot run as an autostart entry"
+            "podnet {first} cannot run as an autostart entry"
         )));
     }
     let exe = std::env::current_exe().context("the path of this binary")?;
@@ -413,7 +413,7 @@ pub fn add(
         let tmp = tmp.canonicalize().unwrap_or(tmp);
         if exe.starts_with(&tmp) {
             return Err(usage(anyhow::anyhow!(
-                "{} is in a temporary directory: copy cfrs to a lasting place (for example ~/.local/bin) first",
+                "{} is in a temporary directory: copy podnet to a lasting place (for example ~/.local/bin) first",
                 exe.display()
             )));
         }
@@ -449,11 +449,11 @@ pub fn add(
                     .with_context(|| format!("making {}", parent.display()))?;
             }
             if unit.exists() && !is_ours(&unit, name) {
-                bail!("{} exists and cfrs did not write it", unit.display());
+                bail!("{} exists and podnet did not write it", unit.display());
             }
             std::fs::write(&unit, unit_text(name, &unit_line(&exe, name, &dir)))
                 .with_context(|| format!("writing {}", unit.display()))?;
-            let service = format!("cfrs-{name}.service");
+            let service = format!("podnet-{name}.service");
             ok(run_limited(
                 "systemctl",
                 &["--user", "daemon-reload"],
@@ -586,7 +586,7 @@ pub fn remove(name: &str, limit: Duration) -> Result<Vec<String>> {
     let mut done = Vec::new();
     if let Ok(unit) = unit_path(name) {
         if is_ours(&unit, name) {
-            let service = format!("cfrs-{name}.service");
+            let service = format!("podnet-{name}.service");
             let _ = run_limited(
                 "systemctl",
                 &["--user", "disable", "--now", &service],
@@ -597,7 +597,7 @@ pub fn remove(name: &str, limit: Duration) -> Result<Vec<String>> {
             let _ = run_limited("systemctl", &["--user", "daemon-reload"], None, limit);
             done.push(format!("removed {}", unit.display()));
         } else if unit.exists() {
-            done.push(format!("kept {}: cfrs did not write it", unit.display()));
+            done.push(format!("kept {}: podnet did not write it", unit.display()));
         }
     }
     if let Ok(current) = crontab_list(limit) {
@@ -675,7 +675,7 @@ mod tests {
         let (kept, vars) = split_secrets(&args, &env);
         assert_eq!(kept, ["tunnel", "--url", "http://127.0.0.1:8080"]);
         assert!(vars.contains(&("TUNNEL_TOKEN".into(), TOKEN.into())));
-        assert!(vars.contains(&("CFRS_PROXY".into(), "http://u:pw@proxy:3128".into())));
+        assert!(vars.contains(&("PODNET_PROXY".into(), "http://u:pw@proxy:3128".into())));
         assert!(vars.contains(&("NO_PROXY".into(), "localhost".into())));
         // A proxy with no password stays on the command line.
         let (kept, _) = split_secrets(
@@ -692,17 +692,17 @@ mod tests {
     #[test]
     fn the_unit_and_the_cron_line_hold_no_secret() {
         let line = run_line(
-            Path::new("/home/u/.local/bin/cfrs"),
+            Path::new("/home/u/.local/bin/podnet"),
             "web",
-            Path::new("/home/u/.local/state/cfrs/autostart"),
+            Path::new("/home/u/.local/state/podnet/autostart"),
         );
         assert_eq!(
             line,
-            "/home/u/.local/bin/cfrs autostart run web --dir /home/u/.local/state/cfrs/autostart"
+            "/home/u/.local/bin/podnet autostart run web --dir /home/u/.local/state/podnet/autostart"
         );
         let unit = unit_text("web", &line);
-        assert!(unit.starts_with("# cfrs autostart web\n"));
-        assert!(unit.contains("ExecStart=/home/u/.local/bin/cfrs autostart run web"));
+        assert!(unit.starts_with("# podnet autostart web\n"));
+        assert!(unit.contains("ExecStart=/home/u/.local/bin/podnet autostart run web"));
         assert!(unit.contains("\nRestartPreventExitStatus=64 78\n"));
         assert!(unit.contains("\nStartLimitIntervalSec=0\n"));
         assert!(!unit.contains(TOKEN));
@@ -712,16 +712,16 @@ mod tests {
     #[test]
     fn the_unit_line_quotes_for_systemd() {
         let line = unit_line(
-            Path::new("/opt/c f/cfrs"),
+            Path::new("/opt/c f/podnet"),
             "web",
             Path::new("/tmp/%h/$X/a\"b"),
         );
         assert_eq!(
             line,
-            r#""/opt/c f/cfrs" autostart run web --dir "/tmp/%%h/$$X/a\"b""#
+            r#""/opt/c f/podnet" autostart run web --dir "/tmp/%%h/$$X/a\"b""#
         );
-        let plain = unit_line(Path::new("/b/cfrs"), "web", Path::new("/d"));
-        assert_eq!(plain, "/b/cfrs autostart run web --dir /d");
+        let plain = unit_line(Path::new("/b/podnet"), "web", Path::new("/d"));
+        assert_eq!(plain, "/b/podnet autostart run web --dir /d");
         let unit = unit_text("web", &line);
         assert!(unit.contains(&format!("\nExecStart={line}\n")), "{unit}");
     }
@@ -746,22 +746,22 @@ mod tests {
 
     #[test]
     fn the_crontab_keeps_other_lines() {
-        let other = "MAILTO=\"\"\n0 3 * * * backup # cfrs autostart webx\n@daily x\n";
+        let other = "MAILTO=\"\"\n0 3 * * * backup # podnet autostart webx\n@daily x\n";
         let with = crontab_with(
             other,
             "web",
-            "/b/cfrs autostart run web --dir /d",
+            "/b/podnet autostart run web --dir /d",
             Path::new("/d/web.log"),
         );
         assert!(with.starts_with(other));
         assert!(with.ends_with(
-            "@reboot /b/cfrs autostart run web --dir /d >> /d/web.log 2>&1 # cfrs autostart web\n"
+            "@reboot /b/podnet autostart run web --dir /d >> /d/web.log 2>&1 # podnet autostart web\n"
         ));
         // Again: one line, not two.
         let twice = crontab_with(
             &with,
             "web",
-            "/b/cfrs autostart run web --dir /d",
+            "/b/podnet autostart run web --dir /d",
             Path::new("/d/web.log"),
         );
         assert_eq!(twice, with);

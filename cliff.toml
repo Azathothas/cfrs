@@ -19,7 +19,7 @@ trim = true
 # named as #N links to it.
 postprocessors = [
   { pattern = '(?m)(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]*)', replace = "${1}`@${2}`" },
-  { pattern = '#([0-9]+)', replace = "[#${1}](https://github.com/Azathothas/cfrs/issues/${1})" },
+  { pattern = '#([0-9]+)', replace = "[#${1}](https://github.com/Azathothas/podnet/issues/${1})" },
 ]
 
 [git]
@@ -32,9 +32,9 @@ commit_parsers = [
   { message = '^Version\b', skip = true },
   { message = '^(warp|vnet|pod)\b', group = "<!-- 0 -->WARP and the virtual network" },
   { message = '^(relay|ws_relay)\b', group = "<!-- 1 -->Relay" },
-  { message = '^(tunnel|edge|edge_h2|quic|http2|connect|config|quick|proxy|egress|net|serve|share|demo|detach|agent|doctor|status|update|signals|exit|report|state|instances|metrics|cli|cfrs|shim|resolve|verify|ports|expose|qr|autostart|origin|ingress)\b', group = "<!-- 2 -->Tunnel and commands" },
+  { message = '^(tunnel|edge|edge_h2|quic|http2|connect|config|quick|proxy|egress|net|serve|share|demo|detach|agent|doctor|status|update|signals|exit|report|state|instances|metrics|cli|podnet|shim|resolve|verify|ports|expose|qr|autostart|origin|ingress)\b', group = "<!-- 2 -->Tunnel and commands" },
   { message = '^(docs|README|SECURITY|CLAUDE|man|maintenance)\b', group = "<!-- 3 -->Documents" },
-  { message = '^(ci|live|release|deny|secrets|scripts|install\.sh|tests|fmt|clippy|deps|cargo|cliff|pod-netns)\b', group = "<!-- 4 -->Build, tests and CI" },
+  { message = '^(ci|live|release|deny|secrets|scripts|install\.sh|tests|fmt|clippy|deps|cargo|cliff|podnet-netns)\b', group = "<!-- 4 -->Build, tests and CI" },
   { message = '.', group = "<!-- 5 -->Other" },
 ]
 filter_commits = false

@@ -6,9 +6,8 @@
 //!
 //! Each probe runs one time for each test binary.
 //!
-//! The unit tests of `cfrs` (`src/lib.rs`), the integration tests in
-//! `tests/` and the tests of `crates/pod-netns` include this one file as
-//! the module `test_host`. Use it at the start of a test:
+//! The unit tests of `podnet` (`src/lib.rs`) and the integration tests in
+//! `tests/` include this one file as the module `test_host`. Use it at the start of a test:
 //! `test_host::need_loopback!();` (`crate::test_host::` in `src/`).
 
 #![allow(dead_code, unused_imports, unused_macros)]

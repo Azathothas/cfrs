@@ -26,7 +26,7 @@ The sidecar paths have no CI test with a real `tailscaled`: `net tailscale --soc
   files only (`Azathothas/podssh:scripts/ts-headscale.sh`,
   `Azathothas/podssh:scripts/ts-headscale-lib.sh`,
   `Azathothas/podssh:.github/workflows/ts-headscale.yml`, and two images pinned by digest).
-- The sidecar code is `crates/pod-netns/src/tailscale.rs` and `src/vnet/tailscale_ssh.rs`.
+- The sidecar code is `crates/podnet-netns/src/tailscale.rs` and `src/vnet/tailscale_ssh.rs`.
 
 ## Approach
 

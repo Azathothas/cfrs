@@ -52,7 +52,7 @@ pub async fn serve_stream(
         return;
     }
     if signature == crate::cloudflare::RPC_STREAM_SIGNATURE {
-        // The edge calls the connector (a configuration push). cfrs serves
+        // The edge calls the connector (a configuration push). podnet serves
         // no RPC on such a stream: reset it, so the edge gets an answer at
         // once.
         tracing::debug!("the edge opened an RPC stream; it is reset");
@@ -133,7 +133,7 @@ async fn serve_request_inner(
 ) -> Result<()> {
     // Issue 205: the credential in front of the tunnel. A request with no
     // right Authorization gets 401 and reaches no origin; the origin does
-    // not get the credential of cfrs.
+    // not get the credential of podnet.
     if let Some(auth) = &ingress.auth {
         if !auth.check_basic(header_value(&request, "authorization")) {
             let mut writer = writer;
@@ -144,7 +144,7 @@ async fn serve_request_inner(
                 AUTH_BODY,
                 &[(
                     "WWW-Authenticate".to_string(),
-                    "Basic realm=\"cfrs\", charset=\"UTF-8\"".to_string(),
+                    "Basic realm=\"podnet\", charset=\"UTF-8\"".to_string(),
                 )],
             )
             .await;
@@ -168,7 +168,7 @@ async fn serve_request_inner(
             &mut writer,
             503,
             "text/plain; charset=utf-8",
-            b"cfrs: no ingress rule matched\n",
+            b"podnet: no ingress rule matched\n",
         )
         .await;
     };
@@ -204,7 +204,7 @@ async fn serve_request_inner(
                     &mut writer,
                     426,
                     "text/plain; charset=utf-8",
-                    b"cfrs: this endpoint requires a WebSocket upgrade\n",
+                    b"podnet: this endpoint requires a WebSocket upgrade\n",
                 )
                 .await;
             }
@@ -216,7 +216,7 @@ async fn serve_request_inner(
                 &mut writer,
                 200,
                 "text/plain; charset=utf-8",
-                b"Hello, world! (cfrs)\n",
+                b"Hello, world! (podnet)\n",
             )
             .await
         }
@@ -299,7 +299,7 @@ async fn forward_http(
                 &mut writer,
                 400,
                 "text/plain; charset=utf-8",
-                b"cfrs: the request is not valid HTTP/1.1\n",
+                b"podnet: the request is not valid HTTP/1.1\n",
             )
             .await?;
             return Err(err);
@@ -381,10 +381,10 @@ async fn proxy_bidi(
 }
 
 /// The body of the 401 of `--auth-user` (issue 205).
-pub const AUTH_BODY: &[u8] = b"cfrs: this tunnel needs a user and a password (HTTP Basic)\n";
+pub const AUTH_BODY: &[u8] = b"podnet: this tunnel needs a user and a password (HTTP Basic)\n";
 
 /// The answer of a raw TCP origin to an HTTP request (issue 199).
-pub const TCP_HTTP_BODY: &[u8] = b"cfrs: a raw TCP origin carries TCP or WebSocket streams, not HTTP. Use --forward with \"cfrs connect\", or --port for an HTTP origin.\n";
+pub const TCP_HTTP_BODY: &[u8] = b"podnet: a raw TCP origin carries TCP or WebSocket streams, not HTTP. Use --forward with \"podnet connect\", or --port for an HTTP origin.\n";
 
 async fn forward_tcp(
     service: &Service,
@@ -401,7 +401,7 @@ async fn forward_tcp(
         if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             tracing::warn!(
                 origin = %crate::net::origin_label(service),
-                "an HTTP request came to a raw TCP origin; cfrs answers 501 (use --forward and cfrs connect)"
+                "an HTTP request came to a raw TCP origin; podnet answers 501 (use --forward and podnet connect)"
             );
         }
         return write_simple_response(&mut writer, 501, "text/plain; charset=utf-8", TCP_HTTP_BODY)
@@ -785,7 +785,7 @@ async fn write_simple_response_with(
     body: &[u8],
     extra: &[(String, String)],
 ) -> Result<()> {
-    // Issue 271: a reply that cfrs makes (the PIN page, the unlock
+    // Issue 271: a reply that podnet makes (the PIN page, the unlock
     // redirect, an error) is not stored by a cache.
     let mut headers = vec![
         ("Content-Type".to_string(), content_type.to_string()),
@@ -1179,7 +1179,7 @@ where
         if size == 0 {
             // The trailer: header lines up to an empty line, at most
             // MAX_TRAILER_LINE bytes each and MAX_TRAILER_BYTES in all
-            // (issue 244). cfrs does not send the trailer on.
+            // (issue 244). podnet does not send the trailer on.
             let mut total = 0;
             loop {
                 line.clear();
@@ -1361,7 +1361,7 @@ mod tests {
 
     /// On a QUIC connection in memory: a stream with the RPC signature is
     /// reset at once, and a data stream after it is served (the signature
-    /// that cfrs read first goes back in front of the request).
+    /// that podnet read first goes back in front of the request).
     #[tokio::test]
     async fn an_rpc_stream_is_reset_and_a_data_stream_is_served() {
         crate::test_host::need_loopback!();
@@ -1661,7 +1661,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_chunked_body_is_decoded() {
-        let (mut origin, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (mut origin, podnet_side) = tokio::io::duplex(1 << 16);
         let mut wire = Vec::new();
         let mut want = Vec::new();
         for i in 0..100u32 {
@@ -1678,7 +1678,7 @@ mod tests {
                 .unwrap();
             origin
         });
-        let mut source = tokio::io::BufReader::new(cfrs_side);
+        let mut source = tokio::io::BufReader::new(podnet_side);
         let mut out = futures::io::Cursor::new(Vec::new());
         tokio::time::timeout(
             std::time::Duration::from_secs(5),

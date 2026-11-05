@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| cfrs::fuzzing::rpc_message(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| podnet::fuzzing::rpc_message(data));

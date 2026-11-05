@@ -92,7 +92,7 @@ mod tests {
         let err = matrix_for(&"a".repeat(MAX_BYTES + 1)).unwrap_err();
         assert!(err.to_string().contains("at most 2331 bytes"), "{err}");
         assert!(looks_like_url("https://x.trycloudflare.com/s/a/"));
-        assert!(looks_like_url("wss://h/__cfrs/ws"));
+        assert!(looks_like_url("wss://h/__podnet/ws"));
         for text in ["not a url", "://x", "https://", "1http://x", "a b://c"] {
             assert!(!looks_like_url(text), "{text}");
         }

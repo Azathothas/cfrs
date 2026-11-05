@@ -1,8 +1,8 @@
-# The cloudflared release whose protocol cfrs speaks. tools/check-upstream.py
+# The cloudflared release whose protocol podnet speaks. tools/check-upstream.py
 # compares each file below with this release and with the newest release;
 # .github/workflows/upstream.yml runs it each week. A `copy` line names the
-# file of cfrs that holds the same bytes (or, for the roots, the same
-# certificates); a `source` line names a file whose behaviour cfrs follows.
+# file of podnet that holds the same bytes (or, for the roots, the same
+# certificates); a `source` line names a file whose behaviour podnet follows.
 tag 2026.10.7
 commit 872b241f94871665c1c157adefcf90c11f0ead96
 released 2026-10-30

@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| cfrs::fuzzing::srv_record(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| podnet::fuzzing::srv_record(data));

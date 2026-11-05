@@ -11,7 +11,7 @@
 //! virtual address can name a service that actually exists:
 //!
 //! ```text
-//! ALL_PROXY=socks5h:///tmp/cfrsnet.socks
+//! ALL_PROXY=socks5h:///tmp/podnet-vnet.socks
 //! curl http://10.66.0.2:8080/        # -> 127.0.0.1:3000
 //! ```
 
@@ -28,7 +28,7 @@ use crate::vnet::addr::VirtAddr;
 use crate::vnet::socks::{self, ProxyHost};
 use crate::vnet::stack::NetStack;
 
-pub use pod_netns::listen::ProxyListen;
+pub use podnet_netns::listen::ProxyListen;
 
 /// A destination table for names the virtual network cannot resolve.
 pub type Resolver = HashMap<String, IpAddr>;
@@ -315,7 +315,7 @@ pub async fn serve(
 #[cfg(unix)]
 fn bind_unix(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
     crate::net::claim_socket_path(path, false)?;
-    pod_netns::listen::bind_private(path)
+    podnet_netns::listen::bind_private(path)
         .with_context(|| format!("binding unix:{}", path.display()))
 }
 

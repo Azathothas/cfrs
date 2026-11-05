@@ -1,7 +1,7 @@
 #!/bin/sh
 # Wait until HOST resolves, for at most SECONDS (default 240). Ask the
 # system resolver, then DoH at Cloudflare and at Google. When only DoH has
-# the address, add it to /etc/hosts, so that curl, python and cfrs resolve
+# the address, add it to /etc/hosts, so that curl, python and podnet resolve
 # the name the same way (issue 119: the system resolver of the runner keeps
 # a negative answer for a new quick-tunnel name). The script prints no host
 # and no address (the log is public).

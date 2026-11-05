@@ -30,21 +30,21 @@ use anyhow::{bail, Context as _, Result};
 
 use crate::instances::{self, Held, Record};
 
-/// The first argument of a detached child. Only cfrs writes it.
+/// The first argument of a detached child. Only podnet writes it.
 pub const CHILD_FLAG: &str = "--detach-child";
 /// The first argument of the supervisor of a detached child (issue 73).
 pub const SUPERVISE_FLAG: &str = "--detach-supervise";
 /// Set for the child of a supervisor.
-pub const SUPERVISED_VARIABLE: &str = "CFRS_DETACH_SUPERVISED";
+pub const SUPERVISED_VARIABLE: &str = "PODNET_DETACH_SUPERVISED";
 /// The name of the instance, for the child.
-pub const NAME_VARIABLE: &str = "CFRS_DETACH_NAME";
+pub const NAME_VARIABLE: &str = "PODNET_DETACH_NAME";
 /// The hash of the arguments, for the child.
-pub const HASH_VARIABLE: &str = "CFRS_DETACH_HASH";
+pub const HASH_VARIABLE: &str = "PODNET_DETACH_HASH";
 /// The command (`tunnel`, `warp proxy`), for the child.
-pub const COMMAND_VARIABLE: &str = "CFRS_DETACH_COMMAND";
+pub const COMMAND_VARIABLE: &str = "PODNET_DETACH_COMMAND";
 /// The `--ready-timeout` in seconds, for the first child (issue 182): its
 /// provision does not wait past it.
-pub const READY_TIMEOUT_VARIABLE: &str = "CFRS_DETACH_READY_TIMEOUT";
+pub const READY_TIMEOUT_VARIABLE: &str = "PODNET_DETACH_READY_TIMEOUT";
 
 /// The time that a provision may wait: `budget`, and in the first child of
 /// `--detach` at most its `--ready-timeout`.
@@ -56,7 +56,7 @@ pub fn provision_budget(budget: Duration) -> Duration {
 }
 
 /// The start of the ready line on the pipe.
-const READY: &str = "cfrs-detached-ready ";
+const READY: &str = "podnet-detached-ready ";
 /// The log is cut at this size; the part before goes to `.log.1`.
 pub const LOG_CAP: u64 = 1 << 20;
 /// Exit code: no ready in time, or the pipe to the parent closed.
@@ -217,7 +217,7 @@ pub fn child_begin() -> Result<()> {
 
 /// Register this foreground process as the instance `name` (issue 209:
 /// `--name` with no `--detach`). It is not forked and has no supervisor;
-/// `cfrs ps`, `logs`, `wait` and `stop` see it. Its stderr stays the one of
+/// `podnet ps`, `logs`, `wait` and `stop` see it. Its stderr stays the one of
 /// the caller; the log file gets a copy of the log lines.
 pub fn register(name: &str, command: &str) -> Result<()> {
     instances::check_name(name)?;
@@ -293,7 +293,7 @@ fn begin_log(path: &Path, name: &str) {
     };
     let _ = writeln!(
         file,
-        "cfrs: ---- start {} pid {} name {name} ----",
+        "podnet: ---- start {} pid {} name {name} ----",
         crate::trust::imf_fixdate(std::time::SystemTime::now()),
         std::process::id()
     );
@@ -401,14 +401,14 @@ fn cap(path: PathBuf, file: std::fs::File) {
                 let _ = std::fs::copy(&path, &aside);
                 if file.set_len(0).is_ok() {
                     let _ = (&file)
-                        .write_all(b"cfrs: the log passed 1 MiB; its part before is in .log.1\n");
+                        .write_all(b"podnet: the log passed 1 MiB; its part before is in .log.1\n");
                 }
             }
         });
 }
 
 /// The ways to run this binary again: `/proc/self/exe` (this image, also
-/// after `cfrs update` replaced the file), then the path of the system.
+/// after `podnet update` replaced the file), then the path of the system.
 fn binaries() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if Path::new("/proc/self/exe").exists() {
@@ -425,7 +425,7 @@ fn binaries() -> Vec<PathBuf> {
 /// Why `--detach` cannot work here, if it cannot.
 fn refusal() -> Option<&'static str> {
     (std::process::id() == 1).then_some(
-        "cfrs is process 1 (a container entry point): a detached child would end with the container; run it in the foreground",
+        "podnet is process 1 (a container entry point): a detached child would end with the container; run it in the foreground",
     )
 }
 
@@ -446,7 +446,7 @@ pub fn start(command: &str, options: &Options) -> i32 {
         Ok(code) => code,
         Err(err) => {
             let code = crate::exit::code_of(&err);
-            eprintln!("cfrs: --detach: {err:#}");
+            eprintln!("podnet: --detach: {err:#}");
             if code == crate::exit::FAILURE {
                 crate::exit::UNAVAILABLE
             } else {
@@ -502,7 +502,7 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
         let mut cmd = Command::new(&program);
         {
             use std::os::unix::process::CommandExt;
-            cmd.arg0("cfrs");
+            cmd.arg0("podnet");
         }
         cmd.arg(if options.restart {
             SUPERVISE_FLAG
@@ -526,7 +526,7 @@ fn start_inner(command: &str, options: &Options) -> Result<i32> {
             Err(err) => tried.push(format!("{}: {err}", program.display())),
         }
     }
-    bail!("cfrs could not run itself again: {}", tried.join("; "))
+    bail!("podnet could not run itself again: {}", tried.join("; "))
 }
 
 /// The arguments with no `--detach`, `--name`, `--ready-timeout`,
@@ -603,7 +603,7 @@ fn wait_ready_child(
             Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 eprintln!(
-                    "cfrs: --detach: {name} was not ready in {} s; it is stopped",
+                    "podnet: --detach: {name} was not ready in {} s; it is stopped",
                     timeout.as_secs()
                 );
                 terminate(child.id(), &mut child);
@@ -620,7 +620,7 @@ fn wait_ready_child(
     instances::remove(dir, name);
     if code == 0 {
         // A command that ends with no ready (for example --run-for 0).
-        eprintln!("cfrs: --detach: {name} ended before it was ready");
+        eprintln!("podnet: --detach: {name} ended before it was ready");
     }
     code
 }
@@ -665,7 +665,7 @@ pub fn wait_ready_record(dir: &Path, name: &str, timeout: Duration) -> Result<se
         if !known && !instances::is_alive(dir, name) {
             return Err(fault(
                 Fault::Unavailable,
-                anyhow::anyhow!("no instance {name} (cfrs ps)"),
+                anyhow::anyhow!("no instance {name} (podnet ps)"),
             ));
         }
         if !instances::is_alive(dir, name) {
@@ -674,7 +674,7 @@ pub fn wait_ready_record(dir: &Path, name: &str, timeout: Duration) -> Result<se
                 anyhow::anyhow!("the instance {name} ended before it was ready; see its log"),
             ));
         }
-        // podssh: the time limit of cfrs wait exits 124, as the ready
+        // podssh: the time limit of podnet wait exits 124, as the ready
         // timeout of --detach and timeout(1) do (before: 69).
         if Instant::now() >= deadline {
             return Err(fault(
@@ -813,7 +813,7 @@ mod supervise {
     }
 
     fn note(text: &str) {
-        eprintln!("cfrs: supervisor: {text}");
+        eprintln!("podnet: supervisor: {text}");
     }
 
     pub(super) fn run(args: &[OsString]) -> i32 {
@@ -881,7 +881,7 @@ mod supervise {
             let mut cmd = Command::new(&program);
             {
                 use std::os::unix::process::CommandExt;
-                cmd.arg0("cfrs");
+                cmd.arg0("podnet");
             }
             if ready_seen {
                 // A restart has no caller that waits: the full budget.
@@ -1034,7 +1034,7 @@ mod unix {
     use std::os::fd::AsRawFd;
 
     /// Close each descriptor from 3; reset the signal mask and the actions
-    /// of INT, TERM and QUIT; name the process `cfrs`.
+    /// of INT, TERM and QUIT; name the process `podnet`.
     pub(super) fn prepare() {
         // SAFETY: the system call closes descriptors of this process; no
         // thread runs yet, so no descriptor is in use.
@@ -1055,7 +1055,7 @@ mod unix {
         // SAFETY: a name of 4 bytes and its NUL; an empty signal set and
         // the default action of three signals, before any thread.
         unsafe {
-            libc::prctl(libc::PR_SET_NAME, c"cfrs".as_ptr());
+            libc::prctl(libc::PR_SET_NAME, c"podnet".as_ptr());
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
             libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
@@ -1144,7 +1144,7 @@ mod tests {
 
     /// Issues 182 and 210: a Retry-After of the child is the wait when it is
     /// longer than the backoff, at most 1 h.
-    // podssh: cfrs wait at its time limit exits 124.
+    // podssh: podnet wait at its time limit exits 124.
     #[test]
     fn wait_at_its_limit_exits_124() {
         let dir = tempfile::tempdir().unwrap();

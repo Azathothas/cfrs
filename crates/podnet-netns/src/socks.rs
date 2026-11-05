@@ -5,7 +5,7 @@
 //! HTTP `CONNECT` listeners on an `AF_UNIX` socket:
 //!
 //! ```text
-//! ALL_PROXY=socks5h:///run/cfrsnet.socks
+//! ALL_PROXY=socks5h:///run/podnet-vnet.socks
 //! ```
 //!
 //! This module is only the wire protocol. The caller maps the requested host

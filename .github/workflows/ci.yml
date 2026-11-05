@@ -59,23 +59,23 @@ jobs:
           # The lists go outside the checkout: a new file there makes the
           # next cargo package refuse a dirty tree.
           out="$RUNNER_TEMP"
-          for p in cfrs pod-netns; do cargo package --locked --list -p "$p" > "$out/pkg-$p.txt"; done
+          for p in podnet podnet-netns; do cargo package --locked --list -p "$p" > "$out/pkg-$p.txt"; done
           for f in LICENSE README.md Cargo.toml; do
-            grep -qx "$f" "$out/pkg-cfrs.txt" && grep -qx "$f" "$out/pkg-pod-netns.txt"
+            grep -qx "$f" "$out/pkg-podnet.txt" && grep -qx "$f" "$out/pkg-podnet-netns.txt"
           done
-          grep -qx 'shim/cfrsnet.c' "$out/pkg-cfrs.txt"
-          if grep -E '^(\.github|\.claude|docs|scripts|fuzz|TODO)/|^(err\.txt|CLAUDE\.md)$' "$out/pkg-cfrs.txt"; then
+          grep -qx 'shim/podnet-vnet.c' "$out/pkg-podnet.txt"
+          if grep -E '^(\.github|\.claude|docs|scripts|fuzz|TODO)/|^(err\.txt|CLAUDE\.md)$' "$out/pkg-podnet.txt"; then
             echo "files of the repository in the package"; exit 1
           fi
       - name: The man page renders with groff and mandoc
         run: |
           set -eu
           sh scripts/retry.sh sudo apt-get install -y -qq groff mandoc > /dev/null
-          cargo run --locked -q --bin cfrs -- man --roff > cfrs.1
-          groff -man -Tutf8 -ww -z cfrs.1 2> groff.log || true
+          cargo run --locked -q --bin podnet -- man --roff > podnet.1
+          groff -man -Tutf8 -ww -z podnet.1 2> groff.log || true
           if [ -s groff.log ]; then cat groff.log; exit 1; fi
-          mandoc -T lint -W error cfrs.1
-          mandoc -T utf8 cfrs.1 | head -20
+          mandoc -T lint -W error podnet.1
+          mandoc -T utf8 podnet.1 | head -20
 
   # #217: the tests on a host that refuses bind(AF_INET). Each test binary
   # has an LD_PRELOAD object that makes bind() of AF_INET and AF_INET6 fail
@@ -131,7 +131,7 @@ jobs:
           set -u
           # Ipv4Addr::from_octets is stable from Rust 1.91.
           printf '\n#[doc(hidden)]\npub fn planted_msrv() -> std::net::Ipv4Addr {\n    std::net::Ipv4Addr::from_octets([1, 2, 3, 4])\n}\n' >> src/lib.rs
-          if cargo +"$MSRV" check --locked -p cfrs --lib > msrv.log 2>&1; then
+          if cargo +"$MSRV" check --locked -p podnet --lib > msrv.log 2>&1; then
             echo "the planted API built with Rust $MSRV"
             exit 1
           fi
@@ -167,23 +167,23 @@ jobs:
       - name: The binaries are static, and their sizes
         run: |
           set -eu
-          sh scripts/check-static.sh target/${{ matrix.target }}/release/cfrs target/${{ matrix.target }}/release/pod-netns
+          sh scripts/check-static.sh target/${{ matrix.target }}/release/podnet
           {
             echo "| ${{ matrix.target }} | bytes |"
             echo "| --- | ---: |"
-            for b in cfrs pod-netns; do
+            for b in podnet; do
               echo "| $b | $(wc -c < target/${{ matrix.target }}/release/$b) |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Package
         run: |
           mkdir dist
-          for bin in cfrs pod-netns; do
+          for bin in podnet; do
             cp target/${{ matrix.target }}/release/$bin dist/$bin-${{ matrix.target }}
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cfrs-${{ matrix.target }}
+          name: podnet-${{ matrix.target }}
           path: dist/*
 
   workflows:

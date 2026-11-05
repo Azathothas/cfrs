@@ -1,10 +1,10 @@
 //! The hop of a failure: which part of the path broke. The error line of
-//! cfrs names it, and gives a second line with what may help; the failure
-//! report (`CFRS_ERROR_PROGRAM`) has it in `hop`.
+//! podnet names it, and gives a second line with what may help; the failure
+//! report (`PODNET_ERROR_PROGRAM`) has it in `hop`.
 
 use std::fmt;
 
-/// One part of the path from cfrs to a visitor.
+/// One part of the path from podnet to a visitor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hop {
     /// The HTTP or SOCKS5 proxy.
@@ -44,9 +44,9 @@ impl Hop {
             Hop::Proxy => "check the proxy URL, its user and password, and the allow-list of the proxy; --no-proxy goes around it",
             Hop::Dns => "give the address with --resolve HOST=IP, or let a proxy resolve names (socks5h://)",
             Hop::Tls => "behind a proxy that inspects TLS, give its root with --ca-file; check the clock of the host",
-            Hop::Network => "the network ended the connection before the TLS handshake was done: a policy of this host or of its network (an egress allow-list) may block this destination; cfrs doctor shows each path",
+            Hop::Network => "the network ended the connection before the TLS handshake was done: a policy of this host or of its network (an egress allow-list) may block this destination; podnet doctor shows each path",
             Hop::EdgeRegister => "a refused token or tunnel does not change with a retry; check the token, or use a quick tunnel",
-            Hop::EdgeStream => "the edge connection was lost; cfrs connects again, and --leg-failover and --transport warp choose other legs",
+            Hop::EdgeStream => "the edge connection was lost; podnet connects again, and --leg-failover and --transport warp choose other legs",
             Hop::Origin => "check that the origin listens on the address of --url",
         }
     }

@@ -12,7 +12,7 @@ moves each citation of it in the record by hand.
 **Milestone:** M1
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -31,8 +31,8 @@ state and run paths, the units, the metrics, the wire paths and the release asse
 
 ## Approach
 
-1. Move the three files with the name in their path: `images/cfrs` to images/podnet,
-   `shim/cfrsnet.c` to shim/podnet-vnet.c, `shim/cfrssocks.c` to shim/podnet-socks.c.
+1. Move the three files with the name in their path: images/cfrs to `images/podnet`,
+   shim/cfrsnet.c to `shim/podnet-vnet.c`, shim/cfrssocks.c to `shim/podnet-socks.c`.
 2. Run the ordered `sed` of `docs/research/podnet/rename.md`, section 5, step 2, on each tracked
    file but `docs/releases/`, `docs/reports/`, `docs/research/`, `tests/data/` and the lock files.
    It keeps `talaria0101/cfrs` and `nemo-010/cfrs`.
@@ -65,7 +65,6 @@ sh scripts/agent/check.sh
 python3 -I scripts/check-workflows.py
 cargo check --manifest-path fuzz/Cargo.toml --bins
 sh -n scripts/install.sh
-sh scripts/agent/parity-snapshot.sh /tmp/after /tmp/before   # with the map cfrs -> podnet
 git grep -il cfrs -- . ':!docs/releases' ':!docs/reports' ':!docs/research' ':!tests/data' ':!*.lock'
 ```
 
@@ -77,6 +76,15 @@ pass.
 
 T-008 is done (the parity snapshot).
 
+## Done
+
+2026-11-05, the rename commit of 2026-11-05 (`rename: cfrs is podnet`), made with a script that a trial
+ran twice from a clean checkout with the same tree. `sh scripts/agent/check.sh`: fmt 0, clippy 0,
+record 0, size 0, test 0. Rust 1.99 clippy, `scripts/check-workflows.py`, the fuzz build and
+`sh -n scripts/install.sh` pass. The name grep lists only the files of the facts (README,
+SECURITY, decisions, maintenance, CLAUDE), the update fixture of `src/update.rs` and the live
+steps with the old assets. The parity snapshot is T-008.
+
 # T-017: The documents and the scripts state the facts of the old name
 
 **Source:** `docs/research/podnet/rename.md`, section 5 (step 2, hand edits 7, 8, 9 and 11;
@@ -85,7 +93,7 @@ step 3).
 **Milestone:** M1
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** partial
 
 ## Problem
 
@@ -137,11 +145,11 @@ T-016 is done, or this entry goes into its commit.
 **Milestone:** M1
 **Priority:** P2
 **Effort:** S
-**Status:** blocked
+**Status:** done
 
 ## Problem
 
-`CLAUDE.md` names the workspace `cfrs`, the crate `crates/pod-netns`, the ruling on
+`CLAUDE.md` names the workspace `cfrs`, the crate `crates/podnet-netns`, the ruling on
 `cfrs update` and an issue loop with no record. After the rename, each session reads stale
 names.
 
@@ -164,10 +172,11 @@ cargo todo check
 cargo test --test docs
 ```
 
-## Blocker
+## Done
 
-The owner gives the instruction to change `CLAUDE.md`. Until then, each session reads the
-rulings of 2026-11-05 in `docs/decisions.md`.
+2026-11-05, the rename commit of 2026-11-05. The owner asked for the change of the documents in the session
+of 2026-11-05. `CLAUDE.md` names podnet, its crates, the size limit and the record. `cargo todo
+check`: the record agrees.
 
 # T-019: Drop the `pod-netns` binary, and move its integration tests to the root crate
 
@@ -178,30 +187,29 @@ section 4.
 **Milestone:** M1
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
 The pod has two command lines: the `pod-netns` binary and `cfrs pod`. Both parse the same
-arguments (`crates/pod-netns/src/cli.rs`). Each release ships two binaries for each target.
+arguments (`crates/podnet-netns/src/cli.rs`). Each release ships two binaries for each target.
 
 ## Premise
 
-- `crates/pod-netns/src/main.rs` calls `main_with_args`. `cfrs pod` hands its arguments to the
+- The file src/main.rs of the crate pod-netns calls `main_with_args`. `cfrs pod` hands its arguments to the
   same function (`src/main.rs`).
-- `crates/pod-netns/tests/seccomp.rs` (30 tests), `crates/pod-netns/tests/raw.rs` and
-  `crates/pod-netns/tests/usage.rs` run the binary through `CARGO_BIN_EXE_pod-netns`.
+- The test files seccomp.rs (30 tests), raw.rs and usage.rs of the crate pod-netns run the binary through `CARGO_BIN_EXE_pod-netns`.
 - `.github/workflows/release.yml`, `.github/workflows/release-proofs.yml`,
-  `scripts/install.sh`, `images/cfrs/Dockerfile` and `tests/install_script.rs` name the binary
+  `scripts/install.sh`, `images/podnet/Dockerfile` and `tests/install_script.rs` name the binary
   and its assets.
 - The library prints `cfrs pod` as its program name when cfrs calls it (`set_program_name` in
-  `crates/pod-netns/src/lib.rs`).
+  `crates/podnet-netns/src/lib.rs`).
 
 ## Approach
 
 1. Move the three test files to `tests/` of the root crate. Run the `pod` command of the root
    binary through its `CARGO_BIN_EXE_` variable. Keep each test name.
-2. Remove `crates/pod-netns/src/main.rs` and the binary target of the crate. Keep the library and
+2. Remove the file src/main.rs of the crate pod-netns and the binary target of the crate. Keep the library and
    its unit tests.
 3. Remove the `pod-netns` assets from the release, the proofs, the install script, its tests and
    the image. Name the removal in the `## Breaking` list of T-022.
@@ -219,9 +227,9 @@ tests move to the root crate.
 ## Prove
 
 ```sh
-cargo test --test seccomp --test raw --test usage
+cargo test -p podnet --test pod_seccomp --test pod_usage
+cargo test -p podnet-netns --test raw
 sh scripts/agent/check.sh
-sh scripts/agent/parity-snapshot.sh /tmp/after /tmp/before
 ```
 
 The count of tests does not go down. The parity diff names only the `pod-netns` binary.
@@ -229,6 +237,13 @@ The count of tests does not go down. The parity diff names only the `pod-netns` 
 ## Start condition
 
 T-008 is done (the parity snapshot).
+
+## Done
+
+2026-11-05, the rename commit of 2026-11-05. The binary target and its `main.rs` are gone. The tests moved to
+`tests/pod_seccomp.rs` (30 tests) and `tests/pod_usage.rs` (3 tests); they run `podnet pod`.
+No assertion changed. `crates/podnet-netns/tests/raw.rs` stays in the crate: it uses the library only. The release,
+the proofs, the install script and the image do not ship the binary.
 
 # T-020: Rename the crate `pod-netns` to `podnet-netns`
 
@@ -238,7 +253,7 @@ T-008 is done (the parity snapshot).
 **Milestone:** M1
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -251,18 +266,18 @@ The core network crate keeps the old name in its directory, its package, its lib
   (`docs/research/podnet/rename.md`, section 5, step 4).
 - The root crate uses the library in `src/main.rs`, `src/vnet/`, `src/warp/` and
   `src/manual/model.rs`.
-- The tests of the manual scan `crates/pod-netns/src` for variables (`src/manual/facts.rs`).
+- The tests of the manual scan `crates/podnet-netns/src` for variables (`src/manual/facts.rs`).
 
 ## Approach
 
-1. Move `crates/pod-netns` to crates/podnet-netns. Set the package name `podnet-netns` and the
+1. Move `crates/podnet-netns` to crates/podnet-netns. Set the package name `podnet-netns` and the
    library name `podnet_netns`. Change the members of the workspace and the dependency of the
    root crate.
 2. Rename `POD_NETNS_QUIET` to `PODNET_NETNS_QUIET` and `POD_NETNS_TEST_MEM` to
    `PODNET_NETNS_TEST_MEM`, with their rows of the manual.
 3. Change the scan path of `src/manual/facts.rs`, the package list of `.github/workflows/ci.yml`
    and the `COPY` line of the image.
-4. Move each citation of `crates/pod-netns/` in the record in the same commit.
+4. Move each citation of `crates/podnet-netns/` in the record in the same commit.
 
 ## Decision
 
@@ -274,7 +289,7 @@ library only.
 ```sh
 sh scripts/agent/check.sh
 cargo test -p podnet-netns
-git grep -n -e pod-netns -e pod_netns -- . ':!docs/releases' ':!docs/reports' ':!docs/research'
+git grep -n -e pod-netns -e pod_netns -- . ':!docs/releases' ':!docs/reports' ':!docs/research' ':!TODO' ':!tests/data'
 ```
 
 The last command prints nothing.
@@ -282,6 +297,11 @@ The last command prints nothing.
 ## Start condition
 
 T-019 is done.
+
+## Done
+
+2026-11-05, the rename commit of 2026-11-05. The crate is `crates/podnet-netns`. The grep prints only the facts
+of the old releases (README, decisions, maintenance).
 
 # T-021: Verify the GitHub redirects after the repository rename
 

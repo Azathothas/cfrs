@@ -5,7 +5,7 @@
 [alias]
 todo = "run -q -p podnet-todo --"
 
-# cfrs's userspace stack owns the local address, the gateway (where the
+# podnet's userspace stack owns the local address, the gateway (where the
 # virtual resolver listens), their IPv6 counterparts, and each address that
 # a virtual listener binds (a --forward to 10.66.0.3). smoltcp defaults
 # IFACE_MAX_ADDR_COUNT to 2, so raise it.

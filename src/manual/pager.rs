@@ -1,4 +1,4 @@
-//! The pager of `cfrs man`. It is used only when stdin and stdout are both a
+//! The pager of `podnet man`. It is used only when stdin and stdout are both a
 //! terminal and `--no-pager` is not given. The choice is made on each run:
 //!
 //! 1. `PAGER`, when it is set. An empty value, or `cat`, means no pager.

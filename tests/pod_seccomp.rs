@@ -1,4 +1,4 @@
-//! End-to-end tests for `pod-netns`'s seccomp backend.
+//! End-to-end tests of the seccomp backend of `podnet pod`.
 //!
 //! A SOCKS5 proxy listens on a unix socket (the only bind a sealed host
 //! permits). A compiled C program calls `socket(AF_INET)`/`connect(AF_INET)`
@@ -10,7 +10,6 @@
 //! `UDP ASSOCIATE`. If the host does not offer `SECCOMP_RET_USER_NOTIF` they
 //! report that and pass, as the other shim tests do without a compiler.
 
-#[path = "../../../tests/test_host/mod.rs"]
 mod test_host;
 
 use std::io::{Read, Write};
@@ -20,6 +19,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// `podnet pod`: the CLI of the pod is a command of the root binary.
+fn pod_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_podnet"));
+    command.arg("pod");
+    command
+}
 
 /// Find a C compiler: `$CC`, then `cc`, `gcc` or `clang` on `PATH`.
 fn compiler() -> Option<PathBuf> {
@@ -146,20 +152,20 @@ fn socks5_proxy(listener: UnixListener, targets: mpsc::Sender<String>, hop: bool
 }
 
 fn seccomp_available() -> bool {
-    let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let out = pod_command()
         .args(["doctor", "--json"])
         .output()
-        .expect("run pod-netns doctor");
+        .expect("run podnet pod doctor");
     let report: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("doctor --json prints JSON");
     report["backend_seccomp"] == serde_json::Value::Bool(true)
 }
 
 fn netns_available() -> bool {
-    let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let out = pod_command()
         .args(["doctor", "--json"])
         .output()
-        .expect("run pod-netns doctor");
+        .expect("run podnet pod doctor");
     let report: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("doctor --json prints JSON");
     report["backend_netns"] == serde_json::Value::Bool(true)
@@ -171,7 +177,7 @@ fn netns_backend_proxies_a_static_and_a_dynamic_binary() {
         eprintln!("skipping: no compiler or no netns backend");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-nsclient-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-nsclient-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -222,7 +228,7 @@ fn netns_backend_refuses_connect_when_the_upstream_is_dead() {
         eprintln!("skipping: no compiler or no netns backend");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-nsdead-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-nsdead-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = build_program(&dir, "dead", DEAD_CLIENT, false);
     let stdout = run_on("netns", &[&dir.join("nobody.sock")], &program);
@@ -243,7 +249,7 @@ fn netns_backend_resolves_names_and_carries_parallel_flows() {
         eprintln!("skipping: no compiler or no netns backend");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-nsdns-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-nsdns-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -295,15 +301,15 @@ fn run(_dir: &std::path::Path, proxies: &[&std::path::Path], program: &std::path
 }
 
 fn run_on(backend: &str, proxies: &[&std::path::Path], program: &std::path::Path) -> String {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pod-netns"));
+    let mut cmd = pod_command();
     cmd.args(["--backend", backend, "-v"]);
     for p in proxies {
         cmd.arg("-x").arg(format!("unix:{}", p.display()));
     }
-    let output = cmd.arg("--").arg(program).output().expect("run pod-netns");
+    let output = cmd.arg("--").arg(program).output().expect("run podnet pod");
     assert!(
         output.status.success(),
-        "pod-netns failed: stderr={:?}",
+        "podnet pod failed: stderr={:?}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).to_string()
@@ -431,7 +437,7 @@ fn seccomp_backend_relays_udp_in_the_stream() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-udp-stream-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-udp-stream-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -518,7 +524,7 @@ fn seccomp_backend_sends_udp_to_a_name_as_the_name() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-udp-name-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-udp-name-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -582,7 +588,7 @@ fn seccomp_backend_proxies_a_static_and_a_dynamic_binary() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -605,7 +611,7 @@ fn seccomp_backend_chains_two_proxies() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-chain-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-chain-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p1 = dir.join("p1.sock");
     let p2 = dir.join("p2.sock");
@@ -632,7 +638,7 @@ fn seccomp_backend_relays_udp() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-udp-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-udp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
 
@@ -723,7 +729,7 @@ fn seccomp_backend_routes_by_rule() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-route-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-route-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p1 = dir.join("p1.sock");
     let p2 = dir.join("p2.sock");
@@ -735,7 +741,7 @@ fn seccomp_backend_routes_by_rule() {
     std::thread::spawn(move || socks5_proxy(l2, tx2, false));
 
     let program = build_program(&dir, "client-route", CLIENT, false);
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", p1.display()))
         .args(["-r"])
@@ -762,7 +768,7 @@ fn seccomp_backend_accepts_inbound() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-inbound-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-inbound-{}", std::process::id()));
     let inbound = dir.join("in");
     std::fs::create_dir_all(&inbound).unwrap();
     let proxy = dir.join("socks.sock");
@@ -771,7 +777,7 @@ fn seccomp_backend_accepts_inbound() {
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
 
     let server = build_program(&dir, "server", SERVER, false);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut child = pod_command()
         .args(["--backend", "seccomp", "--inbound-dir"])
         .arg(&inbound)
         .args(["-x"])
@@ -809,7 +815,7 @@ fn seccomp_backend_accepts_inbound() {
 }
 
 /// Issue 306: with no --inbound-dir, the listener is in
-/// `$XDG_RUNTIME_DIR/pod-netns-inbound`, a directory of mode 0700, not in
+/// `$XDG_RUNTIME_DIR/podnet-netns-inbound`, a directory of mode 0700, not in
 /// a shared name in /tmp.
 #[test]
 fn the_default_inbound_directory_is_private() {
@@ -829,7 +835,7 @@ fn the_default_inbound_directory_is_private() {
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
 
     let server = build_program(dir.path(), "server", SERVER, false);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut child = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", proxy.display()))
         .arg("--")
@@ -839,7 +845,7 @@ fn the_default_inbound_directory_is_private() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let inbound = runtime.join("pod-netns-inbound");
+    let inbound = runtime.join("podnet-netns-inbound");
     let sockpath = inbound.join("8080.sock");
     let mut conn = None;
     for _ in 0..100 {
@@ -860,12 +866,12 @@ fn the_default_inbound_directory_is_private() {
 }
 
 #[test]
-fn pod_netns_serves_a_front_door_and_chains_with_itself() {
+fn podnet_netns_serves_a_front_door_and_chains_with_itself() {
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-serve-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-serve-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let echo = dir.join("echo.sock");
     let front = dir.join("front.sock");
@@ -874,7 +880,7 @@ fn pod_netns_serves_a_front_door_and_chains_with_itself() {
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
 
     // One instance serves SOCKS5 and forwards through the echo proxy.
-    let mut server = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut server = pod_command()
         .args(["--serve"])
         .arg(format!("unix:{}", front.display()))
         .args(["-x"])
@@ -906,7 +912,7 @@ fn seccomp_backend_dials_the_tailnet_with_no_shim() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-ts-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-ts-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let api = dir.join("tailscaled.sock");
     let listener = UnixListener::bind(&api).unwrap();
@@ -945,7 +951,7 @@ fn seccomp_backend_dials_the_tailnet_with_no_shim() {
     });
 
     let program = build_program(&dir, "client-ts", CLIENT, false);
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("tailscale:{}", api.display()))
         .arg("--")
@@ -962,13 +968,13 @@ fn seccomp_backend_dials_the_tailnet_with_no_shim() {
 }
 
 #[test]
-fn pod_netns_serves_a_udp_front_door() {
+fn podnet_netns_serves_a_udp_front_door() {
     test_host::need_loopback!();
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-udpfront-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-udpfront-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
     let echo = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -1045,7 +1051,7 @@ fn pod_netns_serves_a_udp_front_door() {
     }
 
     let front = dir.join("front.sock");
-    let mut server = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut server = pod_command()
         .args(["--serve"])
         .arg(format!("unix:{}", front.display()))
         .args(["-x"])
@@ -1062,7 +1068,7 @@ fn pod_netns_serves_a_udp_front_door() {
     }
 
     let program = build_program(&dir, "udp-client-front", UDP_CLIENT, false);
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", front.display()))
         .arg("--")
@@ -1086,7 +1092,7 @@ fn seccomp_backend_proxies_ipv6_targets() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-v6-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-v6-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1107,7 +1113,7 @@ fn seccomp_backend_uses_an_ambient_proxy() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-env-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-env-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1116,7 +1122,7 @@ fn seccomp_backend_uses_an_ambient_proxy() {
 
     let program = build_program(&dir, "client-env", CLIENT, false);
     // No -x: the proxy comes from the environment.
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "--"])
         .arg(&program)
         .env("ALL_PROXY", format!("socks5://unix:{}", sock.display()))
@@ -1136,7 +1142,7 @@ fn seccomp_backend_pins_names_with_map() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-map-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-map-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1144,7 +1150,7 @@ fn seccomp_backend_pins_names_with_map() {
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
 
     let program = build_program(&dir, "client-map", DNS_CLIENT, false);
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "--map", "example.com=1.2.3.4", "-x"])
         .arg(format!("unix:{}", sock.display()))
         .arg("--")
@@ -1163,10 +1169,7 @@ fn seccomp_backend_pins_names_with_map() {
 
 #[test]
 fn doctor_json_is_machine_readable() {
-    let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
-        .args(["doctor", "--json"])
-        .output()
-        .unwrap();
+    let out = pod_command().args(["doctor", "--json"]).output().unwrap();
     let value: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("doctor --json is JSON");
     assert!(value["capabilities"].is_object());
@@ -1180,7 +1183,7 @@ fn doctor_json_is_machine_readable() {
 /// A program named without a `/` is found in PATH, as `execvp` does.
 #[test]
 fn both_backends_find_a_program_in_path() {
-    let dir = std::env::temp_dir().join(format!("pod-netns-path-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-path-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let _listener = UnixListener::bind(&sock).unwrap();
@@ -1246,7 +1249,7 @@ fn seccomp_inbound_wakes_epoll_and_accept_does_not_block_the_child() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-epoll-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-epoll-{}", std::process::id()));
     let inbound = dir.join("in");
     std::fs::create_dir_all(&inbound).unwrap();
     let proxy = dir.join("socks.sock");
@@ -1254,7 +1257,7 @@ fn seccomp_inbound_wakes_epoll_and_accept_does_not_block_the_child() {
     let (tx, _rx) = mpsc::channel();
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
     let server = build_program(&dir, "epoll-server", EPOLL_SERVER, false);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut child = pod_command()
         .args(["--backend", "seccomp", "--inbound-dir"])
         .arg(&inbound)
         .args(["-x"])
@@ -1317,7 +1320,7 @@ fn the_program_does_not_get_the_host_proxy() {
         return;
     }
     let run = |keep: bool| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pod-netns"));
+        let mut cmd = pod_command();
         cmd.args(["--backend", "seccomp"]);
         if keep {
             cmd.arg("--keep-proxy-env");
@@ -1355,7 +1358,7 @@ fn seccomp_backend_sends_loopback_direct() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-loop-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-loop-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1370,7 +1373,7 @@ fn seccomp_backend_sends_loopback_direct() {
         .replace("htons(80)", &format!("htons({port})"))
         .replace("93.184.216.34", "127.0.0.1");
     let program = build_program(&dir, "client-loop", &source, false);
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", dir.join("no-proxy.sock").display()))
         .arg("--")
@@ -1419,7 +1422,7 @@ fn seccomp_backend_resolves_ipv6_by_name() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-dns6-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-dns6-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1439,7 +1442,7 @@ fn seccomp_backend_resolves_ipv6_by_name() {
     // EAI_SYSTEM. After a NODATA answer, glibc tries the search domains of
     // the host (example.com.SEARCH), and the fake DNS answers each name: an
     // empty LOCALDOMAIN removes the search list of a CI runner.
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "--map", "example.com=1.2.3.4", "-x"])
         .arg(format!("unix:{}", sock.display()))
         .arg("--")
@@ -1490,7 +1493,7 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-sockname-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-sockname-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1498,12 +1501,12 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
     std::thread::spawn(move || socks5_proxy(listener, tx, false));
     let program = build_program(&dir, "sockname", SOCKNAME_CLIENT, false);
     let run_with = |hook: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        let output = pod_command()
             .args(["--backend", "seccomp", "-x"])
             .arg(format!("unix:{}", sock.display()))
             .arg("--")
             .arg(&program)
-            .env("POD_NETNS_TEST_MEM", hook)
+            .env("PODNET_NETNS_TEST_MEM", hook)
             .output()
             .unwrap();
         (
@@ -1525,14 +1528,14 @@ fn getpeername_is_the_inet_address_or_eopnotsupp() {
         err.contains("can crash") && err.contains("--backend netns"),
         "{err:?}"
     );
-    // Issue 115: POD_NETNS_QUIET silences the warning.
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    // Issue 115: PODNET_NETNS_QUIET silences the warning.
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", sock.display()))
         .arg("--")
         .arg(&program)
-        .env("POD_NETNS_TEST_MEM", "none")
-        .env("POD_NETNS_QUIET", "1")
+        .env("PODNET_NETNS_TEST_MEM", "none")
+        .env("PODNET_NETNS_QUIET", "1")
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&output.stderr);
@@ -1587,7 +1590,7 @@ fn getpeername_does_not_write_past_the_buffer_of_the_caller() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-shortname-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-shortname-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let _listener = UnixListener::bind(&sock).unwrap();
@@ -1601,12 +1604,12 @@ fn getpeername_does_not_write_past_the_buffer_of_the_caller() {
     };
     let head = format!("{family}007ba29fc801");
     for hook in ["", "no-fd"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        let output = pod_command()
             .args(["--backend", "seccomp", "-x"])
             .arg(format!("unix:{}", sock.display()))
             .arg("--")
             .arg(&program)
-            .env("POD_NETNS_TEST_MEM", hook)
+            .env("PODNET_NETNS_TEST_MEM", hook)
             .output()
             .unwrap();
         let out = String::from_utf8_lossy(&output.stdout);
@@ -1656,7 +1659,7 @@ fn so_error_gives_the_error_of_a_failed_connect() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-soerror-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-soerror-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = build_program(&dir, "soerror", SO_ERROR_CLIENT, false);
     let stdout = run(&dir, &[&dir.join("nobody.sock")], &program);
@@ -1716,7 +1719,7 @@ fn a_huge_datagram_length_gets_emsgsize() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-hugesend-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-hugesend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = build_program(&dir, "hugesend", HUGE_SEND_CLIENT, false);
     let stdout = run(&dir, &[&dir.join("nobody.sock")], &program);
@@ -1809,7 +1812,7 @@ fn an_unconnected_udp_reader_sees_the_source_address() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-udp-source-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-udp-source-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1860,12 +1863,12 @@ fn an_unconnected_udp_reader_sees_the_source_address() {
     });
     let program = build_program(&dir, "udp-source", UDP_SOURCE_CLIENT, false);
     for hook in ["", "no-fd"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        let output = pod_command()
             .args(["--backend", "seccomp", "-x"])
             .arg(format!("unix:{}", sock.display()))
             .arg("--")
             .arg(&program)
-            .env("POD_NETNS_TEST_MEM", hook)
+            .env("PODNET_NETNS_TEST_MEM", hook)
             .output()
             .unwrap();
         let out = String::from_utf8_lossy(&output.stdout);
@@ -1893,13 +1896,13 @@ fn an_unconnected_udp_reader_sees_the_source_address() {
     }
     // With no write to the memory of the program, the read stays direct
     // and the datagram still arrives.
-    let output = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let output = pod_command()
         .args(["--backend", "seccomp", "-x"])
         .arg(format!("unix:{}", sock.display()))
         .arg("--")
         .arg(&program)
-        .env("POD_NETNS_TEST_MEM", "none")
-        .env("POD_NETNS_QUIET", "1")
+        .env("PODNET_NETNS_TEST_MEM", "none")
+        .env("PODNET_NETNS_QUIET", "1")
         .output()
         .unwrap();
     let out = String::from_utf8_lossy(&output.stdout);
@@ -1934,14 +1937,14 @@ int main(void) {
 /// works in the pod, also when the supervisor cannot write the memory of
 /// the program (glibc sends A and AAAA with one sendmmsg; the pod sets
 /// RES_OPTIONS=single-request). Before, it failed with "Temporary failure
-/// in name resolution" under POD_NETNS_TEST_MEM=none.
+/// in name resolution" under PODNET_NETNS_TEST_MEM=none.
 #[test]
 fn seccomp_backend_resolves_unspec_without_memory_writes() {
     if !have_compiler() || !seccomp_available() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-unspec-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-unspec-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -1954,13 +1957,13 @@ fn seccomp_backend_resolves_unspec_without_memory_writes() {
         ("none", None),
         ("none", Some("ndots:1")),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_pod-netns"));
+        let mut command = pod_command();
         command
             .args(["--backend", "seccomp", "-x"])
             .arg(format!("unix:{}", sock.display()))
             .arg("--")
             .arg(&program)
-            .env("POD_NETNS_TEST_MEM", hook);
+            .env("PODNET_NETNS_TEST_MEM", hook);
         match res_options {
             Some(v) => command.env("RES_OPTIONS", v),
             None => command.env_remove("RES_OPTIONS"),
@@ -2007,7 +2010,7 @@ fn a_refused_system_call_fails_with_its_errno() {
         eprintln!("skipping: no compiler or no SECCOMP_RET_USER_NOTIF");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("pod-netns-uring-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-netns-uring-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("socks.sock");
     let _listener = UnixListener::bind(&sock).unwrap();

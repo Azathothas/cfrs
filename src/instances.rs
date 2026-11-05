@@ -30,9 +30,9 @@ use serde::{Deserialize, Serialize};
 
 /// The run directory in place of the default (tests, and hosts with no
 /// `XDG_RUNTIME_DIR` and no state directory).
-pub const RUN_DIR_VARIABLE: &str = "CFRS_RUN_DIR";
+pub const RUN_DIR_VARIABLE: &str = "PODNET_RUN_DIR";
 
-/// The run directory: `CFRS_RUN_DIR`, else `$XDG_RUNTIME_DIR/cfrs/run`
+/// The run directory: `PODNET_RUN_DIR`, else `$XDG_RUNTIME_DIR/podnet/run`
 /// (empty after a reboot), else `run` in the state directory. Mode 0700,
 /// owned by this user.
 pub fn run_dir() -> Result<PathBuf> {
@@ -43,13 +43,13 @@ pub fn run_dir() -> Result<PathBuf> {
         return Ok(dir);
     }
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        let dir = PathBuf::from(runtime).join("cfrs/run");
+        let dir = PathBuf::from(runtime).join("podnet/run");
         if crate::state::prepare(&dir).is_ok() {
             return Ok(dir);
         }
     }
     let state = crate::state::state_dir()?.context(
-        "detached instances need a run directory: set CFRS_RUN_DIR or a state directory",
+        "detached instances need a run directory: set PODNET_RUN_DIR or a state directory",
     )?;
     let dir = state.join("run");
     crate::state::prepare(&dir)?;
@@ -64,7 +64,7 @@ pub fn existing_run_dir() -> Option<PathBuf> {
         candidates.push(PathBuf::from(dir));
     } else {
         if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-            candidates.push(PathBuf::from(runtime).join("cfrs/run"));
+            candidates.push(PathBuf::from(runtime).join("podnet/run"));
         }
         if let Ok(Some(dir)) = crate::state::find_existing("run") {
             candidates.push(dir);
@@ -81,7 +81,7 @@ pub fn lookup_dir() -> PathBuf {
         std::env::var_os(RUN_DIR_VARIABLE)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/nonexistent/cfrs-run"))
+            .unwrap_or_else(|| PathBuf::from("/nonexistent/podnet-run"))
     })
 }
 
@@ -185,7 +185,7 @@ pub fn write(dir: &Path, record: &Record) -> Result<()> {
 }
 
 /// The variables that hold a secret of an instance.
-pub const SECRET_VARIABLES: &[&str] = &["TUNNEL_TOKEN", "CFRS_PROXY"];
+pub const SECRET_VARIABLES: &[&str] = &["TUNNEL_TOKEN", "PODNET_PROXY"];
 
 /// The secret variables of `vars` ([`SECRET_VARIABLES`]).
 pub fn secrets_of(vars: &[(String, String)]) -> Vec<(String, String)> {
@@ -317,7 +317,7 @@ pub fn lock(path: &Path) -> Result<Held> {
 /// Whether a process holds a lock of the instance `name`: the lock of the
 /// supervisor, or the lock of its child (a child goes on when its
 /// supervisor is killed).
-/// It makes no file (issue 266: `cfrs wait NAME` made `NAME.lock` and
+/// It makes no file (issue 266: `podnet wait NAME` made `NAME.lock` and
 /// `NAME.child.lock`).
 pub fn is_alive(dir: &Path, name: &str) -> bool {
     let Ok(p) = paths(dir, name) else {
@@ -444,7 +444,7 @@ pub fn list(dir: &Path) -> Vec<Entry> {
     out
 }
 
-/// Remove the files of each stale instance of `dir` (`cfrs ps`).
+/// Remove the files of each stale instance of `dir` (`podnet ps`).
 pub fn prune(dir: &Path) {
     let names: Vec<String> = std::fs::read_dir(dir)
         .into_iter()

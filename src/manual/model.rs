@@ -24,10 +24,10 @@ pub struct ArgPage {
     pub values: Vec<String>,
 }
 
-/// One command, for example `cfrs warp run`.
+/// One command, for example `podnet warp run`.
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandPage {
-    /// The words after `cfrs`, for example `["warp", "run"]`.
+    /// The words after `podnet`, for example `["warp", "run"]`.
     pub path: Vec<String>,
     pub usage: String,
     pub about: String,
@@ -78,10 +78,10 @@ impl From<&ExitCode> for ExitRow {
 
 /// The paragraphs of DESCRIPTION.
 const DESCRIPTION: &[&str] = &[
-    "cfrs is one binary for Cloudflare quick tunnels (trycloudflare), named tunnels and the Cloudflare WARP client. It is made for hosts with strong network limits: no root, no TUN device, no network namespace, no UDP, no AF_INET bind, or only TCP 443 out.",
-    "A tunnel reaches the edge with one of four legs: QUIC on UDP 7844, HTTP/2 on TCP 7844 (directly or through HTTPS_PROXY), QUIC inside a WARP MASQUE tunnel on TCP 443, or HTTP/2 through the WebSocket relay on TCP 443 (--transport relay). With --protocol auto and --transport auto, cfrs tries the first three in that order.",
-    "cfrs pod runs a program with all its traffic sent through a proxy, with no LD_PRELOAD (pod-netns). cfrs net gives programs virtual IP addresses on a host that refuses AF_INET binds.",
-    "This manual is generated from the command tree of the binary. cfrs man --roff writes it as a man(7) page, and cfrs man --json writes its tables.",
+    "podnet is one binary for Cloudflare quick tunnels (trycloudflare), named tunnels and the Cloudflare WARP client. It is made for hosts with strong network limits: no root, no TUN device, no network namespace, no UDP, no AF_INET bind, or only TCP 443 out.",
+    "A tunnel reaches the edge with one of four legs: QUIC on UDP 7844, HTTP/2 on TCP 7844 (directly or through HTTPS_PROXY), QUIC inside a WARP MASQUE tunnel on TCP 443, or HTTP/2 through the WebSocket relay on TCP 443 (--transport relay). With --protocol auto and --transport auto, podnet tries the first three in that order.",
+    "podnet pod runs a program with all its traffic sent through a proxy, with no LD_PRELOAD (podnet-netns). podnet net gives programs virtual IP addresses on a host that refuses AF_INET binds.",
+    "This manual is generated from the command tree of the binary. podnet man --roff writes it as a man(7) page, and podnet man --json writes its tables.",
 ];
 
 fn text(s: Option<&clap::builder::StyledStr>) -> String {
@@ -213,7 +213,7 @@ pub fn build(mut cmd: clap::Command) -> Manual {
         about: text(cmd.get_about()),
         description: DESCRIPTION.iter().map(|s| s.to_string()).collect(),
         commands,
-        pod_usage: pod_netns::usage_for("cfrs pod"),
+        pod_usage: podnet_netns::usage_for("podnet pod"),
         environment: ENVIRONMENT,
         files: FILES,
         exit_status: TABLE.iter().map(ExitRow::from).collect(),

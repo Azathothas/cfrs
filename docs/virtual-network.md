@@ -1,17 +1,17 @@
-# Virtual network (`cfrs net`, `cfrs::vnet`)
+# Virtual network (`podnet net`, `podnet::vnet`)
 
 The virtual network gives programs IPv4 and IPv6 addresses on a host where the
 kernel refuses `AF_INET` and `AF_INET6` binds. It needs no network namespace,
 no TUN device and no capability. It needs only `AF_UNIX`, including the
 abstract namespace.
 
-Use `cfrs net doctor` to see what the host permits.
+Use `podnet net doctor` to see what the host permits.
 
 ## 1. Parts
 
 | Part | Module | Function |
 | --- | --- | --- |
-| Shim | `shim/cfrsnet.c`, `vnet::shim` | An `LD_PRELOAD` library. It changes `AF_INET` sockets into `AF_UNIX` abstract sockets. |
+| Shim | `shim/podnet-vnet.c`, `vnet::shim` | An `LD_PRELOAD` library. It changes `AF_INET` sockets into `AF_UNIX` abstract sockets. |
 | Stack | `vnet::stack` | A `smoltcp` TCP/IP stack. It owns the virtual addresses. |
 | Link | `vnet::device`, `vnet::framing` | The packet queues of the stack, and the framing for a byte stream. |
 | Proxy | `vnet::proxy` | A SOCKS5 and HTTP `CONNECT` front door into the stack. |
@@ -29,15 +29,15 @@ Use `cfrs net doctor` to see what the host permits.
 | `10.66.0.1` | The gateway. The virtual resolver listens on port 53. |
 | `10.66.0.2` to `10.66.0.254` | Stacks and programs. |
 
-The kernel does not see these addresses. `cfrs net addresses` prints the plan.
+The kernel does not see these addresses. `podnet net addresses` prints the plan.
 
 ## 3. Shim
 
 Build the shim and start a program with it:
 
 ```sh
-cfrs net shim --out /tmp/cfrsnet --log
-LD_PRELOAD=/tmp/cfrsnet/libcfrsnet.so ./server
+podnet net shim --out /tmp/podnet-vnet --log
+LD_PRELOAD=/tmp/podnet-vnet/libpodnet-vnet.so ./server
 ```
 
 ### 3.1 Address translation
@@ -45,10 +45,10 @@ LD_PRELOAD=/tmp/cfrsnet/libcfrsnet.so ./server
 An IP endpoint becomes an abstract socket name:
 
 ```text
-\0cfrsnet/<family>/<address>/<port>
+\0podnet-vnet/<family>/<address>/<port>
 
-10.66.0.2:8080   ->  \0cfrsnet/4/10.66.0.2/8080
-[fd00::2]:443    ->  \0cfrsnet/6/fd00::2/443
+10.66.0.2:8080   ->  \0podnet-vnet/4/10.66.0.2/8080
+[fd00::2]:443    ->  \0podnet-vnet/6/fd00::2/443
 ```
 
 The IPv6 address is in the RFC 5952 form. The longest name is 60 bytes.
@@ -70,7 +70,7 @@ on the real `AF_UNIX` descriptor.
 
 ### 3.3 Limits
 
-* The shim cannot reach a static binary. Use `cfrs pod` or `cfrs net proxy`
+* The shim cannot reach a static binary. Use `podnet pod` or `podnet net proxy`
   for such programs.
 * `recvmmsg` and `io_uring` are not interposed.
 * `/proc/net/tcp`, `getifaddrs` and `/sys/class/net` do not show the virtual
@@ -106,18 +106,18 @@ Two programs with the shim talk through the abstract name. No other process is
 necessary.
 
 ```text
-program A: bind 10.66.0.2:8080     ->  \0cfrsnet/4/10.66.0.2/8080
-program B: connect 10.66.0.2:8080  ->  \0cfrsnet/4/10.66.0.2/8080
+program A: bind 10.66.0.2:8080     ->  \0podnet-vnet/4/10.66.0.2/8080
+program B: connect 10.66.0.2:8080  ->  \0podnet-vnet/4/10.66.0.2/8080
 ```
 
 ### 5.2 Proxy
 
-`cfrs net proxy` puts a SOCKS5 and HTTP `CONNECT` front door on the stack.
+`podnet net proxy` puts a SOCKS5 and HTTP `CONNECT` front door on the stack.
 `--forward VIRT=REAL` makes the stack listen on a virtual address and send each
 connection to a real destination (`host:port` or `unix:/path`).
 
 ```sh
-cfrs net proxy --listen unix:/tmp/cfrsnet.socks \
+podnet net proxy --listen unix:/tmp/podnet-vnet.socks \
     --forward 10.66.0.2:8080=unix:/run/app.sock
 ```
 
@@ -127,7 +127,7 @@ accept a unix-socket SOCKS proxy. On a host that permits a TCP bind, use
 
 ### 5.3 Switch (more than one host)
 
-`cfrs net switch` is a hub for stacks. Each stack connects to it with a byte
+`podnet net switch` is a hub for stacks. Each stack connects to it with a byte
 stream. The switch records the source address of each peer. It sends each
 packet to the peer that owns the destination address, and it sends a packet
 for an unknown address to all other peers.
@@ -136,37 +136,37 @@ for an unknown address to all other peers.
   disconnects. The switch drops a packet of another peer with that source
   address, and counts it.
 * A unix listener takes the same user only (`SO_PEERCRED`).
-* A TCP listener needs a shared token. Set `CFRS_SWITCH_TOKEN`, or give
+* A TCP listener needs a shared token. Set `PODNET_SWITCH_TOKEN`, or give
   `--switch-token-file PATH` (the text of the file with no white space at
-  the ends). With no token, `cfrs net switch --listen tcp://...` exits 64.
-  `cfrs net proxy --switch tcp://...` sends the same token, from the same
+  the ends). With no token, `podnet net switch --listen tcp://...` exits 64.
+  `podnet net proxy --switch tcp://...` sends the same token, from the same
   variable or its own `--switch-token-file`.
-* The first line of a TCP peer is `cfrs-switch/1 TOKEN` and a line feed.
+* The first line of a TCP peer is `podnet-switch/1 TOKEN` and a line feed.
   The switch answers `ok` and a line feed, then the frames start. A peer
   with a wrong first line gets `refused` and the switch closes it. A peer
   that sends no line in 10 s is closed. The token is not encrypted: on a
-  network that others can see, use a tunnel (`cfrs tunnel --forward`) or
+  network that others can see, use a tunnel (`podnet tunnel --forward`) or
   another encrypted path.
 
 ```sh
 # Host S: the switch. Expose it with a tunnel when the hosts are far apart:
-cfrs net switch --listen unix:/tmp/sw.sock
-cfrs tunnel --forward unix:/tmp/sw.sock
+podnet net switch --listen unix:/tmp/sw.sock
+podnet tunnel --forward unix:/tmp/sw.sock
 
 # Host A: a stack at 10.66.0.2 with a service.
-cfrs connect wss://<host>/__cfrs/ws -L unix:///tmp/sw.sock     # if remote
-cfrs net proxy --switch unix:/tmp/sw.sock --address 10.66.0.2 \
+podnet connect wss://<host>/__podnet/ws -L unix:///tmp/sw.sock     # if remote
+podnet net proxy --switch unix:/tmp/sw.sock --address 10.66.0.2 \
     --forward 10.66.0.2:8080=unix:/run/app.sock
 
 # Host B: a stack at 10.66.0.3. Its proxy reaches 10.66.0.2:8080.
-cfrs net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 \
+podnet net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 \
     --listen unix:/tmp/b.socks
 ```
 
 Shim programs can also use the switch:
 
 * `--control NAME` serves the control socket `\0NAME`. Start the program with
-  `CFRSNET_CONTROL=NAME`. When the program binds a virtual address, the shim
+  `PODNET_VNET_CONTROL=NAME`. When the program binds a virtual address, the shim
   sends `RegisterBind`. The stack then listens on that address and sends each
   connection from the switch to the program.
 * `--import VIRT` binds the abstract name of the remote address `VIRT` on this
@@ -176,20 +176,20 @@ Shim programs can also use the switch:
   `SO_PASSCRED` and drops a datagram of another user. `--import` closes a
   client of another user. The stack does not send a connection to an
   abstract name that a process of another user holds. The unix listener of
-  `cfrs net switch` closes a peer of another user (also root).
+  `podnet net switch` closes a peer of another user (also root).
 
 ### 5.4 Faults
 
-`cfrs net proxy --switch ... --address ...` takes `--drop`, `--duplicate` and
+`podnet net proxy --switch ... --address ...` takes `--drop`, `--duplicate` and
 `--reorder` (probabilities from 0.0 to 1.0) and `--seed`. They put faults on
 the packets that this stack sends to the switch; the switch itself
-(`cfrs net switch`) has no faults. The same seed gives the same faults. With
+(`podnet net switch`) has no faults. The same seed gives the same faults. With
 no `--switch`, the flags are a usage error (exit 64), as a value out of 0.0
 to 1.0 is. In code, use `vnet::switch::Faults` and `FaultInjector`.
 
 ```sh
-cfrs net switch --listen unix:/tmp/sw.sock &
-cfrs net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 --drop 0.1 --seed 7
+podnet net switch --listen unix:/tmp/sw.sock &
+podnet net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 --drop 0.1 --seed 7
 ```
 
 ## 6. Resolver, policy and capture
@@ -204,7 +204,7 @@ cfrs net proxy --switch unix:/tmp/sw.sock --address 10.66.0.3 --drop 0.1 --seed 
 
 ## 7. Control protocol
 
-The shim sends control messages as datagrams to `\0<CFRSNET_CONTROL>`:
+The shim sends control messages as datagrams to `\0<PODNET_VNET_CONTROL>`:
 
 ```text
 u8 op | u16 length | payload

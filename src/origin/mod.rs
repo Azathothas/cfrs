@@ -269,7 +269,7 @@ impl Origin {
         }
     }
 
-    /// Whether this origin is answered by cfrs itself.
+    /// Whether this origin is answered by podnet itself.
     pub fn is_in_process(&self) -> bool {
         matches!(
             self,

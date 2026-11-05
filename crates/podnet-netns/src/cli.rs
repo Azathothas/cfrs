@@ -30,8 +30,8 @@ pub(crate) struct Args {
     pub(crate) prefer_udp: bool,
 }
 
-/// The name in the help and the usage lines: `pod-netns`, or `cfrs pod`
-/// when cfrs runs the pod ([`set_program_name`]).
+/// The name in the help and the usage lines: `podnet-netns`, or `podnet pod`
+/// when podnet runs the pod ([`set_program_name`]).
 static PROGRAM_NAME: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Set the name that the help shows (once, before [`crate::main_with_args`]).
@@ -40,10 +40,10 @@ pub fn set_program_name(name: &'static str) {
 }
 
 fn program_name() -> &'static str {
-    PROGRAM_NAME.get().copied().unwrap_or("pod-netns")
+    PROGRAM_NAME.get().copied().unwrap_or("podnet-netns")
 }
 
-/// The help, in the layout of the other cfrs commands (issue 95).
+/// The help, in the layout of the other podnet commands (issue 95).
 pub fn usage() -> String {
     usage_for(program_name())
 }
@@ -91,8 +91,8 @@ Options:
                            (seccomp backend only). The directory must be of
                            this user and not writable by the group or by
                            others; a new one gets mode 0700
-                           [default: $XDG_RUNTIME_DIR/pod-netns-inbound,
-                           else $TMPDIR/pod-netns-inbound-UID]
+                           [default: $XDG_RUNTIME_DIR/podnet-netns-inbound,
+                           else $TMPDIR/podnet-netns-inbound-UID]
       --serve <LISTEN>     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
                            unix:/path or tcp://host:port, forwarding through
                            the -x chain
@@ -138,9 +138,9 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
             }
             "-V" | "--version" => {
                 println!(
-                    "pod-netns {} ({})",
+                    "podnet-netns {} ({})",
                     env!("CARGO_PKG_VERSION"),
-                    env!("CFRS_BUILD_COMMIT")
+                    env!("PODNET_BUILD_COMMIT")
                 );
                 std::process::exit(0);
             }

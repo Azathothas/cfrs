@@ -10,7 +10,7 @@
 //!   document's §9.1 proof and the basis of deterministic tests.
 //! * **over a link** — an external pump moves framed packets between
 //!   [`NetStack::link_in`] / [`NetStack::link_out`] and a real byte stream: a
-//!   unix socket, a QUIC connection, or a `cfrs` WebSocket forward.
+//!   unix socket, a QUIC connection, or a `podnet` WebSocket forward.
 //!
 //! The clock is monotonic and real (`std::time::Instant`), and the reactor
 //! blocks on the device's waker or the interface's next deadline instead of

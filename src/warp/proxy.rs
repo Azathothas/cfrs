@@ -1,8 +1,8 @@
 //! A local SOCKS5 and HTTP `CONNECT` proxy whose connections go through WARP.
 //!
 //! This is the proxy mode of the WARP client. Programs that read `ALL_PROXY`
-//! or `HTTPS_PROXY` use it directly. `cfrs warp run` puts any other program
-//! behind it with pod-netns.
+//! or `HTTPS_PROXY` use it directly. `podnet warp run` puts any other program
+//! behind it with podnet-netns.
 //!
 //! Names are resolved through the tunnel (DNS over UDP to 1.1.1.1), so no
 //! query goes to the local resolver. The rules of [`super::rules`] can send
@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use pod_netns::listen::ProxyListen;
-use pod_netns::socks::{self, ProxyHost, ProxyRequest};
+use podnet_netns::listen::ProxyListen;
+use podnet_netns::socks::{self, ProxyHost, ProxyRequest};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -46,7 +46,7 @@ impl WarpProxy {
 }
 
 /// A bound listener of the proxy, before the WARP session (issue 97: a
-/// bind that fails is known before cfrs waits for the network).
+/// bind that fails is known before podnet waits for the network).
 pub enum Bound {
     Tcp(tokio::net::TcpListener, ProxyListen),
     Unix(tokio::net::UnixListener, ProxyListen),
@@ -77,12 +77,12 @@ pub async fn bind(listen: &ProxyListen) -> Result<Bound> {
             // proxy lost its clients.
             if std::os::unix::net::UnixStream::connect(path).is_ok() {
                 bail!(
-                    "unix:{} is served by another process (cfrs ps; cfrs warp down stops cfrs warp up)",
+                    "unix:{} is served by another process (podnet ps; podnet warp down stops podnet warp up)",
                     path.display()
                 );
             }
             crate::net::claim_socket_path(path, false)?;
-            let listener = pod_netns::listen::bind_private(path)
+            let listener = podnet_netns::listen::bind_private(path)
                 .with_context(|| format!("binding unix:{}", path.display()))?;
             Ok(Bound::Unix(listener, listen.clone()))
         }
@@ -155,7 +155,7 @@ impl Drop for Admitted {
 }
 
 /// Log one line about the health of the proxy each [`HEALTH_EVERY`]
-/// (issue 116: `cfrs logs warp` showed nothing after the start).
+/// (issue 116: `podnet logs warp` showed nothing after the start).
 pub fn health_log(live: Arc<super::Live<WarpStack>>) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -292,7 +292,7 @@ impl std::fmt::Display for Resolver {
 
 /// The variable of the resolvers of the tunnel (a comma-separated list of
 /// [`Resolver::parse`]).
-pub const RESOLVERS_VARIABLE: &str = "CFRS_WARP_RESOLVERS";
+pub const RESOLVERS_VARIABLE: &str = "PODNET_WARP_RESOLVERS";
 
 static RESOLVERS: std::sync::OnceLock<Vec<Resolver>> = std::sync::OnceLock::new();
 
@@ -662,7 +662,7 @@ where
         let outcome = match command {
             0x01 => "socks_connect",
             0x03 => "udp_associate",
-            pod_netns::upstream::CMD_UDP_IN_STREAM => "udp_in_stream",
+            podnet_netns::upstream::CMD_UDP_IN_STREAM => "udp_in_stream",
             _ => "socks_unsupported",
         };
         crate::decisions::count("dispatch", outcome);
@@ -686,7 +686,7 @@ where
                     bail!("UDP ASSOCIATE is not available");
                 }
             },
-            pod_netns::upstream::CMD_UDP_IN_STREAM => match udp {
+            podnet_netns::upstream::CMD_UDP_IN_STREAM => match udp {
                 Some(stack) => return udp_in_stream(stream, stack).await,
                 None => {
                     socks::socks5_reply(&mut stream, 0x07, None).await?;
@@ -709,7 +709,7 @@ where
             if !auth.check_basic(authorization.as_deref()) {
                 stream
                     .write_all(
-                        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"cfrs\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"podnet\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     )
                     .await?;
                 bail!("an HTTP client with no or wrong credentials");
@@ -909,7 +909,7 @@ where
                 };
                 let target = client.lock().unwrap_or_else(|e| e.into_inner()).fixed;
                 if let Some(target) = target {
-                    let framed = pod_netns::upstream::wrap_udp(&data, from.ip(), from.port());
+                    let framed = podnet_netns::upstream::wrap_udp(&data, from.ip(), from.port());
                     let _ = local.send_to(&framed, target).await;
                 }
             }
@@ -932,14 +932,14 @@ where
 }
 
 /// Serve one UDP association in the stream (issue 84,
-/// [`pod_netns::upstream::CMD_UDP_IN_STREAM`]): each datagram in each
+/// [`podnet_netns::upstream::CMD_UDP_IN_STREAM`]): each datagram in each
 /// direction is a frame on the control connection, so no UDP socket of the
 /// host is necessary. The association ends when the connection closes.
 async fn udp_in_stream<S>(mut control: S, stack: Arc<WarpStack>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    use pod_netns::upstream::{read_udp_frame, wrap_udp, write_udp_frame};
+    use podnet_netns::upstream::{read_udp_frame, wrap_udp, write_udp_frame};
     let tunnel = match stack.udp_bind().await {
         Ok(tunnel) => tunnel,
         Err(err) => {
@@ -1019,7 +1019,7 @@ pub async fn route(stack: Arc<WarpStack>, host: ProxyHost, port: u16) -> Result<
 }
 
 /// Connect to `host:port` from the host, not through the tunnel (the
-/// rule `direct`). No proxy of cfrs: it can be this proxy.
+/// rule `direct`). No proxy of podnet: it can be this proxy.
 async fn direct(host: &ProxyHost, port: u16) -> Result<DuplexStream> {
     debug!(%host, port, "WARP proxy: direct by the rules");
     let stream = crate::egress::dial_direct(&host.to_string(), port, CONNECT_TIMEOUT).await?;
@@ -1115,7 +1115,7 @@ const DNS_RESEND: Duration = Duration::from_millis(1200);
 
 /// The variable that turns off the check of the data path of a new MASQUE
 /// session (issue 120), for a measurement.
-pub const NO_CHECK_VARIABLE: &str = "CFRS_WARP_NO_CHECK";
+pub const NO_CHECK_VARIABLE: &str = "PODNET_WARP_NO_CHECK";
 
 /// The name of the DNS query of the check of the data path.
 const CHECK_NAME: &str = "cloudflare.com";
@@ -1128,7 +1128,7 @@ pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> 
     if resolvers_set() {
         // Issue 145: the resolvers that were set.
         let start = std::time::Instant::now();
-        let query = pod_netns::dns::build_query(0x5a5a, CHECK_NAME, pod_netns::dns::TYPE_A)?;
+        let query = podnet_netns::dns::build_query(0x5a5a, CHECK_NAME, podnet_netns::dns::TYPE_A)?;
         exchange_any(stack, &resolvers(), &query)
             .await
             .context("the MASQUE session is open, and no resolver answered through it")?;
@@ -1144,7 +1144,7 @@ pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> 
 
 async fn check_data_path_at(stack: &WarpStack, server: SocketAddr) -> Result<Duration> {
     let start = std::time::Instant::now();
-    query_at(stack, server, CHECK_NAME, pod_netns::dns::TYPE_A)
+    query_at(stack, server, CHECK_NAME, podnet_netns::dns::TYPE_A)
         .await
         .map_err(|e| {
             e.context(format!(
@@ -1160,11 +1160,11 @@ async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> 
     }
     // Issue 145: the resolvers that were set, one after the other.
     let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;
-    let message = pod_netns::dns::build_query(id, name, kind)?;
+    let message = podnet_netns::dns::build_query(id, name, kind)?;
     let answer = exchange_any(stack, &resolvers(), &message)
         .await
         .with_context(|| format!("no DNS answer for {name}"))?;
-    pod_netns::dns::parse_answers(&answer)
+    podnet_netns::dns::parse_answers(&answer)
 }
 
 /// Ask `server` for the `kind` records of `name`. The query is sent again
@@ -1178,7 +1178,7 @@ async fn query_at(
 ) -> Result<Vec<IpAddr>> {
     let udp = stack.udp_bind().await?;
     let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;
-    let query = pod_netns::dns::build_query(id, name, kind)?;
+    let query = podnet_netns::dns::build_query(id, name, kind)?;
     let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
     loop {
         udp.send_to(query.clone(), server).await?;
@@ -1187,7 +1187,7 @@ async fn query_at(
             match tokio::time::timeout_at(resend, udp.recv_from(4096)).await {
                 Ok(Ok((answer, from))) => {
                     if from == server && answer.get(..2) == Some(&id.to_be_bytes()[..]) {
-                        return pod_netns::dns::parse_answers(&answer);
+                        return podnet_netns::dns::parse_answers(&answer);
                     }
                 }
                 Ok(Err(err)) => return Err(err),
@@ -1210,8 +1210,8 @@ pub async fn resolve_all(stack: &WarpStack, name: &str) -> Result<Vec<IpAddr>> {
         return Ok(vec![ip]);
     }
     let (a, aaaa) = tokio::join!(
-        query(stack, name, pod_netns::dns::TYPE_A),
-        query(stack, name, pod_netns::dns::TYPE_AAAA)
+        query(stack, name, podnet_netns::dns::TYPE_A),
+        query(stack, name, podnet_netns::dns::TYPE_AAAA)
     );
     let mut all: Vec<IpAddr> = a.unwrap_or_default();
     all.extend(aaaa.unwrap_or_default());
@@ -1231,11 +1231,11 @@ pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
     {
         return Ok(ip);
     }
-    let a = query(stack, name, pod_netns::dns::TYPE_A).await;
+    let a = query(stack, name, podnet_netns::dns::TYPE_A).await;
     if let Some(ip) = a.as_ref().ok().and_then(|a| a.first()) {
         return Ok(*ip);
     }
-    let aaaa = query(stack, name, pod_netns::dns::TYPE_AAAA).await;
+    let aaaa = query(stack, name, podnet_netns::dns::TYPE_AAAA).await;
     match (a, aaaa) {
         (_, Ok(aaaa)) if !aaaa.is_empty() => Ok(aaaa[0]),
         (Err(err), _) | (_, Err(err)) => {
@@ -1451,8 +1451,8 @@ mod tests {
                     if n < drop_first {
                         continue;
                     }
-                    let parsed = pod_netns::dns::ParsedQuery::parse(query).unwrap();
-                    let answer = pod_netns::dns::build_response(
+                    let parsed = podnet_netns::dns::ParsedQuery::parse(query).unwrap();
+                    let answer = podnet_netns::dns::build_response(
                         &parsed,
                         &["192.0.2.44".parse().unwrap()],
                         0,
@@ -1516,7 +1516,7 @@ mod tests {
     #[tokio::test]
     async fn dns_over_tls_frames_each_message() {
         let (client, mut server) = tokio::io::duplex(4096);
-        let query = pod_netns::dns::build_query(0x1357, "example.com", 1).unwrap();
+        let query = podnet_netns::dns::build_query(0x1357, "example.com", 1).unwrap();
         let q = query.clone();
         let peer = tokio::spawn(async move {
             let mut len = [0u8; 2];
@@ -1541,7 +1541,7 @@ mod tests {
     #[tokio::test]
     async fn the_first_resolver_that_answers_wins() {
         let (stack, _) = stack_with_dns(0);
-        let query = pod_netns::dns::build_query(0x2468, "example.com", 1).unwrap();
+        let query = podnet_netns::dns::build_query(0x2468, "example.com", 1).unwrap();
         let list = [
             Resolver::Udp("198.51.100.99:53".parse().unwrap()),
             Resolver::Udp(PEER_DNS.parse().unwrap()),
@@ -1575,7 +1575,7 @@ mod tests {
             &stack,
             PEER_DNS.parse().unwrap(),
             "example.com",
-            pod_netns::dns::TYPE_A,
+            podnet_netns::dns::TYPE_A,
         )
         .await
         .unwrap();
@@ -1635,8 +1635,8 @@ mod tests {
         );
         let owner = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let other = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let query = pod_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
-        let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+        let query = podnet_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
+        let v4 = podnet_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
         owner.send_to(&v4, relay).await.unwrap();
         let mut buf = [0u8; 1024];
         tokio::time::timeout(Duration::from_secs(5), owner.recv_from(&mut buf))
@@ -1645,8 +1645,8 @@ mod tests {
             .unwrap();
         // The other socket sends: it gets no answer, and the owner keeps the
         // association.
-        let query = pod_netns::dns::build_query(0x5151, "example.com", 1).unwrap();
-        let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+        let query = podnet_netns::dns::build_query(0x5151, "example.com", 1).unwrap();
+        let v4 = podnet_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
         other.send_to(&v4, relay).await.unwrap();
         let got = tokio::time::timeout(Duration::from_millis(500), other.recv_from(&mut buf)).await;
         assert!(got.is_err(), "another sender gets no answer");
@@ -1677,11 +1677,14 @@ mod tests {
                 u16::from_be_bytes([reply[8], reply[9]]),
             );
             let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let query = pod_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
-            let v6 =
-                pod_netns::upstream::wrap_udp(&query, "2606:4700:4700::1111".parse().unwrap(), 53);
+            let query = podnet_netns::dns::build_query(0x4242, "example.com", 1).unwrap();
+            let v6 = podnet_netns::upstream::wrap_udp(
+                &query,
+                "2606:4700:4700::1111".parse().unwrap(),
+                53,
+            );
             udp.send_to(&v6, relay).await.unwrap();
-            let v4 = pod_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
+            let v4 = podnet_netns::upstream::wrap_udp(&query, "198.51.100.7".parse().unwrap(), 53);
             udp.send_to(&v4, relay).await.unwrap();
             let mut buf = [0u8; 1024];
             let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp.recv_from(&mut buf))
@@ -1701,13 +1704,13 @@ mod tests {
     #[tokio::test]
     async fn the_dns_forwarder_gives_the_answer() {
         let (stack, _) = stack_with_dns(1);
-        let query = pod_netns::dns::build_query(0x7777, "example.com", 1).unwrap();
+        let query = podnet_netns::dns::build_query(0x7777, "example.com", 1).unwrap();
         let answer = forward_dns_to(&stack, PEER_DNS.parse().unwrap(), &query)
             .await
             .unwrap();
         assert_eq!(&answer[..2], &[0x77, 0x77]);
         assert_eq!(
-            pod_netns::dns::parse_answers(&answer).unwrap(),
+            podnet_netns::dns::parse_answers(&answer).unwrap(),
             vec!["192.0.2.44".parse::<IpAddr>().unwrap()]
         );
         assert!(forward_dns_to(&stack, PEER_DNS.parse().unwrap(), b"short")

@@ -1,18 +1,18 @@
-//! The command line of the cfrs binary: exit codes, usage messages and the
+//! The command line of the podnet binary: exit codes, usage messages and the
 //! generated manual. No test here uses the network.
 
 mod test_host;
 
 use std::process::{Command, Output};
 
-fn cfrs(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cfrs"))
+fn podnet(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(args)
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env_remove("CFRS_EDGE")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env_remove("PODNET_EDGE")
         .env("PAGER", "cat")
         .output()
-        .expect("cfrs runs")
+        .expect("podnet runs")
 }
 
 fn stderr(out: &Output) -> String {
@@ -22,21 +22,21 @@ fn stderr(out: &Output) -> String {
 #[test]
 fn help_and_version_exit_0() {
     for args in [&["--help"][..], &["--version"], &["tunnel", "--help"]] {
-        let out = cfrs(args);
-        assert_eq!(out.status.code(), Some(0), "cfrs {args:?}");
+        let out = podnet(args);
+        assert_eq!(out.status.code(), Some(0), "podnet {args:?}");
     }
 }
 
 #[test]
 fn a_usage_error_exits_64() {
-    let out = cfrs(&["tunel"]);
+    let out = podnet(&["tunel"]);
     assert_eq!(out.status.code(), Some(64));
 }
 
 /// A flag with no value and an unknown flag give different messages.
 #[test]
 fn a_missing_value_is_not_an_unknown_flag() {
-    let missing = cfrs(&["tunnel", "--protocol"]);
+    let missing = podnet(&["tunnel", "--protocol"]);
     assert_eq!(missing.status.code(), Some(64));
     let text = stderr(&missing);
     assert!(
@@ -45,7 +45,7 @@ fn a_missing_value_is_not_an_unknown_flag() {
     );
     assert!(!text.contains("unexpected argument"), "{text}");
 
-    let unknown = cfrs(&["tunnel", "--protocl", "quic"]);
+    let unknown = podnet(&["tunnel", "--protocl", "quic"]);
     assert_eq!(unknown.status.code(), Some(64));
     let text = stderr(&unknown);
     assert!(text.contains("unexpected argument '--protocl'"), "{text}");
@@ -57,26 +57,26 @@ fn a_missing_value_is_not_an_unknown_flag() {
 
 #[test]
 fn a_bad_configuration_exits_78() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--url", "http://127.0.0.1:9"])
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env("CFRS_EDGE", "not-an-address")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env("PODNET_EDGE", "not-an-address")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
-    assert!(stderr(&out).contains("CFRS_EDGE"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("PODNET_EDGE"), "{}", stderr(&out));
 
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.yml");
-    let out = cfrs(&["tunnel", "--config", missing.to_str().unwrap()]);
+    let out = podnet(&["tunnel", "--config", missing.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
 }
 
 /// Each `.B` line of the man page has text, and each long flag of
-/// `cfrs man --json` is in the page.
+/// `podnet man --json` is in the page.
 #[test]
 fn the_man_page_names_each_flag() {
-    let roff = cfrs(&["man", "--roff"]);
+    let roff = podnet(&["man", "--roff"]);
     assert_eq!(roff.status.code(), Some(0));
     let roff = String::from_utf8(roff.stdout).unwrap();
     for line in roff.lines() {
@@ -87,7 +87,7 @@ fn the_man_page_names_each_flag() {
         }
     }
 
-    let json = cfrs(&["man", "--json"]);
+    let json = podnet(&["man", "--json"]);
     assert_eq!(json.status.code(), Some(0));
     let json: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid JSON");
     let mut flags = 0;
@@ -122,18 +122,18 @@ fn the_man_page_names_each_flag() {
 
 #[test]
 fn ports_json_is_one_object() {
-    let out = cfrs(&["ports", "--json"]);
+    let out = podnet(&["ports", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     assert!(json["ports"].is_array(), "{json}");
 }
 
-/// Run cfrs with the log at its highest level, and give stderr and stdout.
+/// Run podnet with the log at its highest level, and give stderr and stdout.
 fn trace(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args(args)
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env_remove("CFRS_EDGE")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env_remove("PODNET_EDGE")
         .env("RUST_LOG", "trace")
         .env("NO_PROXY", "");
     for key in [
@@ -170,7 +170,7 @@ fn the_log_holds_no_secret() {
     ));
     let (code, text) = trace(
         &["tunnel", "--token", &token, "--hello-world"],
-        &[("CFRS_EDGE", "not-an-address")],
+        &[("PODNET_EDGE", "not-an-address")],
     );
     assert_eq!(code, Some(78), "{text}");
     assert!(!text.contains(&token), "the token is in the log:\n{text}");
@@ -197,7 +197,7 @@ fn the_log_holds_no_secret() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("warp.json");
     let warp_token = "warp-bearer-token-0123456789abcdef";
-    let device: cfrs::warp::register::Device = serde_json::from_value(serde_json::json!({
+    let device: podnet::warp::register::Device = serde_json::from_value(serde_json::json!({
         "id": "t.0123456789",
         "account": {"id": "acct", "license": "LICENSE-KEY-0123"},
         "config": {},
@@ -205,8 +205,8 @@ fn the_log_holds_no_secret() {
         "tunnel_type": "masque",
     }))
     .unwrap();
-    let identity = cfrs::warp::identity::Identity::generate().unwrap();
-    cfrs::warp::WarpClient::from_parts(device, identity)
+    let identity = podnet::warp::identity::Identity::generate().unwrap();
+    podnet::warp::WarpClient::from_parts(device, identity)
         .save(&path)
         .unwrap();
     let (code, text) = trace(
@@ -244,7 +244,7 @@ fn the_listen_defaults_agree_with_the_manual() {
         let (command, address) = (cells[1], cells[2]);
         let (Some(command), Some(address)) = (
             command
-                .strip_prefix("`cfrs ")
+                .strip_prefix("`podnet ")
                 .and_then(|c| c.strip_suffix('`')),
             address.strip_prefix('`').and_then(|a| a.strip_suffix('`')),
         ) else {
@@ -254,7 +254,7 @@ fn the_listen_defaults_agree_with_the_manual() {
             table.insert(command.to_string(), address.to_string());
         }
     }
-    let json = cfrs(&["man", "--json"]);
+    let json = podnet(&["man", "--json"]);
     let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     let mut manual = std::collections::BTreeMap::new();
     for command in json["commands"].as_array().unwrap() {
@@ -273,7 +273,7 @@ fn the_listen_defaults_agree_with_the_manual() {
         }
     }
     assert!(manual.len() >= 4, "{manual:?}");
-    assert_eq!(table, manual, "SECURITY.md and cfrs man --json differ");
+    assert_eq!(table, manual, "SECURITY.md and podnet man --json differ");
 }
 
 /// With an empty environment (no HOME, no XDG variables, no user name),
@@ -283,7 +283,7 @@ fn the_listen_defaults_agree_with_the_manual() {
 fn an_empty_environment_works() {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
             .env_clear()
             .env("TMPDIR", dir.path())
@@ -301,7 +301,7 @@ fn an_empty_environment_works() {
         assert_eq!(
             out.status.code(),
             Some(0),
-            "cfrs {args:?}: {}",
+            "podnet {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
@@ -313,34 +313,34 @@ fn an_empty_environment_works() {
         .unwrap()
         .to_string();
     assert!(path.starts_with(dir.path().to_str().unwrap()), "{path}");
-    assert!(path.contains("/cfrs-"), "{path}");
-    assert!(!dir.path().join("cfrs-warp.json").exists());
+    assert!(path.contains("/podnet-"), "{path}");
+    assert!(!dir.path().join("podnet-warp.json").exists());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .arg("status")
         .env_clear()
-        .env("CFRS_STATE_DIR", "none")
+        .env("PODNET_STATE_DIR", "none")
         .current_dir(dir.path())
         .output()
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(status["warp_identity"]["reason"], "CFRS_STATE_DIR=none");
+    assert_eq!(status["warp_identity"]["reason"], "PODNET_STATE_DIR=none");
 }
 
 /// A log that goes to a file or a pipe has no escape sequences.
 #[test]
 fn a_log_to_a_pipe_has_no_colours() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--hello-world"])
-        .env("CFRS_EDGE", "not-an-address")
-        .env("RUST_LOG", "cfrs=debug")
+        .env("PODNET_EDGE", "not-an-address")
+        .env("RUST_LOG", "podnet=debug")
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stderr);
     assert!(!text.contains('\u{1b}'), "{text:?}");
 }
 
-/// SIGTERM stops cfrs as SIGINT does: a clean shutdown and exit 0.
+/// SIGTERM stops podnet as SIGINT does: a clean shutdown and exit 0.
 #[test]
 fn sigterm_is_a_clean_stop() {
     test_host::need_loopback!();
@@ -350,15 +350,15 @@ fn sigterm_is_a_clean_stop() {
         .unwrap()
         .port();
     for signal in [libc::SIGTERM, libc::SIGINT] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args([
                 "connect",
                 "-L",
                 &format!("tcp://127.0.0.1:{port}"),
-                "wss://127.0.0.1:9/__cfrs/ws",
+                "wss://127.0.0.1:9/__podnet/ws",
                 "--no-check",
             ])
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -385,7 +385,7 @@ fn warp_status_registers_no_device() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("none.json");
     for command in ["status", "rotate", "delete"] {
-        let out = cfrs(&["warp", "--identity", path.to_str().unwrap(), command]);
+        let out = podnet(&["warp", "--identity", path.to_str().unwrap(), command]);
         assert_eq!(out.status.code(), Some(78), "{command}: {}", stderr(&out));
         assert!(
             stderr(&out).contains("no WARP identity at"),
@@ -401,7 +401,7 @@ fn warp_status_registers_no_device() {
 #[test]
 fn completion_scripts() {
     for shell in ["bash", "zsh", "fish"] {
-        let out = cfrs(&["completions", shell]);
+        let out = podnet(&["completions", shell]);
         assert_eq!(out.status.code(), Some(0), "{shell}");
         let text = String::from_utf8(out.stdout).unwrap();
         for word in ["tunnel", "warp", "update", "leg-failover"] {
@@ -409,13 +409,13 @@ fn completion_scripts() {
         }
         if shell == "bash" {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("cfrs.bash");
+            let path = dir.path().join("podnet.bash");
             std::fs::write(&path, &text).unwrap();
             let check = Command::new("bash").arg("-n").arg(&path).status().unwrap();
             assert!(check.success(), "bash -n failed");
         }
     }
-    assert_eq!(cfrs(&["completions", "tcsh"]).status.code(), Some(64));
+    assert_eq!(podnet(&["completions", "tcsh"]).status.code(), Some(64));
 }
 
 /// A bad value of a tunnel flag is a usage error (exit 64) before any
@@ -458,7 +458,7 @@ fn bad_flag_values_are_usage_errors() {
         ),
     ] {
         let start = std::time::Instant::now();
-        let out = cfrs(args);
+        let out = podnet(args);
         let text = stderr(&out);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {text}");
         assert!(text.contains(want), "{args:?}: {text}");
@@ -489,10 +489,10 @@ fn log_controls() {
         let mut args = vec!["--no-proxy"];
         args.extend_from_slice(flags);
         args.extend_from_slice(&["tunnel", "--hello-world", "--service-url", &url]);
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(&args)
             .env_remove("RUST_LOG")
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stderr).into_owned()
@@ -533,13 +533,13 @@ fn check_mode() {
         l.local_addr().unwrap().port().to_string()
     };
     let run = |args: &[&str], env: &[(&str, &str)]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(args)
             .args(["--service-url", &service_url])
-            .env_remove("CFRS_ERROR_PROGRAM")
-            .env_remove("CFRS_EDGE")
+            .env_remove("PODNET_ERROR_PROGRAM")
+            .env_remove("PODNET_EDGE")
             .env_remove("TUNNEL_TOKEN")
-            .env("CFRS_STATE_DIR", &state);
+            .env("PODNET_STATE_DIR", &state);
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -673,10 +673,10 @@ fn doctor_tells_listen_from_bind() {
         }
         Ok(())
     }
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args(["net", "doctor"])
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env_remove("CFRS_EDGE")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env_remove("PODNET_EDGE")
         .env("CC", "/nonexistent-cc");
     // SAFETY: the closure calls only prctl, which is async-signal-safe.
     unsafe {
@@ -700,7 +700,7 @@ fn doctor_tells_listen_from_bind() {
     assert!(line("UDP egress").contains("fail     refused"), "{text}");
 }
 
-/// `cfrs autostart` with a fake systemctl (no user manager) and a fake
+/// `podnet autostart` with a fake systemctl (no user manager) and a fake
 /// crontab (issue 23): the crontab line holds no secret, other lines stay,
 /// the env file is private, and with no way at all the exit is 69.
 #[test]
@@ -727,14 +727,14 @@ exit 2"#,
     std::fs::write(&crontab, "MAILTO=\"\"\n@daily /usr/bin/true # mine\n").unwrap();
     let state = dir.path().join("state");
     let run = |args: &[&str], path: &str| {
-        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
             .env("PATH", path)
             .env("HOME", dir.path())
-            .env("CFRS_STATE_DIR", &state)
+            .env("PODNET_STATE_DIR", &state)
             .env("FAKE_CRONTAB", &crontab)
             .env("TUNNEL_TOKEN", TOKEN)
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap()
@@ -763,12 +763,18 @@ exit 2"#,
         cron.contains("@reboot ") && cron.contains(" autostart run web --dir "),
         "{cron}"
     );
-    assert!(cron.trim_end().ends_with("# cfrs autostart web"), "{cron}");
+    assert!(
+        cron.trim_end().ends_with("# podnet autostart web"),
+        "{cron}"
+    );
     assert!(!cron.contains(TOKEN) && !cron.contains("pw@"), "{cron}");
     let entry = state.join("autostart");
     let env = std::fs::read_to_string(entry.join("web.env")).unwrap();
     assert!(env.contains(&format!("TUNNEL_TOKEN={TOKEN}")), "{env}");
-    assert!(env.contains("CFRS_PROXY=http://u:pw@127.0.0.1:9"), "{env}");
+    assert!(
+        env.contains("PODNET_PROXY=http://u:pw@127.0.0.1:9"),
+        "{env}"
+    );
     let mode = std::fs::metadata(entry.join("web.env"))
         .unwrap()
         .permissions()
@@ -777,9 +783,12 @@ exit 2"#,
     let args = std::fs::read_to_string(entry.join("web.args")).unwrap();
     assert_eq!(args, r#"["status"]"#);
 
-    // Issue 117: a leading cfrs is dropped; a command that does not parse
+    // Issue 117: a leading podnet is dropped; a command that does not parse
     // is exit 64, and no entry is written.
-    let out = run(&["autostart", "add", "web2", "--", "cfrs", "status"], &path);
+    let out = run(
+        &["autostart", "add", "web2", "--", "podnet", "status"],
+        &path,
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let args = std::fs::read_to_string(entry.join("web2.args")).unwrap();
     assert_eq!(args, r#"["status"]"#);
@@ -791,7 +800,7 @@ exit 2"#,
     );
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("is not a cfrs command"),
+        stderr(&out).contains("is not a podnet command"),
         "{}",
         stderr(&out)
     );
@@ -848,7 +857,7 @@ fn a_missing_upstream_is_named_at_start() {
     test_host::need_loopback!();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("nope.sock");
-    let out = cfrs(&[
+    let out = podnet(&[
         "net",
         "tailscale",
         "--socket",
@@ -870,7 +879,7 @@ fn a_missing_upstream_is_named_at_start() {
         .local_addr()
         .unwrap()
         .port();
-    let out = cfrs(&[
+    let out = podnet(&[
         "pod",
         "-x",
         &format!("socks5://127.0.0.1:{closed}"),
@@ -889,13 +898,13 @@ fn a_missing_upstream_is_named_at_start() {
 /// exited 64. Skipped with no C compiler.
 #[test]
 fn socksify_takes_a_socket_path() {
-    if cfrs::vnet::shim::compiler().is_err() {
+    if podnet::vnet::shim::compiler().is_err() {
         eprintln!("skipping: no C compiler");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().to_str().unwrap();
-    let with = cfrs(&[
+    let with = podnet(&[
         "net",
         "socksify",
         "--out",
@@ -907,9 +916,9 @@ fn socksify_takes_a_socket_path() {
     assert_eq!(with.status.code(), Some(0), "{}", stderr(&with));
     let text = String::from_utf8_lossy(&with.stdout);
     assert!(text.contains("/tmp/x.sock"), "{text}");
-    let default = cfrs(&["net", "socksify", "--out", out, "--json"]);
+    let default = podnet(&["net", "socksify", "--out", out, "--json"]);
     assert_eq!(default.status.code(), Some(0), "{}", stderr(&default));
-    assert!(String::from_utf8_lossy(&default.stdout).contains("/tmp/cfrssocks.sock"));
+    assert!(String::from_utf8_lossy(&default.stdout).contains("/tmp/podnet-socks.sock"));
 }
 
 /// Issue 247: `net ts-shims` with no `--out` does not use a directory in
@@ -917,38 +926,38 @@ fn socksify_takes_a_socket_path() {
 #[test]
 fn ts_shims_skips_a_directory_open_to_others() {
     use std::os::unix::fs::PermissionsExt;
-    if cfrs::vnet::shim::compiler().is_err() {
+    if podnet::vnet::shim::compiler().is_err() {
         eprintln!("skipping: no C compiler");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path().join("tmp");
-    let hostile = tmp.join("cfrs-ts-shims");
+    let hostile = tmp.join("podnet-ts-shims");
     std::fs::create_dir_all(&hostile).unwrap();
     std::fs::set_permissions(&hostile, std::fs::Permissions::from_mode(0o777)).unwrap();
     let state = dir.path().join("state");
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["net", "ts-shims"])
         .env("TMPDIR", &tmp)
-        .env("CFRS_STATE_DIR", &state)
+        .env("PODNET_STATE_DIR", &state)
         .env_remove("XDG_RUNTIME_DIR")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let text = String::from_utf8_lossy(&out.stdout);
-    let chosen = state.join("cfrs-ts-shims");
+    let chosen = state.join("podnet-ts-shims");
     assert!(text.contains(&*chosen.to_string_lossy()), "{text}");
     assert_eq!(std::fs::read_dir(&hostile).unwrap().count(), 0);
 }
 
-/// Issue 227: `update --version` with a path is a usage error, and cfrs
+/// Issue 227: `update --version` with a path is a usage error, and podnet
 /// sends no request.
 #[test]
 fn update_refuses_a_tag_with_a_path() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["update", "--version", "v1/../x", "--check"])
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
-        .env("CFRS_STATE_DIR", "none")
+        .env("PODNET_STATE_DIR", "none")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
@@ -966,31 +975,31 @@ fn bad_input_gives_usage_errors_not_panics() {
     use std::os::unix::ffi::OsStrExt;
     let bad = std::ffi::OsStr::from_bytes(b"\xff\xfe");
     for args in [vec![bad], vec![std::ffi::OsStr::new("tunnel"), bad]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(&args)
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
     }
     for args in [&[][..], &["net"][..], &["warp"][..], &["tunnel"][..]] {
-        let out = cfrs(args);
+        let out = podnet(args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
     }
-    assert_eq!(cfrs(&["--help"]).status.code(), Some(0));
-    let no_host = cfrs(&["tunnel", "--check", "--url", "http://"]);
+    assert_eq!(podnet(&["--help"]).status.code(), Some(0));
+    let no_host = podnet(&["tunnel", "--check", "--url", "http://"]);
     assert_eq!(no_host.status.code(), Some(64), "{}", stderr(&no_host));
     assert!(stderr(&no_host).contains("has no host"));
     for args in [
         &["status", "--json"][..],
         &["net", "addresses", "--json"][..],
     ] {
-        let out = cfrs(args);
+        let out = podnet(args);
         assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
     }
     // A closed stdout: the default SIGPIPE ends the command, no panic (101).
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["completions", "bash"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1012,9 +1021,9 @@ fn the_failure_report_has_the_error_once() {
     std::fs::write(&program, format!("#!/bin/sh\ncat > {}\n", saved.display())).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--url", "ftp://x"])
-        .env("CFRS_ERROR_PROGRAM", &program)
+        .env("PODNET_ERROR_PROGRAM", &program)
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(64));
@@ -1029,25 +1038,25 @@ fn the_failure_report_has_the_error_once() {
     }
 }
 
-/// Issue 66: CFRS_EDGE is checked the same way by tunnel and the doctors;
-/// a bad CFRS_UDP gives one failed legs row in --check, not two rows.
+/// Issue 66: PODNET_EDGE is checked the same way by tunnel and the doctors;
+/// a bad PODNET_UDP gives one failed legs row in --check, not two rows.
 #[test]
 fn the_environment_is_checked_alike() {
     for args in [&["doctor", "--samples", "1"][..], &["net", "doctor"][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
-            .env("CFRS_EDGE", "not-an-address")
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env("PODNET_EDGE", "not-an-address")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
-        assert!(stderr(&out).contains("CFRS_EDGE"), "{}", stderr(&out));
+        assert!(stderr(&out).contains("PODNET_EDGE"), "{}", stderr(&out));
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--hello-world", "--check", "--json"])
-        .env("CFRS_UDP", "bogus")
-        .env_remove("CFRS_EDGE")
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env("PODNET_UDP", "bogus")
+        .env_remove("PODNET_EDGE")
+        .env_remove("PODNET_ERROR_PROGRAM")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -1060,26 +1069,26 @@ fn the_environment_is_checked_alike() {
         .collect();
     assert_eq!(legs.len(), 1, "{doc}");
     assert_eq!(legs[0]["status"], "fail");
-    // Issue 111: a bad CFRS_WARP_TCP_BURST is exit 78 before any network
+    // Issue 111: a bad PODNET_WARP_TCP_BURST is exit 78 before any network
     // wait. Before, it gave the default with no message.
     for args in [&["warp", "probe"][..], &["agent", "up"][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
-            .env("CFRS_WARP_TCP_BURST", "abc")
-            .env("CFRS_STATE_DIR", "none")
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env("PODNET_WARP_TCP_BURST", "abc")
+            .env("PODNET_STATE_DIR", "none")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
         assert!(
-            stderr(&out).contains("CFRS_WARP_TCP_BURST"),
+            stderr(&out).contains("PODNET_WARP_TCP_BURST"),
             "{}",
             stderr(&out)
         );
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["status"])
-        .env("RUST_LOG", "cfrs=deubg")
+        .env("RUST_LOG", "podnet=deubg")
         .output()
         .unwrap();
     assert!(stderr(&out).contains("RUST_LOG"), "{}", stderr(&out));
@@ -1093,7 +1102,7 @@ fn a_full_stdout_is_no_panic() {
         .write(true)
         .open("/dev/full")
         .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["status"])
         .stdout(full)
         .output()
@@ -1107,7 +1116,7 @@ fn a_full_stdout_is_no_panic() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
 }
 
-/// Issue 126: cfrs raises the soft limit of open files to the hard limit,
+/// Issue 126: podnet raises the soft limit of open files to the hard limit,
 /// and `status` shows it. `warp exec` leaves it as it is (it runs a program
 /// of the user).
 #[test]
@@ -1115,8 +1124,8 @@ fn a_full_stdout_is_no_panic() {
 fn the_soft_limit_of_open_files_is_raised() {
     use std::os::unix::process::CommandExt;
     let status_with = |soft: u64, hard: u64| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
-        cmd.arg("status").env("CFRS_STATE_DIR", "none");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
+        cmd.arg("status").env("PODNET_STATE_DIR", "none");
         // SAFETY: setrlimit is async-signal-safe.
         unsafe {
             cmd.pre_exec(move || {
@@ -1163,10 +1172,10 @@ fn warp_ssh_config_owns_its_block() {
     let mine = "Host box\n  User me\n";
     std::fs::write(&conf, mine).unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(["warp", "ssh-config", "--config", conf.to_str().unwrap()])
             .args(args)
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap()
     };
@@ -1180,7 +1189,7 @@ fn warp_ssh_config_owns_its_block() {
     );
     let text = std::fs::read_to_string(&conf).unwrap();
     assert!(
-        text.starts_with("# >>> cfrs warp ssh-config: github.com >>>\nHost github.com\n"),
+        text.starts_with("# >>> podnet warp ssh-config: github.com >>>\nHost github.com\n"),
         "{text}"
     );
     assert!(text.ends_with(mine), "{text}");
@@ -1195,19 +1204,19 @@ fn warp_ssh_config_owns_its_block() {
 }
 
 /// Issue 189: a global option before `pod` does not panic, and a network
-/// option of cfrs is refused with a pointer to `-x`.
+/// option of podnet is refused with a pointer to `-x`.
 #[test]
 fn a_global_flag_before_pod_does_not_panic() {
     for args in [
         &["-v", "pod", "--", "true"][..],
         &["-q", "pod", "--", "true"],
     ] {
-        let out = cfrs(args);
+        let out = podnet(args);
         let err = stderr(&out);
         assert_ne!(out.status.code(), Some(101), "{args:?}: {err}");
         assert!(!err.contains("panicked"), "{args:?}: {err}");
     }
-    let out = cfrs(&["--proxy", "http://127.0.0.1:1", "pod", "--", "true"]);
+    let out = podnet(&["--proxy", "http://127.0.0.1:1", "pod", "--", "true"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     assert!(stderr(&out).contains("-x"), "{}", stderr(&out));
 }
@@ -1227,7 +1236,7 @@ fn the_config_file_gives_the_protocol_and_the_connections() {
     let plan = |extra: &[&str]| {
         let mut args = vec!["tunnel", "--check", "--json", "--config", path];
         args.extend_from_slice(extra);
-        let out = cfrs(&args);
+        let out = podnet(&args);
         assert!(out.status.success(), "{}", stderr(&out));
         let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         doc["plan"].clone()
@@ -1248,7 +1257,7 @@ fn tunnel_tcp_takes_the_scheme_and_warns() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("tcp://{addr}");
-    let out = cfrs(&["tunnel", "--tcp", &url, "--check", "--json"]);
+    let out = podnet(&["tunnel", "--tcp", &url, "--check", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["plan"]["ingress"][0]["service"], url, "{doc}");
@@ -1260,7 +1269,7 @@ fn tunnel_tcp_takes_the_scheme_and_warns() {
         .find(|c| c["name"] == "origin 1")
         .unwrap();
     assert_eq!(origin["status"], "warn", "{doc}");
-    let out = cfrs(&["tunnel", "--tcp", "http://127.0.0.1:1", "--check"]);
+    let out = podnet(&["tunnel", "--tcp", "http://127.0.0.1:1", "--check"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
 
@@ -1290,14 +1299,14 @@ fn bad_credentials_exit_78() {
         vec!["tunnel", "--hello-world", "--token", "garbage", "--check"],
         vec!["serve", "--dir", ".", "--token", "garbage", "--check"],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(&args)
             .env_remove("TUNNEL_TOKEN")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(78), "{args:?}: {}", stderr(&out));
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args([
             "tunnel",
             "--hello-world",
@@ -1318,9 +1327,9 @@ fn a_config_with_no_rule_fails_the_check() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("empty.yml");
     std::fs::write(&config, "ingress: []\n").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--config", config.to_str().unwrap(), "--check"])
-        .env("CFRS_EDGE", "127.0.0.1:9")
+        .env("PODNET_EDGE", "127.0.0.1:9")
         .env_remove("TUNNEL_TOKEN")
         .output()
         .unwrap();
@@ -1329,12 +1338,12 @@ fn a_config_with_no_rule_fails_the_check() {
     assert!(text.contains("no ingress rules"), "{text}");
 }
 
-/// Issue 250: a bare `cfrs share` names the modes, and starts nothing.
+/// Issue 250: a bare `podnet share` names the modes, and starts nothing.
 #[test]
 fn a_bare_share_names_the_modes() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["share", "--check"])
-        .env("CFRS_EDGE", "bogus::")
+        .env("PODNET_EDGE", "bogus::")
         .env_remove("TUNNEL_TOKEN")
         .output()
         .unwrap();
@@ -1349,9 +1358,9 @@ fn a_bare_share_names_the_modes() {
 #[test]
 fn exit_codes_of_flags_and_configuration() {
     let run = |args: &[&str], env: &[(&str, &str)]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(args)
-            .env_remove("CFRS_EDGE")
+            .env_remove("PODNET_EDGE")
             .env_remove("TUNNEL_TOKEN");
         for (k, v) in env {
             cmd.env(k, v);
@@ -1360,15 +1369,15 @@ fn exit_codes_of_flags_and_configuration() {
         (out.status.code(), stderr(&out))
     };
     for (args, env, want) in [
-        // Issue 250: a bare `cfrs share` is a usage error.
-        // CFRS_EDGE=bogus:: makes sure that no tunnel starts.
-        (&["share"][..], &[("CFRS_EDGE", "bogus::")][..], 64),
+        // Issue 250: a bare `podnet share` is a usage error.
+        // PODNET_EDGE=bogus:: makes sure that no tunnel starts.
+        (&["share"][..], &[("PODNET_EDGE", "bogus::")][..], 64),
         (&["share", "--check"], &[], 64),
         (&["share", "--mode", "download", "--check"], &[], 64),
         (&["share", "--mode", "proxy", "--check"], &[], 64),
         (
             &["tunnel", "--hello-world", "--check"],
-            &[("CFRS_EDGE", "bogus::")][..],
+            &[("PODNET_EDGE", "bogus::")][..],
             78,
         ),
         (
@@ -1420,7 +1429,7 @@ fn exit_codes_of_flags_and_configuration() {
     // --file that is not there is 78.
     let state = tempfile::tempdir().unwrap();
     let st = state.path().to_str().unwrap();
-    let env = [("CFRS_STATE_DIR", st)];
+    let env = [("PODNET_STATE_DIR", st)];
     for args in [
         &["relay", "connect", "nosuchpair"][..],
         &["relay", "stop", "nosuchpair"],
@@ -1445,14 +1454,14 @@ fn share_proxy_takes_a_unix_socket() {
     let sock = dir.path().join("api.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     let sock = sock.to_str().unwrap();
-    let out = cfrs(&["share", "--unix", sock, "--check", "--json"]);
+    let out = podnet(&["share", "--unix", sock, "--check", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let service = doc["plan"]["ingress"][0]["service"].as_str().unwrap();
     assert!(service.contains(&format!("unix:{sock}")), "{doc}");
-    let out = cfrs(&["share", "--unix", sock, "--port", "1", "--check"]);
+    let out = podnet(&["share", "--unix", sock, "--port", "1", "--check"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
-    let out = cfrs(&["share", "--unix", "/nonexistent.sock", "--check"]);
+    let out = podnet(&["share", "--unix", "/nonexistent.sock", "--check"]);
     assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
 }
 
@@ -1471,7 +1480,7 @@ fn log_format_json_gives_json_lines_only() {
         ][..],
         &["--log-format=json", "tunnel", "--bogus"],
     ] {
-        let out = cfrs(args);
+        let out = podnet(args);
         assert!(!out.status.success());
         let err = stderr(&out);
         for line in err.lines().filter(|l| !l.trim().is_empty()) {
@@ -1486,9 +1495,9 @@ fn log_format_json_gives_json_lines_only() {
 /// 0.0 to 1.0.
 #[test]
 fn the_fault_flags_need_a_switch_and_a_probability() {
-    let out = cfrs(&["net", "proxy", "--drop", "0.1", "--run-for", "1"]);
+    let out = podnet(&["net", "proxy", "--drop", "0.1", "--run-for", "1"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
-    let out = cfrs(&[
+    let out = podnet(&[
         "net",
         "proxy",
         "--switch",
@@ -1519,7 +1528,7 @@ fn auth_user_flags() {
     let pass = pass.to_str().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let out = cfrs(&[
+    let out = podnet(&[
         "tunnel",
         "--tcp",
         &addr,
@@ -1530,7 +1539,7 @@ fn auth_user_flags() {
         "--check",
     ]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
-    let out = cfrs(&[
+    let out = podnet(&[
         "tunnel",
         "--hello-world",
         "--auth-user",
@@ -1541,7 +1550,7 @@ fn auth_user_flags() {
     ]);
     assert!(out.status.success(), "{}", stderr(&out));
     std::fs::set_permissions(pass, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let out = cfrs(&[
+    let out = podnet(&[
         "tunnel",
         "--hello-world",
         "--auth-user",
@@ -1551,12 +1560,12 @@ fn auth_user_flags() {
         "--check",
     ]);
     assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
-    let out = cfrs(&["tunnel", "--hello-world", "--auth-user", "u", "--check"]);
+    let out = podnet(&["tunnel", "--hello-world", "--auth-user", "u", "--check"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
 
-/// The program of CFRS_ERROR_PROGRAM gets the report, and no secret of
-/// cfrs in its environment (podssh).
+/// The program of PODNET_ERROR_PROGRAM gets the report, and no secret of
+/// podnet in its environment (podssh).
 #[test]
 fn the_error_program_gets_no_secret() {
     let dir = tempfile::tempdir().unwrap();
@@ -1569,23 +1578,23 @@ fn the_error_program_gets_no_secret() {
     .unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["tunnel", "--bogus-flag"])
-        .env("CFRS_ERROR_PROGRAM", &program)
+        .env("PODNET_ERROR_PROGRAM", &program)
         .env("TUNNEL_TOKEN", "secret-token")
-        .env("CFRS_RELAY_TOKEN", "secret-relay")
-        .env("CFRS_PROXY", "http://user:secret-pw@127.0.0.1:1")
-        .env("CFRS_SOMETHING", "kept")
+        .env("PODNET_RELAY_TOKEN", "secret-relay")
+        .env("PODNET_PROXY", "http://user:secret-pw@127.0.0.1:1")
+        .env("PODNET_SOMETHING", "kept")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(64));
     let env = std::fs::read_to_string(&seen).unwrap();
     assert!(!env.contains("secret"), "{env}");
-    assert!(env.contains("CFRS_SOMETHING=kept"), "{env}");
+    assert!(env.contains("PODNET_SOMETHING=kept"), "{env}");
 }
 
 /// podssh #118: root with the HOME of another user writes no file there.
-/// ssh-config --write exits 78; CFRS_FOREIGN_HOME=allow writes. The state
+/// ssh-config --write exits 78; PODNET_FOREIGN_HOME=allow writes. The state
 /// directory skips that HOME. Needs root (to chown); skipped otherwise.
 #[test]
 fn root_writes_no_file_in_the_home_of_another_user() {
@@ -1608,13 +1617,13 @@ fn root_writes_no_file_in_the_home_of_another_user() {
     }
     assert_eq!(c(&home.join(".ssh")), 0);
     let run = |extra: &[(&str, &str)]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(["warp", "ssh-config", "--write", "--host", "example.org"])
             .env("HOME", &home)
             .env_remove("XDG_STATE_HOME")
-            .env_remove("CFRS_STATE_DIR")
-            .env_remove("CFRS_FOREIGN_HOME")
-            .env_remove("CFRS_ERROR_PROGRAM");
+            .env_remove("PODNET_STATE_DIR")
+            .env_remove("PODNET_FOREIGN_HOME")
+            .env_remove("PODNET_ERROR_PROGRAM");
         for (k, v) in extra {
             cmd.env(k, v);
         }
@@ -1623,25 +1632,25 @@ fn root_writes_no_file_in_the_home_of_another_user() {
     let out = run(&[]);
     assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("CFRS_FOREIGN_HOME=allow"),
+        stderr(&out).contains("PODNET_FOREIGN_HOME=allow"),
         "{}",
         stderr(&out)
     );
     assert!(!home.join(".ssh/config").exists());
-    let out = run(&[("CFRS_FOREIGN_HOME", "allow")]);
+    let out = run(&[("PODNET_FOREIGN_HOME", "allow")]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(home.join(".ssh/config").exists());
     // The state directory is not made in that HOME.
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["status"])
         .env("HOME", &home)
         .env_remove("XDG_STATE_HOME")
-        .env_remove("CFRS_STATE_DIR")
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env_remove("PODNET_STATE_DIR")
+        .env_remove("PODNET_ERROR_PROGRAM")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!home.join(".local/state/cfrs").exists());
+    assert!(!home.join(".local/state/podnet").exists());
 }
 
 /// One rule for a unix socket path (podssh, issue 202): net switch, net
@@ -1655,8 +1664,8 @@ fn the_socket_rule_of_net_and_relay() {
     let live = dir.path().join("live.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
     let run = |args: &[&str]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
-        cmd.args(args).env_remove("CFRS_ERROR_PROGRAM");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
+        cmd.args(args).env_remove("PODNET_ERROR_PROGRAM");
         let out = cmd.output().unwrap();
         (out.status.code(), stderr(&out))
     };
@@ -1687,14 +1696,14 @@ fn a_port_0_listener_prints_the_bound_port() {
     test_host::need_loopback!();
     use std::io::BufRead;
     for (args, prefix) in [
-        (&["net", "switch"][..], "cfrs: switch   tcp://"),
-        (&["net", "proxy"][..], "cfrs: proxy    tcp://"),
+        (&["net", "switch"][..], "podnet: switch   tcp://"),
+        (&["net", "proxy"][..], "podnet: proxy    tcp://"),
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
             .args(["--listen", "tcp://127.0.0.1:0", "--run-for", "20"])
-            .env_remove("CFRS_ERROR_PROGRAM")
-            .env("CFRS_SWITCH_TOKEN", "test-switch-token")
+            .env_remove("PODNET_ERROR_PROGRAM")
+            .env("PODNET_SWITCH_TOKEN", "test-switch-token")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -1720,10 +1729,10 @@ fn a_port_0_listener_prints_the_bound_port() {
 #[test]
 fn a_tcp_switch_needs_a_token() {
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
-            .env_remove("CFRS_ERROR_PROGRAM")
-            .env_remove("CFRS_SWITCH_TOKEN")
+            .env_remove("PODNET_ERROR_PROGRAM")
+            .env_remove("PODNET_SWITCH_TOKEN")
             .output()
             .unwrap();
         (out.status.code(), stderr(&out))
@@ -1737,7 +1746,7 @@ fn a_tcp_switch_needs_a_token() {
         "1",
     ]);
     assert_eq!(code, Some(64), "{err}");
-    assert!(err.contains("CFRS_SWITCH_TOKEN"), "{err}");
+    assert!(err.contains("PODNET_SWITCH_TOKEN"), "{err}");
     let (code, err) = run(&[
         "net",
         "proxy",
@@ -1749,7 +1758,7 @@ fn a_tcp_switch_needs_a_token() {
         "1",
     ]);
     assert_eq!(code, Some(64), "{err}");
-    assert!(err.contains("CFRS_SWITCH_TOKEN"), "{err}");
+    assert!(err.contains("PODNET_SWITCH_TOKEN"), "{err}");
     let dir = tempfile::tempdir().unwrap();
     let empty = dir.path().join("token");
     std::fs::write(&empty, "\n").unwrap();
@@ -1783,23 +1792,23 @@ fn the_read_commands_make_no_run_directory() {
         &["logs", "x"],
         &["wait", "x", "--timeout", "1"],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("XDG_STATE_HOME", &state)
             .env("HOME", dir.path())
-            .env_remove("CFRS_RUN_DIR")
-            .env_remove("CFRS_STATE_DIR")
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_RUN_DIR")
+            .env_remove("PODNET_STATE_DIR")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .output()
             .unwrap();
         assert_ne!(out.status.code(), Some(101), "{args:?}: {}", stderr(&out));
         assert!(
-            !runtime.join("cfrs").exists(),
+            !runtime.join("podnet").exists(),
             "{args:?} made the run directory"
         );
         assert!(
-            !state.join("cfrs").exists(),
+            !state.join("podnet").exists(),
             "{args:?} made the state directory"
         );
     }
@@ -1814,11 +1823,11 @@ fn a_token_comes_from_a_file() {
     std::fs::write(&file, "  bad*token*value\n").unwrap();
     let path = file.to_str().unwrap();
     let run = |args: &[&str], env: Option<&str>| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(args)
             .env_remove("TUNNEL_TOKEN")
             .env_remove("TUNNEL_TOKEN_FILE")
-            .env("CFRS_STATE_DIR", "none");
+            .env("PODNET_STATE_DIR", "none");
         if let Some(env) = env {
             cmd.env("TUNNEL_TOKEN_FILE", env);
         }
@@ -1859,19 +1868,19 @@ fn a_token_comes_from_a_file() {
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
 }
 
-/// E11: status gives the kind of the proxy that cfrs dials (before, each
+/// E11: status gives the kind of the proxy that podnet dials (before, each
 /// proxy was "http"), and its source.
 #[test]
 fn status_names_the_kind_and_the_source_of_the_proxy() {
     let status = |args: &[&str], proxy: Option<&str>| -> serde_json::Value {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
         cmd.args(args).arg("status");
         for key in [
             "HTTPS_PROXY",
             "https_proxy",
             "ALL_PROXY",
             "all_proxy",
-            "CFRS_PROXY",
+            "PODNET_PROXY",
         ] {
             cmd.env_remove(key);
         }
@@ -1893,7 +1902,7 @@ fn status_names_the_kind_and_the_source_of_the_proxy() {
     assert_eq!(doc["proxy"]["source"], "--proxy");
 }
 
-/// E3: the JSON documents have schema and cfrs; ps --json names its dir.
+/// E3: the JSON documents have schema and podnet; ps --json names its dir.
 #[test]
 fn json_documents_have_the_schema_and_the_version() {
     let dir = tempfile::tempdir().unwrap();
@@ -1902,16 +1911,16 @@ fn json_documents_have_the_schema_and_the_version() {
         &["ports", "--json"][..],
         &["status"][..],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+        let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
-            .env("CFRS_RUN_DIR", dir.path())
+            .env("PODNET_RUN_DIR", dir.path())
             .output()
             .unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
             .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", stderr(&out)));
         assert_eq!(doc["schema"], 1, "{args:?}: {doc}");
         assert!(
-            doc["cfrs"]
+            doc["podnet"]
                 .as_str()
                 .unwrap()
                 .starts_with(env!("CARGO_PKG_VERSION")),
@@ -1935,7 +1944,7 @@ fn ssh_config_refuses_a_host_with_a_newline_or_a_space() {
         for extra in [&["--write", "--config", config][..], &[]] {
             let mut args = vec!["warp", "ssh-config", "--host", host];
             args.extend_from_slice(extra);
-            let out = cfrs(&args);
+            let out = podnet(&args);
             assert_eq!(out.status.code(), Some(64), "{host:?}: {}", stderr(&out));
             assert!(out.stdout.is_empty(), "{host:?}");
         }
@@ -1959,22 +1968,22 @@ fn autostart_from_an_instance_keeps_its_secrets_and_drops_detach_options() {
     let empty = dir.path().join("empty");
     std::fs::create_dir(&empty).unwrap();
     let listen = format!("unix:{}", dir.path().join("s.sock").display());
-    let cfrs = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let podnet = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_podnet"))
             .args(args)
             .env("PATH", &empty)
             .env("HOME", dir.path())
-            .env("CFRS_STATE_DIR", &state)
-            .env("CFRS_RUN_DIR", &run_dir)
+            .env("PODNET_STATE_DIR", &state)
+            .env("PODNET_RUN_DIR", &run_dir)
             .env_remove("TUNNEL_TOKEN")
-            .env_remove("CFRS_PROXY")
-            .env_remove("CFRS_ERROR_PROGRAM")
+            .env_remove("PODNET_PROXY")
+            .env_remove("PODNET_ERROR_PROGRAM")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("RUST_LOG")
             .output()
             .unwrap()
     };
-    let start = cfrs(&[
+    let start = podnet(&[
         "--proxy",
         "http://u:pw265@127.0.0.1:9",
         "net",
@@ -1986,14 +1995,14 @@ fn autostart_from_an_instance_keeps_its_secrets_and_drops_detach_options() {
         "src",
     ]);
     assert!(start.status.success(), "{}", stderr(&start));
-    let out = cfrs(&["autostart", "add", "x", "--from", "src"]);
-    let stopped = cfrs(&["stop", "src", "--timeout", "5"]);
+    let out = podnet(&["autostart", "add", "x", "--from", "src"]);
+    let stopped = podnet(&["stop", "src", "--timeout", "5"]);
     assert!(stopped.status.success(), "{}", stderr(&stopped));
     assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
     let entry = state.join("autostart");
     let env = std::fs::read_to_string(entry.join("x.env")).unwrap();
     assert!(
-        env.contains("CFRS_PROXY=http://u:pw265@127.0.0.1:9"),
+        env.contains("PODNET_PROXY=http://u:pw265@127.0.0.1:9"),
         "{env}"
     );
     let mode = std::fs::metadata(entry.join("x.env"))
@@ -2013,7 +2022,7 @@ fn autostart_from_an_instance_keeps_its_secrets_and_drops_detach_options() {
         "stop removes the secrets"
     );
 
-    let out = cfrs(&[
+    let out = podnet(&[
         "autostart",
         "add",
         "y",
@@ -2044,7 +2053,7 @@ fn warp_env_with_no_proxy_variables_exits_69() {
     std::fs::create_dir(&run_dir).unwrap();
     std::fs::write(
         run_dir.join("warp.env"),
-        "# cfrs warp up\nCFRS_WARP_SOCKET=/x\n",
+        "# podnet warp up\nPODNET_WARP_SOCKET=/x\n",
     )
     .unwrap();
     // The lock of a live warp up: a child holds it.
@@ -2068,10 +2077,10 @@ fn warp_env_with_no_proxy_variables_exits_69() {
         assert!(std::time::Instant::now() < until, "the child holds no lock");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["warp", "env"])
-        .env("CFRS_RUN_DIR", &run_dir)
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env("PODNET_RUN_DIR", &run_dir)
+        .env_remove("PODNET_ERROR_PROGRAM")
         .output()
         .unwrap();
     let _ = holder.kill();
@@ -2096,30 +2105,30 @@ fn invalid_values_are_refused() {
         &["warp", "scan", "--timeout-ms", "0"][..],
         &["warp", "scan", "--timeout-ms", "999999"],
     ] {
-        let out = cfrs(args);
+        let out = podnet(args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["ports"])
-        .env("CFRS_RESOLVE", "bad")
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env("PODNET_RESOLVE", "bad")
+        .env_remove("PODNET_ERROR_PROGRAM")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(78), "{}", stderr(&out));
-    assert!(stderr(&out).contains("CFRS_RESOLVE"), "{}", stderr(&out));
-    let out = cfrs(&["--resolve", "bad", "ports"]);
+    assert!(stderr(&out).contains("PODNET_RESOLVE"), "{}", stderr(&out));
+    let out = podnet(&["--resolve", "bad", "ports"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     let state = tempfile::tempdir().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["status"])
-        .env("CFRS_EDGE", "zz")
-        .env("CFRS_STATE_DIR", state.path())
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env("PODNET_EDGE", "zz")
+        .env("PODNET_STATE_DIR", state.path())
+        .env_remove("PODNET_ERROR_PROGRAM")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        stderr(&out).contains("CFRS_EDGE entry \"zz\""),
+        stderr(&out).contains("PODNET_EDGE entry \"zz\""),
         "{}",
         stderr(&out)
     );
@@ -2130,14 +2139,14 @@ fn invalid_values_are_refused() {
 fn error_messages_have_one_shape() {
     // A parent command with no subcommand: an error and a short usage.
     for parent in ["net", "warp", "relay", "autostart", "agent"] {
-        let out = cfrs(&[parent]);
+        let out = podnet(&[parent]);
         let err = stderr(&out);
         assert_eq!(out.status.code(), Some(64), "{parent}: {err}");
         assert!(err.contains("error:"), "{parent}: {err}");
         assert!(err.lines().count() < 15, "{parent}: {err}");
     }
     // --ca-file is named once.
-    let out = cfrs(&["--ca-file", "/nonexistent/roots.pem", "status"]);
+    let out = podnet(&["--ca-file", "/nonexistent/roots.pem", "status"]);
     assert_eq!(out.status.code(), Some(78));
     assert_eq!(
         stderr(&out).matches("--ca-file").count(),
@@ -2147,7 +2156,7 @@ fn error_messages_have_one_shape() {
     );
     // --port 0 is refused by the parser, for tunnel and share.
     for args in [&["tunnel", "--port", "0"][..], &["share", "--port", "0"]] {
-        let out = cfrs(args);
+        let out = podnet(args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", stderr(&out));
         assert!(
             stderr(&out).contains("--port"),
@@ -2157,16 +2166,16 @@ fn error_messages_have_one_shape() {
     }
     // An empty value names its flag.
     for flag in ["--url", "--tcp", "--forward", "--unix"] {
-        let out = cfrs(&["tunnel", flag, ""]);
+        let out = podnet(&["tunnel", flag, ""]);
         assert_eq!(out.status.code(), Some(64), "{flag}: {}", stderr(&out));
         assert!(stderr(&out).contains(flag), "{flag}: {}", stderr(&out));
     }
     // stop with no target names --all too.
-    let out = cfrs(&["stop"]);
+    let out = podnet(&["stop"]);
     assert_eq!(out.status.code(), Some(64));
     assert!(stderr(&out).contains("--all"), "{}", stderr(&out));
     // net addresses names its columns.
-    let out = cfrs(&["net", "addresses"]);
+    let out = podnet(&["net", "addresses"]);
     assert!(out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("ADDRESS"),
@@ -2175,13 +2184,13 @@ fn error_messages_have_one_shape() {
     );
 }
 
-/// Start `cfrs serve --dir DIR --local ADDR` and give the child and its
+/// Start `podnet serve --dir DIR --local ADDR` and give the child and its
 /// first stdout line (issue 307).
 fn serve_local(dir: &std::path::Path, addr: &str) -> (std::process::Child, String) {
     use std::io::BufRead;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cfrs"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_podnet"))
         .args(["serve", "--dir", dir.to_str().unwrap(), "--local", addr])
-        .env_remove("CFRS_ERROR_PROGRAM")
+        .env_remove("PODNET_ERROR_PROGRAM")
         .env_remove("TUNNEL_TOKEN")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -2252,10 +2261,10 @@ fn serve_local_serves_files_on_tcp() {
 
     let dir_arg = dir.path().to_str().unwrap();
     // A bad address is a usage error.
-    let out = cfrs(&["serve", "--dir", dir_arg, "--local", "nowhere"]);
+    let out = podnet(&["serve", "--dir", dir_arg, "--local", "nowhere"]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     // --check has no meaning with --local.
-    let out = cfrs(&[
+    let out = podnet(&[
         "serve",
         "--dir",
         dir_arg,
@@ -2291,14 +2300,14 @@ fn serve_local_serves_files_on_a_unix_socket() {
     assert_eq!(body, b"over unix");
 
     // A live socket (this server) is refused.
-    let out = cfrs(&["serve", "--dir", dir_arg, "--local", &addr]);
+    let out = podnet(&["serve", "--dir", dir_arg, "--local", &addr]);
     assert_eq!(out.status.code(), Some(69), "{}", stderr(&out));
     stop(child);
     assert!(!sock.exists(), "the socket stays after the stop");
 
     // A file that is not a socket is refused and stays.
     std::fs::write(&sock, "keep").unwrap();
-    let out = cfrs(&["serve", "--dir", dir_arg, "--local", &addr]);
+    let out = podnet(&["serve", "--dir", dir_arg, "--local", &addr]);
     assert_eq!(out.status.code(), Some(64), "{}", stderr(&out));
     assert!(stderr(&out).contains("is not a socket"), "{}", stderr(&out));
     assert_eq!(std::fs::read_to_string(&sock).unwrap(), "keep");

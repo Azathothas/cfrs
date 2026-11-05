@@ -206,7 +206,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("cfrs-ts-shims-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("podnet-ts-shims-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

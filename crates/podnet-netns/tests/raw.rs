@@ -22,7 +22,7 @@ fn python() -> Option<String> {
 
 #[test]
 fn a_raw_pod_gives_the_ip_packets_of_its_program() {
-    if !pod_netns::raw::available() {
+    if !podnet_netns::raw::available() {
         eprintln!("skipping: no user namespace or no /dev/net/tun");
         return;
     }
@@ -31,7 +31,7 @@ fn a_raw_pod_gives_the_ip_packets_of_its_program() {
         return;
     };
     let v4 = Ipv4Addr::new(172, 16, 0, 2);
-    let opts = pod_netns::raw::RawOptions {
+    let opts = podnet_netns::raw::RawOptions {
         program: vec![
             python,
             "-c".into(),
@@ -43,7 +43,7 @@ fn a_raw_pod_gives_the_ip_packets_of_its_program() {
         mtu: 1280,
         nameserver: "1.1.1.1".parse().unwrap(),
     };
-    let pod = match pod_netns::raw::spawn(&opts) {
+    let pod = match podnet_netns::raw::spawn(&opts) {
         Ok(pod) => pod,
         Err(err) => {
             // A host where the namespace cannot bring up its interfaces
@@ -77,7 +77,7 @@ fn a_raw_pod_gives_the_ip_packets_of_its_program() {
     }
     let until = Instant::now() + Duration::from_secs(10);
     let code = loop {
-        if let Some(code) = pod_netns::raw::try_wait(pod.pid) {
+        if let Some(code) = podnet_netns::raw::try_wait(pod.pid) {
             break code;
         }
         assert!(Instant::now() < until, "the program did not end");

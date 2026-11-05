@@ -1,12 +1,12 @@
 // The commit that `--version` prints, and the target triple that
-// `cfrs update` downloads. The release workflow sets CFRS_BUILD_COMMIT; a
+// `podnet update` downloads. The release workflow sets PODNET_BUILD_COMMIT; a
 // local build prints "unknown".
 fn main() {
-    println!("cargo:rerun-if-env-changed=CFRS_BUILD_COMMIT");
-    let commit = std::env::var("CFRS_BUILD_COMMIT").unwrap_or_else(|_| "unknown".into());
-    println!("cargo:rustc-env=CFRS_BUILD_COMMIT={commit}");
+    println!("cargo:rerun-if-env-changed=PODNET_BUILD_COMMIT");
+    let commit = std::env::var("PODNET_BUILD_COMMIT").unwrap_or_else(|_| "unknown".into());
+    println!("cargo:rustc-env=PODNET_BUILD_COMMIT={commit}");
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".into());
-    println!("cargo:rustc-env=CFRS_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=PODNET_BUILD_TARGET={target}");
     // The date of the manual (issue 181): SOURCE_DATE_EPOCH, else the date
     // of the commit. Both are the same for each build of a commit, so a
     // rebuild gives the same binary.
@@ -17,7 +17,7 @@ fn main() {
         .map(civil_date)
         .or_else(commit_date)
         .unwrap_or_default();
-    println!("cargo:rustc-env=CFRS_BUILD_DATE={date}");
+    println!("cargo:rustc-env=PODNET_BUILD_DATE={date}");
 }
 
 /// YYYY-MM-DD of a Unix time (the algorithm of Howard Hinnant).

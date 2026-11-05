@@ -18,7 +18,7 @@ stays (the owner's ruling of 2026-11-05 on regressions, `docs/decisions.md`).
 
 Five dial functions exist with no common interface: `egress::dial` (`src/egress.rs`), the WARP
 dial of `src/warp/proxy.rs`, `Relay::connect` (`src/ws_relay.rs`), the tailnet dialer of
-`crates/pod-netns/src/tailscale.rs` and the stack of `src/vnet/stack.rs`. Each front door and
+`crates/podnet-netns/src/tailscale.rs` and the stack of `src/vnet/stack.rs`. Each front door and
 each command calls one of them by name. A router, a group or a new overlay needs one interface.
 
 ## Premise
@@ -65,8 +65,8 @@ The dial functions of T-055 have no `Dialer` form.
 - Direct and the egress proxy: `egress::dial`, `dial_direct` and `Proxy::connect`
   (`src/egress.rs`).
 - The relay: `Relay::connect` reaches a public IPv4 TCP address only (`src/ws_relay.rs`).
-- The pod upstream chains and the tailnet: `crates/pod-netns/src/upstream.rs` and
-  `crates/pod-netns/src/tailscale.rs`.
+- The pod upstream chains and the tailnet: `crates/podnet-netns/src/upstream.rs` and
+  `crates/podnet-netns/src/tailscale.rs`.
 - The virtual network: `NetStack` (`src/vnet/stack.rs`).
 
 ## Approach
@@ -180,7 +180,7 @@ table names the networks of a build.
 
 ## Premise
 
-- `src/egress.rs` and `crates/pod-netns/src/upstream.rs` hold the two parsers.
+- `src/egress.rs` and `crates/podnet-netns/src/upstream.rs` hold the two parsers.
 - `docs/research/podnet/architecture.md`, section 4.3: a static table in the binary needs no
   dependency (no `inventory`, no `linkme`) and keeps a static musl build.
 
@@ -222,7 +222,7 @@ network needs a new flag on each command.
 ## Premise
 
 - The global flags are in `src/main.rs` (after M2, in the CLI module).
-- The pod parses its own flags (`crates/pod-netns/src/cli.rs`).
+- The pod parses its own flags (`crates/podnet-netns/src/cli.rs`).
 
 ## Approach
 
@@ -261,9 +261,9 @@ T-059 is done.
 
 ## Problem
 
-Four front doors share one parser of SOCKS5 and HTTP CONNECT (`crates/pod-netns/src/socks.rs`),
+Four front doors share one parser of SOCKS5 and HTTP CONNECT (`crates/podnet-netns/src/socks.rs`),
 but each has its own accept loop and its own dial side: `src/warp/proxy.rs`,
-`crates/pod-netns/src/frontdoor.rs`, `src/vnet/proxy.rs` and `crates/pod-netns/src/tailscale.rs`.
+`crates/podnet-netns/src/frontdoor.rs`, `src/vnet/proxy.rs` and `crates/podnet-netns/src/tailscale.rs`.
 The router of M6 needs a door over any network.
 
 ## Premise

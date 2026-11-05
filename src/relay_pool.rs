@@ -1,7 +1,7 @@
 //! The hosts of a relay deployment, and the cache files of the relay
 //! (adapted from podssh `pool.rs` and `cache.rs`).
 //!
-//! * The pool: the relay publishes its hosts in `/relays.json`. cfrs reads
+//! * The pool: the relay publishes its hosts in `/relays.json`. podnet reads
 //!   it after a mint (rarely: a token lasts hours), and keeps it in
 //!   `relay-pool-HOST.json` in the state directory. Until a pool is cached,
 //!   the alternates of the default relay come from [`SEED`].
@@ -44,10 +44,10 @@ pub const MAX_ALTERNATES: usize = 3;
 /// mint.
 pub const STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// The largest `/relays.json` that cfrs reads.
+/// The largest `/relays.json` that podnet reads.
 pub const MAX_BODY: usize = 256 * 1024;
 
-/// The largest cache file that cfrs reads.
+/// The largest cache file that podnet reads.
 pub const MAX_FILE: u64 = 64 * 1024;
 
 /// Whether `host` is another host of the deployment of `primary`: a host
@@ -176,7 +176,7 @@ pub fn read_private(path: &Path) -> Option<String> {
     } else {
         return std::fs::read_to_string(path).ok();
     };
-    tracing::warn!(path = %path.display(), "cfrs does not use the cache file: {why}");
+    tracing::warn!(path = %path.display(), "podnet does not use the cache file: {why}");
     None
 }
 
@@ -255,7 +255,7 @@ pub fn load_token(primary: &str) -> Option<(String, SystemTime)> {
 }
 
 /// Keep the pool of `primary` in the state directory (none with
-/// `CFRS_STATE_DIR=none`). A failure is logged only.
+/// `PODNET_STATE_DIR=none`). A failure is logged only.
 pub fn store_pool(primary: &str, hosts: &[String]) {
     if let Ok(Some(dir)) = crate::state::state_dir() {
         if let Err(err) = store_pool_in(&dir, primary, hosts, SystemTime::now()) {
@@ -265,7 +265,7 @@ pub fn store_pool(primary: &str, hosts: &[String]) {
 }
 
 /// Keep the token of `primary` in the state directory (none with
-/// `CFRS_STATE_DIR=none`). A failure is logged only.
+/// `PODNET_STATE_DIR=none`). A failure is logged only.
 pub fn store_token(primary: &str, token: &str, expires: SystemTime) {
     if let Ok(Some(dir)) = crate::state::state_dir() {
         if let Err(err) = store_token_in(&dir, primary, token, expires) {

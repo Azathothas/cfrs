@@ -1,18 +1,18 @@
-//! The report of a failure, for the program in `CFRS_ERROR_PROGRAM`.
+//! The report of a failure, for the program in `PODNET_ERROR_PROGRAM`.
 //!
-//! When cfrs fails (an exit code that is not 0), it starts that program by its
+//! When podnet fails (an exit code that is not 0), it starts that program by its
 //! name, with no shell and no arguments, and writes one JSON object and a line
 //! break to its stdin:
 //!
-//! `schema` (1), `cfrs` (the version and the commit), `os`, `arch`, `command`
+//! `schema` (1), `podnet` (the version and the commit), `os`, `arch`, `command`
 //! (for example `tunnel` or `warp run`, or null), `exit`, `error` (the error
 //! chain) and `messages` (the last [`KEEP`] log lines, each at most
 //! [`LINE_MAX`] bytes).
 //!
-//! * The program gets the environment of cfrs without `CFRS_ERROR_PROGRAM`,
-//!   so that a cfrs that it runs starts no program of its own. Its stdout and
-//!   stderr go to the stderr of cfrs. After 30 s cfrs stops it. Its status
-//!   does not change the exit code of cfrs.
+//! * The program gets the environment of podnet without `PODNET_ERROR_PROGRAM`,
+//!   so that a podnet that it runs starts no program of its own. Its stdout and
+//!   stderr go to the stderr of podnet. After 30 s podnet stops it. Its status
+//!   does not change the exit code of podnet.
 //! * The report holds no credential: each line goes through [`mask`], which
 //!   hides the user and the password of each URL, the value of each proxy
 //!   variable with a user part, and the values that [`hide`] names (a tunnel
@@ -28,7 +28,7 @@ pub const KEEP: usize = 64;
 /// The longest line of the report, in bytes.
 pub const LINE_MAX: usize = 2048;
 /// The variable that names the program.
-pub const PROGRAM_VARIABLE: &str = "CFRS_ERROR_PROGRAM";
+pub const PROGRAM_VARIABLE: &str = "PODNET_ERROR_PROGRAM";
 /// The longest time that the program may run.
 pub const PROGRAM_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -121,11 +121,11 @@ pub fn clean(text: &str) -> String {
     out
 }
 
-/// The line that cfrs prints for the error `err`: masked and clean.
+/// The line that podnet prints for the error `err`: masked and clean.
 pub fn error_line(err: &anyhow::Error) -> String {
-    let mut line = format!("cfrs: {}", clean(&mask(&format!("{err:#}"))));
+    let mut line = format!("podnet: {}", clean(&mask(&format!("{err:#}"))));
     if let Some(hint) = crate::trust::clock_hint(err) {
-        line.push_str("\ncfrs: ");
+        line.push_str("\npodnet: ");
         line.push_str(&hint);
     } else if let Some(status) = crate::egress::refusal(err)
         .map(|r| r.status)
@@ -134,10 +134,10 @@ pub fn error_line(err: &anyhow::Error) -> String {
         // Issue 178: a 502, 503 or 504 of the proxy is the destination:
         // the proxy could not reach it.
         line.push_str(&format!(
-            "\ncfrs: the proxy answered HTTP {status}: it could not reach the destination; check the address of the destination (--masque-endpoint, --url, the edge)"
+            "\npodnet: the proxy answered HTTP {status}: it could not reach the destination; check the address of the destination (--masque-endpoint, --url, the edge)"
         ));
     } else if let Some(hop) = crate::hop::of(err) {
-        line.push_str(&format!("\ncfrs: the {hop} hop failed; {}", hop.hint()));
+        line.push_str(&format!("\npodnet: the {hop} hop failed; {}", hop.hint()));
     }
     line
 }
@@ -366,7 +366,7 @@ pub fn document(
         .unwrap_or_default();
     serde_json::json!({
         "schema": 1,
-        "cfrs": concat!(env!("CARGO_PKG_VERSION"), " (", env!("CFRS_BUILD_COMMIT"), ")"),
+        "podnet": concat!(env!("CARGO_PKG_VERSION"), " (", env!("PODNET_BUILD_COMMIT"), ")"),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "command": command,
@@ -381,18 +381,18 @@ pub fn document(
     })
 }
 
-/// The variables that hold a secret of cfrs. The program of
-/// `CFRS_ERROR_PROGRAM` does not get them (podssh): it reads a report, not
+/// The variables that hold a secret of podnet. The program of
+/// `PODNET_ERROR_PROGRAM` does not get them (podssh): it reads a report, not
 /// the credentials of the run.
 const SECRET_VARIABLES: &[&str] = &[
     "TUNNEL_TOKEN",
-    "CFRS_RELAY_TOKEN",
-    "CFRS_RELAY_CONNECT_TOKEN",
+    "PODNET_RELAY_TOKEN",
+    "PODNET_RELAY_CONNECT_TOKEN",
 ];
 
 /// The proxy variables, which hold a secret when they have a user part.
 const PROXY_VARIABLES: &[&str] = &[
-    "CFRS_PROXY",
+    "PODNET_PROXY",
     "HTTPS_PROXY",
     "https_proxy",
     "ALL_PROXY",
@@ -401,7 +401,7 @@ const PROXY_VARIABLES: &[&str] = &[
     "http_proxy",
 ];
 
-/// The variables that the program of `CFRS_ERROR_PROGRAM` does not get:
+/// The variables that the program of `PODNET_ERROR_PROGRAM` does not get:
 /// the secrets, and a proxy variable with a user and a password.
 pub fn withheld(env: &dyn Fn(&str) -> Option<String>) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = SECRET_VARIABLES.to_vec();
@@ -420,14 +420,14 @@ pub fn withheld(env: &dyn Fn(&str) -> Option<String>) -> Vec<&'static str> {
     out
 }
 
-/// Give the report to the program of `CFRS_ERROR_PROGRAM`, when it is set.
+/// Give the report to the program of `PODNET_ERROR_PROGRAM`, when it is set.
 /// Errors go to stderr as one line; they do not change the exit code.
 pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
     let Some(program) = std::env::var_os(PROGRAM_VARIABLE).filter(|v| !v.is_empty()) else {
         return;
     };
     let report = document(command, exit, error).to_string() + "\n";
-    // The stdout of the program is the stderr of cfrs: stdout is data.
+    // The stdout of the program is the stderr of podnet: stdout is data.
     use std::os::fd::AsFd;
     let stdout = std::io::stderr()
         .as_fd()
@@ -448,7 +448,7 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
         Ok(child) => child,
         Err(err) => {
             eprintln!(
-                "cfrs: {PROGRAM_VARIABLE}: could not start {}: {err}",
+                "podnet: {PROGRAM_VARIABLE}: could not start {}: {err}",
                 program.to_string_lossy()
             );
             return;
@@ -468,7 +468,7 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
                 let _ = child.kill();
                 let _ = child.wait();
                 eprintln!(
-                    "cfrs: {PROGRAM_VARIABLE}: stopped after {} s",
+                    "podnet: {PROGRAM_VARIABLE}: stopped after {} s",
                     PROGRAM_TIMEOUT.as_secs()
                 );
                 return;
@@ -481,11 +481,11 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
 mod tests {
     use super::*;
 
-    // The program of CFRS_ERROR_PROGRAM gets no secret of cfrs.
+    // The program of PODNET_ERROR_PROGRAM gets no secret of podnet.
     #[test]
     fn the_error_program_gets_no_secret() {
         let env = |k: &str| match k {
-            "CFRS_PROXY" => Some("http://user:pw@proxy:3128".to_string()),
+            "PODNET_PROXY" => Some("http://user:pw@proxy:3128".to_string()),
             "HTTPS_PROXY" => Some("http://proxy:3128".to_string()),
             "ALL_PROXY" => Some("socks5h://u:p@10.0.0.1:1080".to_string()),
             _ => None,
@@ -493,9 +493,9 @@ mod tests {
         let out = withheld(&env);
         for key in [
             "TUNNEL_TOKEN",
-            "CFRS_RELAY_TOKEN",
-            "CFRS_RELAY_CONNECT_TOKEN",
-            "CFRS_PROXY",
+            "PODNET_RELAY_TOKEN",
+            "PODNET_RELAY_CONNECT_TOKEN",
+            "PODNET_PROXY",
             "ALL_PROXY",
         ] {
             assert!(out.contains(&key), "{key}: {out:?}");
@@ -562,7 +562,7 @@ mod tests {
         let line = error_line(&err);
         assert_eq!(
             line,
-            "cfrs: registering with the edge: bad gateway fromthe edge31m"
+            "podnet: registering with the edge: bad gateway fromthe edge31m"
         );
         for c in ['\u{1b}', '\u{7}', '\r', '\u{9b}', '\u{7f}'] {
             assert!(!line.contains(c), "{c:?} in {line:?}");
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn the_program_gets_the_report_on_stdin() {
-        let dir = std::env::temp_dir().join(format!("cfrs-report-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-report-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("report.json");
         let script = dir.join("program.sh");

@@ -1,4 +1,4 @@
-//! The egress of cfrs, end to end, with local stand-ins: a quick-tunnel API,
+//! The egress of podnet, end to end, with local stand-ins: a quick-tunnel API,
 //! a SOCKS5 proxy, an HTTP proxy that answers 407, and an edge that only
 //! counts its connections. No test here uses the network.
 
@@ -172,12 +172,12 @@ fn edge() -> (u16, Arc<AtomicUsize>) {
     (port, hits)
 }
 
-fn cfrs(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+fn podnet(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args(args)
-        .env("RUST_LOG", "cfrs=info")
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env_remove("CFRS_EDGE");
+        .env("RUST_LOG", "podnet=info")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env_remove("PODNET_EDGE");
     for key in [
         "HTTPS_PROXY",
         "https_proxy",
@@ -214,7 +214,7 @@ fn socks5_carries_the_api_and_the_edge() {
         };
         let api_url = format!("http://localhost:{api_port}");
         let edge_addr = format!("127.0.0.1:{edge_port}");
-        let (code, text) = cfrs(
+        let (code, text) = podnet(
             &[
                 "tunnel",
                 "--hello-world",
@@ -222,7 +222,7 @@ fn socks5_carries_the_api_and_the_edge() {
                 &api_url,
                 "--no-verify",
             ],
-            &[("ALL_PROXY", &proxy), ("CFRS_EDGE", &edge_addr)],
+            &[("ALL_PROXY", &proxy), ("PODNET_EDGE", &edge_addr)],
         );
         assert_ne!(code, Some(0), "{text}");
         assert_eq!(api_hits.load(Ordering::SeqCst), 1, "{text}");
@@ -248,9 +248,9 @@ fn socks5_carries_the_api_and_the_edge() {
     let (socks_port, _) = socks5(Some(("alice", "s3cret")));
     let proxy = format!("socks5h://alice:wrong@127.0.0.1:{socks_port}");
     let api_url = format!("http://localhost:{api_port}");
-    let (_, text) = cfrs(
+    let (_, text) = podnet(
         &["tunnel", "--hello-world", "--service-url", &api_url],
-        &[("ALL_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+        &[("ALL_PROXY", &proxy), ("PODNET_EDGE", "127.0.0.1:9")],
     );
     assert!(
         text.contains("the proxy refused the user and the password"),
@@ -267,23 +267,23 @@ fn no_proxy_bypasses_the_proxy() {
     let api_url = format!("http://127.0.0.1:{api_port}");
     let closed = "http://127.0.0.1:9";
     let args = ["tunnel", "--hello-world", "--service-url", &api_url];
-    let env = [("HTTPS_PROXY", closed), ("CFRS_EDGE", "127.0.0.1:9")];
+    let env = [("HTTPS_PROXY", closed), ("PODNET_EDGE", "127.0.0.1:9")];
 
-    let (_, text) = cfrs(&args, &env);
+    let (_, text) = podnet(&args, &env);
     assert!(
         text.contains("through the proxy http://127.0.0.1:9"),
         "{text}"
     );
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 
-    let (_, text) = cfrs(
+    let (_, text) = podnet(
         &args,
         &[env[0], env[1], ("NO_PROXY", "127.0.0.1,.example.com")],
     );
     assert!(text.contains("HTTP 403"), "{text}");
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 
-    let (_, text) = cfrs(&[&args[..], &["--no-proxy"]].concat(), &env);
+    let (_, text) = podnet(&[&args[..], &["--no-proxy"]].concat(), &env);
     assert!(text.contains("HTTP 403"), "{text}");
     assert_eq!(hits.load(Ordering::SeqCst), 2);
 }
@@ -294,20 +294,20 @@ fn a_407_names_the_schemes() {
     test_host::need_loopback!();
     let port = proxy_407();
     let proxy = format!("http://127.0.0.1:{port}");
-    let (code, text) = cfrs(
+    let (code, text) = podnet(
         &[
             "tunnel",
             "--hello-world",
             "--service-url",
             "http://api.example:80",
         ],
-        &[("HTTPS_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+        &[("HTTPS_PROXY", &proxy), ("PODNET_EDGE", "127.0.0.1:9")],
     );
     assert_ne!(code, Some(0));
     assert!(text.contains("HTTP 407"), "{text}");
     assert!(text.contains("NTLM or Negotiate"), "{text}");
     assert!(
-        text.contains("cfrs supports Basic and Digest only"),
+        text.contains("podnet supports Basic and Digest only"),
         "{text}"
     );
 }
@@ -322,7 +322,7 @@ async fn a_silent_address_does_not_hold_the_dial() {
     // TEST-NET-1: no host answers there.
     let silent: std::net::SocketAddr = "192.0.2.1:9".parse().unwrap();
     let start = Instant::now();
-    let (index, _stream) = cfrs::egress::dial_addrs(&[silent, good], Duration::from_secs(10))
+    let (index, _stream) = podnet::egress::dial_addrs(&[silent, good], Duration::from_secs(10))
         .await
         .unwrap();
     let took = start.elapsed();
@@ -350,14 +350,14 @@ fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
         }
     });
     let proxy = format!("http://127.0.0.1:{port}");
-    let (code, text) = cfrs(
+    let (code, text) = podnet(
         &[
             "tunnel",
             "--hello-world",
             "--service-url",
             "https://api.example",
         ],
-        &[("HTTPS_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+        &[("HTTPS_PROXY", &proxy), ("PODNET_EDGE", "127.0.0.1:9")],
     );
     assert_eq!(code, Some(69), "{text}");
     assert!(
@@ -366,7 +366,7 @@ fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
         ),
         "{text}"
     );
-    assert!(text.contains("cfrs: the proxy hop failed; "), "{text}");
+    assert!(text.contains("podnet: the proxy hop failed; "), "{text}");
 }
 
 /// Issue 259: a proxy host that does not resolve. The DoH query of the
@@ -375,15 +375,18 @@ fn a_proxy_refusal_names_the_hop_and_keeps_the_text() {
 /// proxy host.
 #[test]
 fn a_proxy_host_that_does_not_resolve_is_an_error_not_a_crash() {
-    let (code, text) = cfrs(
+    let (code, text) = podnet(
         &["update", "--check"],
-        &[("HTTPS_PROXY", "http://cfrs-proxy.invalid:8080")],
+        &[("HTTPS_PROXY", "http://podnet-proxy.invalid:8080")],
     );
     assert_eq!(code, Some(69), "{text}");
-    assert!(text.contains("the proxy host cfrs-proxy.invalid"), "{text}");
+    assert!(
+        text.contains("the proxy host podnet-proxy.invalid"),
+        "{text}"
+    );
 }
 
-/// Issue 274: socks5:// resolves the target with the chain of cfrs, so a
+/// Issue 274: socks5:// resolves the target with the chain of podnet, so a
 /// --resolve pin is used. The proxy gets the IPv4 address of the pin.
 #[test]
 fn socks5_resolves_the_target_with_the_pins() {
@@ -391,17 +394,17 @@ fn socks5_resolves_the_target_with_the_pins() {
     let (api_port, api_hits) = api(true);
     let (socks_port, targets) = socks5(None);
     let proxy = format!("socks5://127.0.0.1:{socks_port}");
-    let api_url = format!("http://cfrs-pinned.test:{api_port}");
-    let (_, text) = cfrs(
+    let api_url = format!("http://podnet-pinned.test:{api_port}");
+    let (_, text) = podnet(
         &[
             "--resolve",
-            "cfrs-pinned.test=127.0.0.1",
+            "podnet-pinned.test=127.0.0.1",
             "tunnel",
             "--hello-world",
             "--service-url",
             &api_url,
         ],
-        &[("ALL_PROXY", &proxy), ("CFRS_EDGE", "127.0.0.1:9")],
+        &[("ALL_PROXY", &proxy), ("PODNET_EDGE", "127.0.0.1:9")],
     );
     let targets = targets.lock().unwrap().clone();
     assert!(
@@ -415,7 +418,7 @@ fn socks5_resolves_the_target_with_the_pins() {
 /// password of a URL with a user part is not.
 #[test]
 fn a_proxy_url_with_no_password_is_shown() {
-    let (_, text) = cfrs(
+    let (_, text) = podnet(
         &[
             "--proxy",
             "http://127.0.0.1:9",
@@ -428,7 +431,7 @@ fn a_proxy_url_with_no_password_is_shown() {
     );
     assert!(text.contains("http://127.0.0.1:9"), "{text}");
     assert!(!text.contains("<hidden>"), "{text}");
-    let (_, text) = cfrs(
+    let (_, text) = podnet(
         &[
             "--proxy",
             "http://user:secretpw@127.0.0.1:9",

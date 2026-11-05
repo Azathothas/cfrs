@@ -2,7 +2,7 @@
 //!
 //! The shim is C, not Rust, because it has to interpose libc symbols before
 //! the program's own constructors run. Its source is embedded in this crate
-//! so a `cfrs` binary can drop it in a writable directory, compile it with
+//! so a `podnet` binary can drop it in a writable directory, compile it with
 //! the host's `cc`, and use it without shipping a second file.
 
 use std::path::{Path, PathBuf};
@@ -11,9 +11,9 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 /// The shim source, compiled into the binary.
-pub const SHIM_SOURCE: &str = include_str!("../../shim/cfrsnet.c");
+pub const SHIM_SOURCE: &str = include_str!("../../shim/podnet-vnet.c");
 /// The shim's file name on a unix host.
-pub const SHIM_FILE: &str = "libcfrsnet.so";
+pub const SHIM_FILE: &str = "libpodnet-vnet.so";
 
 /// The Tailscale-socksifying shim source, compiled into the binary.
 ///
@@ -21,14 +21,14 @@ pub const SHIM_FILE: &str = "libcfrsnet.so";
 /// `AF_UNIX` SOCKS5 front door for a tailnet address, and leaves every other
 /// socket alone. The abstract-name shim and this one are alternative front
 /// ends, not layers, so they are built and preloaded separately.
-pub const SOCKS_SHIM_SOURCE: &str = include_str!("../../shim/cfrssocks.c");
+pub const SOCKS_SHIM_SOURCE: &str = include_str!("../../shim/podnet-socks.c");
 /// The socksifying shim's file name on a unix host.
-pub const SOCKS_SHIM_FILE: &str = "libcfrssocks.so";
+pub const SOCKS_SHIM_FILE: &str = "libpodnet-socks.so";
 
 /// Configuration passed to the shim through the environment.
 #[derive(Clone, Debug)]
 pub struct ShimOptions {
-    /// The abstract-name prefix (default `cfrsnet`).
+    /// The abstract-name prefix (default `podnet-vnet`).
     pub prefix: String,
     /// Log every translation to stderr.
     pub log: bool,
@@ -47,7 +47,7 @@ pub struct ShimOptions {
 impl Default for ShimOptions {
     fn default() -> Self {
         Self {
-            prefix: "cfrsnet".into(),
+            prefix: "podnet-vnet".into(),
             log: false,
             map_loopback: false,
             hosts: Vec::new(),
@@ -69,15 +69,15 @@ impl ShimOptions {
                 _ => shim_path.display().to_string(),
             },
         )];
-        env.push(("CFRSNET_PREFIX".into(), self.prefix.clone()));
+        env.push(("PODNET_VNET_PREFIX".into(), self.prefix.clone()));
         if self.log {
-            env.push(("CFRSNET_LOG".into(), "1".into()));
+            env.push(("PODNET_VNET_LOG".into(), "1".into()));
         }
         if self.map_loopback {
-            env.push(("CFRSNET_MAP_LOOPBACK".into(), "1".into()));
+            env.push(("PODNET_VNET_MAP_LOOPBACK".into(), "1".into()));
         }
         if let Some(control) = &self.control {
-            env.push(("CFRSNET_CONTROL".into(), control.clone()));
+            env.push(("PODNET_VNET_CONTROL".into(), control.clone()));
         }
         if !self.hosts.is_empty() {
             let table = self
@@ -86,9 +86,9 @@ impl ShimOptions {
                 .map(|(name, ip)| format!("{name}={ip}"))
                 .collect::<Vec<_>>()
                 .join(",");
-            env.push(("CFRSNET_HOSTS".into(), table));
+            env.push(("PODNET_VNET_HOSTS".into(), table));
         }
-        env.push(("CFRSNET_MAX_FDS".into(), self.max_fds.to_string()));
+        env.push(("PODNET_VNET_MAX_FDS".into(), self.max_fds.to_string()));
         env
     }
 }
@@ -96,7 +96,7 @@ impl ShimOptions {
 /// How the shim was obtained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShimOrigin {
-    /// `CFRSNET_SHIM` named it.
+    /// `PODNET_VNET_SHIM` named it.
     Environment,
     /// A previously compiled copy beside the build tree or binary.
     Cached,
@@ -116,7 +116,7 @@ pub struct Shim {
 /// Names searched, in order, when looking for an existing shim.
 pub fn candidate_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(value) = std::env::var("CFRSNET_SHIM") {
+    if let Ok(value) = std::env::var("PODNET_VNET_SHIM") {
         if !value.is_empty() {
             out.push(PathBuf::from(value));
         }
@@ -138,10 +138,10 @@ pub fn candidate_paths() -> Vec<PathBuf> {
 /// Find an existing shim, or `None`.
 ///
 /// Candidates are tried in the order [`candidate_paths`] returns them, so an
-/// explicit `CFRSNET_SHIM` wins, then the running binary's own directory, then
+/// explicit `PODNET_VNET_SHIM` wins, then the running binary's own directory, then
 /// a checkout's build tree.
 pub fn locate() -> Option<Shim> {
-    let env_shim = std::env::var("CFRSNET_SHIM")
+    let env_shim = std::env::var("PODNET_VNET_SHIM")
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
@@ -172,7 +172,7 @@ pub fn locate_or_build(directory: &Path) -> Result<Shim> {
 
 /// Find an existing socksifying shim, or `None`.
 pub fn locate_socks() -> Option<Shim> {
-    let env_shim = std::env::var("CFRSSOCKS_SHIM")
+    let env_shim = std::env::var("PODNET_SOCKS_SHIM")
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
@@ -204,12 +204,12 @@ pub fn locate_socks() -> Option<Shim> {
     None
 }
 
-/// Compile the embedded shim source into `directory/libcfrsnet.so`.
+/// Compile the embedded shim source into `directory/libpodnet-vnet.so`.
 pub fn build(directory: &Path) -> Result<Shim> {
     compile_source(SHIM_SOURCE, SHIM_FILE, directory)
 }
 
-/// Compile the embedded socksifying shim into `directory/libcfrssocks.so`.
+/// Compile the embedded socksifying shim into `directory/libpodnet-socks.so`.
 pub fn build_socks(directory: &Path) -> Result<Shim> {
     compile_source(SOCKS_SHIM_SOURCE, SOCKS_SHIM_FILE, directory)
 }
@@ -398,18 +398,18 @@ mod tests {
             ..ShimOptions::default()
         };
         let env: std::collections::HashMap<_, _> = options
-            .environment(Path::new("/tmp/libcfrsnet.so"))
+            .environment(Path::new("/tmp/libpodnet-vnet.so"))
             .into_iter()
             .collect();
-        assert!(env["LD_PRELOAD"].contains("libcfrsnet.so"));
-        assert_eq!(env["CFRSNET_LOG"], "1");
-        assert_eq!(env["CFRSNET_MAP_LOOPBACK"], "1");
-        assert_eq!(env["CFRSNET_HOSTS"], "web=10.66.0.2");
+        assert!(env["LD_PRELOAD"].contains("libpodnet-vnet.so"));
+        assert_eq!(env["PODNET_VNET_LOG"], "1");
+        assert_eq!(env["PODNET_VNET_MAP_LOOPBACK"], "1");
+        assert_eq!(env["PODNET_VNET_HOSTS"], "web=10.66.0.2");
     }
 
     #[test]
     fn embedded_source_looks_like_the_shim() {
-        assert!(SHIM_SOURCE.contains("cfrsnet"));
+        assert!(SHIM_SOURCE.contains("podnet-vnet"));
         assert!(SHIM_SOURCE.contains("dlsym"));
         assert!(SHIM_SOURCE.contains("AF_UNIX"));
     }

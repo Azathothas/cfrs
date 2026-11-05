@@ -12,8 +12,8 @@
 # The source is the tag, in a new directory at a path that is not the one
 # of release.yml (/work), and the build runs in the image of
 # images/build/Dockerfile of the tag, pinned to a digest, with the same
-# command and variables as release.yml. The two binaries must have the
-# SHA-256 of SHA256SUMS. Exit 0 when both match, 1 when one does not.
+# command and variables as release.yml. The binary must have the SHA-256
+# of SHA256SUMS. Exit 0 when it matches, 1 when it does not.
 set -eu
 
 tag=${1:?usage: rebuild.sh TAG [TARGET]}
@@ -31,7 +31,7 @@ case "$target" in
         ;;
 esac
 [ "$target" = "$host" ] || echo "rebuild.sh: $target on a $(uname -m) host runs the image under emulation" >&2
-repo=${CFRS_REPO:-Azathothas/cfrs}
+repo=${PODNET_REPO:-Azathothas/podnet}
 engine=${CONTAINER:-docker}
 
 dir=$(mktemp -d)
@@ -62,7 +62,7 @@ fi
 # The command of release.yml, at another path in the container.
 "$engine" run --rm -v "$src:/rebuild/$tag" -w "/rebuild/$tag" \
     -e CARGO_BUILD_JOBS=4 -e RUSTFLAGS=-Ctarget-feature=+crt-static \
-    -e CFRS_BUILD_COMMIT="$commit" \
+    -e PODNET_BUILD_COMMIT="$commit" \
     "$image" \
     cargo build --locked --release --target "$target"
 # The container wrote target/ as root: give it back to this user, so that
@@ -72,7 +72,7 @@ fi
 
 curl -fsSL -o "$dir/SHA256SUMS" "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
 failed=0
-for b in cfrs pod-netns; do
+for b in podnet; do
     want=$(awk -v f="$b-$target" '$2 == f { print $1 }' "$dir/SHA256SUMS")
     got=$(sha256sum "$src/target/$target/release/$b" | cut -d ' ' -f 1)
     if [ -n "$want" ] && [ "$got" = "$want" ]; then

@@ -3,9 +3,9 @@
 //! This is the TCP transport of cloudflared (`--protocol http2`). Use it where
 //! UDP is blocked and the QUIC transport cannot work.
 //!
-//! * cfrs opens TCP to the edge (port 7844) and starts TLS with the SNI
+//! * podnet opens TCP to the edge (port 7844) and starts TLS with the SNI
 //!   `h2.cftunnel.com` and no ALPN.
-//! * On that connection the edge is the HTTP/2 client and cfrs is the HTTP/2
+//! * On that connection the edge is the HTTP/2 client and podnet is the HTTP/2
 //!   server. The edge opens one stream for each request.
 //! * The first stream has the header
 //!   `Cf-Cloudflared-Proxy-Connection-Upgrade: control-stream`. Its request
@@ -71,7 +71,7 @@ const PIPE_BUFFER: usize = 64 * 1024;
 const WEBSOCKET_VALUE: &str = "websocket";
 /// The header value that marks a configuration push.
 const CONFIGURATION_VALUE: &str = "update-configuration";
-/// The meta header for a response that cfrs makes itself.
+/// The meta header for a response that podnet makes itself.
 const META_CLOUDFLARED: &str = r#"{"src":"cloudflared"}"#;
 
 /// What the edge opened a stream for.
@@ -360,7 +360,7 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for GoawayScan<T> {
     }
 }
 
-/// The window of each stream that cfrs gives the edge.
+/// The window of each stream that podnet gives the edge.
 pub const STREAM_WINDOW: u32 = 1 << 20;
 /// The window of the connection.
 pub const CONNECTION_WINDOW: u32 = 1 << 24;
@@ -379,7 +379,7 @@ pub const DATA_FRAME_BUDGET: usize =
     CONNECTION_WINDOW as usize / SMALLEST_FRAME * (256 - SMALLEST_FRAME);
 const _: () = assert!(DATA_FRAME_BUDGET >= CONNECTION_WINDOW as usize / 60 * (256 - 60));
 
-/// HTTP/2 as cfrs serves its connection to the edge.
+/// HTTP/2 as podnet serves its connection to the edge.
 pub fn server_builder() -> h2::server::Builder {
     let mut builder = h2::server::Builder::new();
     builder
@@ -517,7 +517,7 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Metered<T> {
     }
 }
 
-/// Serve the HTTP/2 connection `io` of the edge (cfrs is the HTTP/2 server).
+/// Serve the HTTP/2 connection `io` of the edge (podnet is the HTTP/2 server).
 /// One task accepts the streams, gives the control stream to the caller,
 /// and sends a PING each `keepalive.interval`. When `budget` is spent, the
 /// connection drains as for a GOAWAY of the edge.
@@ -931,7 +931,7 @@ async fn answer_configuration(
     Ok(())
 }
 
-/// The largest configuration push that cfrs reads. cfrs does not apply a
+/// The largest configuration push that podnet reads. podnet does not apply a
 /// remote configuration: it reads only the version.
 pub const MAX_CONFIGURATION: usize = 64 * 1024;
 
@@ -1251,7 +1251,7 @@ mod tests {
             Ingress::new()
                 .rule_with(IngressRule {
                     hostname: None,
-                    path: Some(crate::ingress::PathPattern::prefix("/__cfrs/ws")),
+                    path: Some(crate::ingress::PathPattern::prefix("/__podnet/ws")),
                     service: Service::Forward(ForwardTarget::Unix(sock.clone())),
                     origin: OriginOptions::default(),
                 })
@@ -1259,13 +1259,13 @@ mod tests {
         );
         let runtime =
             Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 20);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 20);
         let client = tokio::spawn(
             h2::client::Builder::new()
                 .max_concurrent_streams(1000)
                 .handshake::<_, Bytes>(edge_side),
         );
-        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
+        let _served = serve_connection(podnet_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let (mut send, conn) = client.await.unwrap().unwrap();
@@ -1278,7 +1278,7 @@ mod tests {
         for _ in 0..16 {
             let request = http::Request::builder()
                 .method("GET")
-                .uri("https://x.example/__cfrs/ws")
+                .uri("https://x.example/__podnet/ws")
                 .header(CONTROL_STREAM_HEADER, WEBSOCKET_VALUE)
                 .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
                 .body(())
@@ -1341,9 +1341,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_silent_edge_fails_the_handshake_in_the_dial_time() {
         let (runtime, ingress) = service();
-        let (_edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (_edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let start = tokio::time::Instant::now();
-        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None);
+        let served = serve_connection(podnet_side, runtime, ingress, Keepalive::default(), None);
         let err = match tokio::time::timeout(DIAL_TIMEOUT * 2, served).await {
             Ok(Err(err)) => err,
             Ok(Ok(_)) => panic!("the handshake passed"),
@@ -1358,7 +1358,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_failed_registration_closes_the_connection() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let edge = tokio::spawn(h2::client::handshake(edge_side));
         let auth = rpc::TunnelAuth {
             account_tag: "test".into(),
@@ -1369,7 +1369,7 @@ mod tests {
         // The edge opens no control stream.
         let attempt = register_served(
             addr,
-            cfrs_side,
+            podnet_side,
             &auth,
             Uuid::nil(),
             0,
@@ -1412,14 +1412,14 @@ mod tests {
     #[tokio::test]
     async fn the_edge_gets_the_stream_limit_of_quic() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let _served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
+        let _served = serve_connection(podnet_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let (send, connection) = client.await.unwrap().unwrap();
         let driver = tokio::spawn(connection);
-        // The SETTINGS of cfrs come with the first round trip.
+        // The SETTINGS of podnet come with the first round trip.
         let send = send.ready().await.unwrap();
         let mut send = send;
         let request = http::Request::builder()
@@ -1463,16 +1463,16 @@ mod tests {
     #[tokio::test]
     async fn a_spent_budget_drains_the_connection() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let spent = Arc::new(tokio::sync::Notify::new());
-        let cfrs_side = Metered::new(cfrs_side, 4 << 10, spent.clone());
+        let podnet_side = Metered::new(podnet_side, 4 << 10, spent.clone());
         let budget = Budget {
             spent,
             age: Duration::from_secs(3600),
         };
         let client = tokio::spawn(h2::client::handshake(edge_side));
         let served = serve_connection(
-            cfrs_side,
+            podnet_side,
             runtime,
             ingress,
             Keepalive::default(),
@@ -1521,7 +1521,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_old_connection_drains() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let budget = Budget {
             spent: Arc::new(tokio::sync::Notify::new()),
             age: Duration::from_secs(600),
@@ -1531,7 +1531,7 @@ mod tests {
             timeout: Duration::from_secs(30),
         };
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let served = serve_connection(cfrs_side, runtime, ingress, keepalive, Some(budget))
+        let served = serve_connection(podnet_side, runtime, ingress, keepalive, Some(budget))
             .await
             .unwrap();
         let (_send, connection) = client.await.unwrap().unwrap();
@@ -1548,13 +1548,13 @@ mod tests {
     #[tokio::test]
     async fn a_ping_with_no_answer_ends_the_connection() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let keepalive = Keepalive {
             interval: Duration::from_millis(100),
             timeout: Duration::from_millis(200),
         };
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let served = serve_connection(cfrs_side, runtime, ingress, keepalive, None)
+        let served = serve_connection(podnet_side, runtime, ingress, keepalive, None)
             .await
             .unwrap();
         // The edge side keeps its connection but never polls it again.
@@ -1571,9 +1571,9 @@ mod tests {
     #[tokio::test]
     async fn goaway_drains_and_open_streams_finish() {
         let (runtime, ingress) = service();
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let client = tokio::spawn(h2::client::handshake(edge_side));
-        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
+        let served = serve_connection(podnet_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let (mut send, connection) = client.await.unwrap().unwrap();
@@ -1596,7 +1596,7 @@ mod tests {
             let _ = body.flow_control().release_capacity(chunk.len());
             text.extend_from_slice(&chunk);
         }
-        assert_eq!(text, b"Hello, world! (cfrs)\n");
+        assert_eq!(text, b"Hello, world! (podnet)\n");
         drop(body);
         let reason = tokio::time::timeout(Duration::from_secs(5), served.draining)
             .await
@@ -1625,17 +1625,17 @@ mod tests {
             out
         }
         let (runtime, ingress) = service();
-        let (mut edge, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (mut edge, podnet_side) = tokio::io::duplex(1 << 16);
         let mut start = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
         start.extend(frame(0x4, 0, 0, &[])); // SETTINGS
                                              // HEADERS on stream 1, END_HEADERS, no END_STREAM: GET https://x/.
         start.extend(frame(0x1, 0x4, 1, &[0x82, 0x87, 0x84, 0x41, 0x01, b'x']));
         edge.write_all(&start).await.unwrap();
-        let served = serve_connection(cfrs_side, runtime, ingress, Keepalive::default(), None)
+        let served = serve_connection(podnet_side, runtime, ingress, Keepalive::default(), None)
             .await
             .unwrap();
         let mut draining = served.draining;
-        // The edge reads what cfrs sends, so cfrs is not blocked.
+        // The edge reads what podnet sends, so podnet is not blocked.
         let (mut edge_read, mut edge_write) = tokio::io::split(edge);
         let reader = tokio::spawn(async move {
             let mut buf = vec![0u8; 1 << 16];
@@ -1695,9 +1695,9 @@ mod tests {
         let ingress = Arc::new(Ingress::new().catch_all(crate::ingress::Service::HelloWorld));
         let runtime =
             Arc::new(ServiceRuntime::build(&ingress, crate::metrics::Metrics::new()).unwrap());
-        let (edge_side, cfrs_side) = tokio::io::duplex(1 << 16);
+        let (edge_side, podnet_side) = tokio::io::duplex(1 << 16);
         let server = tokio::spawn(async move {
-            let mut conn = h2::server::handshake(cfrs_side).await.unwrap();
+            let mut conn = h2::server::handshake(podnet_side).await.unwrap();
             while let Some(Ok((request, respond))) = conn.accept().await {
                 let kind = stream_type(request.headers());
                 let runtime = runtime.clone();
@@ -1729,7 +1729,7 @@ mod tests {
             let _ = body.flow_control().release_capacity(chunk.len());
             text.extend_from_slice(&chunk);
         }
-        assert_eq!(text, b"Hello, world! (cfrs)\n");
+        assert_eq!(text, b"Hello, world! (podnet)\n");
         drop(client);
         server.abort();
     }

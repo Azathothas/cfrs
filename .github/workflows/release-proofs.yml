@@ -3,7 +3,7 @@ name: release proofs
 # The proofs of a published release, checked on a fresh runner as README.md
 # tells a user to check them:
 #
-# * SHA256SUMS has one line for each binary (and for cfrs.1 when the release
+# * SHA256SUMS has one line for each binary (and for podnet.1 when the release
 #   has it), and each line is correct.
 # * The provenance of each binary names release.yml at the tag and the commit
 #   of the tag. It is checked through the API and with the bundle of the
@@ -68,21 +68,21 @@ jobs:
         run: |
           set -eu
           n=0
-          for f in cfrs-* pod-netns-*; do
+          for f in podnet-*; do
             grep -q "  $f\$" SHA256SUMS || { echo "SHA256SUMS has no line for $f"; exit 1; }
             n=$((n + 1))
           done
           want=$n
-          if [ -f cfrs.1 ]; then
-            grep -q '  cfrs\.1$' SHA256SUMS || { echo "SHA256SUMS has no line for cfrs.1"; exit 1; }
+          if [ -f podnet.1 ]; then
+            grep -q '  podnet\.1$' SHA256SUMS || { echo "SHA256SUMS has no line for podnet.1"; exit 1; }
             want=$((n + 1))
           fi
           lines=$(wc -l < SHA256SUMS)
           test "$want" -eq "$lines" || { echo "SHA256SUMS has $lines lines, not $want"; exit 1; }
           sha256sum -c SHA256SUMS
-          cp cfrs-x86_64-unknown-linux-musl "$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
-          printf x >> "$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
-          grep '  cfrs-x86_64-unknown-linux-musl$' SHA256SUMS > "$RUNNER_TEMP/sums-changed"
+          cp podnet-x86_64-unknown-linux-musl "$RUNNER_TEMP/podnet-x86_64-unknown-linux-musl"
+          printf x >> "$RUNNER_TEMP/podnet-x86_64-unknown-linux-musl"
+          grep '  podnet-x86_64-unknown-linux-musl$' SHA256SUMS > "$RUNNER_TEMP/sums-changed"
           if (cd "$RUNNER_TEMP" && sha256sum -c sums-changed > /dev/null 2>&1); then
             echo "a changed copy passed sha256sum -c"
             exit 1
@@ -97,12 +97,12 @@ jobs:
             timeout 120 gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
               --source-ref "refs/tags/$TAG" --source-digest "$COMMIT" --deny-self-hosted-runners "${@:2}" > /dev/null
           }
-          for f in cfrs-* pod-netns-*; do
+          for f in podnet-*; do
             verify "$f"
             verify "$f" --bundle provenance.sigstore.json
             echo "ok   $f: $signer at refs/tags/$TAG, $COMMIT, through the API and with the bundle"
           done
-          changed="$RUNNER_TEMP/cfrs-x86_64-unknown-linux-musl"
+          changed="$RUNNER_TEMP/podnet-x86_64-unknown-linux-musl"
           if verify "$changed" 2> /dev/null; then echo "a changed copy verified"; exit 1; fi
           if verify "$changed" --bundle provenance.sigstore.json 2> /dev/null; then
             echo "a changed copy verified with the bundle"
@@ -143,31 +143,31 @@ jobs:
             exit 1
           fi
           echo "ok   SHA256SUMS: signed by $workflow@refs/tags/$TAG (cosign 3.1.4 and 2.6.5); a changed copy and the identity of a branch fail"
-      - name: cfrs update, on the published x86_64 binary
+      - name: podnet update, on the published x86_64 binary
         run: |
           set -eu
           dir="$RUNNER_TEMP/update"
           mkdir -p "$dir"
-          cp "$RUNNER_TEMP/release/cfrs-x86_64-unknown-linux-musl" "$dir/cfrs"
-          chmod 0755 "$dir/cfrs"
-          if ! "$dir/cfrs" update --help > /dev/null 2>&1; then
-            echo "skip $TAG has no cfrs update"
+          cp "$RUNNER_TEMP/release/podnet-x86_64-unknown-linux-musl" "$dir/podnet"
+          chmod 0755 "$dir/podnet"
+          if ! "$dir/podnet" update --help > /dev/null 2>&1; then
+            echo "skip $TAG has no podnet update"
             exit 0
           fi
           # Issue 197: an update to the same version needs --force (from
           # v0.3.0-beta.10 on); an older binary installs it again with no flag.
           force=""
-          if "$dir/cfrs" update --help 2>&1 | grep -q -- '--force'; then force=--force; fi
-          timeout 300 "$dir/cfrs" update --version "$TAG" $force
-          got=$("$dir/cfrs" --version)
-          test "$got" = "cfrs ${TAG#v} ($COMMIT)" || { echo "after the update: $got"; exit 1; }
-          echo "ok   cfrs update installed $TAG and checked its signature: $got"
+          if "$dir/podnet" update --help 2>&1 | grep -q -- '--force'; then force=--force; fi
+          timeout 300 "$dir/podnet" update --version "$TAG" $force
+          got=$("$dir/podnet" --version)
+          test "$got" = "podnet ${TAG#v} ($COMMIT)" || { echo "after the update: $got"; exit 1; }
+          echo "ok   podnet update installed $TAG and checked its signature: $got"
       - name: the short release check, on the published x86_64 binary
         run: |
           set -eu
-          bin="$RUNNER_TEMP/release/cfrs-x86_64-unknown-linux-musl"
+          bin="$RUNNER_TEMP/release/podnet-x86_64-unknown-linux-musl"
           chmod +x "$bin"
-          CFRS_BUILD_COMMIT="$COMMIT" timeout 300 sh scripts/release-short.sh "$bin" --net
+          PODNET_BUILD_COMMIT="$COMMIT" timeout 300 sh scripts/release-short.sh "$bin" --net
 
   # Issue 162: the binaries of the release are rebuilt from the tag, at
   # another path, in the pinned image of the tag, and must have the SHA-256

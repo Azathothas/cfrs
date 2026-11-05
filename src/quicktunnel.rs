@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// Default provisioning endpoint, matching cloudflared's `quick-service` flag.
 pub const DEFAULT_QUICK_SERVICE: &str = "https://api.trycloudflare.com";
 
-/// The anonymous provisioning response. Only the fields cfrs uses are modelled;
+/// The anonymous provisioning response. Only the fields podnet uses are modelled;
 /// cloudflared's `QuickTunnel` also carries `name`, which is unused here.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct QuickTunnel {
@@ -225,7 +225,7 @@ impl std::error::Error for ProvisionError {
 
 /// The user agent cloudflared-style clients send. Kept simple and honest.
 pub fn user_agent() -> String {
-    format!("cfrs/{} (rust)", env!("CARGO_PKG_VERSION"))
+    format!("podnet/{} (rust)", env!("CARGO_PKG_VERSION"))
 }
 
 /// Provision a quick tunnel: `POST <endpoint>/tunnel`.

@@ -12,7 +12,7 @@
 //!
 //! The Cloudflare tunnel edge (`region*.v2.argotunnel.com:7844`) is *not* on
 //! that allow-list, so a genuine Cloudflare tunnel cannot be established from
-//! here. See `src/bin/cfrs.rs` for how the CLI reports that, and the relay
+//! here. See `src/bin/podnet.rs` for how the CLI reports that, and the relay
 //! module for the transport that does work here.
 
 use std::io::{self, Read, Write};
@@ -271,7 +271,7 @@ mod tests {
     fn connect_tunnel_round_trips_over_a_unix_socket_proxy() {
         use std::os::unix::net::{UnixListener, UnixStream};
 
-        let dir = std::env::temp_dir().join(format!("cfrs-proxy-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("podnet-proxy-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("proxy.sock");
         let _ = std::fs::remove_file(&path);

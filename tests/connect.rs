@@ -1,4 +1,4 @@
-//! `cfrs connect` against local fakes: the egress layer (issues 191 and
+//! `podnet connect` against local fakes: the egress layer (issues 191 and
 //! 198), the start check (issue 207) and the socket file (issue 202).
 
 mod test_host;
@@ -83,18 +83,18 @@ async fn fake_proxy() -> (u16, Arc<Mutex<Vec<String>>>) {
 }
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("cfrs-connect-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("podnet-connect-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn cfrs(args: &[&str]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cfrs"));
+fn podnet(args: &[&str]) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_podnet"));
     cmd.args(args)
-        .env_remove("CFRS_ERROR_PROGRAM")
-        .env_remove("CFRS_RESOLVE")
-        .env_remove("CFRS_PROXY")
+        .env_remove("PODNET_ERROR_PROGRAM")
+        .env_remove("PODNET_RESOLVE")
+        .env_remove("PODNET_PROXY")
         .env_remove("NO_PROXY")
         .env_remove("no_proxy")
         .stdout(Stdio::null())
@@ -113,7 +113,7 @@ fn wait_for(path: &Path, child: &mut Child) {
                 .unwrap()
                 .read_to_string(&mut err)
                 .unwrap();
-            panic!("cfrs ended: {status:?}: {err}");
+            panic!("podnet ended: {status:?}: {err}");
         }
         assert!(start.elapsed() < Duration::from_secs(30), "no listener");
         std::thread::sleep(Duration::from_millis(50));
@@ -151,8 +151,8 @@ async fn connect_dials_through_the_proxy() {
     let sock = dir.join("s.sock");
     let proxy = format!("http://127.0.0.1:{port}");
     let local = format!("unix://{}", sock.display());
-    let remote = format!("ws://{NAME}/__cfrs/ws");
-    let mut child = cfrs(&["--proxy", &proxy, "connect", &remote, "-L", &local])
+    let remote = format!("ws://{NAME}/__podnet/ws");
+    let mut child = podnet(&["--proxy", &proxy, "connect", &remote, "-L", &local])
         .spawn()
         .unwrap();
     let path = sock.clone();
@@ -183,9 +183,9 @@ async fn connect_uses_resolve_pins() {
     let dir = temp_dir("pins");
     let sock = dir.join("s.sock");
     let local = format!("unix://{}", sock.display());
-    let remote = format!("ws://{NAME}:{port}/__cfrs/ws");
+    let remote = format!("ws://{NAME}:{port}/__podnet/ws");
     let pin = format!("{NAME}=127.0.0.1");
-    let mut child = cfrs(&[
+    let mut child = podnet(&[
         "--no-proxy",
         "--resolve",
         &pin,
@@ -216,11 +216,11 @@ fn connect_exits_69_when_the_remote_does_not_answer() {
     let dir = temp_dir("dead");
     let sock = dir.join("s.sock");
     let local = format!("unix://{}", sock.display());
-    let out = cfrs(&[
+    let out = podnet(&[
         "--proxy",
         "http://127.0.0.1:1",
         "connect",
-        "ws://dead.invalid/__cfrs/ws",
+        "ws://dead.invalid/__podnet/ws",
         "-L",
         &local,
     ])
@@ -231,11 +231,11 @@ fn connect_exits_69_when_the_remote_does_not_answer() {
     assert!(err.contains("--no-check"), "{err}");
     assert!(!sock.exists(), "the socket file is left");
     // --no-check starts with the same dead remote.
-    let out = cfrs(&[
+    let out = podnet(&[
         "--proxy",
         "http://127.0.0.1:1",
         "connect",
-        "ws://dead.invalid/__cfrs/ws",
+        "ws://dead.invalid/__podnet/ws",
         "-L",
         &local,
         "--no-check",
@@ -263,7 +263,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
     let local = format!("unix://{}", sock.display());
     let base = [
         "connect",
-        "ws://127.0.0.1:9/__cfrs/ws",
+        "ws://127.0.0.1:9/__podnet/ws",
         "-L",
         local.as_str(),
         "--no-check",
@@ -273,7 +273,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
 
     let live = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     let ino = std::fs::metadata(&sock).unwrap().ino();
-    let out = cfrs(&base).output().unwrap();
+    let out = podnet(&base).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(69), "{err}");
     assert!(err.contains("served by another process"), "{err}");
@@ -281,7 +281,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
 
     let mut replace = base.to_vec();
     replace.push("--replace");
-    let out = cfrs(&replace).output().unwrap();
+    let out = podnet(&replace).output().unwrap();
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -292,7 +292,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
 
     // A stale socket file (nobody answers) is replaced.
     let _stale = std::os::unix::net::UnixListener::bind(&sock).map(drop);
-    let out = cfrs(&base).output().unwrap();
+    let out = podnet(&base).output().unwrap();
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -302,7 +302,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
     assert!(!sock.exists(), "the socket file is left");
 
     std::fs::write(&sock, "data").unwrap();
-    let out = cfrs(&base).output().unwrap();
+    let out = podnet(&base).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(64), "{err}");
     assert_eq!(std::fs::read_to_string(&sock).unwrap(), "data");
@@ -310,7 +310,7 @@ fn connect_keeps_a_live_socket_and_other_files() {
 }
 
 // Issue 207: connect --detach prints the ready document with the
-// listeners; cfrs ps lists it; cfrs stop ends it and removes the socket.
+// listeners; podnet ps lists it; podnet stop ends it and removes the socket.
 #[test]
 fn connect_detach_is_in_ps_and_stops() {
     let dir = temp_dir("detach");
@@ -318,13 +318,13 @@ fn connect_detach_is_in_ps_and_stops() {
     let sock = dir.join("s.sock");
     let local = format!("unix://{}", sock.display());
     let with_run = |args: &[&str]| {
-        let mut cmd = cfrs(args);
-        cmd.env("CFRS_RUN_DIR", &run).stdout(Stdio::piped());
+        let mut cmd = podnet(args);
+        cmd.env("PODNET_RUN_DIR", &run).stdout(Stdio::piped());
         cmd.output().unwrap()
     };
     let start = with_run(&[
         "connect",
-        "ws://127.0.0.1:9/__cfrs/ws",
+        "ws://127.0.0.1:9/__podnet/ws",
         "-L",
         &local,
         "--no-check",

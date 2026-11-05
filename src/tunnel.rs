@@ -23,7 +23,7 @@ use crate::share::ShareControl;
 use crate::util::validate_quick_hostname;
 use crate::warp::WarpClient;
 
-pub const CLIENT_VERSION: &str = concat!("cfrs/", env!("CARGO_PKG_VERSION"));
+pub const CLIENT_VERSION: &str = concat!("podnet/", env!("CARGO_PKG_VERSION"));
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -162,7 +162,7 @@ impl Tunnel {
             failover,
         } = self.config;
 
-        // A bad CFRS_EDGE is a configuration error: check it before the
+        // A bad PODNET_EDGE is a configuration error: check it before the
         // quick tunnel is provisioned.
         edge_override()?;
 
@@ -172,7 +172,7 @@ impl Tunnel {
         let runtime = Arc::new(ServiceRuntime::build(&ingress, metrics.clone())?);
         let forward_path = crate::ws::forward_path(&ingress);
 
-        // CFRS_UDP: the UDP probe runs while the quick tunnel is provisioned.
+        // PODNET_UDP: the UDP probe runs while the quick tunnel is provisioned.
         let udp = crate::udp::Choice::from_env()?;
         let udp_probe = (udp == crate::udp::Choice::Probe
             && protocol == Protocol::Auto
@@ -548,7 +548,7 @@ fn split_explicit(credentials: Credentials) -> Result<(rpc::TunnelAuth, Uuid)> {
 
 /// Edge addresses for a direct dial on port 7844.
 ///
-/// `CFRS_EDGE` overrides discovery with a comma-separated `host:port` list, the
+/// `PODNET_EDGE` overrides discovery with a comma-separated `host:port` list, the
 /// way `cloudflared --edge` does. It exists for a self-hosted or pinned edge,
 /// and it is also the only way to test the `auto` fallback deliberately: point
 /// it at an address nothing answers on and direct must fail where discovery
@@ -633,12 +633,12 @@ pub fn plan_with_proxy(
     (
         kept,
         Some(format!(
-            "a proxy is set ({proxy}); no proxy carries UDP, so cfrs does not try QUIC on UDP 7844"
+            "a proxy is set ({proxy}); no proxy carries UDP, so podnet does not try QUIC on UDP 7844"
         )),
     )
 }
 
-/// Apply `CFRS_UDP` and the result of the UDP probe to the plan. `off`
+/// Apply `PODNET_UDP` and the result of the UDP probe to the plan. `off`
 /// removes QUIC on UDP 7844. With `probe`, a refused probe removes it; an
 /// unknown or answered probe keeps the order. The probe runs only for
 /// `--protocol auto`, so `egress` is `None` for an explicit protocol.
@@ -652,7 +652,7 @@ pub fn plan_with_udp(
         return Ok((plan, None));
     }
     let why = match (udp, egress) {
-        (Choice::Off, _) => "CFRS_UDP=off".to_string(),
+        (Choice::Off, _) => "PODNET_UDP=off".to_string(),
         (Choice::Probe, Some(Egress::Refused(detail))) => {
             format!("the UDP probe was refused ({detail})")
         }
@@ -676,7 +676,7 @@ pub fn plan_with_udp(
     }
     Ok((
         kept,
-        Some(format!("{why}: cfrs does not try QUIC on UDP 7844")),
+        Some(format!("{why}: podnet does not try QUIC on UDP 7844")),
     ))
 }
 
@@ -753,7 +753,7 @@ where
                     cause = %refused.cause,
                     try_ = tries,
                     wait_s = wait.as_secs(),
-                    "the edge refused the registration and asks for a retry; cfrs tries again"
+                    "the edge refused the registration and asks for a retry; podnet tries again"
                 );
                 tokio::time::sleep(wait).await;
                 tries += 1;
@@ -779,17 +779,17 @@ async fn bounded<T>(
     }
 }
 
-/// Read `CFRS_EDGE`, a comma-separated `host:port` list that replaces edge
+/// Read `PODNET_EDGE`, a comma-separated `host:port` list that replaces edge
 /// discovery (as `cloudflared --edge` does).
 pub(crate) fn edge_override() -> Result<Option<Vec<edge::EdgeAddr>>> {
-    let Ok(list) = std::env::var("CFRS_EDGE") else {
+    let Ok(list) = std::env::var("PODNET_EDGE") else {
         return Ok(None);
     };
     let mut overridden = Vec::new();
     for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
         let socket: std::net::SocketAddr = item
             .parse()
-            .with_context(|| format!("CFRS_EDGE entry {item:?} is not host:port"))
+            .with_context(|| format!("PODNET_EDGE entry {item:?} is not host:port"))
             .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
         overridden.push(edge::EdgeAddr::new(socket));
     }
@@ -1126,7 +1126,7 @@ impl TunnelHandle {
         }
     }
 
-    /// The wss:// endpoint of `--forward` for `cfrs connect` (issue 203):
+    /// The wss:// endpoint of `--forward` for `podnet connect` (issue 203):
     /// with a public URL. A named tunnel gives the path only
     /// ([`TunnelHandle::forward_path`]).
     pub fn forward(&self) -> Option<String> {
@@ -1291,9 +1291,9 @@ async fn verify_fetch(
         // looked like a hang for up to a minute.
         let left_s = left.as_secs();
         if attempt > 10 && attempt.is_multiple_of(5) {
-            tracing::warn!(attempt, left_s, %last, "the public URL does not answer yet; cfrs tries again");
+            tracing::warn!(attempt, left_s, %last, "the public URL does not answer yet; podnet tries again");
         } else if attempt == 1 || attempt.is_multiple_of(5) {
-            info!(attempt, left_s, %last, "the public URL does not answer yet (a new name takes some seconds); cfrs tries again");
+            info!(attempt, left_s, %last, "the public URL does not answer yet (a new name takes some seconds); podnet tries again");
         } else {
             tracing::debug!(attempt, %last, "verification retry");
         }
@@ -1531,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn cfrs_udp_and_the_probe_shape_the_plan() {
+    fn podnet_udp_and_the_probe_shape_the_plan() {
         use crate::udp::{Choice, Egress};
         use LegKind::*;
         let all = || vec![QuicDirect, H2Direct, QuicWarp];
@@ -1546,7 +1546,7 @@ mod tests {
         for egress in [Egress::Unknown("x".into()), Egress::Answered("x".into())] {
             assert_eq!(plan(Choice::Probe, Some(egress)).unwrap().0, all());
         }
-        // CFRS_UDP=off with QUIC on UDP 7844 as the only leg is an error.
+        // PODNET_UDP=off with QUIC on UDP 7844 as the only leg is an error.
         let err = plan_with_udp(vec![QuicDirect], Choice::Off, None).unwrap_err();
         assert_eq!(crate::exit::code_of(&err), crate::exit::CONFIG);
         assert_eq!(

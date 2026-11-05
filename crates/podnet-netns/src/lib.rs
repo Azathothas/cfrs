@@ -1,4 +1,4 @@
-//! pod-netns: run a program with all its network traffic sent through a
+//! podnet-netns: run a program with all its network traffic sent through a
 //! SOCKS5 or HTTP proxy. No `LD_PRELOAD` is necessary.
 //!
 //! The kernel enforces the redirection, so static binaries, Go binaries and
@@ -16,7 +16,7 @@
 //!   only seccomp.
 //!
 //! ```text
-//!   pod-netns [OPTIONS] -- PROGRAM
+//!   podnet pod [OPTIONS] -- PROGRAM
 //!     |
 //!     +- child:  namespace or seccomp filter, then exec PROGRAM
 //!     |
@@ -108,13 +108,13 @@ pub(crate) fn readable_copy(fd: RawFd) -> std::io::Result<tokio::io::unix::Async
 /// The exit code of a usage error (sysexits `EX_USAGE`).
 pub const USAGE: i32 = 64;
 
-/// Run the `pod-netns` command line with `argv` (without the program name).
+/// Run the command line of `podnet pod` with `argv` (without the program name).
 /// Return the exit status.
 pub fn main_with_args(argv: &[String]) -> i32 {
     let args = match parse_args(argv) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("pod-netns: {e:#}");
+            eprintln!("podnet-netns: {e:#}");
             return USAGE;
         }
     };
@@ -123,7 +123,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     }
     if args.serve.is_some() {
         if args.proxies.is_empty() {
-            eprintln!("pod-netns: --serve needs at least one -x upstream");
+            eprintln!("podnet-netns: --serve needs at least one -x upstream");
             return USAGE;
         }
         let listen = args.serve.clone().unwrap();
@@ -133,7 +133,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("pod-netns: {e:#}");
+                eprintln!("podnet-netns: {e:#}");
                 return EXIT_NO_BACKEND;
             }
         };
@@ -146,7 +146,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
         match outcome {
             Ok(()) => return 0,
             Err(e) => {
-                eprintln!("pod-netns: {e:#}");
+                eprintln!("podnet-netns: {e:#}");
                 return EXIT_NO_BACKEND;
             }
         }
@@ -155,14 +155,14 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     // (exit 64), not a host that has no backend (exit 3).
     if args.proxies.is_empty() && args.rules.is_empty() {
         eprintln!(
-            "pod-netns: no proxy: give -x PROXY, or set ALL_PROXY, HTTPS_PROXY or HTTP_PROXY"
+            "podnet-netns: no proxy: give -x PROXY, or set ALL_PROXY, HTTPS_PROXY or HTTP_PROXY"
         );
         return USAGE;
     }
     warn_unreachable(&args.proxies);
     // Inbound listeners exist on the seccomp backend only (issue 69).
     if args.inbound_dir_given && matches!(args.backend, BackendKind::Netns) {
-        eprintln!("pod-netns: --inbound-dir works with --backend seccomp only");
+        eprintln!("podnet-netns: --inbound-dir works with --backend seccomp only");
         return USAGE;
     }
     let warn_inbound = |backend: &str| {
@@ -194,7 +194,7 @@ pub fn main_with_args(argv: &[String]) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("pod-netns: {e:#}");
+            eprintln!("podnet-netns: {e:#}");
             EXIT_NO_BACKEND
         }
     }
@@ -217,7 +217,7 @@ pub(crate) const PROXY_VARIABLES: &[&str] = &[
 /// The environment of the program, as `KEY=VALUE` C strings for execve:
 /// the environment of this process without [`PROXY_VARIABLES`] (unless
 /// `keep_proxy`). Built before the fork; this process's own environment is
-/// not changed (cfrs warp run calls pod-netns on a thread). Prints one line
+/// not changed (podnet warp run calls podnet-netns on a thread). Prints one line
 /// that names the removed variables.
 pub(crate) fn child_env(keep_proxy: bool) -> Vec<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
@@ -246,9 +246,9 @@ pub(crate) fn child_env(keep_proxy: bool) -> Vec<std::ffi::CString> {
     env
 }
 
-/// The variable that silences the warnings of pod-netns (issue 115): set
-/// and not empty. `cfrs -q` sets it. Errors are still printed.
-pub const QUIET_VARIABLE: &str = "POD_NETNS_QUIET";
+/// The variable that silences the warnings of podnet-netns (issue 115): set
+/// and not empty. `podnet -q` sets it. Errors are still printed.
+pub const QUIET_VARIABLE: &str = "PODNET_NETNS_QUIET";
 
 /// True when [`QUIET_VARIABLE`] is set.
 pub fn quiet() -> bool {
@@ -258,7 +258,7 @@ pub fn quiet() -> bool {
 /// Print a warning on stderr, unless [`quiet`].
 pub(crate) fn warn(text: &str) {
     if !quiet() {
-        eprintln!("pod-netns: {text}");
+        eprintln!("podnet-netns: {text}");
     }
 }
 

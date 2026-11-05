@@ -50,7 +50,8 @@ struct Lab {
 
 impl Lab {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("cfrs-install-{name}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("podnet-install-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["bin", "release", "dest"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -65,7 +66,7 @@ impl Lab {
             "uname",
             "case \"$1\" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac",
         );
-        lab.release("v9.9.9", "cfrs 9.9.9 (test)");
+        lab.release("v9.9.9", "podnet 9.9.9 (test)");
         lab
     }
 
@@ -84,15 +85,15 @@ impl Lab {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// A fake release: a cfrs that prints `version`, and its SHA256SUMS.
+    /// A fake release: a podnet that prints `version`, and its SHA256SUMS.
     fn release(&self, _tag: &str, version: &str) {
         let rel = self.root.join("release");
-        let bin = rel.join("cfrs-x86_64-unknown-linux-musl");
+        let bin = rel.join("podnet-x86_64-unknown-linux-musl");
         std::fs::write(&bin, format!("#!/bin/sh\necho '{version}'\n")).unwrap();
         let sum = sha256_hex(&std::fs::read(&bin).unwrap());
         std::fs::write(
             rel.join("SHA256SUMS"),
-            format!("{sum}  cfrs-x86_64-unknown-linux-musl\n"),
+            format!("{sum}  podnet-x86_64-unknown-linux-musl\n"),
         )
         .unwrap();
     }
@@ -145,8 +146,8 @@ impl Lab {
             .env_clear()
             .env("PATH", self.bin())
             .env("HOME", &self.root)
-            .env("CFRS_VERSION", "v9.9.9")
-            .env("CFRS_INSTALL_DIR", self.dest())
+            .env("PODNET_VERSION", "v9.9.9")
+            .env("PODNET_INSTALL_DIR", self.dest())
             .env("NO_COLOR", "1");
         for (k, v) in extra {
             cmd.env(k, v);
@@ -192,8 +193,8 @@ fn curl_installs_the_release() {
     let t = text(&out);
     assert!(out.status.success(), "{t}");
     assert!(t.contains("downloader: curl"), "{t}");
-    assert!(t.contains("cfrs 9.9.9 (test)"), "{t}");
-    assert!(lab.dest().join("cfrs").exists());
+    assert!(t.contains("podnet 9.9.9 (test)"), "{t}");
+    assert!(lab.dest().join("podnet").exists());
 }
 
 // Issue 174: busybox wget goes after each other downloader.
@@ -229,7 +230,7 @@ fn busybox_without_tls_is_not_selected() {
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
     assert!(t.contains("no downloader"), "{t}");
-    assert!(!lab.dest().join("cfrs").exists());
+    assert!(!lab.dest().join("podnet").exists());
 }
 
 // Issue 174: a wget that is the busybox applet (Alpine) is busybox.
@@ -261,15 +262,15 @@ fn busybox_with_cosign_names_the_signature() {
 
 const SERVE: &str = "[ -f \"$f\" ] || exit 22\ncp \"$f\" \"$out\"";
 
-// Issue 169: a bad CFRS_DOWNLOADER names the variable.
+// Issue 169: a bad PODNET_DOWNLOADER names the variable.
 #[test]
 fn bad_downloader_names_the_variable() {
     let lab = Lab::new("baddl");
     lab.curl();
-    let out = lab.run(&[("CFRS_DOWNLOADER", "nosuch")]);
+    let out = lab.run(&[("PODNET_DOWNLOADER", "nosuch")]);
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
-    assert!(t.contains("CFRS_DOWNLOADER=nosuch: not found"), "{t}");
+    assert!(t.contains("PODNET_DOWNLOADER=nosuch: not found"), "{t}");
 }
 
 // Issues 169 and 175: a binary that does not run keeps the old one.
@@ -278,15 +279,15 @@ fn a_binary_that_does_not_run_keeps_the_old_one() {
     let lab = Lab::new("norun");
     lab.curl();
     let rel = lab.root.join("release");
-    let bin = rel.join("cfrs-x86_64-unknown-linux-musl");
+    let bin = rel.join("podnet-x86_64-unknown-linux-musl");
     std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
     let sum = sha256_hex(&std::fs::read(&bin).unwrap());
     std::fs::write(
         rel.join("SHA256SUMS"),
-        format!("{sum}  cfrs-x86_64-unknown-linux-musl\n"),
+        format!("{sum}  podnet-x86_64-unknown-linux-musl\n"),
     )
     .unwrap();
-    let old = lab.dest().join("cfrs");
+    let old = lab.dest().join("podnet");
     std::fs::write(&old, "old binary").unwrap();
     let out = lab.run(&[]);
     let t = text(&out);
@@ -298,7 +299,7 @@ fn a_binary_that_does_not_run_keeps_the_old_one() {
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    assert_eq!(left, vec![std::ffi::OsString::from("cfrs")], "{left:?}");
+    assert_eq!(left, vec![std::ffi::OsString::from("podnet")], "{left:?}");
 }
 
 // Issue 175: a cut download is a download error, not a SHA256 mismatch;
@@ -309,17 +310,17 @@ fn a_cut_download_is_a_download_error() {
     lab.curl_with("case \"$url\" in *musl) head -c 5 \"$f\" > \"$out\"; exit 56 ;; esac\n[ -f \"$f\" ] || exit 22\ncp \"$f\" \"$out\"");
     let t = text(&lab.run(&[]));
     assert!(
-        t.contains("the download of cfrs-x86_64-unknown-linux-musl failed (exit 56"),
+        t.contains("the download of podnet-x86_64-unknown-linux-musl failed (exit 56"),
         "{t}"
     );
     assert!(!t.contains("SHA256 of"), "{t}");
 
     let lab = Lab::new("missing");
     lab.curl_with(SERVE);
-    std::fs::remove_file(lab.root.join("release/cfrs-x86_64-unknown-linux-musl")).unwrap();
+    std::fs::remove_file(lab.root.join("release/podnet-x86_64-unknown-linux-musl")).unwrap();
     let t = text(&lab.run(&[]));
     assert!(
-        t.contains("no cfrs-x86_64-unknown-linux-musl in v9.9.9"),
+        t.contains("no podnet-x86_64-unknown-linux-musl in v9.9.9"),
         "{t}"
     );
 }
@@ -331,10 +332,10 @@ fn latest_falls_back_to_releases_atom() {
     lab.curl_with(SERVE);
     std::fs::write(
         lab.root.join("release/releases.atom"),
-        "<feed><entry><link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/Azathothas/cfrs/releases/tag/v9.9.9\"/></entry>\n<entry><link href=\"https://github.com/Azathothas/cfrs/releases/tag/v9.9.8\"/></entry></feed>\n",
+        "<feed><entry><link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/Azathothas/podnet/releases/tag/v9.9.9\"/></entry>\n<entry><link href=\"https://github.com/Azathothas/podnet/releases/tag/v9.9.8\"/></entry></feed>\n",
     )
     .unwrap();
-    let out = lab.run(&[("CFRS_VERSION", "latest")]);
+    let out = lab.run(&[("PODNET_VERSION", "latest")]);
     let t = text(&out);
     assert!(out.status.success(), "{t}");
     assert!(t.contains("reading releases.atom"), "{t}");
@@ -352,7 +353,7 @@ fn latest_falls_back_to_releases_atom() {
 fn the_directory_is_checked_first_and_made_absolute() {
     let lab = Lab::new("dir");
     lab.curl_with(SERVE);
-    let out = lab.run(&[("CFRS_INSTALL_DIR", "/proc/nope")]);
+    let out = lab.run(&[("PODNET_INSTALL_DIR", "/proc/nope")]);
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
     assert!(t.contains("not a writable directory"), "{t}");
@@ -365,8 +366,8 @@ fn the_directory_is_checked_first_and_made_absolute() {
         .env_clear()
         .env("PATH", lab.bin())
         .env("HOME", &lab.root)
-        .env("CFRS_VERSION", "v9.9.9")
-        .env("CFRS_INSTALL_DIR", "rel/bin")
+        .env("PODNET_VERSION", "v9.9.9")
+        .env("PODNET_INSTALL_DIR", "rel/bin")
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
@@ -374,7 +375,7 @@ fn the_directory_is_checked_first_and_made_absolute() {
     assert!(out.status.success(), "{t}");
     let abs = std::fs::canonicalize(lab.root.join("rel/bin")).unwrap();
     assert!(
-        t.contains(&format!("installed {}/cfrs", abs.display())),
+        t.contains(&format!("installed {}/podnet", abs.display())),
         "{t}"
     );
     assert!(
@@ -409,7 +410,7 @@ fn term_stops_the_script_and_cleans_up() {
     assert_eq!(out.status.code(), Some(143), "{t}");
     let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
-    assert!(!lab.dest().join("cfrs").exists());
+    assert!(!lab.dest().join("podnet").exists());
 }
 
 // Issue 165: the documented form fails when the downloader is missing (a
@@ -440,13 +441,13 @@ fn latest_is_the_highest_version() {
         r#"[{"tag_name": "v1.0.0-beta.9"}, {"tag_name": "v1.0.0-beta.8"}, {"tag_name": "v1.0.0-beta.10"}]"#,
     )
     .unwrap();
-    let out = lab.run(&[("CFRS_VERSION", "latest")]);
+    let out = lab.run(&[("PODNET_VERSION", "latest")]);
     let t = text(&out);
     assert!(t.contains("release: v1.0.0-beta.10"), "{t}");
 }
 
 /// A made-up token for the tests of issue 270.
-const TOKEN: &str = "cfrs-test-token-270-not-real";
+const TOKEN: &str = "podnet-test-token-270-not-real";
 
 impl Lab {
     /// The script with the umask `mask`.
@@ -458,8 +459,8 @@ impl Lab {
             .env_clear()
             .env("PATH", self.bin())
             .env("HOME", &self.root)
-            .env("CFRS_VERSION", "v9.9.9")
-            .env("CFRS_INSTALL_DIR", self.dest())
+            .env("PODNET_VERSION", "v9.9.9")
+            .env("PODNET_INSTALL_DIR", self.dest())
             .env("NO_COLOR", "1");
         for (k, v) in extra {
             cmd.env(k, v);
@@ -504,7 +505,7 @@ fn debug_does_not_show_the_token() {
     )
     .unwrap();
     let out = lab.run(&[
-        ("CFRS_VERSION", "latest"),
+        ("PODNET_VERSION", "latest"),
         ("DEBUG", "1"),
         ("GITHUB_TOKEN", TOKEN),
     ]);
@@ -563,15 +564,15 @@ fn a_restrictive_umask_gives_mode_0755() {
     let out = lab.run_umask(0o077, &[]);
     let t = text(&out);
     assert!(out.status.success(), "{t}");
-    let mode = std::fs::metadata(lab.dest().join("cfrs"))
+    let mode = std::fs::metadata(lab.dest().join("podnet"))
         .unwrap()
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o755, "{t}");
     let log = std::fs::read_to_string(lab.root.join("mktemp.log")).unwrap();
-    let want = format!("{}/.cfrs.new.XXXXXX", lab.dest().display());
+    let want = format!("{}/.podnet.new.XXXXXX", lab.dest().display());
     assert!(log.lines().any(|l| l == want), "{log}");
-    assert_eq!(lab.entries(&lab.dest()), vec!["cfrs"]);
+    assert_eq!(lab.entries(&lab.dest()), vec!["podnet"]);
 }
 
 // Issue 270: a space in the install directory leaves no copy after a
@@ -581,17 +582,17 @@ fn a_space_in_the_directory_leaves_no_file() {
     let lab = Lab::new("space");
     lab.curl();
     let rel = lab.root.join("release");
-    let bin = rel.join("cfrs-x86_64-unknown-linux-musl");
+    let bin = rel.join("podnet-x86_64-unknown-linux-musl");
     std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
     let sum = sha256_hex(&std::fs::read(&bin).unwrap());
     std::fs::write(
         rel.join("SHA256SUMS"),
-        format!("{sum}  cfrs-x86_64-unknown-linux-musl\n"),
+        format!("{sum}  podnet-x86_64-unknown-linux-musl\n"),
     )
     .unwrap();
     let dest = lab.root.join("my bin");
     std::fs::create_dir_all(&dest).unwrap();
-    let out = lab.run(&[("CFRS_INSTALL_DIR", dest.to_str().unwrap())]);
+    let out = lab.run(&[("PODNET_INSTALL_DIR", dest.to_str().unwrap())]);
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
     assert!(t.contains("does not run on this machine"), "{t}");
@@ -604,14 +605,14 @@ fn a_space_in_the_directory_leaves_no_file() {
 fn a_directory_at_the_binary_path_is_refused() {
     let lab = Lab::new("isdir");
     lab.curl_with(SERVE);
-    std::fs::create_dir_all(lab.dest().join("cfrs")).unwrap();
+    std::fs::create_dir_all(lab.dest().join("podnet")).unwrap();
     let out = lab.run(&[]);
     let t = text(&out);
     assert_eq!(out.status.code(), Some(1), "{t}");
     assert!(t.contains("exists and is not a file"), "{t}");
     assert!(!t.contains("installed"), "{t}");
     assert_eq!(lab.curl_log(), "", "a download before the check");
-    assert!(lab.dest().join("cfrs").is_dir());
+    assert!(lab.dest().join("podnet").is_dir());
 }
 
 // Issue 270: a binary that prints another version than the tag does not
@@ -620,18 +621,18 @@ fn a_directory_at_the_binary_path_is_refused() {
 fn a_binary_of_another_version_is_refused() {
     let lab = Lab::new("otherversion");
     lab.curl();
-    lab.release("v9.9.9", "cfrs 9.9.8 (test)");
-    let old = lab.dest().join("cfrs");
+    lab.release("v9.9.9", "podnet 9.9.8 (test)");
+    let old = lab.dest().join("podnet");
     std::fs::write(&old, "old binary").unwrap();
     let out = lab.run(&[]);
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
     assert!(
-        t.contains("prints 'cfrs 9.9.8 (test)', not 'cfrs 9.9.9'"),
+        t.contains("prints 'podnet 9.9.8 (test)', not 'podnet 9.9.9'"),
         "{t}"
     );
     assert_eq!(std::fs::read_to_string(&old).unwrap(), "old binary");
-    assert_eq!(lab.entries(&lab.dest()), vec!["cfrs"]);
+    assert_eq!(lab.entries(&lab.dest()), vec!["podnet"]);
 }
 
 // Issue 270: latest does not select a draft (a token with push access sees
@@ -645,7 +646,7 @@ fn latest_skips_a_draft() {
         r#"[{"url": "u", "author": {"login": "a", "id": 1}, "tag_name": "v9.9.10", "target_commitish": "main", "name": "v9.9.10", "draft": true, "prerelease": true}, {"url": "u", "tag_name": "v9.9.9", "name": "v9.9.9", "draft": false, "prerelease": true}]"#,
     )
     .unwrap();
-    let out = lab.run(&[("CFRS_VERSION", "latest")]);
+    let out = lab.run(&[("PODNET_VERSION", "latest")]);
     let t = text(&out);
     assert!(out.status.success(), "{t}");
     assert!(t.contains("release: v9.9.9"), "{t}");
@@ -663,7 +664,7 @@ fn an_empty_download_is_named() {
     let t = text(&out);
     assert!(!out.status.success(), "{t}");
     assert!(
-        t.contains("the download of cfrs-x86_64-unknown-linux-musl is empty"),
+        t.contains("the download of podnet-x86_64-unknown-linux-musl is empty"),
         "{t}"
     );
     assert!(!t.contains("exit 1 of"), "{t}");

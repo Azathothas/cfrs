@@ -1,17 +1,17 @@
 #!/bin/sh
-# Large uploads to `cfrs share` through one quick tunnel (issue 92). For each
+# Large uploads to `podnet share` through one quick tunnel (issue 92). For each
 # size in SIZES (MiB): a multipart upload with curl -F; the answer must be
 # 200 and the file must be on disk with its size. Then an upload with a
 # Content-Length over --max-request must get 413, and the session page must
 # still answer. The log of CI is public: the tunnel host is masked before it
 # can be printed.
 #
-#   sh scripts/live-share.sh CFRS PROTOCOL [SIZES]
+#   sh scripts/live-share.sh PODNET PROTOCOL [SIZES]
 #
 # SIZES is a list such as "20 64" (default "20 64"). The script prints one
 # line for each upload: "share PROTOCOL MiB: status, seconds".
 set -eu
-cfrs=$1
+podnet=$1
 protocol=$2
 sizes=${3:-20 64}
 dir=$(mktemp -d)
@@ -25,7 +25,7 @@ log() {
     mask < "$dir/share.err" | tail -25
 }
 
-RUST_LOG=cfrs=debug "$cfrs" share --dir "$dir/in" --protocol "$protocol" --transport direct \
+RUST_LOG=podnet=debug "$podnet" share --dir "$dir/in" --protocol "$protocol" --transport direct \
     --json --no-verify --idle-secs 0 --max-request 90000000 \
     > "$dir/share.out" 2> "$dir/share.err" &
 i=0
@@ -70,7 +70,7 @@ for s in $sizes; do
     cmp "$dir/f$n.bin" "$dir/in/f$n.bin" || { echo "the file on disk is not the file sent"; exit 1; }
 done
 
-# Over --max-request: 413 from cfrs. curl sends the header and waits for the
+# Over --max-request: 413 from podnet. curl sends the header and waits for the
 # answer before the body (Expect: 100-continue).
 head -c 95000000 /dev/zero > "$dir/big.bin"
 code=$(curl -sS --max-time 120 -o "$dir/answer.txt" -w '%{http_code}' \

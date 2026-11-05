@@ -1,4 +1,4 @@
-//! cfrs command line.
+//! podnet command line.
 
 /// `println!`, `print!` and `eprintln!` that drop a failed write (issue
 /// 74). The std macros panic when the write fails: a detached instance
@@ -34,25 +34,25 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
-use cfrs::config::{load_file, Config};
-use cfrs::exit::{Fault, ResultExt};
-use cfrs::gate::Gate;
-use cfrs::ingress::{ForwardTarget, Ingress, IngressRule, OriginOptions, Service};
-use cfrs::net::BoxedIo;
-use cfrs::share::{ShareConfig, ShareControl, ShareMode};
-use cfrs::vnet::{VirtAddr, VirtualSubnet};
-use cfrs::ws::{self, LocalSpec};
-use cfrs::{Protocol, Transport, Tunnel};
+use podnet::config::{load_file, Config};
+use podnet::exit::{Fault, ResultExt};
+use podnet::gate::Gate;
+use podnet::ingress::{ForwardTarget, Ingress, IngressRule, OriginOptions, Service};
+use podnet::net::BoxedIo;
+use podnet::share::{ShareConfig, ShareControl, ShareMode};
+use podnet::vnet::{VirtAddr, VirtualSubnet};
+use podnet::ws::{self, LocalSpec};
+use podnet::{Protocol, Transport, Tunnel};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "cfrs",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CFRS_BUILD_COMMIT"), ")"),
+    name = "podnet",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("PODNET_BUILD_COMMIT"), ")"),
     about = "Cloudflare tunnels and the WARP client for hosts with strong network limits"
 )]
 struct Cli {
-    /// A file of TLS roots (PEM). cfrs uses only these roots for each
-    /// connection that it opens as a client. Without it, cfrs reads SSL_CERT_FILE, else cfrs-ca.pem
+    /// A file of TLS roots (PEM). podnet uses only these roots for each
+    /// connection that it opens as a client. Without it, podnet reads SSL_CERT_FILE, else podnet-ca.pem
     /// beside the binary, the system bundle and the compiled-in roots.
     #[arg(long, global = true, value_name = "PATH")]
     ca_file: Option<PathBuf>,
@@ -60,9 +60,9 @@ struct Cli {
     /// [user:password@]host[:port]. A proxy on a unix socket:
     /// socks5h+unix:/PATH (or socks5h://unix:/PATH). A proxy at the stdin
     /// and stdout of a command, one for each connection (as ProxyCommand of
-    /// SSH): http+exec:COMMAND or socks5h+exec:COMMAND. Without it, cfrs
+    /// SSH): http+exec:COMMAND or socks5h+exec:COMMAND. Without it, podnet
     /// reads HTTPS_PROXY and ALL_PROXY (no +exec: there). NO_PROXY names
-    /// the targets that do not use a proxy. CFRS_PROXY gives the same
+    /// the targets that do not use a proxy. PODNET_PROXY gives the same
     /// value, and keeps a password out of the command line. Percent-encode
     /// / ? # @ : in the user and the password.
     #[arg(
@@ -70,14 +70,14 @@ struct Cli {
         global = true,
         value_name = "URL",
         conflicts_with = "no_proxy",
-        env = "CFRS_PROXY",
+        env = "PODNET_PROXY",
         hide_env_values = true
     )]
     proxy: Option<String>,
     /// Use no proxy, also when HTTPS_PROXY or ALL_PROXY is set.
     #[arg(long, global = true)]
     no_proxy: bool,
-    /// Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. CFRS_RESOLVE
+    /// Addresses for names, in place of DNS: HOST=IP[,HOST=IP]. PODNET_RESOLVE
     /// adds to it. TLS still checks the name of the certificate.
     #[arg(long, global = true, value_name = "HOST=IP")]
     resolve: Option<String>,
@@ -112,25 +112,25 @@ enum Command {
     Connect(ConnectArgs),
     /// List local TCP ports that are listening.
     Ports(PortsArgs),
-    /// Print a text for a bug report: the version, cfrs status, the
+    /// Print a text for a bug report: the version, podnet status, the
     /// detached instances and the end of their logs, and the names of the
     /// variables that are set. Device IDs, tunnel IDs, tokens and
     /// credentials are hidden. No network unless --doctor.
     BugReport {
-        /// Also run cfrs doctor and add its JSON (network).
+        /// Also run podnet doctor and add its JSON (network).
         #[arg(long)]
         doctor: bool,
     },
     /// Print a completion script for a shell: bash, zsh, fish, elvish or
     /// powershell.
     ///
-    /// Bash: cfrs completions bash > ~/.local/share/bash-completion/completions/cfrs.
-    /// Zsh: cfrs completions zsh > ~/.zfunc/_cfrs (with ~/.zfunc in fpath).
-    /// Fish: cfrs completions fish > ~/.config/fish/completions/cfrs.fish.
-    /// Elvish: cfrs completions elvish > ~/.config/elvish/lib/cfrs.elv, and
-    /// use cfrs in ~/.config/elvish/rc.elv.
-    /// PowerShell: cfrs completions powershell > ~/.config/powershell/cfrs.ps1,
-    /// and . ~/.config/powershell/cfrs.ps1 in $PROFILE.
+    /// Bash: podnet completions bash > ~/.local/share/bash-completion/completions/podnet.
+    /// Zsh: podnet completions zsh > ~/.zfunc/_podnet (with ~/.zfunc in fpath).
+    /// Fish: podnet completions fish > ~/.config/fish/completions/podnet.fish.
+    /// Elvish: podnet completions elvish > ~/.config/elvish/lib/podnet.elv, and
+    /// use podnet in ~/.config/elvish/rc.elv.
+    /// PowerShell: podnet completions powershell > ~/.config/powershell/podnet.ps1,
+    /// and . ~/.config/powershell/podnet.ps1 in $PROFILE.
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
@@ -149,14 +149,14 @@ enum Command {
     /// Inbound access to this host through the WebSocket relay (--relay):
     /// pair, run a node for a local port, connect as the operator.
     Relay(RelayArgs),
-    /// Run a program with all its traffic sent through a proxy (pod-netns).
+    /// Run a program with all its traffic sent through a proxy (podnet-netns).
     ///
-    /// Give the pod-netns arguments after `pod`. See `cfrs pod --help`.
-    /// cfrs gives the line after `pod` to pod-netns: the global options of
-    /// cfrs (-q, -v, --color, --log-format) do not apply to it.
+    /// Give the podnet-netns arguments after `pod`. See `podnet pod --help`.
+    /// podnet gives the line after `pod` to podnet-netns: the global options of
+    /// podnet (-q, -v, --color, --log-format) do not apply to it.
     #[command(disable_help_flag = true)]
     Pod {
-        /// The pod-netns arguments.
+        /// The podnet-netns arguments.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -172,7 +172,7 @@ enum Command {
     /// the APIs, the edge (7844) and MASQUE (443), and UDP 7844. Exit 0 when
     /// at least one leg (quic, http2, quic+warp) can work, 1 when none can.
     Doctor(DoctorArgs),
-    /// Start a cfrs command at boot, with no root: a systemd user unit (it
+    /// Start a podnet command at boot, with no root: a systemd user unit (it
     /// stops at logout unless linger is on), else an @reboot line in the
     /// crontab.
     Autostart(AutostartArgs),
@@ -193,7 +193,7 @@ enum Command {
     /// Stop a detached instance: SIGTERM, then SIGKILL after --timeout.
     #[command(group = clap::ArgGroup::new("target").args(["name", "all"]).required(true))]
     Stop {
-        /// The name of the instance (cfrs ps).
+        /// The name of the instance (podnet ps).
         name: Option<String>,
         /// Stop each instance.
         #[arg(long, conflicts_with = "name")]
@@ -204,7 +204,7 @@ enum Command {
     },
     /// Print the log of a detached instance.
     Logs {
-        /// The name of the instance (cfrs ps).
+        /// The name of the instance (podnet ps).
         name: String,
         /// Print new lines as they come, until Ctrl-C.
         #[arg(short, long)]
@@ -216,7 +216,7 @@ enum Command {
     /// Wait until a detached instance is ready, and print its ready
     /// document.
     Wait {
-        /// The name of the instance (cfrs ps).
+        /// The name of the instance (podnet ps).
         name: String,
         /// Seconds to wait (else exit 69).
         #[arg(long, default_value_t = 60)]
@@ -233,19 +233,19 @@ struct AutostartArgs {
 
 #[derive(Subcommand, Debug)]
 enum AutostartCommand {
-    /// Add an entry that runs `cfrs ARGS`. The token and a proxy password
+    /// Add an entry that runs `podnet ARGS`. The token and a proxy password
     /// go to a private env file (mode 0600), not to the unit, the crontab
     /// or the command line. Exit 69 when this host has no systemd user
     /// manager and no crontab.
     Add {
         /// The name of the entry (letters, digits, - and _).
         name: String,
-        /// The cfrs command and its arguments, after `--`, with no leading
-        /// `cfrs` (one is dropped). The command must parse.
+        /// The podnet command and its arguments, after `--`, with no leading
+        /// `podnet` (one is dropped). The command must parse.
         #[arg(last = true, required_unless_present = "from")]
         args: Vec<String>,
         /// Take the command and its arguments from the detached instance
-        /// INSTANCE (cfrs ps), with no --detach options.
+        /// INSTANCE (podnet ps), with no --detach options.
         #[arg(long, value_name = "INSTANCE", conflicts_with = "args")]
         from: Option<String>,
     },
@@ -270,11 +270,11 @@ enum AutostartCommand {
 
 #[derive(Subcommand, Debug)]
 enum AgentCommand {
-    /// Test the host (cfrs doctor --agent), start cfrs warp up when direct
+    /// Test the host (podnet doctor --agent), start podnet warp up when direct
     /// networking does not do each task, start a detached quick tunnel for
     /// each --expose PORT, and print one JSON document.
     Up {
-        /// Also add the block of cfrs warp up --persist to the shell files.
+        /// Also add the block of podnet warp up --persist to the shell files.
         #[arg(long)]
         persist: bool,
         /// A local port to expose with a quick tunnel (repeatable).
@@ -287,9 +287,9 @@ enum AgentCommand {
         #[arg(long)]
         warp: bool,
     },
-    /// Stop what cfrs agent up started and put back each change.
+    /// Stop what podnet agent up started and put back each change.
     Down,
-    /// Print the state: the instances, cfrs warp up, and the doctor.
+    /// Print the state: the instances, podnet warp up, and the doctor.
     Status,
 }
 
@@ -300,7 +300,7 @@ struct DoctorArgs {
     json: bool,
     /// Test what dev work can do here: git over HTTPS and SSH, the package
     /// registries, UDP DNS, IPv6 and localhost, directly, through the proxy
-    /// and through a running cfrs warp up; then print the commands to run.
+    /// and through a running podnet warp up; then print the commands to run.
     #[arg(long)]
     agent: bool,
     /// Samples of each TCP path (1-9). All samples end in 10 s.
@@ -314,7 +314,7 @@ struct DoctorArgs {
 #[derive(Args, Debug)]
 struct ManArgs {
     /// Sections: commands (tunnel, warp run) and topics (environment, files,
-    /// exit-status, examples, pod). `cfrs man tunnel serve` gives both.
+    /// exit-status, examples, pod). `podnet man tunnel serve` gives both.
     #[arg(value_name = "SECTION", num_args = 0..)]
     section: Vec<String>,
     /// Write to stdout, also on a terminal.
@@ -337,19 +337,19 @@ struct UpdateArgs {
     /// release (a prerelease only when this binary is a prerelease).
     #[arg(long, value_name = "TAG", value_parser = parse_release_tag)]
     version: Option<String>,
-    /// Put the binary before the last update (cfrs.prev) back, with no
+    /// Put the binary before the last update (podnet.prev) back, with no
     /// network. A second --rollback goes forward again.
     #[arg(long, conflicts_with_all = ["check", "version", "force"])]
     rollback: bool,
     /// Install the release also when it is the version of this binary.
-    /// Without it, cfrs says that the version is installed and exits 0.
+    /// Without it, podnet says that the version is installed and exits 0.
     #[arg(long)]
     force: bool,
 }
 
-/// A `--version` of `cfrs update`: a release tag (issue 227).
+/// A `--version` of `podnet update`: a release tag (issue 227).
 fn parse_release_tag(value: &str) -> Result<String, String> {
-    if cfrs::update::valid_tag(value) {
+    if podnet::update::valid_tag(value) {
         Ok(value.to_string())
     } else {
         Err("not a release tag (for example v0.3.0-beta.9)".to_string())
@@ -393,9 +393,9 @@ struct TunnelOpts {
     #[arg(long, default_value = "auto", global = true, value_parser = ["auto", "direct", "warp", "relay"])]
     transport: String,
     /// The WebSocket-to-TCP relay of --transport relay: a URL, or a comma
-    /// list of hosts of one deployment. The variable CFRS_RELAY_TOKEN (not
-    /// CFRS_RELAY) gives a token; without it, cfrs mints one.
-    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", hide_env_values = true, default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    /// list of hosts of one deployment. The variable PODNET_RELAY_TOKEN (not
+    /// PODNET_RELAY) gives a token; without it, podnet mints one.
+    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::DEFAULT_RELAY)]
     relay: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.
     /// Without it, every run registers a new anonymous device.
@@ -404,7 +404,7 @@ struct TunnelOpts {
     /// How the next edge leg starts: staggered (when the leg before has not
     /// registered in 2 s, or at once when it fails) or serial (only after the
     /// leg before failed).
-    #[arg(long, global = true, default_value = "staggered", env = "CFRS_LEG_FAILOVER", hide_env_values = true, value_parser = ["staggered", "serial"])]
+    #[arg(long, global = true, default_value = "staggered", env = "PODNET_LEG_FAILOVER", hide_env_values = true, value_parser = ["staggered", "serial"])]
     leg_failover: String,
     /// Do not fetch the public URL to prove reachability.
     #[arg(long, global = true)]
@@ -425,12 +425,12 @@ struct TunnelOpts {
     /// Each visitor must give this user (HTTP Basic), with the password of
     /// --auth-password-file. A visitor with no right credential gets 401
     /// and reaches no origin; the origin does not get the header. For HTTP
-    /// origins and --forward (cfrs connect --auth-user); not for --tcp.
+    /// origins and --forward (podnet connect --auth-user); not for --tcp.
     #[arg(
         long,
         value_name = "USER",
         global = true,
-        env = "CFRS_AUTH_USER",
+        env = "PODNET_AUTH_USER",
         hide_env_values = true,
         requires = "auth_password_file"
     )]
@@ -441,7 +441,7 @@ struct TunnelOpts {
         long,
         value_name = "FILE",
         global = true,
-        env = "CFRS_AUTH_PASSWORD_FILE",
+        env = "PODNET_AUTH_PASSWORD_FILE",
         hide_env_values = true,
         requires = "auth_user"
     )]
@@ -493,7 +493,7 @@ impl TunnelOpts {
         config.transport = Transport::parse(&self.transport)?;
         // Issue 173: a protocol that the transport cannot carry is a usage
         // error before any network call.
-        cfrs::tunnel::leg_plan(config.protocol, config.transport).fault(Fault::Usage)?;
+        podnet::tunnel::leg_plan(config.protocol, config.transport).fault(Fault::Usage)?;
         // Issue 205: the credential in front of the tunnel.
         if let (Some(user), Some(file)) = (&self.auth_user, &self.auth_password_file) {
             if config
@@ -502,7 +502,7 @@ impl TunnelOpts {
                 .iter()
                 .any(|rule| matches!(rule.service, Service::Tcp(_)))
             {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Usage,
                     anyhow::anyhow!(
                         "--auth-user is for HTTP origins and --forward, not for a raw --tcp origin"
@@ -510,19 +510,19 @@ impl TunnelOpts {
                 ));
             }
             config.ingress.auth = Some(
-                cfrs::proxy_auth::Credentials::load(user, file)
+                podnet::proxy_auth::Credentials::load(user, file)
                     .context("--auth-password-file")
                     .fault(Fault::Config)?,
             );
         }
         if config.transport == Transport::Relay {
-            cfrs::ws_relay::set(
-                cfrs::ws_relay::Relay::from_env(Some(&self.relay)).fault(Fault::Usage)?,
+            podnet::ws_relay::set(
+                podnet::ws_relay::Relay::from_env(Some(&self.relay)).fault(Fault::Usage)?,
             );
         }
         config.warp_identity = self.warp_identity.clone();
         config.verify = !self.no_verify;
-        config.failover = cfrs::race::Failover::parse(&self.leg_failover)?;
+        config.failover = podnet::race::Failover::parse(&self.leg_failover)?;
         Ok(config)
     }
 }
@@ -530,16 +530,16 @@ impl TunnelOpts {
 /// The options of a command that can run in the background (issue 70).
 #[derive(Args, Clone, Debug, Default)]
 struct DetachArgs {
-    /// Run in the background: cfrs prints one JSON document when the
+    /// Run in the background: podnet prints one JSON document when the
     /// command is ready (its URL or its listen address) and exits 0. The
-    /// instance keeps running when the shell or the terminal closes. cfrs
+    /// instance keeps running when the shell or the terminal closes. podnet
     /// ps, logs, wait and stop manage it.
     #[arg(long)]
     detach: bool,
     /// The name of the detached instance. Default: the command and a hash
     /// of its arguments. A second start with the same name and the same
     /// arguments gives the same instance. With no --detach: register this
-    /// process under the name (it is not forked and not restarted); cfrs
+    /// process under the name (it is not forked and not restarted); podnet
     /// ps, logs, wait and stop see it.
     #[arg(long, value_name = "NAME")]
     name: Option<String>,
@@ -556,15 +556,15 @@ struct DetachArgs {
     /// Do not start the instance again when it ends. Without it, a
     /// supervisor starts it again with a backoff (1 s to 30 s), but not
     /// after exit 64 or 78, and not after a planned end (--stop-after,
-    /// --idle-secs, --run-for). A quick tunnel gets a new URL; cfrs ps
+    /// --idle-secs, --run-for). A quick tunnel gets a new URL; podnet ps
     /// shows it. With --name and no --detach, there is no supervisor.
     #[arg(long)]
     no_restart: bool,
 }
 
 impl DetachArgs {
-    fn options(&self) -> cfrs::detach::Options {
-        cfrs::detach::Options {
+    fn options(&self) -> podnet::detach::Options {
+        podnet::detach::Options {
             name: self.name.clone(),
             ready_timeout: std::time::Duration::from_secs(self.ready_timeout.max(1)),
             replace: self.replace,
@@ -637,7 +637,7 @@ struct ServeArgs {
     spa: bool,
     /// Serve the files on this local listener and make no tunnel:
     /// HOST:PORT (or tcp://HOST:PORT), or unix:PATH (mode 0600). Port 0
-    /// takes a free port; cfrs prints the bound address. A unix socket
+    /// takes a free port; podnet prints the bound address. A unix socket
     /// that answers is refused (exit 69, --replace takes it over), a
     /// stale socket is removed, a file that is not a socket is refused
     /// (exit 64). The tunnel flags have no effect.
@@ -671,7 +671,7 @@ struct ShareArgs {
     common: TunnelOpts,
     /// Session mode. With no --mode: download with --file, proxy with
     /// --port or --unix, upload with --dir. With none of these flags,
-    /// cfrs refuses to start: give --mode upload for the default upload
+    /// podnet refuses to start: give --mode upload for the default upload
     /// directory.
     #[arg(long, value_enum)]
     mode: Option<ModeArg>,
@@ -698,9 +698,9 @@ struct ShareArgs {
     #[arg(long, default_value_t = 900)]
     idle_secs: u64,
     /// Upload mode: the most bytes of one upload request. A larger request
-    /// gets 413 and saves nothing (cfrs drops its body). The Cloudflare
+    /// gets 413 and saves nothing (podnet drops its body). The Cloudflare
     /// edge accepts at most 100 MB in one request.
-    #[arg(long, value_name = "BYTES", default_value_t = cfrs::share::MAX_REQUEST, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, value_name = "BYTES", default_value_t = podnet::share::MAX_REQUEST, value_parser = clap::value_parser!(u64).range(1..))]
     max_request: u64,
     /// Named-tunnel token. Prefer the variable TUNNEL_TOKEN or
     /// --token-file: other users of the host can read a command line.
@@ -721,7 +721,7 @@ struct ShareArgs {
 #[command(subcommand_required = true, arg_required_else_help = false)]
 struct RelayArgs {
     /// The relay for a new pair. A pair keeps the relay that made it.
-    #[arg(long, value_name = "URL", global = true, env = "CFRS_RELAY", hide_env_values = true, default_value = cfrs::ws_relay::DEFAULT_RELAY)]
+    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::DEFAULT_RELAY)]
     relay: String,
     #[command(subcommand)]
     command: RelayCommand,
@@ -757,7 +757,7 @@ enum RelayCommand {
         /// The connect token. Prefer the variable or --token-file: other
         /// users of the host can read a command line. Default: the local
         /// pair file.
-        #[arg(long, env = "CFRS_RELAY_CONNECT_TOKEN", hide_env_values = true)]
+        #[arg(long, env = "PODNET_RELAY_CONNECT_TOKEN", hide_env_values = true)]
         token: Option<String>,
         /// Read the connect token from this file.
         #[arg(long, value_name = "PATH")]
@@ -777,10 +777,10 @@ enum RelayCommand {
 
 #[derive(Args, Debug)]
 struct ConnectArgs {
-    /// Public WebSocket URL, e.g. wss://<host>/__cfrs/ws.
+    /// Public WebSocket URL, e.g. wss://<host>/__podnet/ws.
     remote: String,
     /// Local listeners, repeatable: tcp://[bind:]port or unix:///path. In
-    /// cfrs pod with the netns backend, a TCP listener is in the network of
+    /// podnet pod with the netns backend, a TCP listener is in the network of
     /// the pod: use unix:///path to reach it from outside.
     #[arg(short = 'L', long = "local", required = true)]
     locals: Vec<String>,
@@ -797,7 +797,7 @@ struct ConnectArgs {
     #[arg(
         long,
         value_name = "USER",
-        env = "CFRS_AUTH_USER",
+        env = "PODNET_AUTH_USER",
         hide_env_values = true,
         requires = "auth_password_file"
     )]
@@ -807,7 +807,7 @@ struct ConnectArgs {
     #[arg(
         long,
         value_name = "FILE",
-        env = "CFRS_AUTH_PASSWORD_FILE",
+        env = "PODNET_AUTH_PASSWORD_FILE",
         hide_env_values = true,
         requires = "auth_user"
     )]
@@ -845,25 +845,25 @@ struct DemoArgs {
 }
 
 fn main() {
-    // pod-netns forks and makes its own runtime. Start it before the async
-    // runtime of cfrs exists.
+    // podnet-netns forks and makes its own runtime. Start it before the async
+    // runtime of podnet exists.
     // args() panics on an argument that is not UTF-8 (issue 57); clap then
     // reports the bad argument as a usage error.
     // A detached child (issue 70) closes the descriptors that it got and
     // drops its flag before anything else.
-    let args = cfrs::detach::prepare(std::env::args_os().collect());
+    let args = podnet::detach::prepare(std::env::args_os().collect());
     let args = cloudflared_compat(args);
     let argv: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if let Err(err) = apply_token_files(&argv) {
-        eprintln!("cfrs: {err:#}");
-        std::process::exit(cfrs::exit::USAGE);
+        eprintln!("podnet: {err:#}");
+        std::process::exit(podnet::exit::USAGE);
     }
     if argv.get(1).map(String::as_str) == Some("pod") {
-        pod_netns::set_program_name("cfrs pod");
-        std::process::exit(pod_netns::main_with_args(&argv[2..]));
+        podnet_netns::set_program_name("podnet pod");
+        std::process::exit(podnet_netns::main_with_args(&argv[2..]));
     }
     let cli = match top_command()
         .try_get_matches_from(&args)
@@ -873,14 +873,14 @@ fn main() {
         Err(err) => {
             use clap::error::ErrorKind;
             // Help that the user asked for exits 0. Help that comes up
-            // because a subcommand is missing (cfrs net) is a usage error.
+            // because a subcommand is missing (podnet net) is a usage error.
             let code = match err.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => cfrs::exit::SUCCESS,
-                _ => cfrs::exit::USAGE,
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => podnet::exit::SUCCESS,
+                _ => podnet::exit::USAGE,
             };
             // Issue 181: with --log-format json, a usage error is one JSON
             // line too (found in argv: the parse failed).
-            if code != cfrs::exit::SUCCESS && json_wanted(&argv) {
+            if code != podnet::exit::SUCCESS && json_wanted(&argv) {
                 eprintln!("{}", error_json(&err.render().to_string(), code));
             } else {
                 let _ = err.print();
@@ -888,8 +888,8 @@ fn main() {
                     eprintln!("{line}");
                 }
             }
-            if code != cfrs::exit::SUCCESS {
-                cfrs::report::send(command_name(&argv).as_deref(), code, None);
+            if code != podnet::exit::SUCCESS {
+                podnet::report::send(command_name(&argv).as_deref(), code, None);
             }
             std::process::exit(code);
         }
@@ -903,17 +903,17 @@ fn main() {
     // yet.
     if cli.quiet {
         // SAFETY: one thread: the runtime does not exist yet.
-        unsafe { std::env::set_var(pod_netns::QUIET_VARIABLE, "1") };
+        unsafe { std::env::set_var(podnet_netns::QUIET_VARIABLE, "1") };
     }
-    // Issue 189: `cfrs -v pod -- PROG` (a global option before pod) runs the
+    // Issue 189: `podnet -v pod -- PROG` (a global option before pod) runs the
     // pod too; before, it panicked. Still one thread: the pod forks.
     if let Command::Pod { args } = &cli.command {
         if let Some(option) = pod_network_option(&cli) {
-            eprintln!("cfrs: cfrs pod does not use {option}; give the proxy to the pod with -x (cfrs pod --help)");
-            std::process::exit(cfrs::exit::USAGE);
+            eprintln!("podnet: podnet pod does not use {option}; give the proxy to the pod with -x (podnet pod --help)");
+            std::process::exit(podnet::exit::USAGE);
         }
-        pod_netns::set_program_name("cfrs pod");
-        std::process::exit(pod_netns::main_with_args(&pod_args_of(&argv, args)));
+        podnet_netns::set_program_name("podnet pod");
+        std::process::exit(podnet_netns::main_with_args(&pod_args_of(&argv, args)));
     }
     // Issue 126: a server command holds one descriptor for each connection.
     // A command that runs a program of the user leaves its limit as it is.
@@ -922,72 +922,78 @@ fn main() {
         Some("warp exec" | "warp shell" | "warp run" | "autostart run")
     );
     if !runs_a_program {
-        cfrs::rlimit::raise();
+        podnet::rlimit::raise();
     }
     if let Some(detach) = detach_of(&cli.command).filter(|d| d.detach) {
         let name = command.clone().unwrap_or_default();
-        if !cfrs::detach::is_child() {
-            std::process::exit(cfrs::detach::start(&name, &detach.options()));
+        if !podnet::detach::is_child() {
+            std::process::exit(podnet::detach::start(&name, &detach.options()));
         }
-        if let Err(err) = cfrs::detach::child_begin() {
-            eprintln!("cfrs: --detach: {err:#}");
-            std::process::exit(cfrs::detach::TEMPFAIL);
+        if let Err(err) = podnet::detach::child_begin() {
+            eprintln!("podnet: --detach: {err:#}");
+            std::process::exit(podnet::detach::TEMPFAIL);
         }
-    } else if cfrs::detach::is_child() {
-        eprintln!("cfrs: --detach-child is for cfrs itself");
-        std::process::exit(cfrs::exit::USAGE);
+    } else if podnet::detach::is_child() {
+        eprintln!("podnet: --detach-child is for podnet itself");
+        std::process::exit(podnet::exit::USAGE);
     } else if let Some(detach) = detach_of(&cli.command) {
         if detach.replace && !matches!(cli.command, Command::Connect(_)) {
-            eprintln!("cfrs: --replace needs --detach");
-            std::process::exit(cfrs::exit::USAGE);
+            eprintln!("podnet: --replace needs --detach");
+            std::process::exit(podnet::exit::USAGE);
         }
         // Issue 209: --name with no --detach registers this process.
         match &detach.name {
             Some(name) => {
-                if let Err(err) = cfrs::instances::check_name(name) {
-                    eprintln!("cfrs: --name: {err:#}");
-                    std::process::exit(cfrs::exit::USAGE);
+                if let Err(err) = podnet::instances::check_name(name) {
+                    eprintln!("podnet: --name: {err:#}");
+                    std::process::exit(podnet::exit::USAGE);
                 }
                 if let Err(err) =
-                    cfrs::detach::register(name, command.as_deref().unwrap_or_default())
+                    podnet::detach::register(name, command.as_deref().unwrap_or_default())
                 {
-                    eprintln!("cfrs: --name: {err:#}");
-                    std::process::exit(cfrs::detach::TEMPFAIL);
+                    eprintln!("podnet: --name: {err:#}");
+                    std::process::exit(podnet::detach::TEMPFAIL);
                 }
             }
             None if detach.no_restart => {
-                eprintln!("cfrs: --no-restart needs --detach or --name");
-                std::process::exit(cfrs::exit::USAGE);
+                eprintln!("podnet: --no-restart needs --detach or --name");
+                std::process::exit(podnet::exit::USAGE);
             }
             None => {}
         }
     }
     if let Some(path) = &cli.ca_file {
-        cfrs::trust::set_ca_file(path.clone());
+        podnet::trust::set_ca_file(path.clone());
         // Issue 173: a roots file that cannot be used exits 78 for each
         // command (status and doctor too), before any work.
-        if let Err(err) = cfrs::trust::roots() {
+        if let Err(err) = podnet::trust::roots() {
             // Issue 253: trust::roots names the file already.
-            let err = cfrs::exit::fault(cfrs::exit::Fault::Config, err);
-            print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
-            let code = cfrs::exit::code_of(&err);
-            cfrs::report::send(command.as_deref(), code, Some(&err));
+            let err = podnet::exit::fault(podnet::exit::Fault::Config, err);
+            print_error(
+                &podnet::report::error_line(&err),
+                podnet::exit::code_of(&err),
+            );
+            let code = podnet::exit::code_of(&err);
+            podnet::report::send(command.as_deref(), code, Some(&err));
             std::process::exit(code);
         }
     }
     if let Err(err) = network_options(&cli) {
-        // A flag is a usage error; a variable (CFRS_RESOLVE) has its class.
-        let err = if cfrs::exit::code_of(&err) == cfrs::exit::FAILURE {
-            cfrs::exit::fault(cfrs::exit::Fault::Usage, err)
+        // A flag is a usage error; a variable (PODNET_RESOLVE) has its class.
+        let err = if podnet::exit::code_of(&err) == podnet::exit::FAILURE {
+            podnet::exit::fault(podnet::exit::Fault::Usage, err)
         } else {
             err
         };
-        print_error(&cfrs::report::error_line(&err), cfrs::exit::code_of(&err));
-        let code = cfrs::exit::code_of(&err);
-        cfrs::report::send(command.as_deref(), code, Some(&err));
+        print_error(
+            &podnet::report::error_line(&err),
+            podnet::exit::code_of(&err),
+        );
+        let code = podnet::exit::code_of(&err);
+        podnet::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
     }
-    // A command that only prints ends at a closed stdout (cfrs status |
+    // A command that only prints ends at a closed stdout (podnet status |
     // head) with no panic: the default action of SIGPIPE. The server
     // commands keep SIGPIPE ignored.
     if matches!(
@@ -1008,18 +1014,18 @@ fn main() {
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     }
     let level = if cli.quiet {
-        "cfrs=warn"
+        "podnet=warn"
     } else {
         match cli.verbose {
-            0 => "cfrs=info",
-            1 => "cfrs=debug",
-            _ => "cfrs=trace",
+            0 => "podnet=info",
+            1 => "podnet=debug",
+            _ => "podnet=trace",
         }
     };
     let filter = match std::env::var("RUST_LOG") {
         Ok(value) if !value.is_empty() => EnvFilter::try_new(&value).unwrap_or_else(|e| {
             // Before, a bad RUST_LOG gave the default level with no word.
-            eprintln!("cfrs: RUST_LOG={value:?} does not parse ({e}); the log level is {level}");
+            eprintln!("podnet: RUST_LOG={value:?} does not parse ({e}); the log level is {level}");
             EnvFilter::new(level)
         }),
         _ => EnvFilter::new(level),
@@ -1032,12 +1038,12 @@ fn main() {
         _ => {
             std::io::IsTerminal::is_terminal(&std::io::stderr())
                 && std::env::var_os("NO_COLOR").is_none()
-                && !cfrs::detach::is_child()
+                && !podnet::detach::is_child()
         }
     };
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(cfrs::report::TeeStderr);
+        .with_writer(podnet::report::TeeStderr);
     if cli.log_format == "json" {
         builder.json().with_ansi(false).init();
     } else {
@@ -1046,7 +1052,7 @@ fn main() {
     if let Some(line) = foreground_hint(
         command.as_deref(),
         &argv,
-        cfrs::detach::is_child(),
+        podnet::detach::is_child(),
         no_terminal(),
     ) {
         tracing::info!("{line}");
@@ -1061,19 +1067,19 @@ fn main() {
                 async_main(cli).await
             })
         });
-    cfrs::detach::unregister();
+    podnet::detach::unregister();
     if let Err(err) = result {
-        let code = cfrs::exit::code_of(&err);
-        let line = cfrs::report::error_line(&err);
+        let code = podnet::exit::code_of(&err);
+        let line = podnet::report::error_line(&err);
         // Issues 182 and 210: a supervised child tells its supervisor how
         // long the service asks to wait.
-        if let Some(secs) = cfrs::quicktunnel::retry_of(&err).and_then(|r| r.retry_after_s) {
-            cfrs::detach::retry_after(secs);
+        if let Some(secs) = podnet::quicktunnel::retry_of(&err).and_then(|r| r.retry_after_s) {
+            podnet::detach::retry_after(secs);
         }
         // The report has the error in "error"; "messages" holds the log
         // lines before it (issue 55: the line was in both).
         print_error(&line, code);
-        cfrs::report::send(command.as_deref(), code, Some(&err));
+        podnet::report::send(command.as_deref(), code, Some(&err));
         std::process::exit(code);
     }
 }
@@ -1081,45 +1087,45 @@ fn main() {
 /// `--log-format json` (issue 181): the last error line is JSON too.
 static LOG_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Flags of cloudflared that cfrs does not have, with the advice for each
+/// Flags of cloudflared that podnet does not have, with the advice for each
 /// (E9).
 const CLOUDFLARED_FLAGS: &[(&str, &str)] = &[
     (
         "--logfile",
-        "the log goes to stderr: redirect it (2>FILE), or use --detach and cfrs logs",
+        "the log goes to stderr: redirect it (2>FILE), or use --detach and podnet logs",
     ),
     (
         "--log-directory",
-        "the log goes to stderr: redirect it, or use --detach and cfrs logs",
+        "the log goes to stderr: redirect it, or use --detach and podnet logs",
     ),
     (
         "--pidfile",
-        "use --detach: cfrs ps shows the pid, cfrs stop stops it",
+        "use --detach: podnet ps shows the pid, podnet stop stops it",
     ),
-    ("--metrics", "cfrs has no metrics listener flag"),
+    ("--metrics", "podnet has no metrics listener flag"),
     (
         "--origincert",
         "a named tunnel needs --token, --token-file or --credentials-file",
     ),
     (
         "--autoupdate-freq",
-        "cfrs does not update itself: cfrs update",
+        "podnet does not update itself: podnet update",
     ),
     (
         "--grace-period",
-        "cfrs drains the open streams for up to 90 s at a stop",
+        "podnet drains the open streams for up to 90 s at a stop",
     ),
     (
         "--edge-ip-version",
-        "cfrs tries IPv4 and IPv6 edge addresses",
+        "podnet tries IPv4 and IPv6 edge addresses",
     ),
-    ("--region", "cfrs uses the global region"),
+    ("--region", "podnet uses the global region"),
     (
         "--retries",
-        "cfrs connects again with a backoff and no limit",
+        "podnet connects again with a backoff and no limit",
     ),
-    ("--tag", "cfrs sends no tags"),
-    ("--post-quantum", "cfrs has no post-quantum option"),
+    ("--tag", "podnet sends no tags"),
+    ("--post-quantum", "podnet has no post-quantum option"),
 ];
 
 /// cloudflared arguments for `tunnel` (E9): `tunnel run` is `tunnel`;
@@ -1215,7 +1221,7 @@ fn read_token_file(path: &std::path::Path) -> Result<String> {
 fn apply_token_files(argv: &[String]) -> Result<()> {
     let relay_connect = command_name(argv).as_deref() == Some("relay connect");
     let variable = if relay_connect {
-        cfrs::relay_reverse::CONNECT_TOKEN_VARIABLE
+        podnet::relay_reverse::CONNECT_TOKEN_VARIABLE
     } else {
         "TUNNEL_TOKEN"
     };
@@ -1247,7 +1253,7 @@ fn apply_token_files(argv: &[String]) -> Result<()> {
         return Ok(());
     };
     let token = read_token_file(&path)?;
-    cfrs::report::hide(&token);
+    podnet::report::hide(&token);
     // SAFETY: one thread: the runtime does not exist yet.
     unsafe { std::env::set_var(variable, token) };
     Ok(())
@@ -1286,7 +1292,7 @@ fn foreground_hint(
         return None;
     }
     Some(format!(
-        "cfrs {command} runs in the foreground until a stop signal, and no terminal is attached: add --detach to run it in the background (cfrs ps, cfrs stop), or --run-for SECS"
+        "podnet {command} runs in the foreground until a stop signal, and no terminal is attached: add --detach to run it in the background (podnet ps, podnet stop), or --run-for SECS"
     ))
 }
 
@@ -1306,7 +1312,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         &["ps", "logs", "wait", "stop", "autostart"],
     ),
     (
-        "Check this host and cfrs",
+        "Check this host and podnet",
         &[
             "doctor",
             "status",
@@ -1323,10 +1329,10 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// The "Start here" block of the top help.
 const START_HERE: &str = "\
 Start here:
-  cfrs doctor                              test the path from this host to the edge
-  cfrs tunnel --url http://localhost:8080  a public URL for a local service
-  cfrs agent up                            a sandbox: test, start WARP if needed, expose ports
-  cfrs man                                 the full manual";
+  podnet doctor                              test the path from this host to the edge
+  podnet tunnel --url http://localhost:8080  a public URL for a local service
+  podnet agent up                            a sandbox: test, start WARP if needed, expose ports
+  podnet man                                 the full manual";
 
 /// The first part of `text`: up to the end of the first sentence or the
 /// first colon, with no issue reference.
@@ -1380,13 +1386,13 @@ fn top_command() -> clap::Command {
         grouped_commands(&cmd)
     );
     let root = Cli::command();
-    with_examples(cmd.help_template(template), "cfrs", &root)
+    with_examples(cmd.help_template(template), "podnet", &root)
 }
 
-/// The command path of an example: `cfrs`, then each word that names a
-/// subcommand (`cfrs warp proxy -r` is `cfrs warp proxy`).
+/// The command path of an example: `podnet`, then each word that names a
+/// subcommand (`podnet warp proxy -r` is `podnet warp proxy`).
 fn example_path(cmd: &clap::Command, line: &str) -> String {
-    let mut path = String::from("cfrs");
+    let mut path = String::from("podnet");
     let mut at = cmd;
     for word in line.split_whitespace().skip(1) {
         match at.find_subcommand(word) {
@@ -1401,12 +1407,12 @@ fn example_path(cmd: &clap::Command, line: &str) -> String {
     path
 }
 
-/// E7: the examples of `cfrs man examples` in the help of their command
-/// (`cfrs tunnel --help`), from the one table of the manual.
+/// E7: the examples of `podnet man examples` in the help of their command
+/// (`podnet tunnel --help`), from the one table of the manual.
 fn with_examples(cmd: clap::Command, path: &str, root: &clap::Command) -> clap::Command {
-    let examples: Vec<&cfrs::manual::facts::Example> = cfrs::manual::facts::EXAMPLES
+    let examples: Vec<&podnet::manual::facts::Example> = podnet::manual::facts::EXAMPLES
         .iter()
-        .filter(|e| path != "cfrs" && example_path(root, e.command) == path)
+        .filter(|e| path != "podnet" && example_path(root, e.command) == path)
         .collect();
     let names: Vec<String> = cmd
         .get_subcommands()
@@ -1429,7 +1435,7 @@ fn with_examples(cmd: clap::Command, path: &str, root: &clap::Command) -> clap::
 
 /// The lines after a usage error (E8, E10): a word that is no command but
 /// looks like a port, a URL or a path names the command for it; an unknown
-/// command or flag names the version and `cfrs update --check`.
+/// command or flag names the version and `podnet update --check`.
 fn usage_hints(err: &clap::Error) -> Vec<String> {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let invalid = || match err
@@ -1451,7 +1457,7 @@ fn usage_hints(err: &clap::Error) -> Vec<String> {
             let name = word.split('=').next().unwrap_or("");
             if let Some((flag, advice)) = CLOUDFLARED_FLAGS.iter().find(|(f, _)| *f == name) {
                 lines.push(format!(
-                    "hint: {flag} is a flag of cloudflared, not of cfrs; {advice}"
+                    "hint: {flag} is a flag of cloudflared, not of podnet; {advice}"
                 ));
                 return lines;
             }
@@ -1459,37 +1465,37 @@ fn usage_hints(err: &clap::Error) -> Vec<String> {
         _ => return lines,
     }
     lines.push(format!(
-        "cfrs {} does not know {}; a newer release can: cfrs update --check",
+        "podnet {} does not know {}; a newer release can: podnet update --check",
         env!("CARGO_PKG_VERSION"),
         invalid().map_or_else(|| "it".to_string(), |w| format!("'{w}'"))
     ));
     lines
 }
 
-/// The command for a word that is no command of cfrs.
+/// The command for a word that is no command of podnet.
 fn word_hint(word: &str) -> Option<String> {
     if !word.is_empty() && word.len() <= 5 && word.bytes().all(|b| b.is_ascii_digit()) {
         return Some(format!(
-            "hint: for a public URL of the local port {word}: cfrs tunnel --url http://localhost:{word}"
+            "hint: for a public URL of the local port {word}: podnet tunnel --url http://localhost:{word}"
         ));
     }
     let lower = word.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return Some(format!(
-            "hint: for a public URL of the local service {word}: cfrs tunnel --url {word}"
+            "hint: for a public URL of the local service {word}: podnet tunnel --url {word}"
         ));
     }
     if lower.starts_with("wss://") || lower.starts_with("ws://") {
         return Some(format!(
-            "hint: for a local socket to the WebSocket forward {word}: cfrs connect --local 127.0.0.1:2222 {word}"
+            "hint: for a local socket to the WebSocket forward {word}: podnet connect --local 127.0.0.1:2222 {word}"
         ));
     }
     let path = std::path::Path::new(word);
     if word.starts_with('/') || word.starts_with("./") || word.starts_with("~/") || path.exists() {
         return Some(if path.is_file() {
-            format!("hint: to send the file {word}: cfrs share --mode download --file {word}")
+            format!("hint: to send the file {word}: podnet share --mode download --file {word}")
         } else {
-            format!("hint: to serve the directory {word}: cfrs serve --dir {word}")
+            format!("hint: to serve the directory {word}: podnet serve --dir {word}")
         });
     }
     None
@@ -1508,13 +1514,13 @@ fn error_json(text: &str, code: i32) -> String {
     let message = text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.strip_prefix("cfrs: ").unwrap_or(l))
+        .map(|l| l.strip_prefix("podnet: ").unwrap_or(l))
         .collect::<Vec<_>>()
         .join("; ");
     serde_json::json!({
         "level": "ERROR",
         "fields": { "message": message.trim_end(), "exit_code": code },
-        "target": "cfrs",
+        "target": "podnet",
     })
     .to_string()
 }
@@ -1555,7 +1561,7 @@ fn install_signals() {
             (SignalKind::interrupt(), libc::SIGINT, "SIGINT"),
             (SignalKind::terminate(), libc::SIGTERM, "SIGTERM"),
         ];
-        if !cfrs::detach::is_child() && !signal_ignored(libc::SIGHUP) {
+        if !podnet::detach::is_child() && !signal_ignored(libc::SIGHUP) {
             kinds.push((SignalKind::hangup(), libc::SIGHUP, "SIGHUP"));
         }
         let tx = std::sync::Arc::new(tx);
@@ -1567,7 +1573,7 @@ fn install_signals() {
                         while stream.recv().await.is_some() {
                             // No command waits, or the second signal
                             // during the shutdown: the default action.
-                            if !cfrs::detach::stop_armed() || *tx.borrow() {
+                            if !podnet::detach::stop_armed() || *tx.borrow() {
                                 // SAFETY: signal() and raise() with a
                                 // valid signal number.
                                 unsafe {
@@ -1596,13 +1602,13 @@ fn install_signals() {
     });
 }
 
-/// Ready on SIGINT (Ctrl-C), SIGTERM (systemd, Docker, Kubernetes, cfrs
+/// Ready on SIGINT (Ctrl-C), SIGTERM (systemd, Docker, Kubernetes, podnet
 /// stop) or SIGHUP (the terminal closed): each starts the same clean
 /// shutdown, and the exit code is 0. A detached instance ignores SIGHUP.
 /// A signal that came before this call is not lost.
 async fn shutdown_signal() -> std::io::Result<()> {
     install_signals();
-    cfrs::detach::arm_stop();
+    podnet::detach::arm_stop();
     let mut rx = STOP.get().expect("installed").clone();
     let _ = rx.wait_for(|stop| *stop).await;
     Ok(())
@@ -1614,7 +1620,7 @@ async fn sleep_or_signal(run_for: Option<u64>) {
     match run_for {
         Some(secs) => {
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(secs)) => cfrs::detach::planned_end(),
+                _ = tokio::time::sleep(Duration::from_secs(secs)) => podnet::detach::planned_end(),
                 _ = shutdown_signal() => {}
             }
         }
@@ -1648,14 +1654,14 @@ async fn until_stop_or<T>(
         biased;
         _ = shutdown_signal() => None,
         _ = sleep_until_opt(deadline) => {
-            cfrs::detach::planned_end();
+            podnet::detach::planned_end();
             None
         }
         out = work => Some(out),
     }
 }
 
-/// Run `cfrs ARGS` and give its last line as JSON (the ready document of
+/// Run `podnet ARGS` and give its last line as JSON (the ready document of
 /// a detached start), with its stderr on this stderr.
 fn run_self_json(args: &[String]) -> Result<serde_json::Value> {
     let exe = std::env::current_exe()?;
@@ -1666,13 +1672,13 @@ fn run_self_json(args: &[String]) -> Result<serde_json::Value> {
         .output()?;
     let text = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
-        bail!("cfrs {} exited {}", args.join(" "), out.status);
+        bail!("podnet {} exited {}", args.join(" "), out.status);
     }
     let last = text.lines().last().unwrap_or("");
-    serde_json::from_str(last).with_context(|| format!("the output of cfrs {}", args.join(" ")))
+    serde_json::from_str(last).with_context(|| format!("the output of podnet {}", args.join(" ")))
 }
 
-/// `cfrs agent up`, `down` and `status`.
+/// `podnet agent up`, `down` and `status`.
 async fn agent(command: AgentCommand) -> Result<()> {
     let timeout = Duration::from_secs(4);
     match command {
@@ -1682,13 +1688,13 @@ async fn agent(command: AgentCommand) -> Result<()> {
             port,
             warp,
         } => {
-            cfrs::warp::check_tcp_burst()?;
-            cfrs::warp::check_cc()?;
-            let before = cfrs::agent::run(timeout).await;
+            podnet::warp::check_tcp_burst()?;
+            podnet::warp::check_cc()?;
+            let before = podnet::agent::run(timeout).await;
             let direct_enough = before
                 .rows
                 .iter()
-                .all(|r| r.direct == cfrs::agent::Outcome::Ok)
+                .all(|r| r.direct == podnet::agent::Outcome::Ok)
                 && before.udp_dns.works();
             let mut doc = serde_json::json!({});
             let mut warp_doc = serde_json::Value::Null;
@@ -1706,7 +1712,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 match run_self_json(&args) {
                     Ok(d) => warp_doc = d,
                     Err(err) => {
-                        eprintln!("cfrs: agent up: cfrs warp up failed: {err:#}");
+                        eprintln!("podnet: agent up: podnet warp up failed: {err:#}");
                         doc["warp_error"] = format!("{err:#}").into();
                     }
                 }
@@ -1716,7 +1722,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 let name = format!("expose-{p}");
                 // Issue 119: a port with no origin gets no tunnel (it gave
                 // a URL that answered 502).
-                if !cfrs::ports::reachable(*p, Duration::from_secs(2)).await {
+                if !podnet::ports::reachable(*p, Duration::from_secs(2)).await {
                     exposed.push(serde_json::json!({
                         "port": p,
                         "state": "origin-unreachable",
@@ -1733,7 +1739,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                     name.clone(),
                 ];
                 let result = run_self_json(&base).or_else(|first| {
-                    eprintln!("cfrs: agent up: the tunnel of port {p} failed ({first:#}); trying --transport relay");
+                    eprintln!("podnet: agent up: the tunnel of port {p} failed ({first:#}); trying --transport relay");
                     let mut relay = base.clone();
                     relay.extend(["--transport".into(), "relay".into(), "--replace".into()]);
                     run_self_json(&relay)
@@ -1747,7 +1753,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                     ),
                 }
             }
-            let after = cfrs::agent::run(timeout).await;
+            let after = podnet::agent::run(timeout).await;
             let mut works = serde_json::Map::new();
             for row in &after.rows {
                 works.insert(
@@ -1773,9 +1779,9 @@ async fn agent(command: AgentCommand) -> Result<()> {
             let mut advice = after.advice.clone();
             if let Some(err) = doc["warp_error"].as_str().map(str::to_string) {
                 // Issue 97: do not give the command that just failed as advice.
-                advice.retain(|line| !line.contains("cfrs warp up"));
+                advice.retain(|line| !line.contains("podnet warp up"));
                 advice.push(format!(
-                    "cfrs warp up failed ({err}); see cfrs net doctor, and use cfrs warp run -- CMD for one program"
+                    "podnet warp up failed ({err}); see podnet net doctor, and use podnet warp run -- CMD for one program"
                 ));
             }
             // Issue 117: say what --persist changed.
@@ -1785,24 +1791,24 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 .unwrap_or_default();
             if !files.is_empty() {
                 advice.push(format!(
-                    "--persist: new shells load WARP from {}; cfrs warp down removes it",
+                    "--persist: new shells load WARP from {}; podnet warp down removes it",
                     files.join(", ")
                 ));
             }
             doc["advice"] = advice.into();
-            let doc = cfrs::status::stamped(doc);
+            let doc = podnet::status::stamped(doc);
             println!("{doc}");
             // Issue 97: WARP was needed and did not start: not a success.
             if warp_wanted && !doc["warp_error"].is_null() {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
-                    anyhow::anyhow!("agent up: WARP was needed, and cfrs warp up failed"),
+                    anyhow::anyhow!("agent up: WARP was needed, and podnet warp up failed"),
                 ));
             }
             // Issue 173: an expose that failed is not a success.
             let failed = exposes_failed(&doc["exposed"]);
             if failed > 0 {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!(
                         "agent up: {failed} of {} exposes failed (see \"exposed\")",
@@ -1813,20 +1819,20 @@ async fn agent(command: AgentCommand) -> Result<()> {
             Ok(())
         }
         AgentCommand::Down => {
-            let dir = cfrs::instances::lookup_dir();
-            for entry in cfrs::instances::list(&dir) {
+            let dir = podnet::instances::lookup_dir();
+            for entry in podnet::instances::list(&dir) {
                 if entry.record.name.starts_with("expose-") {
-                    cfrs::detach::stop(&dir, &entry.record.name, Duration::from_secs(10))?;
-                    println!("cfrs: agent down: stopped {}", entry.record.name);
+                    podnet::detach::stop(&dir, &entry.record.name, Duration::from_secs(10))?;
+                    println!("podnet: agent down: stopped {}", entry.record.name);
                 }
             }
-            cfrs::warp::up::down()
+            podnet::warp::up::down()
         }
         AgentCommand::Status => {
             instances_ps(false)?;
             println!();
-            let report = cfrs::agent::run(timeout).await;
-            print!("{}", cfrs::agent::text(&report));
+            let report = podnet::agent::run(timeout).await;
+            print!("{}", podnet::agent::text(&report));
             Ok(())
         }
     }
@@ -1836,7 +1842,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
 /// key (HTTP 4xx, other than 401, 403 and 429) is a usage error; else the
 /// service is not available.
 fn license_fault(err: &anyhow::Error) -> Fault {
-    match cfrs::warp::register::api_status(err) {
+    match podnet::warp::register::api_status(err) {
         Some(401 | 403 | 429) => Fault::Unavailable,
         Some(400..=499) => Fault::Usage,
         _ => Fault::Unavailable,
@@ -1851,11 +1857,11 @@ fn exposes_failed(exposed: &serde_json::Value) -> usize {
         .unwrap_or(0)
 }
 
-/// `cfrs ps`: the instances of the run directory.
+/// `podnet ps`: the instances of the run directory.
 fn instances_ps(json: bool) -> Result<()> {
-    let dir = cfrs::instances::lookup_dir();
-    cfrs::instances::prune(&dir);
-    let list = cfrs::instances::list(&dir);
+    let dir = podnet::instances::lookup_dir();
+    podnet::instances::prune(&dir);
+    let list = podnet::instances::list(&dir);
     if json {
         let items: Vec<serde_json::Value> = list
             .iter()
@@ -1878,7 +1884,7 @@ fn instances_ps(json: bool) -> Result<()> {
             .collect();
         println!(
             "{}",
-            cfrs::status::stamped(serde_json::json!({
+            podnet::status::stamped(serde_json::json!({
                 "instances": items,
                 "dir": dir.display().to_string(),
             }))
@@ -1886,11 +1892,11 @@ fn instances_ps(json: bool) -> Result<()> {
         return Ok(());
     }
     if list.is_empty() {
-        println!("cfrs: no detached instance");
+        println!("podnet: no detached instance");
         return Ok(());
     }
     println!("NAME                     STATE          PID RST     AGE  URL/LISTEN");
-    let now = cfrs::instances::now();
+    let now = podnet::instances::now();
     for e in &list {
         let r = &e.record;
         let at = r
@@ -1909,7 +1915,7 @@ fn instances_ps(json: bool) -> Result<()> {
             "{:<24} {:<9} {:>8} {:>3} {:>7}  {}",
             r.name, r.state, r.pid, r.restarts, age, at
         );
-        // Issue 203: the endpoint for cfrs connect, on its own line.
+        // Issue 203: the endpoint for podnet connect, on its own line.
         if let Some(forward) = r
             .ready
             .as_ref()
@@ -1922,39 +1928,39 @@ fn instances_ps(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `cfrs stop`.
+/// `podnet stop`.
 fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
-    let dir = cfrs::instances::lookup_dir();
+    let dir = podnet::instances::lookup_dir();
     let names: Vec<String> = if all {
-        cfrs::instances::list(&dir)
+        podnet::instances::list(&dir)
             .into_iter()
             .map(|e| e.record.name)
             .collect()
     } else {
         let name = name.unwrap_or_default();
-        cfrs::instances::check_name(&name).map_err(|e| cfrs::exit::fault(Fault::Usage, e))?;
-        let alive = cfrs::instances::is_alive(&dir, &name);
-        if alive && cfrs::instances::read(&dir, &name).is_none() {
+        podnet::instances::check_name(&name).map_err(|e| podnet::exit::fault(Fault::Usage, e))?;
+        let alive = podnet::instances::is_alive(&dir, &name);
+        if alive && podnet::instances::read(&dir, &name).is_none() {
             // Issue 264: the locks of a live instance stay.
-            return Err(cfrs::detach::unreadable(&dir, &name));
+            return Err(podnet::detach::unreadable(&dir, &name));
         }
         if !alive {
-            cfrs::instances::remove(&dir, &name);
-            return Err(cfrs::exit::fault(
+            podnet::instances::remove(&dir, &name);
+            return Err(podnet::exit::fault(
                 Fault::Unavailable,
-                anyhow::anyhow!("no instance {name} runs (cfrs ps)"),
+                anyhow::anyhow!("no instance {name} runs (podnet ps)"),
             ));
         }
         vec![name]
     };
     let mut failed = None;
     for name in names {
-        match cfrs::detach::stop(&dir, &name, std::time::Duration::from_secs(timeout)) {
-            Ok(()) => println!("cfrs: stopped  {name}"),
+        match podnet::detach::stop(&dir, &name, std::time::Duration::from_secs(timeout)) {
+            Ok(()) => println!("podnet: stopped  {name}"),
             // --all: one instance that cannot stop does not keep the
             // others running.
             Err(err) if all => {
-                eprintln!("cfrs: stop {name}: {err:#}");
+                eprintln!("podnet: stop {name}: {err:#}");
                 failed = Some(err);
             }
             Err(err) => return Err(err),
@@ -1966,15 +1972,15 @@ fn instances_stop(name: Option<String>, all: bool, timeout: u64) -> Result<()> {
     }
 }
 
-/// `cfrs logs`.
+/// `podnet logs`.
 async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Result<()> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-    let dir = cfrs::instances::lookup_dir();
-    let path = cfrs::instances::paths(&dir, name)
-        .map_err(|e| cfrs::exit::fault(Fault::Usage, e))?
+    let dir = podnet::instances::lookup_dir();
+    let path = podnet::instances::paths(&dir, name)
+        .map_err(|e| podnet::exit::fault(Fault::Usage, e))?
         .log;
     let text = std::fs::read(&path).map_err(|e| {
-        cfrs::exit::fault(
+        podnet::exit::fault(
             Fault::Unavailable,
             anyhow::anyhow!("no log of {name} at {}: {e}", path.display()),
         )
@@ -2029,7 +2035,7 @@ async fn instances_logs(name: &str, follow: bool, lines: Option<usize>) -> Resul
     }
 }
 
-/// The files of `cfrs warp up` other than the env file.
+/// The files of `podnet warp up` other than the env file.
 struct UpFiles {
     /// The blocks of the shell files.
     persist: bool,
@@ -2037,7 +2043,7 @@ struct UpFiles {
     env_d: bool,
 }
 
-/// `cfrs warp up`: start `warp proxy` detached (instance `warp`) with the
+/// `podnet warp up`: start `warp proxy` detached (instance `warp`) with the
 /// WARP options of this command line, then write the env file.
 fn warp_up(
     args: &WarpArgs,
@@ -2048,9 +2054,9 @@ fn warp_up(
     dns: Option<std::net::SocketAddr>,
     auth: Option<(&String, &PathBuf)>,
 ) -> Result<()> {
-    let socket = cfrs::warp::up::socket_path()?;
+    let socket = podnet::warp::up::socket_path()?;
     if files.env_d {
-        cfrs::warp::up::check_env_d().fault(Fault::Config)?;
+        podnet::warp::up::check_env_d().fault(Fault::Config)?;
     }
     let mut argv = warp_up_args(args, port, &socket, ready_timeout);
     // Issue 146: the path of the password goes to the child, not the
@@ -2073,14 +2079,14 @@ fn warp_up(
     if replace {
         argv.push("--replace".into());
     }
-    let doc = cfrs::warp::up::start("cfrs warp proxy --detach", &argv)?;
+    let doc = podnet::warp::up::start("podnet warp proxy --detach", &argv)?;
     // Issue 97: the TCP listener or the socket can be refused by the host;
     // the env file and the advice follow what came up.
-    let (tcp, socket_up) = cfrs::warp::up::listeners_of(&doc);
+    let (tcp, socket_up) = podnet::warp::up::listeners_of(&doc);
     for line in up_summary(tcp.is_some(), port, socket_up, &socket) {
         eprintln!("{line}");
     }
-    let env = cfrs::warp::up::write_env(tcp, &socket)?;
+    let env = podnet::warp::up::write_env(tcp, &socket)?;
     let persist = files.persist;
     let mut persist_files = Vec::new();
     // Issue 138: the variables for the programs of the next login.
@@ -2088,21 +2094,21 @@ fn warp_up(
     if files.env_d {
         match tcp {
             Some(port) => {
-                let file = cfrs::warp::up::write_env_d(port)?;
+                let file = podnet::warp::up::write_env_d(port)?;
                 eprintln!(
-                    "cfrs: warp up: wrote {} (for the next login; cfrs warp down removes it)",
+                    "podnet: warp up: wrote {} (for the next login; podnet warp down removes it)",
                     file.display()
                 );
                 env_d = file.display().to_string().into();
             }
             None => eprintln!(
-                "cfrs: warp up: --env-d needs the TCP listener; no environment.d file is written"
+                "podnet: warp up: --env-d needs the TCP listener; no environment.d file is written"
             ),
         }
     }
     if persist {
-        for file in cfrs::warp::up::persist(&env)? {
-            eprintln!("cfrs: warp up: a block in {}", file.display());
+        for file in podnet::warp::up::persist(&env)? {
+            eprintln!("podnet: warp up: a block in {}", file.display());
             persist_files.push(file.display().to_string());
         }
     }
@@ -2124,39 +2130,39 @@ fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -
     let mut out = Vec::new();
     if !tcp && socket_up {
         out.push(format!(
-            "cfrs: warp up: the WARP proxy runs on unix:{}; use: cfrs warp exec -- CMD (or cfrs warp shell). The host refused the TCP listener 127.0.0.1:{port}, so there are no proxy variables",
+            "podnet: warp up: the WARP proxy runs on unix:{}; use: podnet warp exec -- CMD (or podnet warp shell). The host refused the TCP listener 127.0.0.1:{port}, so there are no proxy variables",
             socket.display()
         ));
     } else if !tcp {
         out.push(format!(
-            "cfrs: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables"
+            "podnet: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables"
         ));
     }
     if !socket_up {
-        out.push("cfrs: warp up: the unix socket did not start; cfrs warp exec and cfrs warp shell do not work. Use the proxy variables: eval \"$(cfrs warp env)\"".into());
+        out.push("podnet: warp up: the unix socket did not start; podnet warp exec and podnet warp shell do not work. Use the proxy variables: eval \"$(podnet warp env)\"".into());
     }
     out
 }
 
-/// The default `--idle` of `cfrs warp nc -u`, in seconds.
+/// The default `--idle` of `podnet warp nc -u`, in seconds.
 const UDP_NC_IDLE: u64 = 3;
 
-/// The end of the TCP pipe of `cfrs warp nc` (issue 188).
-fn nc_end(idle: Option<u64>, shutdown: bool) -> cfrs::warp::nc::PipeEnd {
-    cfrs::warp::nc::PipeEnd {
+/// The end of the TCP pipe of `podnet warp nc` (issue 188).
+fn nc_end(idle: Option<u64>, shutdown: bool) -> podnet::warp::nc::PipeEnd {
+    podnet::warp::nc::PipeEnd {
         shutdown,
-        idle: idle.map_or(cfrs::warp::nc::TCP_IDLE, Duration::from_secs),
+        idle: idle.map_or(podnet::warp::nc::TCP_IDLE, Duration::from_secs),
     }
 }
 
-/// `cfrs warp nc -u` on stdin and stdout (issue 115). The process ends
+/// `podnet warp nc -u` on stdin and stdout (issue 115). The process ends
 /// here: a read of stdin blocks a thread.
 async fn udp_nc(
     out: tokio::sync::mpsc::Sender<Vec<u8>>,
     back: tokio::sync::mpsc::Receiver<Vec<u8>>,
     idle: u64,
 ) -> Result<()> {
-    cfrs::warp::nc::udp_pipe_with(
+    podnet::warp::nc::udp_pipe_with(
         out,
         back,
         tokio::io::stdin(),
@@ -2167,7 +2173,7 @@ async fn udp_nc(
     std::process::exit(0);
 }
 
-/// `cfrs warp ssh-config --write`, `--remove` and `--check` (issue 130).
+/// `podnet warp ssh-config --write`, `--remove` and `--check` (issue 130).
 fn ssh_config_file(
     exe: &std::path::Path,
     host: Option<&str>,
@@ -2175,10 +2181,10 @@ fn ssh_config_file(
     remove: bool,
     config: &str,
 ) -> Result<()> {
-    use cfrs::warp::ssh_config as sc;
+    use podnet::warp::ssh_config as sc;
     let path = sc::expand(config).fault(Fault::Config)?;
     if write || remove {
-        cfrs::state::check_own(&path)?;
+        podnet::state::check_own(&path)?;
     }
     let old = match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
@@ -2190,14 +2196,14 @@ fn ssh_config_file(
     if remove {
         let new = sc::remove(text, host).with_context(|| shown.to_string())?;
         if old.is_some() && sc::save(&path, old.as_deref(), &new)? {
-            println!("cfrs: warp ssh-config: removed from {shown}");
+            println!("podnet: warp ssh-config: removed from {shown}");
         } else {
-            println!("cfrs: warp ssh-config: no block in {shown}");
+            println!("podnet: warp ssh-config: no block in {shown}");
         }
         return Ok(());
     }
     let host = host.ok_or_else(|| {
-        cfrs::exit::fault(
+        podnet::exit::fault(
             Fault::Usage,
             anyhow::anyhow!("give --host PATTERN (for example --host github.com)"),
         )
@@ -2206,19 +2212,19 @@ fn ssh_config_file(
     if write {
         let new = sc::write(text, host, &block).with_context(|| shown.to_string())?;
         if sc::save(&path, old.as_deref(), &new)? {
-            println!("cfrs: warp ssh-config: the block for {host} is in {shown}");
+            println!("podnet: warp ssh-config: the block for {host} is in {shown}");
         } else {
-            println!("cfrs: warp ssh-config: the block for {host} in {shown} is current");
+            println!("podnet: warp ssh-config: the block for {host} in {shown} is current");
         }
         return Ok(());
     }
     match sc::state(text, host, &block).with_context(|| shown.to_string())? {
         sc::State::Current => {
-            println!("cfrs: warp ssh-config: the block for {host} in {shown} is current");
+            println!("podnet: warp ssh-config: the block for {host} in {shown} is current");
             Ok(())
         }
-        sc::State::Stale => bail!("the block for {host} in {shown} names another binary; run cfrs warp ssh-config --write --host {host}"),
-        sc::State::Missing => bail!("no block for {host} in {shown}; run cfrs warp ssh-config --write --host {host}"),
+        sc::State::Stale => bail!("the block for {host} in {shown} names another binary; run podnet warp ssh-config --write --host {host}"),
+        sc::State::Missing => bail!("no block for {host} in {shown}; run podnet warp ssh-config --write --host {host}"),
     }
 }
 
@@ -2229,18 +2235,19 @@ fn ssh_config_file(
 fn agent_commands(warp: bool, warp_tcp: bool) -> Vec<String> {
     let mut commands: Vec<String> = Vec::new();
     if warp && warp_tcp {
-        commands.push("eval \"$(cfrs warp env)\"   # proxy variables for this shell".into());
+        commands.push("eval \"$(podnet warp env)\"   # proxy variables for this shell".into());
     }
     if warp {
-        commands.push("cfrs warp exec -- CMD   # any program, also static binaries and UDP".into());
-        commands.push("cfrs warp ssh-config --write --host github.com   # git over SSH".into());
+        commands
+            .push("podnet warp exec -- CMD   # any program, also static binaries and UDP".into());
+        commands.push("podnet warp ssh-config --write --host github.com   # git over SSH".into());
     }
-    commands.push("cfrs agent status".into());
-    commands.push("cfrs agent down".into());
+    commands.push("podnet agent status".into());
+    commands.push("podnet agent down".into());
     commands
 }
 
-/// `warp` and the options of `cfrs warp` that a child of `warp up` needs:
+/// `warp` and the options of `podnet warp` that a child of `warp up` needs:
 /// the identity, the relay, and the front door (the IPv6-only kit, 0002:
 /// `warp up --tun` dropped `--masque-endpoint`).
 fn warp_global_args(args: &WarpArgs) -> Vec<String> {
@@ -2298,7 +2305,7 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
     argv
 }
 
-/// The command line of the `warp tun --default-route --detach` of `cfrs
+/// The command line of the `warp tun --default-route --detach` of `podnet
 /// warp up --tun`.
 fn warp_up_tun_args(args: &WarpArgs, ready_timeout: u64) -> Vec<String> {
     let mut argv = warp_global_args(args);
@@ -2307,14 +2314,14 @@ fn warp_up_tun_args(args: &WarpArgs, ready_timeout: u64) -> Vec<String> {
         "--default-route".into(),
         "--detach".into(),
         "--name".into(),
-        cfrs::warp::up::TUN_INSTANCE.into(),
+        podnet::warp::up::TUN_INSTANCE.into(),
         "--ready-timeout".into(),
         ready_timeout.to_string(),
     ]);
     argv
 }
 
-/// The command line of the `warp proxy --detach` of `cfrs warp up`.
+/// The command line of the `warp proxy --detach` of `podnet warp up`.
 fn warp_up_args(
     args: &WarpArgs,
     port: u16,
@@ -2330,7 +2337,7 @@ fn warp_up_args(
         format!("unix:{}", socket.display()),
         "--detach".into(),
         "--name".into(),
-        cfrs::warp::up::INSTANCE.into(),
+        podnet::warp::up::INSTANCE.into(),
         "--ready-timeout".into(),
         ready_timeout.to_string(),
     ]);
@@ -2367,9 +2374,9 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
 
 /// Apply --proxy, --no-proxy and --resolve.
 fn network_options(cli: &Cli) -> Result<()> {
-    use cfrs::egress::{set_choice, Proxy, ProxyChoice};
+    use podnet::egress::{set_choice, Proxy, ProxyChoice};
     if let Some(spec) = &cli.proxy {
-        // Issue 95: a value with no scheme (CFRS_PROXY=notaurl) became
+        // Issue 95: a value with no scheme (PODNET_PROXY=notaurl) became
         // http://notaurl:8080, and each leg then failed on a name. The
         // proxy variables of other tools keep the lenient form.
         if !spec.contains("://") && !spec.contains("+unix:") && !spec.contains("+exec:") {
@@ -2378,11 +2385,11 @@ fn network_options(cli: &Cli) -> Result<()> {
                 None => spec.clone(),
             };
             bail!(
-                "--proxy (or CFRS_PROXY) {shown:?} has no scheme; give http://, socks5:// or socks5h://HOST:PORT"
+                "--proxy (or PODNET_PROXY) {shown:?} has no scheme; give http://, socks5:// or socks5h://HOST:PORT"
             );
         }
         for secret in Proxy::secret_parts(spec) {
-            cfrs::report::hide(&secret);
+            podnet::report::hide(&secret);
         }
         set_choice(ProxyChoice::Via(
             Proxy::parse_trusted(spec).context("--proxy")?,
@@ -2391,12 +2398,12 @@ fn network_options(cli: &Cli) -> Result<()> {
         set_choice(ProxyChoice::Direct);
     }
     if let Some(list) = &cli.resolve {
-        cfrs::resolve::set_pins(list).context("--resolve")?;
-    } else if let Ok(list) = std::env::var(cfrs::resolve::PINS_VARIABLE) {
-        // Issue 252: a bad CFRS_RESOLVE was a warning at the first dial
+        podnet::resolve::set_pins(list).context("--resolve")?;
+    } else if let Ok(list) = std::env::var(podnet::resolve::PINS_VARIABLE) {
+        // Issue 252: a bad PODNET_RESOLVE was a warning at the first dial
         // (and none for a command with no dial).
-        cfrs::resolve::parse_pins(&list)
-            .context(cfrs::resolve::PINS_VARIABLE)
+        podnet::resolve::parse_pins(&list)
+            .context(podnet::resolve::PINS_VARIABLE)
             .fault(Fault::Config)?;
     }
     Ok(())
@@ -2408,7 +2415,7 @@ fn command_name(argv: &[String]) -> Option<String> {
     let mut cmd = Cli::command();
     let mut words = Vec::new();
     let mut rest = argv.iter().skip(1);
-    // Issue 181: an option before the subcommand (cfrs -q tunnel, cfrs
+    // Issue 181: an option before the subcommand (podnet -q tunnel, podnet
     // --proxy URL warp run) is skipped, with its value; before, the name
     // stopped at the first option.
     while let Some(arg) = rest.next() {
@@ -2447,7 +2454,7 @@ fn command_name(argv: &[String]) -> Option<String> {
     (!words.is_empty()).then(|| words.join(" "))
 }
 
-/// The global network option of `cfrs OPTION pod`, which the pod does not
+/// The global network option of `podnet OPTION pod`, which the pod does not
 /// use (issue 189): its proxy is `-x`.
 fn pod_network_option(cli: &Cli) -> Option<&'static str> {
     if cli.proxy.is_some() {
@@ -2483,16 +2490,16 @@ async fn async_main(cli: Cli) -> Result<()> {
             let path = std::env::current_exe()
                 .and_then(|p| p.canonicalize())
                 .context("finding this binary")?;
-            let now = cfrs::update::rollback(&path).fault(Fault::Unavailable)?;
+            let now = podnet::update::rollback(&path).fault(Fault::Unavailable)?;
             println!(
                 "{}: {now} (put back from {})",
                 path.display(),
-                cfrs::update::previous_of(&path).display()
+                podnet::update::previous_of(&path).display()
             );
             Ok(())
         }
         Command::Update(args) => {
-            use cfrs::update::Outcome;
+            use podnet::update::Outcome;
             // Issue 249: an empty tag asked the network, then exit 69.
             if let Some(tag) = args.version.as_deref() {
                 let good = !tag.is_empty()
@@ -2500,26 +2507,26 @@ async fn async_main(cli: Cli) -> Result<()> {
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b));
                 if !good {
-                    return Err(cfrs::exit::fault(
+                    return Err(podnet::exit::fault(
                         Fault::Usage,
                         anyhow::anyhow!("--version {tag:?}: give a tag like v0.3.0-beta.11"),
                     ));
                 }
             }
-            match cfrs::update::run(args.version.as_deref(), args.check, args.force)
+            match podnet::update::run(args.version.as_deref(), args.check, args.force)
                 .await
                 .fault(Fault::Unavailable)?
             {
-                Outcome::UpToDate(tag) => println!("cfrs {tag} is the newest release"),
+                Outcome::UpToDate(tag) => println!("podnet {tag} is the newest release"),
                 Outcome::Same(tag) => {
-                    println!("cfrs {tag} is installed; nothing to do (--force installs it again)")
+                    println!("podnet {tag} is installed; nothing to do (--force installs it again)")
                 }
                 Outcome::Available { current, tag } => {
-                    println!("cfrs {current}; release {tag} is available (cfrs update)")
+                    println!("podnet {current}; release {tag} is available (podnet update)")
                 }
                 Outcome::Updated { from, to, path } => {
                     println!(
-                        "cfrs {from} -> {to}: {} (signature and SHA-256 checked)",
+                        "podnet {from} -> {to}: {} (signature and SHA-256 checked)",
                         path.display()
                     )
                 }
@@ -2535,9 +2542,10 @@ async fn async_main(cli: Cli) -> Result<()> {
             lines,
         } => instances_logs(&name, follow, lines).await,
         Command::Wait { name, timeout } => {
-            cfrs::instances::check_name(&name).map_err(|e| cfrs::exit::fault(Fault::Usage, e))?;
-            let dir = cfrs::instances::lookup_dir();
-            let doc = cfrs::detach::wait_ready_record(
+            podnet::instances::check_name(&name)
+                .map_err(|e| podnet::exit::fault(Fault::Usage, e))?;
+            let dir = podnet::instances::lookup_dir();
+            let doc = podnet::detach::wait_ready_record(
                 &dir,
                 &name,
                 std::time::Duration::from_secs(timeout),
@@ -2549,18 +2557,18 @@ async fn async_main(cli: Cli) -> Result<()> {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
             let mut script = Vec::new();
-            clap_complete::generate(shell, &mut cmd, "cfrs", &mut script);
+            clap_complete::generate(shell, &mut cmd, "podnet", &mut script);
             match std::io::Write::write_all(&mut std::io::stdout(), &script) {
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
                 other => other.context("writing the completion script"),
             }
         }
         Command::Ports(args) => {
-            let mut ports = cfrs::ports::listening_ports();
+            let mut ports = podnet::ports::listening_ports();
             if args.probe {
                 // Issue 119: a port in the LISTEN table can refuse each
                 // connection.
-                let (open, unreachable) = cfrs::ports::probe(&ports).await;
+                let (open, unreachable) = podnet::ports::probe(&ports).await;
                 ports = open;
                 if args.json {
                     println!(
@@ -2570,13 +2578,13 @@ async fn async_main(cli: Cli) -> Result<()> {
                     return Ok(());
                 }
                 for port in &unreachable {
-                    eprintln!("cfrs: ports: {port} listens, and refuses a connection");
+                    eprintln!("podnet: ports: {port} listens, and refuses a connection");
                 }
             }
             if args.json {
                 println!(
                     "{}",
-                    cfrs::status::stamped(serde_json::json!({ "ports": ports }))
+                    podnet::status::stamped(serde_json::json!({ "ports": ports }))
                 );
             } else {
                 for port in ports {
@@ -2589,64 +2597,67 @@ async fn async_main(cli: Cli) -> Result<()> {
             // Issue 95: a text over the limit is a usage mistake; a text
             // that is not a URL gets a warning (a QR code of any text is
             // valid).
-            if args.url.len() > cfrs::qr::MAX_BYTES {
-                return Err(cfrs::exit::fault(
+            if args.url.len() > podnet::qr::MAX_BYTES {
+                return Err(podnet::exit::fault(
                     Fault::Usage,
                     anyhow::anyhow!(
                         "the text is {} bytes; a QR code holds at most {} bytes",
                         args.url.len(),
-                        cfrs::qr::MAX_BYTES
+                        podnet::qr::MAX_BYTES
                     ),
                 ));
             }
-            if !cfrs::qr::looks_like_url(&args.url) {
+            if !podnet::qr::looks_like_url(&args.url) {
                 eprintln!(
-                    "cfrs: warning: {:?} is not a URL (scheme://...); the QR code holds the text as it is",
+                    "podnet: warning: {:?} is not a URL (scheme://...); the QR code holds the text as it is",
                     args.url
                 );
             }
-            print!("{}", cfrs::qr::render_terminal(&args.url)?);
+            print!("{}", podnet::qr::render_terminal(&args.url)?);
             Ok(())
         }
         Command::Demo(args) => demo(args).await,
         Command::Net(args) => net(args).await,
         Command::Warp(args) => warp(*args).await,
         Command::Relay(args) => relay(args).await,
-        Command::Pod { .. } => Err(cfrs::exit::fault(
+        Command::Pod { .. } => Err(podnet::exit::fault(
             Fault::Usage,
-            anyhow::anyhow!("cfrs pod runs before the runtime"),
+            anyhow::anyhow!("podnet pod runs before the runtime"),
         )),
         Command::Man(args) => {
             use clap::CommandFactory;
-            let manual = cfrs::manual::model::build(Cli::command());
-            let request = cfrs::manual::Request {
+            let manual = podnet::manual::model::build(Cli::command());
+            let request = podnet::manual::Request {
                 section: (!args.section.is_empty()).then(|| args.section.join(" ")),
                 no_pager: args.no_pager,
                 roff: args.roff,
                 json: args.json,
             };
-            let text = cfrs::manual::body(&manual, &request)
-                .map_err(|e| cfrs::exit::fault(cfrs::exit::Fault::Usage, anyhow::anyhow!(e)))?;
+            let text = podnet::manual::body(&manual, &request)
+                .map_err(|e| podnet::exit::fault(podnet::exit::Fault::Usage, anyhow::anyhow!(e)))?;
             let paged = !request.roff && !request.json;
-            cfrs::manual::pager::show(&text, request.no_pager || !paged)?;
+            podnet::manual::pager::show(&text, request.no_pager || !paged)?;
             Ok(())
         }
         Command::Doctor(args) if args.agent => {
-            let report = cfrs::agent::run(Duration::from_secs(args.timeout.max(3))).await;
+            let report = podnet::agent::run(Duration::from_secs(args.timeout.max(3))).await;
             if args.json {
-                println!("{}", cfrs::status::stamped(serde_json::to_value(&report)?));
+                println!(
+                    "{}",
+                    podnet::status::stamped(serde_json::to_value(&report)?)
+                );
             } else {
-                print!("{}", cfrs::agent::text(&report));
+                print!("{}", podnet::agent::text(&report));
             }
             Ok(())
         }
         Command::Doctor(args) => {
-            cfrs::udp::check_edge_env()?;
-            cfrs::udp::Choice::from_env()?;
-            let report = cfrs::doctor::run(cfrs::doctor::Options {
+            podnet::udp::check_edge_env()?;
+            podnet::udp::Choice::from_env()?;
+            let report = podnet::doctor::run(podnet::doctor::Options {
                 samples: args.samples as usize,
                 timeout: Duration::from_secs(args.timeout),
-                ..cfrs::doctor::Options::default()
+                ..podnet::doctor::Options::default()
             })
             .await;
             if args.json {
@@ -2661,20 +2672,20 @@ async fn async_main(cli: Cli) -> Result<()> {
         }
         Command::Autostart(args) => autostart(args.command),
         Command::Status { .. } => {
-            println!("{}", cfrs::status::document());
+            println!("{}", podnet::status::document());
             Ok(())
         }
         Command::BugReport { doctor } => {
             let report = if doctor {
-                let options = cfrs::doctor::Options {
+                let options = podnet::doctor::Options {
                     samples: 3,
                     ..Default::default()
                 };
-                Some(cfrs::doctor::run(options).await.to_json())
+                Some(podnet::doctor::run(options).await.to_json())
             } else {
                 None
             };
-            print!("{}", cfrs::bug_report::text(report.as_ref()));
+            print!("{}", podnet::bug_report::text(report.as_ref()));
             Ok(())
         }
     }
@@ -2691,7 +2702,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
     let token = match (&args.token, &args.credentials_file) {
         (Some(token), Some(path)) => {
             if std::env::var("TUNNEL_TOKEN").ok().as_deref() != Some(token.as_str()) {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Usage,
                     anyhow::anyhow!("give --token or --credentials-file, not both"),
                 ));
@@ -2705,10 +2716,10 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
         (token, _) => token.as_ref(),
     };
     if let Some(token) = token {
-        cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
+        podnet::report::hide(token);
+        config.credentials = podnet::config::parse_token(token).fault(Fault::Config)?;
     } else if let Some(path) = &args.credentials_file {
-        config.credentials = cfrs::config::parse_credentials_file(path).fault(Fault::Config)?;
+        config.credentials = podnet::config::parse_credentials_file(path).fault(Fault::Config)?;
     }
 
     if args.config.is_none() {
@@ -2717,7 +2728,9 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
             let target = ForwardTarget::parse(forward).fault(Fault::Usage)?;
             ingress = ingress.rule_with(IngressRule {
                 hostname: None,
-                path: Some(cfrs::ingress::PathPattern::prefix(cfrs::ws::DEFAULT_PATH)),
+                path: Some(podnet::ingress::PathPattern::prefix(
+                    podnet::ws::DEFAULT_PATH,
+                )),
                 service: Service::Forward(target),
                 origin: OriginOptions::default(),
             });
@@ -2737,7 +2750,7 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
             });
         }
         if ingress.is_empty() {
-            return Err(cfrs::exit::fault(
+            return Err(podnet::exit::fault(
                 Fault::Usage,
                 anyhow::anyhow!(
                     "choose an origin (--url, --unix, --port, --tcp, --hello-world) or --forward"
@@ -2775,16 +2788,16 @@ async fn tunnel(args: TunnelArgs) -> Result<()> {
 
 /// `--check`: print the report of the check, and fail when a check failed.
 async fn preflight(config: &Config, show: Show) -> Result<()> {
-    let report = cfrs::preflight::check(config).await;
+    let report = podnet::preflight::check(config).await;
     if show.json {
-        println!("{}", cfrs::status::stamped(report.to_json()));
+        println!("{}", podnet::status::stamped(report.to_json()));
     } else {
         print!("{}", report.text());
     }
     let failed = report
         .checks
         .iter()
-        .filter(|c| c.status == cfrs::preflight::Status::Fail)
+        .filter(|c| c.status == podnet::preflight::Status::Fail)
         .count();
     if failed > 0 {
         let err = anyhow::anyhow!(
@@ -2794,40 +2807,41 @@ async fn preflight(config: &Config, show: Show) -> Result<()> {
         // Issue 173: a failed check of the configuration gives its code
         // (78), as a run does. A failed origin or network check gives 1.
         return Err(match report.fault() {
-            Some(class) => cfrs::exit::fault(class, err),
+            Some(class) => podnet::exit::fault(class, err),
             None => err,
         });
     }
     Ok(())
 }
 
-/// The arguments of `autostart add` (issue 117): a first argument `cfrs`
-/// (or a path to it) is dropped, and the rest must parse as a cfrs command.
-/// Before, `-- cfrs warp up` was kept as `cfrs cfrs warp up`, which failed
+/// The arguments of `autostart add` (issue 117): a first argument `podnet`
+/// (or a path to it) is dropped, and the rest must parse as a podnet command.
+/// Before, `-- podnet warp up` was kept as `podnet podnet warp up`, which failed
 /// at each boot with no message.
 fn autostart_args(mut args: Vec<String>) -> Result<Vec<String>> {
-    let is_cfrs = |arg: &str| std::path::Path::new(arg).file_name() == Some("cfrs".as_ref());
-    if args.first().is_some_and(|a| is_cfrs(a)) {
+    let is_podnet = |arg: &str| std::path::Path::new(arg).file_name() == Some("podnet".as_ref());
+    if args.first().is_some_and(|a| is_podnet(a)) {
         args.remove(0);
     }
     // Issue 265: an entry with --detach forked at each boot, and its
     // service manager saw the parent end.
-    let kept = cfrs::detach::without_start_options(&args);
+    let kept = podnet::detach::without_start_options(&args);
     if kept != args {
-        eprintln!("cfrs: autostart add: --detach, --name, --ready-timeout and --no-restart are removed; the entry runs in the foreground");
+        eprintln!("podnet: autostart add: --detach, --name, --ready-timeout and --no-restart are removed; the entry runs in the foreground");
         args = kept;
     }
-    if let Err(err) = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(args.clone())) {
+    if let Err(err) = Cli::try_parse_from(std::iter::once("podnet".to_string()).chain(args.clone()))
+    {
         let first = err.to_string();
         let first = first
             .lines()
             .next()
             .unwrap_or_default()
             .trim_start_matches("error: ");
-        return Err(cfrs::exit::fault(
+        return Err(podnet::exit::fault(
             Fault::Usage,
             anyhow::anyhow!(
-                "autostart add: `cfrs {}` is not a cfrs command: {first}",
+                "autostart add: `podnet {}` is not a podnet command: {first}",
                 args.join(" ")
             ),
         ));
@@ -2836,27 +2850,30 @@ fn autostart_args(mut args: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn autostart(command: AutostartCommand) -> Result<()> {
-    use cfrs::autostart;
+    use podnet::autostart;
     match command {
         AutostartCommand::Add { name, args, from } => {
             let (args, secrets) = match from {
                 Some(instance) => {
-                    let dir = cfrs::instances::run_dir().fault(Fault::Config)?;
-                    let record = cfrs::instances::read(&dir, &instance).ok_or_else(|| {
-                        cfrs::exit::fault(
+                    let dir = podnet::instances::run_dir().fault(Fault::Config)?;
+                    let record = podnet::instances::read(&dir, &instance).ok_or_else(|| {
+                        podnet::exit::fault(
                             Fault::Usage,
-                            anyhow::anyhow!("no detached instance {instance} (cfrs ps)"),
+                            anyhow::anyhow!("no detached instance {instance} (podnet ps)"),
                         )
                     })?;
                     // Issue 265: the record has no secret; NAME.secrets has them.
-                    (record.args, cfrs::instances::read_secrets(&dir, &instance))
+                    (
+                        record.args,
+                        podnet::instances::read_secrets(&dir, &instance),
+                    )
                 }
                 None => (args, Vec::new()),
             };
             let args = autostart_args(args)?;
             let added = autostart::add(&name, &args, &secrets, autostart::PROGRAM_LIMIT)?;
             println!(
-                "cfrs: autostart {name} added ({}): {}",
+                "podnet: autostart {name} added ({}): {}",
                 added.way.name(),
                 added.detail
             );
@@ -2864,7 +2881,7 @@ fn autostart(command: AutostartCommand) -> Result<()> {
         }
         AutostartCommand::Remove { name } => {
             for line in autostart::remove(&name, autostart::PROGRAM_LIMIT)? {
-                println!("cfrs: {line}");
+                println!("podnet: {line}");
             }
             Ok(())
         }
@@ -2882,7 +2899,7 @@ fn autostart(command: AutostartCommand) -> Result<()> {
                 .args(&args)
                 .envs(vars)
                 .exec();
-            Err(anyhow::anyhow!("starting cfrs {}: {err}", args.join(" ")))
+            Err(anyhow::anyhow!("starting podnet {}: {err}", args.join(" ")))
         }
     }
 }
@@ -2903,7 +2920,7 @@ fn parse_door(spec: &str) -> Result<std::net::SocketAddr> {
 }
 
 /// One line of an exit (issue 147): `AMS NL 104.28.1.2 warp=on 42 ms`.
-fn exit_line(exit: &cfrs::warp::exit::Exit) -> String {
+fn exit_line(exit: &podnet::warp::exit::Exit) -> String {
     format!(
         "{} {} {} warp={} {} ms",
         exit.colo,
@@ -2985,12 +3002,12 @@ fn pick_optional_service(args: &TunnelArgs) -> Result<Option<Service>> {
 }
 
 async fn connect(args: ConnectArgs) -> Result<()> {
-    cfrs::init_crypto();
+    podnet::init_crypto();
     if !(args.remote.starts_with("wss://") || args.remote.starts_with("ws://")) {
-        return Err(cfrs::exit::fault(
+        return Err(podnet::exit::fault(
             Fault::Usage,
             anyhow::anyhow!(
-                "the remote {} is not a WebSocket URL: give wss://<host>/__cfrs/ws",
+                "the remote {} is not a WebSocket URL: give wss://<host>/__podnet/ws",
                 args.remote
             ),
         ));
@@ -3007,7 +3024,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     // Issue 205: the credential of a tunnel with --auth-user.
     let auth: Option<Arc<str>> = match (&args.auth_user, &args.auth_password_file) {
         (Some(user), Some(file)) => Some(Arc::from(
-            cfrs::proxy_auth::Credentials::load(user, file)
+            podnet::proxy_auth::Credentials::load(user, file)
                 .context("--auth-password-file")
                 .fault(Fault::Config)?
                 .basic_header(),
@@ -3049,7 +3066,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
         let ws = ws::dial(&args.remote, ws::DIAL_TIMEOUT, auth.as_deref())
             .await
             .map_err(|err| {
-                cfrs::exit::fault(
+                podnet::exit::fault(
                     Fault::Unavailable,
                     err.context(format!(
                         "the remote {} does not answer (--no-check starts without this check)",
@@ -3065,7 +3082,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     #[cfg(unix)]
     listens.extend(unix.iter().map(|(name, _)| name.clone()));
     for (name, listener) in tcp {
-        println!("cfrs: {name} -> {}", args.remote);
+        println!("podnet: {name} -> {}", args.remote);
         tasks.push(tokio::spawn(accept_loop(
             listener,
             args.remote.clone(),
@@ -3074,7 +3091,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
     }
     #[cfg(unix)]
     for (name, listener) in unix {
-        println!("cfrs: {name} -> {}", args.remote);
+        println!("podnet: {name} -> {}", args.remote);
         tasks.push(tokio::spawn(accept_unix(
             listener,
             args.remote.clone(),
@@ -3082,7 +3099,7 @@ async fn connect(args: ConnectArgs) -> Result<()> {
         )));
     }
     // Issue 207: the ready document of --detach and --name.
-    cfrs::detach::ready(serde_json::json!({
+    podnet::detach::ready(serde_json::json!({
         "remote": args.remote,
         "listen": listens.join(", "),
         "listeners": listens,
@@ -3152,8 +3169,8 @@ fn unix_listener(
     path: &std::path::Path,
     replace: bool,
 ) -> Result<(tokio::net::UnixListener, SocketFile)> {
-    cfrs::net::claim_socket_path(path, replace)?;
-    let listener = pod_netns::listen::bind_private(path)
+    podnet::net::claim_socket_path(path, replace)?;
+    let listener = podnet_netns::listen::bind_private(path)
         .with_context(|| format!("binding unix:{}", path.display()))?;
     let file = SocketFile {
         path: path.to_path_buf(),
@@ -3190,8 +3207,8 @@ async fn serve(args: ServeArgs) -> Result<()> {
     }
     let mut config = Config::default();
     if let Some(token) = &args.token {
-        cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
+        podnet::report::hide(token);
+        config.credentials = podnet::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Static {
         root: args.dir.clone(),
@@ -3207,20 +3224,20 @@ async fn serve(args: ServeArgs) -> Result<()> {
 /// `serve --local ADDR` (issue 307): serve the static files on a local
 /// listener, with the router of the tunnel, and provision no tunnel.
 async fn serve_local(args: &ServeArgs, local: &str) -> Result<()> {
-    let usage = |msg: String| cfrs::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
+    let usage = |msg: String| podnet::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
     if args.common.auth_user.is_some() {
         return Err(usage(
             "serve --local: --auth-user works only through a tunnel; a local listener checks no visitor"
                 .to_string(),
         ));
     }
-    let router = cfrs::service::static_router(&args.dir, args.spa)?;
+    let router = podnet::service::static_router(&args.dir, args.spa)?;
     let show = args.common.show();
     let (url, listen, server, _file) = if local.starts_with("unix:") {
         #[cfg(unix)]
         {
-            let path = match cfrs::vnet::proxy::ProxyListen::parse(local) {
-                Ok(cfrs::vnet::proxy::ProxyListen::Unix(path)) => path,
+            let path = match podnet::vnet::proxy::ProxyListen::parse(local) {
+                Ok(podnet::vnet::proxy::ProxyListen::Unix(path)) => path,
                 Ok(_) => unreachable!("a unix: address is a unix socket"),
                 Err(err) => return Err(usage(format!("--local {local}: {err:#}"))),
             };
@@ -3242,7 +3259,7 @@ async fn serve_local(args: &ServeArgs, local: &str) -> Result<()> {
             }
             // An address in use, or an address of no interface: exit 69.
             Err(err) => {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!("--local {local}: binding {addr}: {err}"),
                 ));
@@ -3257,7 +3274,7 @@ async fn serve_local(args: &ServeArgs, local: &str) -> Result<()> {
             None,
         )
     };
-    cfrs::detach::arm_stop();
+    podnet::detach::arm_stop();
     if show.json {
         let doc = serde_json::json!({
             "event": "ready",
@@ -3265,18 +3282,18 @@ async fn serve_local(args: &ServeArgs, local: &str) -> Result<()> {
             "listen": listen,
             "dir": args.dir.display().to_string(),
         });
-        println!("{}", cfrs::status::stamped(doc));
+        println!("{}", podnet::status::stamped(doc));
     } else {
         println!(
-            "cfrs: serve  {}  on {url}  (local, no tunnel)",
+            "podnet: serve  {}  on {url}  (local, no tunnel)",
             args.dir.display()
         );
     }
     // A QR code of a unix socket has no use.
     if show.qr && url.starts_with("http://") {
-        print!("{}", cfrs::qr::render_terminal(&url)?);
+        print!("{}", podnet::qr::render_terminal(&url)?);
     }
-    cfrs::detach::ready(serde_json::json!({ "url": url, "listen": listen }));
+    podnet::detach::ready(serde_json::json!({ "url": url, "listen": listen }));
     tokio::select! {
         _ = sleep_or_signal(args.common.run_for) => {}
         ended = server => {
@@ -3306,7 +3323,7 @@ fn share_mode(args: &ShareArgs) -> Result<ModeArg> {
     if args.dir.is_some() {
         wanted.push(("--dir", ModeArg::Upload));
     }
-    let usage = |msg: String| cfrs::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
+    let usage = |msg: String| podnet::exit::fault(Fault::Usage, anyhow::anyhow!(msg));
     if let [(a, _), (b, _), ..] = wanted[..] {
         return Err(usage(format!(
             "share: {a} and {b} are flags of two modes; give one"
@@ -3321,7 +3338,7 @@ fn share_mode(args: &ShareArgs) -> Result<ModeArg> {
         ))),
         (Some(mode), _) => Ok(mode),
         (None, Some((_, mode))) => Ok(*mode),
-        // Issue 250: a bare `cfrs share` does not open a public upload
+        // Issue 250: a bare `podnet share` does not open a public upload
         // session.
         (None, None) => Err(usage(
             "share: give a mode: --mode upload (or --dir DIR) to receive files, \
@@ -3353,13 +3370,13 @@ async fn share(args: ShareArgs) -> Result<()> {
             match std::fs::metadata(&path) {
                 Ok(meta) if meta.file_type().is_socket() => {}
                 Ok(_) => {
-                    return Err(cfrs::exit::fault(
+                    return Err(podnet::exit::fault(
                         Fault::Usage,
                         anyhow::anyhow!("--unix {}: not a unix socket", path.display()),
                     ))
                 }
                 Err(err) => {
-                    return Err(cfrs::exit::fault(
+                    return Err(podnet::exit::fault(
                         Fault::Unavailable,
                         anyhow::anyhow!("--unix {}: {err}", path.display()),
                     ))
@@ -3374,7 +3391,7 @@ async fn share(args: ShareArgs) -> Result<()> {
                 .fault(Fault::Usage)?;
             // A check sends no request to the origin: it only connects.
             if !args.common.check {
-                cfrs::ports::confirm_local_http(port).await?;
+                podnet::ports::confirm_local_http(port).await?;
             }
             ShareConfig::proxy(format!("127.0.0.1:{port}"))
         }
@@ -3389,8 +3406,8 @@ async fn share(args: ShareArgs) -> Result<()> {
 
     let mut config = Config::default();
     if let Some(token) = &args.token {
-        cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
+        podnet::report::hide(token);
+        config.credentials = podnet::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::Share(share_config.clone()));
     config = args.common.apply(config)?;
@@ -3415,8 +3432,8 @@ async fn share(args: ShareArgs) -> Result<()> {
 async fn demo(args: DemoArgs) -> Result<()> {
     let mut config = Config::default();
     if let Some(token) = &args.token {
-        cfrs::report::hide(token);
-        config.credentials = cfrs::config::parse_token(token).fault(Fault::Config)?;
+        podnet::report::hide(token);
+        config.credentials = podnet::config::parse_token(token).fault(Fault::Config)?;
     }
     config.ingress = Ingress::new().catch_all(Service::HelloWorld);
     config = args.common.apply(config)?;
@@ -3439,9 +3456,9 @@ fn default_upload_dir() -> PathBuf {
         .unwrap_or_default();
     let downloads = home.join("Downloads");
     if downloads.is_dir() {
-        downloads.join("cfrs")
+        downloads.join("podnet")
     } else {
-        home.join("cfrs-uploads")
+        home.join("podnet-uploads")
     }
 }
 
@@ -3483,7 +3500,7 @@ async fn run_tunnel(
             verified(show, url, checked.dns);
         }
     }
-    cfrs::detach::ready(tunnel_doc(&handle, handle.url(), verify));
+    podnet::detach::ready(tunnel_doc(&handle, handle.url(), verify));
     serve_until(&handle, wait(deadline, controls)).await?;
     handle.shutdown().await;
     Ok(())
@@ -3506,7 +3523,7 @@ async fn run_share(
         .to_string();
     let public = format!("{}{}", base.trim_end_matches('/'), path);
     // Issue 101: from the ready line on, a stop signal is a clean stop.
-    cfrs::detach::arm_stop();
+    podnet::detach::arm_stop();
     if show.json {
         println!(
             "{}",
@@ -3521,19 +3538,19 @@ async fn run_share(
         );
     } else {
         println!();
-        println!("  cfrs: session  {public}");
+        println!("  podnet: session  {public}");
         if let Some(pin) = &pin {
-            println!("  cfrs: PIN      {pin}");
+            println!("  podnet: PIN      {pin}");
         }
         println!(
-            "  cfrs: edge     {} ({})",
+            "  podnet: edge     {} ({})",
             handle.locations().join(", "),
             handle.leg()
         );
         println!();
     }
     if show.qr {
-        print!("{}", cfrs::qr::render_terminal(&public)?);
+        print!("{}", podnet::qr::render_terminal(&public)?);
     }
     if verify && handle.url().is_some() {
         let Some(check) = until_stop_or(deadline, handle.verify_url(&public, None)).await else {
@@ -3551,7 +3568,7 @@ async fn run_share(
     }
     let mut doc = tunnel_doc(&handle, Some(&public), verify);
     doc["pin"] = pin.clone().into();
-    cfrs::detach::ready(doc);
+    podnet::detach::ready(doc);
     let controls = handle.share_controls();
     serve_until(&handle, wait_with_idle(deadline, controls, idle_secs)).await?;
     handle.shutdown().await;
@@ -3569,7 +3586,7 @@ async fn run_demo(
     let deadline = deadline_of(run_for);
     if exit_on_verify {
         let Some(check) =
-            until_stop_or(deadline, handle.verify(Some("Hello, world! (cfrs)"))).await
+            until_stop_or(deadline, handle.verify(Some("Hello, world! (podnet)"))).await
         else {
             handle.shutdown().await;
             return Ok(());
@@ -3586,14 +3603,14 @@ async fn run_demo(
             verified(show, handle.url().unwrap_or(""), dns);
         } else {
             println!(
-                "  cfrs: PROOF   {} -> HTTP 200 (built-in hello world)",
+                "  podnet: PROOF   {} -> HTTP 200 (built-in hello world)",
                 handle.url().unwrap_or("")
             );
         }
         handle.shutdown().await;
         return Ok(());
     }
-    let Some(check) = until_stop_or(deadline, handle.verify(Some("Hello, world! (cfrs)"))).await
+    let Some(check) = until_stop_or(deadline, handle.verify(Some("Hello, world! (podnet)"))).await
     else {
         handle.shutdown().await;
         return Ok(());
@@ -3602,7 +3619,7 @@ async fn run_demo(
         handle.shutdown().await;
         return Err(err);
     }
-    cfrs::detach::ready(tunnel_doc(&handle, handle.url(), true));
+    podnet::detach::ready(tunnel_doc(&handle, handle.url(), true));
     serve_until(&handle, wait(deadline, vec![])).await?;
     handle.shutdown().await;
     Ok(())
@@ -3611,12 +3628,12 @@ async fn run_demo(
 /// Serve until `done`, or until each edge leg has stopped for a cause: then
 /// the command fails with the cause (exit 69).
 async fn serve_until(
-    handle: &cfrs::TunnelHandle,
+    handle: &podnet::TunnelHandle,
     done: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
     tokio::select! {
         _ = done => Ok(()),
-        reason = handle.stopped() => Err(cfrs::exit::fault(
+        reason = handle.stopped() => Err(podnet::exit::fault(
             Fault::Unavailable,
             anyhow::anyhow!("each edge connection stopped: {reason}"),
         )),
@@ -3624,7 +3641,11 @@ async fn serve_until(
 }
 
 /// The ready document of a tunnel for --detach.
-fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) -> serde_json::Value {
+fn tunnel_doc(
+    handle: &podnet::TunnelHandle,
+    url: Option<&str>,
+    verified: bool,
+) -> serde_json::Value {
     let mut doc = serde_json::json!({
         "url": url,
         "verified": verified && url.is_some(),
@@ -3632,29 +3653,29 @@ fn tunnel_doc(handle: &cfrs::TunnelHandle, url: Option<&str>, verified: bool) ->
         "locations": handle.locations(),
         "leg": handle.leg(),
     });
-    // Issue 203: the endpoint for cfrs connect.
+    // Issue 203: the endpoint for podnet connect.
     if let Some(path) = handle.forward_path() {
-        doc["forward"] = url.and_then(|u| cfrs::ws::forward_url(u, path)).into();
+        doc["forward"] = url.and_then(|u| podnet::ws::forward_url(u, path)).into();
         doc["forward_path"] = path.into();
     }
     doc
 }
 
 /// The ready document of a listener for --detach.
-fn listen_doc(listen: &cfrs::vnet::proxy::ProxyListen) -> serde_json::Value {
+fn listen_doc(listen: &podnet::vnet::proxy::ProxyListen) -> serde_json::Value {
     serde_json::json!({ "listen": listen.to_string() })
 }
 
-/// `cfrs relay` (issue 88).
+/// `podnet relay` (issue 88).
 async fn relay(args: RelayArgs) -> Result<()> {
-    use cfrs::relay_reverse as reverse;
-    let relay = cfrs::ws_relay::Relay::new(&args.relay, None).fault(Fault::Usage)?;
+    use podnet::relay_reverse as reverse;
+    let relay = podnet::ws_relay::Relay::new(&args.relay, None).fault(Fault::Usage)?;
     let dir = reverse::pairs_dir()?;
     match args.command {
         RelayCommand::Pair { json } => {
             let pair = reverse::pair(&relay).await.fault(Fault::Unavailable)?;
-            cfrs::report::hide(&pair.node_token);
-            cfrs::report::hide(&pair.stop_token);
+            podnet::report::hide(&pair.node_token);
+            podnet::report::hide(&pair.stop_token);
             let path = reverse::save(&pair, &dir)?;
             let left = pair.left().as_secs();
             if json {
@@ -3675,13 +3696,13 @@ async fn relay(args: RelayArgs) -> Result<()> {
                 println!("connect     {}", pair.connect_token);
                 println!();
                 println!(
-                    "On this host: cfrs relay node {} --to 127.0.0.1:22 --detach",
+                    "On this host: podnet relay node {} --to 127.0.0.1:22 --detach",
                     pair.name
                 );
                 println!("Give the connect token to the operator over a channel that you trust. The operator:");
                 println!(
-                    "  {}=<connect token> ssh -o ProxyCommand='cfrs relay connect {}' USER@{}",
-                    cfrs::relay_reverse::CONNECT_TOKEN_VARIABLE,
+                    "  {}=<connect token> ssh -o ProxyCommand='podnet relay connect {}' USER@{}",
+                    podnet::relay_reverse::CONNECT_TOKEN_VARIABLE,
                     pair.name,
                     pair.name
                 );
@@ -3694,8 +3715,8 @@ async fn relay(args: RelayArgs) -> Result<()> {
             // the expiry.
             let follow = pair.is_none().then_some(dir.as_path());
             let pair = reverse::load(&dir, pair.as_deref())?;
-            cfrs::report::hide(&pair.node_token);
-            cfrs::ws_relay::Relay::single(&pair.relay, None).fault(Fault::Config)?;
+            podnet::report::hide(&pair.node_token);
+            podnet::ws_relay::Relay::single(&pair.relay, None).fault(Fault::Config)?;
             tokio::select! {
                 result = reverse::run_node(follow, pair, &target) => result,
                 _ = shutdown_signal() => Ok(()),
@@ -3713,11 +3734,11 @@ async fn relay(args: RelayArgs) -> Result<()> {
                     let pair = reverse::load(&dir, Some(&name))
                         .context("no --token and no local pair file")?;
                     let relay =
-                        cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+                        podnet::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
                     (pair.connect_token, relay)
                 }
             };
-            cfrs::report::hide(&token);
+            podnet::report::hide(&token);
             match listen {
                 None => {
                     reverse::connect(
@@ -3733,7 +3754,7 @@ async fn relay(args: RelayArgs) -> Result<()> {
                 }
                 Some(listen) => {
                     let listen =
-                        cfrs::vnet::proxy::ProxyListen::parse(&listen).fault(Fault::Usage)?;
+                        podnet::vnet::proxy::ProxyListen::parse(&listen).fault(Fault::Usage)?;
                     let relay = Arc::new(relay);
                     let (name, token) = (Arc::new(name), Arc::new(token));
                     let serve = |io: Box<dyn RelayIo>| {
@@ -3748,14 +3769,14 @@ async fn relay(args: RelayArgs) -> Result<()> {
                         });
                     };
                     match listen {
-                        cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
+                        podnet::vnet::proxy::ProxyListen::Tcp(addr) => {
                             let listener = tokio::net::TcpListener::bind(addr).await?;
                             println!(
-                                "cfrs: relay    {} -> tcp://{}",
+                                "podnet: relay    {} -> tcp://{}",
                                 name,
                                 listener.local_addr()?
                             );
-                            cfrs::detach::arm_stop();
+                            podnet::detach::arm_stop();
                             loop {
                                 tokio::select! {
                                     accepted = listener.accept() => serve(Box::new(accepted?.0)),
@@ -3763,11 +3784,11 @@ async fn relay(args: RelayArgs) -> Result<()> {
                                 }
                             }
                         }
-                        cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-                            cfrs::net::claim_socket_path(&path, false)?;
-                            let listener = pod_netns::listen::bind_private(&path)?;
-                            println!("cfrs: relay    {} -> unix:{}", name, path.display());
-                            cfrs::detach::arm_stop();
+                        podnet::vnet::proxy::ProxyListen::Unix(path) => {
+                            podnet::net::claim_socket_path(&path, false)?;
+                            let listener = podnet_netns::listen::bind_private(&path)?;
+                            println!("podnet: relay    {} -> unix:{}", name, path.display());
+                            podnet::detach::arm_stop();
                             loop {
                                 tokio::select! {
                                     accepted = listener.accept() => serve(Box::new(accepted?.0)),
@@ -3783,23 +3804,23 @@ async fn relay(args: RelayArgs) -> Result<()> {
             let pair = reverse::load(&dir, Some(&name))?;
             // Issue 119: the local node of the pair stops first, so that it
             // does not connect again.
-            if let Ok(run) = cfrs::instances::run_dir() {
-                let records: Vec<_> = cfrs::instances::list(&run)
+            if let Ok(run) = podnet::instances::run_dir() {
+                let records: Vec<_> = podnet::instances::list(&run)
                     .into_iter()
                     .filter(|e| e.alive)
                     .map(|e| e.record)
                     .collect();
                 for instance in reverse::instances_of_pair(&records, &name) {
-                    cfrs::detach::stop(&run, &instance, Duration::from_secs(10))?;
-                    println!("cfrs: relay    stopped the node instance {instance}");
+                    podnet::detach::stop(&run, &instance, Duration::from_secs(10))?;
+                    println!("podnet: relay    stopped the node instance {instance}");
                 }
             }
-            let relay = cfrs::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
+            let relay = podnet::ws_relay::Relay::new(&pair.relay, None).fault(Fault::Config)?;
             reverse::stop(&relay, &pair)
                 .await
                 .fault(Fault::Unavailable)?;
             let _ = std::fs::remove_file(dir.join(format!("{name}.json")));
-            println!("cfrs: relay    {name} stopped");
+            println!("podnet: relay    {name} stopped");
             Ok(())
         }
     }
@@ -3857,10 +3878,10 @@ fn verified(show: Show, url: &str, dns: &str) {
     }
 }
 
-fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
+fn announce(handle: &podnet::TunnelHandle, show: Show) -> Result<()> {
     // Issue 101: from the ready line on, a stop signal is a clean stop
     // (before, only after the verify).
-    cfrs::detach::arm_stop();
+    podnet::detach::arm_stop();
     if show.json {
         let mut doc = serde_json::json!({
             "event": "ready",
@@ -3873,39 +3894,39 @@ fn announce(handle: &cfrs::TunnelHandle, show: Show) -> Result<()> {
             doc["forward"] = handle.forward().into();
             doc["forward_path"] = path.into();
         }
-        let doc = cfrs::status::stamped(doc);
+        let doc = podnet::status::stamped(doc);
         println!("{doc}");
     } else {
         announce_text(handle);
     }
     if show.qr {
         match handle.url() {
-            Some(url) => print!("{}", cfrs::qr::render_terminal(url)?),
+            Some(url) => print!("{}", podnet::qr::render_terminal(url)?),
             None => tracing::warn!(
-                "--qr: a named tunnel has its hostname in Cloudflare, and cfrs does not know it; no QR code"
+                "--qr: a named tunnel has its hostname in Cloudflare, and podnet does not know it; no QR code"
             ),
         }
     }
     Ok(())
 }
 
-fn announce_text(handle: &cfrs::TunnelHandle) {
+fn announce_text(handle: &podnet::TunnelHandle) {
     println!();
     match handle.url() {
-        Some(url) => println!("  cfrs: public   {url}"),
+        Some(url) => println!("  podnet: public   {url}"),
         None => println!(
-            "  cfrs: tunnel   {} (named; hostname configured in Cloudflare)",
+            "  podnet: tunnel   {} (named; hostname configured in Cloudflare)",
             handle.tunnel_id()
         ),
     }
     println!(
-        "  cfrs: edge     {} ({})",
+        "  podnet: edge     {} ({})",
         handle.locations().join(", "),
         handle.leg()
     );
     match (handle.forward(), handle.forward_path()) {
-        (Some(url), _) => println!("  cfrs: forward  {url} (cfrs connect {url} -L ...)"),
-        (None, Some(path)) => println!("  cfrs: forward  path {path} of the hostname"),
+        (Some(url), _) => println!("  podnet: forward  {url} (podnet connect {url} -L ...)"),
+        (None, Some(path)) => println!("  podnet: forward  path {path} of the hostname"),
         _ => {}
     }
     println!();
@@ -3917,8 +3938,8 @@ fn announce_text(handle: &cfrs::TunnelHandle) {
 async fn wait(deadline: Option<tokio::time::Instant>, controls: Vec<Arc<ShareControl>>) {
     tokio::select! {
         _ = shutdown_signal() => {}
-        _ = sleep_until_opt(deadline) => cfrs::detach::planned_end(),
-        _ = wait_controls(controls) => cfrs::detach::planned_end(),
+        _ = sleep_until_opt(deadline) => podnet::detach::planned_end(),
+        _ = wait_controls(controls) => podnet::detach::planned_end(),
     }
 }
 
@@ -3956,9 +3977,9 @@ async fn wait_with_idle(
     let watch = idle_watch(controls.clone(), idle_secs);
     tokio::select! {
         _ = shutdown_signal() => {}
-        _ = sleep_until_opt(deadline) => cfrs::detach::planned_end(),
-        _ = wait_controls(controls) => cfrs::detach::planned_end(),
-        _ = watch => cfrs::detach::planned_end(),
+        _ = sleep_until_opt(deadline) => podnet::detach::planned_end(),
+        _ = wait_controls(controls) => podnet::detach::planned_end(),
+        _ = watch => podnet::detach::planned_end(),
     }
 }
 
@@ -3993,7 +4014,7 @@ struct NetArgs {
 struct WarpArgs {
     /// The file that keeps the device and its MASQUE key, so that each run
     /// uses the same device. Default: warp.json in the state directory
-    /// (see CFRS_STATE_DIR in cfrs man environment).
+    /// (see PODNET_STATE_DIR in podnet man environment).
     #[arg(long, value_name = "PATH", global = true)]
     identity: Option<PathBuf>,
     /// Register a new device for this run only, and do not save it.
@@ -4007,7 +4028,7 @@ struct WarpArgs {
         long,
         value_name = "SPEC",
         global = true,
-        env = "CFRS_WARP_RESOLVERS",
+        env = "PODNET_WARP_RESOLVERS",
         hide_env_values = true,
         value_delimiter = ','
     )]
@@ -4017,7 +4038,7 @@ struct WarpArgs {
         long,
         value_name = "NAME",
         global = true,
-        env = "CFRS_WARP_DEVICE_NAME",
+        env = "PODNET_WARP_DEVICE_NAME",
         hide_env_values = true
     )]
     device_name: Option<String>,
@@ -4026,7 +4047,7 @@ struct WarpArgs {
         long,
         value_name = "MODEL",
         global = true,
-        env = "CFRS_WARP_DEVICE_MODEL",
+        env = "PODNET_WARP_DEVICE_MODEL",
         hide_env_values = true
     )]
     device_model: Option<String>,
@@ -4035,7 +4056,7 @@ struct WarpArgs {
         long,
         value_name = "LOCALE",
         global = true,
-        env = "CFRS_WARP_DEVICE_LOCALE",
+        env = "PODNET_WARP_DEVICE_LOCALE",
         hide_env_values = true
     )]
     device_locale: Option<String>,
@@ -4046,7 +4067,7 @@ struct WarpArgs {
         long,
         value_name = "MODE",
         global = true,
-        env = "CFRS_WARP_FRAGMENT", hide_env_values = true,
+        env = "PODNET_WARP_FRAGMENT", hide_env_values = true,
         num_args = 0..=1,
         default_missing_value = "record"
     )]
@@ -4057,7 +4078,7 @@ struct WarpArgs {
         long,
         value_name = "MIN[-MAX]",
         global = true,
-        env = "CFRS_WARP_FRAGMENT_SIZE",
+        env = "PODNET_WARP_FRAGMENT_SIZE",
         hide_env_values = true
     )]
     fragment_size: Option<String>,
@@ -4067,7 +4088,7 @@ struct WarpArgs {
         long,
         value_name = "NAME",
         global = true,
-        env = "CFRS_WARP_CC",
+        env = "PODNET_WARP_CC",
         hide_env_values = true
     )]
     cc: Option<String>,
@@ -4078,12 +4099,12 @@ struct WarpArgs {
         long,
         value_name = "SECS",
         global = true,
-        env = "CFRS_WARP_SESSION_MAX_AGE", hide_env_values = true,
+        env = "PODNET_WARP_SESSION_MAX_AGE", hide_env_values = true,
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     session_max_age: Option<u64>,
-    /// Do not try the WebSocket relay (--relay, CFRS_RELAY) when the direct
-    /// MASQUE path fails. Without it, cfrs tries the relay: the TLS to the
+    /// Do not try the WebSocket relay (--relay, PODNET_RELAY) when the direct
+    /// MASQUE path fails. Without it, podnet tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
     #[arg(long, global = true)]
     no_relay: bool,
@@ -4101,18 +4122,18 @@ struct WarpArgs {
         long,
         value_name = "PROTOCOL",
         global = true,
-        env = "CFRS_WARP_MASQUE_TRANSPORT", hide_env_values = true,
+        env = "PODNET_WARP_MASQUE_TRANSPORT", hide_env_values = true,
         value_parser = ["h2", "h3"]
     )]
     masque_transport: Option<String>,
     /// The leg of the tunnel: masque (the default) or wireguard (UDP to the
-    /// WireGuard front door, with the device of `cfrs warp export`, which
-    /// cfrs registers when the file has none).
+    /// WireGuard front door, with the device of `podnet warp export`, which
+    /// podnet registers when the file has none).
     #[arg(
         long,
         value_name = "TRANSPORT",
         global = true,
-        env = "CFRS_WARP_TRANSPORT", hide_env_values = true,
+        env = "PODNET_WARP_TRANSPORT", hide_env_values = true,
         value_parser = ["masque", "wireguard"]
     )]
     transport: Option<String>,
@@ -4122,7 +4143,7 @@ struct WarpArgs {
         long,
         value_name = "IP:PORT",
         global = true,
-        env = "CFRS_WARP_WG_ENDPOINT",
+        env = "PODNET_WARP_WG_ENDPOINT",
         hide_env_values = true
     )]
     wireguard_endpoint: Option<std::net::SocketAddr>,
@@ -4133,7 +4154,7 @@ struct WarpArgs {
         long,
         value_name = "CARRY",
         global = true,
-        env = "CFRS_WARP_CARRY", hide_env_values = true,
+        env = "PODNET_WARP_CARRY", hide_env_values = true,
         value_parser = ["none", "wg"]
     )]
     carry: Option<String>,
@@ -4143,7 +4164,7 @@ struct WarpArgs {
         long,
         value_name = "IP:PORT",
         global = true,
-        env = "CFRS_WARP_CARRY_ENDPOINT",
+        env = "PODNET_WARP_CARRY_ENDPOINT",
         hide_env_values = true
     )]
     carry_endpoint: Option<std::net::SocketAddr>,
@@ -4252,7 +4273,7 @@ enum WarpCommand {
             long = "local",
             value_name = "LISTEN=HOST:PORT",
             required = true,
-            env = "CFRS_WARP_FORWARD",
+            env = "PODNET_WARP_FORWARD",
             hide_env_values = true,
             value_delimiter = ','
         )]
@@ -4295,7 +4316,7 @@ enum WarpCommand {
         #[arg(
             long,
             value_name = "USER",
-            env = "CFRS_PROXY_USER",
+            env = "PODNET_PROXY_USER",
             hide_env_values = true,
             requires = "proxy_password_file"
         )]
@@ -4305,7 +4326,7 @@ enum WarpCommand {
         #[arg(
             long,
             value_name = "FILE",
-            env = "CFRS_PROXY_PASSWORD_FILE",
+            env = "PODNET_PROXY_PASSWORD_FILE",
             hide_env_values = true,
             requires = "proxy_user"
         )]
@@ -4319,7 +4340,7 @@ enum WarpCommand {
             short = 'r',
             long = "rule",
             value_name = "KIND:VALUE=ACTION",
-            env = "CFRS_WARP_RULES",
+            env = "PODNET_WARP_RULES",
             hide_env_values = true,
             value_delimiter = ','
         )]
@@ -4328,10 +4349,10 @@ enum WarpCommand {
         /// door of WARP (UDP 443), with no IP stack. UDP is not served. The
         /// rules (-r, --rules-file, --rule-default) apply; an address rule
         /// (cidr:) decides an address, not a name, as no name is resolved.
-        #[arg(long, env = "CFRS_WARP_L4", hide_env_values = true, conflicts_with_all = ["dns", "listen_identity"])]
+        #[arg(long, env = "PODNET_WARP_L4", hide_env_values = true, conflicts_with_all = ["dns", "listen_identity"])]
         l4: bool,
         /// The TLS name of the L4 door.
-        #[arg(long, value_name = "NAME", default_value = cfrs::warp::l4::L4_SNI, requires = "l4")]
+        #[arg(long, value_name = "NAME", default_value = podnet::warp::l4::L4_SNI, requires = "l4")]
         l4_sni: String,
         /// LISTEN=PATH: a listener whose clients use the WARP device of the
         /// identity file PATH (made when it does not exist: that registers
@@ -4340,11 +4361,11 @@ enum WarpCommand {
         #[arg(long, value_name = "LISTEN=PATH")]
         listen_identity: Vec<String>,
         /// A file with one rule on each line (# starts a comment), after
-        /// the --rule rules. cfrs reads it again when it changes.
+        /// the --rule rules. podnet reads it again when it changes.
         #[arg(
             long,
             value_name = "FILE",
-            env = "CFRS_WARP_RULES_FILE",
+            env = "PODNET_WARP_RULES_FILE",
             hide_env_values = true
         )]
         rules_file: Option<PathBuf>,
@@ -4363,7 +4384,7 @@ enum WarpCommand {
     /// Start WARP for this sandbox, in the background: a
     /// detached warp proxy on 127.0.0.1:PORT and on a unix socket, and an
     /// env file with the proxy variables. Later shells join it with
-    /// `eval "$(cfrs warp env)"`, `cfrs warp exec -- CMD`, `cfrs warp
+    /// `eval "$(podnet warp env)"`, `podnet warp exec -- CMD`, `podnet warp
     /// shell`, or --persist.
     Up {
         /// The TCP port of the proxy on 127.0.0.1.
@@ -4371,16 +4392,16 @@ enum WarpCommand {
         port: u16,
         /// Add a marked block to ~/.bashrc and ~/.profile: each new shell
         /// loads the env file, and an interactive shell runs under the pod
-        /// (static binaries and UDP go through WARP too). cfrs warp down
+        /// (static binaries and UDP go through WARP too). podnet warp down
         /// removes it.
         #[arg(long)]
         persist: bool,
         /// Also write the proxy variables to
-        /// $XDG_CONFIG_HOME/environment.d/90-cfrs-warp.conf (else
-        /// ~/.config/environment.d/90-cfrs-warp.conf): the systemd user
+        /// $XDG_CONFIG_HOME/environment.d/90-podnet-warp.conf (else
+        /// ~/.config/environment.d/90-podnet-warp.conf): the systemd user
         /// manager gives them to the programs of the next login (a
-        /// desktop, a user unit). cfrs warp down removes the file. A file
-        /// of that name that cfrs did not write is not changed.
+        /// desktop, a user unit). podnet warp down removes the file. A file
+        /// of that name that podnet did not write is not changed.
         #[arg(long)]
         env_d: bool,
         /// Seconds to wait for WARP to be ready.
@@ -4403,7 +4424,7 @@ enum WarpCommand {
         #[arg(
             long,
             value_name = "USER",
-            env = "CFRS_PROXY_USER",
+            env = "PODNET_PROXY_USER",
             hide_env_values = true,
             requires = "proxy_password_file"
         )]
@@ -4413,36 +4434,36 @@ enum WarpCommand {
         #[arg(
             long,
             value_name = "FILE",
-            env = "CFRS_PROXY_PASSWORD_FILE",
+            env = "PODNET_PROXY_PASSWORD_FILE",
             hide_env_values = true,
             requires = "proxy_user"
         )]
         proxy_password_file: Option<PathBuf>,
     },
-    /// Stop what cfrs warp up started, and remove its env file and its
+    /// Stop what podnet warp up started, and remove its env file and its
     /// block in ~/.bashrc and ~/.profile.
     Down,
-    /// Print the proxy variables of the running cfrs warp up, for
-    /// `eval "$(cfrs warp env)"`. Exit 69 with no output when warp up has no
+    /// Print the proxy variables of the running podnet warp up, for
+    /// `eval "$(podnet warp env)"`. Exit 69 with no output when warp up has no
     /// TCP listener (no proxy variables).
     Env,
-    /// Run a program under the pod of the running cfrs warp up: TCP, DNS
+    /// Run a program under the pod of the running podnet warp up: TCP, DNS
     /// and UDP go through WARP, also for static binaries.
     Exec {
-        /// A pod-netns rule, repeatable (see cfrs pod --help).
+        /// A podnet-netns rule, repeatable (see podnet pod --help).
         #[arg(short = 'r', long = "rule", value_name = "SPEC")]
         rules: Vec<String>,
         /// The program and its arguments.
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         program: Vec<String>,
     },
-    /// Run $SHELL under the pod of the running cfrs warp up. When it does
+    /// Run $SHELL under the pod of the running podnet warp up. When it does
     /// not run, the shell starts as it is (with the proxy variables when
     /// the env file is there).
     Shell,
     /// A byte pipe from stdin and stdout to HOST:PORT through WARP, for
-    /// `ssh -o ProxyCommand='cfrs warp nc %h %p'` and git over SSH.
-    /// It uses the running cfrs warp up, else a WARP session of its
+    /// `ssh -o ProxyCommand='podnet warp nc %h %p'` and git over SSH.
+    /// It uses the running podnet warp up, else a WARP session of its
     /// own.
     Nc {
         host: String,
@@ -4456,16 +4477,16 @@ enum WarpCommand {
         #[arg(short = 'u', long)]
         udp: bool,
         /// After the end of stdin, end when no data came for this many
-        /// seconds (default 3 with -u, else 5). TCP: cfrs then sends the FIN.
+        /// seconds (default 3 with -u, else 5). TCP: podnet then sends the FIN.
         #[arg(long, value_name = "SECS")]
         idle: Option<u64>,
         /// TCP: send the FIN at the end of stdin, then wait for the far end
-        /// to close (as nc -N). Without it, cfrs sends no FIN until the end:
+        /// to close (as nc -N). Without it, podnet sends no FIN until the end:
         /// some servers drop a half-closed connection before they answer.
         #[arg(short = 'N', long, conflicts_with = "udp")]
         shutdown: bool,
     },
-    /// Print an SSH config block and GIT_SSH_COMMAND that use cfrs warp nc.
+    /// Print an SSH config block and GIT_SSH_COMMAND that use podnet warp nc.
     /// With --write, --remove or --check: own the block in the SSH config
     /// file, between two marker lines.
     SshConfig {
@@ -4478,7 +4499,7 @@ enum WarpCommand {
         /// of the file that names the same pattern is an error (exit 1).
         #[arg(long, conflicts_with_all = ["remove", "check"])]
         write: bool,
-        /// Remove the block for --host (with no --host: each block of cfrs).
+        /// Remove the block for --host (with no --host: each block of podnet).
         #[arg(long, conflicts_with = "check")]
         remove: bool,
         /// Exit 1 when the block for --host is missing or names another
@@ -4493,7 +4514,7 @@ enum WarpCommand {
     /// CAP_NET_ADMIN and /dev/net/tun. Routes are not changed.
     Tun {
         /// The interface name.
-        #[arg(long, default_value = "cfrs0")]
+        #[arg(long, default_value = "podnet0")]
         interface: String,
         /// Send the whole host through WARP: host routes keep the
         /// MASQUE connection outside, default routes go to the TUN (IPv4 and
@@ -4505,7 +4526,7 @@ enum WarpCommand {
         detach: DetachArgs,
     },
     /// Run a program with all its traffic sent through WARP. No root and no
-    /// TUN device are necessary (pod-netns).
+    /// TUN device are necessary (podnet-netns).
     Run {
         /// The backend: auto, netns-raw, netns or seccomp. netns-raw moves the
         /// raw packets of a namespace through WARP (TCP, UDP, ICMP, IPv6; no
@@ -4513,7 +4534,7 @@ enum WarpCommand {
         /// UDP goes through WARP too.
         #[arg(long, default_value = "auto")]
         backend: String,
-        /// A pod-netns rule, repeatable: domain:NAME=PROXY,
+        /// A podnet-netns rule, repeatable: domain:NAME=PROXY,
         /// domain:.SUFFIX=PROXY, cidr:NET/LEN=PROXY; PROXY may be direct.
         #[arg(short = 'r', long = "rule", value_name = "SPEC")]
         rules: Vec<String>,
@@ -4523,8 +4544,8 @@ enum WarpCommand {
         /// Where a port that the program listens on is a unix socket
         /// (seccomp backend). The directory must be of this user and not
         /// writable by the group or others [default:
-        /// $XDG_RUNTIME_DIR/pod-netns-inbound, else
-        /// $TMPDIR/pod-netns-inbound-UID].
+        /// $XDG_RUNTIME_DIR/podnet-netns-inbound, else
+        /// $TMPDIR/podnet-netns-inbound-UID].
         #[arg(long, value_name = "DIR")]
         inbound_dir: Option<PathBuf>,
         /// The program and its arguments.
@@ -4533,7 +4554,7 @@ enum WarpCommand {
     },
 }
 
-async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
+async fn warp_client(args: &WarpArgs) -> Result<(podnet::warp::WarpClient, Option<PathBuf>)> {
     let (client, path) = warp_client_inner(args).await?;
     let peer = wireguard_peer(args).await?;
     let carry = carry_peer(args).await?;
@@ -4548,46 +4569,46 @@ async fn warp_client(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<
 
 /// The carried device of `--carry wg` (issues 154 and 155): warp-carry.json
 /// of the state directory, registered when the file has none.
-async fn carry_peer(args: &WarpArgs) -> Result<Option<cfrs::warp::wg::Peer>> {
+async fn carry_peer(args: &WarpArgs) -> Result<Option<podnet::warp::wg::Peer>> {
     if args.carry.as_deref() != Some("wg") {
         return Ok(None);
     }
-    let path = cfrs::state::state_dir()
+    let path = podnet::state::state_dir()
         .fault(Fault::Config)?
         .map(|dir| dir.join("warp-carry.json"))
-        .context("CFRS_STATE_DIR=none keeps no carried device; --carry wg needs one")
+        .context("PODNET_STATE_DIR=none keeps no carried device; --carry wg needs one")
         .fault(Fault::Config)?;
-    let exported = cfrs::warp::export::load_or_register(&path, false, None)
+    let exported = podnet::warp::export::load_or_register(&path, false, None)
         .await
         .fault(Fault::Unavailable)?;
-    let peer =
-        cfrs::warp::wg::Peer::from_exported(&exported, args.carry_endpoint).fault(Fault::Config)?;
+    let peer = podnet::warp::wg::Peer::from_exported(&exported, args.carry_endpoint)
+        .fault(Fault::Config)?;
     tracing::info!(endpoint = %peer.endpoint, "a second WireGuard device goes inside the tunnel");
     Ok(Some(peer))
 }
 
 /// The WireGuard peer of `--transport wireguard` (issue 152): the device of
 /// `warp export` (warp-wg.json of the state directory).
-async fn wireguard_peer(args: &WarpArgs) -> Result<Option<cfrs::warp::wg::Peer>> {
+async fn wireguard_peer(args: &WarpArgs) -> Result<Option<podnet::warp::wg::Peer>> {
     if args.transport.as_deref() != Some("wireguard") {
         return Ok(None);
     }
-    let path = cfrs::warp::export::default_path()
+    let path = podnet::warp::export::default_path()
         .fault(Fault::Config)?
-        .context("CFRS_STATE_DIR=none keeps no WireGuard device; --transport wireguard needs one")
+        .context("PODNET_STATE_DIR=none keeps no WireGuard device; --transport wireguard needs one")
         .fault(Fault::Config)?;
-    let exported = cfrs::warp::export::load_or_register(&path, false, None)
+    let exported = podnet::warp::export::load_or_register(&path, false, None)
         .await
         .fault(Fault::Unavailable)?;
-    let peer = cfrs::warp::wg::Peer::from_exported(&exported, args.wireguard_endpoint)
+    let peer = podnet::warp::wg::Peer::from_exported(&exported, args.wireguard_endpoint)
         .fault(Fault::Config)?;
     tracing::info!(endpoint = %peer.endpoint, "the tunnel goes on WireGuard (UDP)");
     Ok(Some(peer))
 }
 
 /// The MASQUE options of the command line.
-fn masque_options(args: &WarpArgs) -> cfrs::warp::MasqueOptions {
-    cfrs::warp::MasqueOptions {
+fn masque_options(args: &WarpArgs) -> podnet::warp::MasqueOptions {
+    podnet::warp::MasqueOptions {
         no_relay: args.no_relay,
         endpoint: args.masque_endpoint,
         sni: args.masque_sni.clone(),
@@ -4602,20 +4623,20 @@ fn identity_pairs(
     specs: &[String],
     main: Option<&std::path::Path>,
     listens: &[String],
-) -> Result<Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)>> {
+) -> Result<Vec<(podnet::vnet::proxy::ProxyListen, PathBuf)>> {
     // Issue 178: a listener of --listen is not a listener of an identity.
-    let mains: Vec<cfrs::vnet::proxy::ProxyListen> = listens
+    let mains: Vec<podnet::vnet::proxy::ProxyListen> = listens
         .iter()
         .flat_map(|l| l.split(','))
-        .filter_map(|l| cfrs::vnet::proxy::ProxyListen::parse(l.trim()).ok())
+        .filter_map(|l| podnet::vnet::proxy::ProxyListen::parse(l.trim()).ok())
         .collect();
-    let mut out: Vec<(cfrs::vnet::proxy::ProxyListen, PathBuf)> = Vec::new();
+    let mut out: Vec<(podnet::vnet::proxy::ProxyListen, PathBuf)> = Vec::new();
     for spec in specs {
         let (listen, path) = spec
             .split_once('=')
             .filter(|(l, p)| !l.is_empty() && !p.is_empty())
             .with_context(|| format!("{spec:?}: give LISTEN=PATH"))?;
-        let listen = cfrs::vnet::proxy::ProxyListen::parse(listen)?;
+        let listen = podnet::vnet::proxy::ProxyListen::parse(listen)?;
         let path = PathBuf::from(path);
         let same = |a: &std::path::Path, b: &std::path::Path| {
             a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
@@ -4637,8 +4658,8 @@ fn identity_pairs(
     Ok(out)
 }
 
-async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, Option<PathBuf>)> {
-    use cfrs::warp::WarpClient;
+async fn warp_client_inner(args: &WarpArgs) -> Result<(podnet::warp::WarpClient, Option<PathBuf>)> {
+    use podnet::warp::WarpClient;
     if args.ephemeral {
         return Ok((
             WarpClient::register().await.fault(Fault::Unavailable)?,
@@ -4650,7 +4671,7 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
         None => match WarpClient::default_identity_path().fault(Fault::Config)? {
             Some(path) => path,
             None => {
-                eprintln!("cfrs: CFRS_STATE_DIR=none: the WARP device is not saved");
+                eprintln!("podnet: PODNET_STATE_DIR=none: the WARP device is not saved");
                 return Ok((
                     WarpClient::register().await.fault(Fault::Unavailable)?,
                     None,
@@ -4667,43 +4688,43 @@ async fn warp_client_inner(args: &WarpArgs) -> Result<(cfrs::warp::WarpClient, O
 }
 
 async fn warp(mut args: WarpArgs) -> Result<()> {
-    // Issue 111: a bad CFRS_WARP_TCP_BURST fails before any network wait.
-    cfrs::warp::check_tcp_burst()?;
+    // Issue 111: a bad PODNET_WARP_TCP_BURST fails before any network wait.
+    podnet::warp::check_tcp_burst()?;
     // Issue 134: the congestion controller of the stack.
     if let Some(cc) = &args.cc {
-        cfrs::warp::ip::set_cc(cfrs::warp::ip::parse_cc(cc)?);
+        podnet::warp::ip::set_cc(podnet::warp::ip::parse_cc(cc)?);
     }
     // Issue 185: the renewal of the session.
     if let Some(secs) = args.session_max_age {
         if matches!(args.command, WarpCommand::Tun { .. }) {
-            return Err(cfrs::exit::fault(
+            return Err(podnet::exit::fault(
                 Fault::Usage,
                 anyhow::anyhow!("--session-max-age works with warp proxy, forward, run and up, not with warp tun"),
             ));
         }
-        cfrs::warp::live::set_max_age(Some(Duration::from_secs(secs)));
+        podnet::warp::live::set_max_age(Some(Duration::from_secs(secs)));
     }
     // Issue 145: the resolvers of the tunnel.
-    let resolvers = cfrs::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
-    cfrs::warp::proxy::set_resolvers(resolvers);
+    let resolvers = podnet::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
+    podnet::warp::proxy::set_resolvers(resolvers);
     // Issue 135: the split of the ClientHello of the MASQUE connection.
-    if let Some(split) = cfrs::tls_fragment::Split::parse(
+    if let Some(split) = podnet::tls_fragment::Split::parse(
         args.fragment_client_hello.as_deref().unwrap_or("off"),
         args.fragment_size.as_deref(),
     )
     .fault(Fault::Config)?
     {
-        cfrs::tls_fragment::set(split);
+        podnet::tls_fragment::set(split);
     }
     // Issue 141: the name, the model and the locale of a new device.
-    cfrs::warp::register::DeviceHints {
+    podnet::warp::register::DeviceHints {
         name: args.device_name.clone(),
         model: args.device_model.clone(),
         locale: args.device_locale.clone(),
     }
     .set()
     .fault(Fault::Usage)?;
-    // These commands use the running instance of cfrs warp up.
+    // These commands use the running instance of podnet warp up.
     match &args.command {
         WarpCommand::Up {
             tun: true,
@@ -4711,7 +4732,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             ..
         } => {
             let argv = warp_up_tun_args(&args, *ready_timeout);
-            let doc = cfrs::warp::up::start("cfrs warp tun --default-route --detach", &argv)?;
+            let doc = podnet::warp::up::start("podnet warp tun --default-route --detach", &argv)?;
             println!("{doc}");
             return Ok(());
         }
@@ -4733,17 +4754,17 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             };
             return warp_up(&args, *port, files, *ready_timeout, *replace, *dns, auth);
         }
-        WarpCommand::Down => return cfrs::warp::up::down(),
+        WarpCommand::Down => return podnet::warp::up::down(),
         WarpCommand::Env => {
-            let text = cfrs::warp::up::env_text()?;
+            let text = podnet::warp::up::env_text()?;
             // Issue 255: no proxy variables is not a success: a script
-            // that runs `eval "$(cfrs warp env)" && CMD` must not run CMD
+            // that runs `eval "$(podnet warp env)" && CMD` must not run CMD
             // with no proxy.
             if !text.contains("ALL_PROXY") {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!(
-                        "warp env: the TCP listener of cfrs warp up did not start, so there are no proxy variables; use: cfrs warp exec -- CMD"
+                        "warp env: the TCP listener of podnet warp up did not start, so there are no proxy variables; use: podnet warp exec -- CMD"
                     ),
                 ));
             }
@@ -4751,9 +4772,9 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             return Ok(());
         }
         WarpCommand::Exec { rules, program } => {
-            return Err(cfrs::warp::up::exec_in_pod(rules, program));
+            return Err(podnet::warp::up::exec_in_pod(rules, program));
         }
-        WarpCommand::Shell => return Err(cfrs::warp::up::shell()),
+        WarpCommand::Shell => return Err(podnet::warp::up::shell()),
         WarpCommand::SshConfig {
             host,
             write,
@@ -4763,13 +4784,13 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         } => {
             // Issue 252: a pattern with a newline wrote an own ProxyCommand.
             if let Some(host) = host {
-                cfrs::warp::ssh_config::check_host(host).fault(Fault::Usage)?;
+                podnet::warp::ssh_config::check_host(host).fault(Fault::Usage)?;
             }
             let exe = std::env::current_exe()?.canonicalize()?;
             if !(*write || *remove || *check) {
                 print!(
                     "{}",
-                    cfrs::warp::nc::ssh_config(&exe, host.as_deref().unwrap_or("*"))
+                    podnet::warp::nc::ssh_config(&exe, host.as_deref().unwrap_or("*"))
                 );
                 return Ok(());
             }
@@ -4783,11 +4804,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             shutdown,
             ..
         } => {
-            let relay = cfrs::ws_relay::Relay::from_env(None).fault(Fault::Config)?;
-            let io = cfrs::warp::nc::via_relay(&relay, host, *port)
+            let relay = podnet::ws_relay::Relay::from_env(None).fault(Fault::Config)?;
+            let io = podnet::warp::nc::via_relay(&relay, host, *port)
                 .await
                 .fault(Fault::Unavailable)?;
-            return cfrs::warp::nc::pipe(io, nc_end(*idle, *shutdown))
+            return podnet::warp::nc::pipe(io, nc_end(*idle, *shutdown))
                 .await
                 .fault(Fault::Unavailable);
         }
@@ -4798,7 +4819,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             idle,
             ..
         } => {
-            if let Some((out, back)) = cfrs::warp::nc::udp_via_running(host, *port).await? {
+            if let Some((out, back)) = podnet::warp::nc::udp_via_running(host, *port).await? {
                 return udp_nc(out, back, idle.unwrap_or(UDP_NC_IDLE)).await;
             }
         }
@@ -4809,8 +4830,8 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             shutdown,
             ..
         } => {
-            if let Some(io) = cfrs::warp::nc::via_running(host, *port).await? {
-                return cfrs::warp::nc::pipe(io, nc_end(*idle, *shutdown))
+            if let Some(io) = podnet::warp::nc::via_running(host, *port).await? {
+                return podnet::warp::nc::pipe(io, nc_end(*idle, *shutdown))
                     .await
                     .fault(Fault::Unavailable);
             }
@@ -4827,24 +4848,24 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         } => {
             let path = match export_identity.clone() {
                 Some(path) => path,
-                None => cfrs::warp::export::default_path()
+                None => podnet::warp::export::default_path()
                     .fault(Fault::Config)?
-                    .context("CFRS_STATE_DIR=none keeps no file; give --export-identity PATH")
+                    .context("PODNET_STATE_DIR=none keeps no file; give --export-identity PATH")
                     .fault(Fault::Config)?,
             };
             if *delete {
                 // Issue 178: a second --delete names the missing file.
-                if !cfrs::state::exists(&path).fault(Fault::Config)? {
-                    return Err(cfrs::exit::fault(
+                if !podnet::state::exists(&path).fault(Fault::Config)? {
+                    return Err(podnet::exit::fault(
                         Fault::Config,
                         anyhow::anyhow!("no exported device at {}", path.display()),
                     ));
                 }
-                let id = cfrs::warp::export::delete(&path, None)
+                let id = podnet::warp::export::delete(&path, None)
                     .await
                     .fault(Fault::Unavailable)?;
                 eprintln!(
-                    "cfrs: warp export: the device {id} is deleted, and {}",
+                    "podnet: warp export: the device {id} is deleted, and {}",
                     path.display()
                 );
                 return Ok(());
@@ -4856,33 +4877,34 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .is_none_or(|p| p == std::path::Path::new("-"));
             {
                 use std::io::IsTerminal as _;
-                cfrs::warp::export::check_sink(out.as_deref(), std::io::stdout().is_terminal())
+                podnet::warp::export::check_sink(out.as_deref(), std::io::stdout().is_terminal())
                     .fault(Fault::Usage)?;
             }
-            let exported = cfrs::warp::export::load_or_register(&path, *new, None)
+            let exported = podnet::warp::export::load_or_register(&path, *new, None)
                 .await
                 .fault(Fault::Unavailable)?;
-            let config = cfrs::warp::export::Config::of(&exported, endpoint.as_deref(), *keepalive)
-                .fault(Fault::Unavailable)?;
+            let config =
+                podnet::warp::export::Config::of(&exported, endpoint.as_deref(), *keepalive)
+                    .fault(Fault::Unavailable)?;
             let text = match format.as_str() {
                 "json" => format!("{:#}\n", config.json(&exported.device.id)),
                 _ => config.wg_quick(),
             };
             match out {
                 Some(file) if !to_stdout => {
-                    cfrs::warp::write_private_file(file, text.as_bytes())
+                    podnet::warp::write_private_file(file, text.as_bytes())
                         .with_context(|| format!("writing {}", file.display()))?;
-                    eprintln!("cfrs: warp export: wrote {}", file.display());
+                    eprintln!("podnet: warp export: wrote {}", file.display());
                 }
                 _ => {
-                    if cfrs::warp::export::tighten_stdout() {
-                        eprintln!("cfrs: warp export: the file of stdout is mode 0600 now (it holds the private key)");
+                    if podnet::warp::export::tighten_stdout() {
+                        eprintln!("podnet: warp export: the file of stdout is mode 0600 now (it holds the private key)");
                     }
                     print!("{text}");
                 }
             }
             eprintln!(
-                "cfrs: warp export: the device {} is in {} (cfrs warp export --delete removes it)",
+                "podnet: warp export: the device {} is in {} (podnet warp export --delete removes it)",
                 exported.device.id,
                 path.display()
             );
@@ -4896,8 +4918,8 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             check: true,
             ..
         } => {
-            let default = cfrs::warp::rules::Action::parse(rule_default).fault(Fault::Usage)?;
-            let table = cfrs::warp::rules::Table::build(rules, rules_file.as_deref(), default)
+            let default = podnet::warp::rules::Action::parse(rule_default).fault(Fault::Usage)?;
+            let table = podnet::warp::rules::Table::build(rules, rules_file.as_deref(), default)
                 .fault(Fault::Usage)?;
             for rule in &table.rules {
                 println!("rule        {}", rule.spec);
@@ -4915,7 +4937,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             let main = match &args.identity {
                 Some(path) => Some(path.clone()),
                 None if args.ephemeral => None,
-                None => cfrs::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
+                None => podnet::warp::WarpClient::default_identity_path().fault(Fault::Config)?,
             };
             identity_pairs(listen_identity, main.as_deref(), listen).fault(Fault::Usage)?;
         }
@@ -4934,32 +4956,32 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         // candidate directory; a stat error is a configuration error.
         let path = match args.identity.clone() {
             Some(path) => Some(path),
-            None => match cfrs::state::find_existing("warp.json").fault(Fault::Config)? {
+            None => match podnet::state::find_existing("warp.json").fault(Fault::Config)? {
                 Some(found) => {
                     args.identity = Some(found.clone());
                     Some(found)
                 }
-                None => cfrs::state::candidates(&|k| std::env::var_os(k))
+                None => podnet::state::candidates(&|k| std::env::var_os(k))
                     .and_then(|c| c.into_iter().next())
                     .map(|(_, dir)| dir.join("warp.json")),
             },
         };
         match path {
-            Some(path) if cfrs::state::exists(&path).fault(Fault::Config)? => {}
+            Some(path) if podnet::state::exists(&path).fault(Fault::Config)? => {}
             Some(path) => {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Config,
                     anyhow::anyhow!(
-                        "no WARP identity at {}; run cfrs warp register first",
+                        "no WARP identity at {}; run podnet warp register first",
                         path.display()
                     ),
                 ))
             }
             None => {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Config,
                     anyhow::anyhow!(
-                        "CFRS_STATE_DIR=none keeps no WARP identity; give --identity PATH"
+                        "PODNET_STATE_DIR=none keeps no WARP identity; give --identity PATH"
                     ),
                 ))
             }
@@ -4967,7 +4989,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
     }
     let (mut client, path) = warp_client(&args).await?;
     let masque = masque_options(&args);
-    let save = |client: &cfrs::warp::WarpClient| -> Result<()> {
+    let save = |client: &podnet::warp::WarpClient| -> Result<()> {
         if let Some(path) = &path {
             client.save(path)?;
         }
@@ -4981,7 +5003,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             save(&client)?;
             let mut account = client.account().await?;
             // Issue 116: the instance of warp up, with the account.
-            let instance = cfrs::warp::up::instance_state();
+            let instance = podnet::warp::up::instance_state();
             if json {
                 let active = warp_plus_label(&account) == "yes";
                 if let Some(doc) = account.as_object_mut() {
@@ -4994,7 +5016,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 return Ok(());
             }
             print_device(&client, path.as_deref());
-            println!("warp up     {}", cfrs::warp::up::instance_line(&instance));
+            println!("warp up     {}", podnet::warp::up::instance_line(&instance));
             let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("type        {}", field("account_type"));
             println!("warp+       {}", warp_plus_label(&account));
@@ -5012,7 +5034,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .fault(Fault::Usage)?;
                 let text = text.trim().to_string();
                 if text.is_empty() {
-                    return Err(cfrs::exit::fault(
+                    return Err(podnet::exit::fault(
                         Fault::Usage,
                         anyhow::anyhow!("no license key on stdin"),
                     ));
@@ -5021,11 +5043,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             } else {
                 key
             };
-            cfrs::report::hide(&key);
+            podnet::report::hide(&key);
             let account = client
                 .set_license(&key)
                 .await
-                .map_err(|err| cfrs::exit::fault(license_fault(&err), err))?;
+                .map_err(|err| podnet::exit::fault(license_fault(&err), err))?;
             save(&client)?;
             let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("license     set");
@@ -5091,11 +5113,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     }
                 }
                 if let Some((best, _)) = results.iter().find(|(_, r)| r.is_ok()) {
-                    println!("use         cfrs warp --masque-endpoint {best} ...");
+                    println!("use         podnet warp --masque-endpoint {best} ...");
                 }
             }
             if ok == 0 {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!("no front door answered"),
                 ));
@@ -5103,7 +5125,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         }
         WarpCommand::Exit { json, no_ipv6 } => {
             let stack = client.connect().await.fault(Fault::Unavailable)?;
-            let mut exit = cfrs::warp::exit::trace(&stack)
+            let mut exit = podnet::warp::exit::trace(&stack)
                 .await
                 .fault(Fault::Unavailable)?;
             // Issue 184: the IPv6 egress address changes with each session.
@@ -5111,7 +5133,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 if client.device().ipv6().is_none() {
                     exit.ipv6_error = Some("the device has no IPv6 address".into());
                 } else {
-                    match cfrs::warp::exit::egress_v6(&stack).await {
+                    match podnet::warp::exit::egress_v6(&stack).await {
                         Ok(ip) => exit.ipv6 = Some(ip),
                         Err(err) => exit.ipv6_error = Some(format!("{err:#}")),
                     }
@@ -5168,7 +5190,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             );
             // Issue 147: the exit of the session. It does not change the
             // exit code.
-            match cfrs::warp::exit::trace(&stack).await {
+            match podnet::warp::exit::trace(&stack).await {
                 Ok(exit) => println!("exit        {}", exit_line(&exit)),
                 Err(err) => println!("exit        - ({err:#})"),
             }
@@ -5177,7 +5199,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 178: the summary names the failed checks.
             let mut names: Vec<String> = Vec::new();
             // Issue 115: the UDP data path: a DNS query through the tunnel.
-            match cfrs::warp::proxy::check_data_path(&stack, true).await {
+            match podnet::warp::proxy::check_data_path(&stack, true).await {
                 Ok(took) => println!("OK          udp 1.1.1.1:53 (DNS) in {took:?}"),
                 Err(err) => {
                     failed += 1;
@@ -5189,7 +5211,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 let started = std::time::Instant::now();
                 let attempt = async {
                     // A name is resolved by DNS through the tunnel.
-                    let ip = cfrs::warp::proxy::resolve(&stack, &host).await?;
+                    let ip = podnet::warp::proxy::resolve(&stack, &host).await?;
                     let addr = std::net::SocketAddr::new(ip, port);
                     let conn = stack.tcp_connect(addr).await?;
                     Ok::<_, anyhow::Error>((addr, conn))
@@ -5213,7 +5235,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
             // Issue 95: a target that fails is a failure of the probe.
             if failed > 0 {
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!(
                         "{failed} of {total} targets failed through WARP: {}",
@@ -5241,20 +5263,20 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 150: the listeners of the other identities.
             let pairs =
                 identity_pairs(&listen_identity, path.as_deref(), &listen).fault(Fault::Usage)?;
-            cfrs::warp::proxy::set_max_connections(max_connections);
+            podnet::warp::proxy::set_max_connections(max_connections);
             // Issues 132 and 136: the rules of the destinations.
-            let default = cfrs::warp::rules::Action::parse(&rule_default).fault(Fault::Usage)?;
-            let table = cfrs::warp::rules::Table::build(&rules, rules_file.as_deref(), default)
+            let default = podnet::warp::rules::Action::parse(&rule_default).fault(Fault::Usage)?;
+            let table = podnet::warp::rules::Table::build(&rules, rules_file.as_deref(), default)
                 .fault(Fault::Usage)?;
-            cfrs::warp::rules::set(table);
+            podnet::warp::rules::set(table);
             if let Some(file) = rules_file {
-                cfrs::warp::rules::watch(rules, file, default);
+                podnet::warp::rules::watch(rules, file, default);
             }
             // Issue 146: the credentials of the clients.
             if let (Some(user), Some(file)) = (&proxy_user, &proxy_password_file) {
                 let credentials =
-                    cfrs::proxy_auth::Credentials::load(user, file).fault(Fault::Config)?;
-                cfrs::warp::proxy::set_credentials(credentials);
+                    podnet::proxy_auth::Credentials::load(user, file).fault(Fault::Config)?;
+                podnet::warp::proxy::set_credentials(credentials);
             }
             // Issue 117: the DNS listener is bound before the session, as
             // the proxy listeners.
@@ -5269,23 +5291,23 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             };
             let listens = listen
                 .iter()
-                .map(|l| cfrs::vnet::proxy::ProxyListen::parse(l))
+                .map(|l| podnet::vnet::proxy::ProxyListen::parse(l))
                 .collect::<Result<Vec<_>>>()
                 .fault(Fault::Usage)?;
             // Issue 97: each listener is bound on its own, before the WARP
             // session. A listener that the host refuses (EACCES on a TCP
             // bind) is reported; the proxy starts with the others.
-            let (bound, mut failed) = cfrs::warp::proxy::bind_all(&listens).await;
+            let (bound, mut failed) = podnet::warp::proxy::bind_all(&listens).await;
             let mut extra = Vec::new();
             for (listen, identity) in pairs {
-                match cfrs::warp::proxy::bind(&listen).await {
+                match podnet::warp::proxy::bind(&listen).await {
                     Ok(b) => extra.push((b, identity)),
                     Err(err) => failed.push((listen, err)),
                 }
             }
             for (listen, err) in &failed {
                 eprintln!(
-                    "cfrs: warp proxy: {} is not available: {err:#}",
+                    "podnet: warp proxy: {} is not available: {err:#}",
                     listen_doc(listen)["listen"].as_str().unwrap_or("?")
                 );
             }
@@ -5295,7 +5317,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     .map(|(_, err)| format!("{err:#}"))
                     .collect::<Vec<_>>()
                     .join("; ");
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!("warp proxy: a listener did not start: {list}"),
                 ));
@@ -5306,11 +5328,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 door.connection().await.fault(Fault::Unavailable)?;
                 let proxies: Vec<_> = bound
                     .into_iter()
-                    .map(|b| cfrs::warp::proxy::run_l4(door.clone(), b))
+                    .map(|b| podnet::warp::proxy::run_l4(door.clone(), b))
                     .collect();
                 for proxy in &proxies {
                     println!(
-                        "cfrs: warp proxy  {}  (L4: {l4_sni}, HTTP/3 on UDP; TCP only)",
+                        "podnet: warp proxy  {}  (L4: {l4_sni}, HTTP/3 on UDP; TCP only)",
                         listen_doc(&proxy.listen)["listen"].as_str().unwrap_or("?")
                     );
                 }
@@ -5321,7 +5343,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     .collect::<Vec<_>>()
                     .into();
                 doc["l4"] = true.into();
-                cfrs::detach::ready(doc);
+                podnet::detach::ready(doc);
                 sleep_or_signal(run_for).await;
                 for proxy in &proxies {
                     proxy.abort();
@@ -5332,17 +5354,17 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
-            cfrs::warp::proxy::health_log(live.clone());
+            podnet::warp::proxy::health_log(live.clone());
             if let Some(socket) = dns_socket {
-                cfrs::warp::proxy::serve_dns(live.clone(), socket);
+                podnet::warp::proxy::serve_dns(live.clone(), socket);
             }
             let mut proxies: Vec<_> = bound
                 .into_iter()
-                .map(|b| cfrs::warp::proxy::run(live.clone(), b))
+                .map(|b| podnet::warp::proxy::run(live.clone(), b))
                 .collect();
             let mut identities = Vec::new();
             for (b, identity) in extra {
-                let other = cfrs::warp::WarpClient::register_or_load(&identity)
+                let other = podnet::warp::WarpClient::register_or_load(&identity)
                     .await
                     .fault(Fault::Unavailable)?
                     .with_masque(masque.clone());
@@ -5351,7 +5373,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     .connect_live()
                     .await
                     .fault(Fault::Unavailable)?;
-                let proxy = cfrs::warp::proxy::run(other, b);
+                let proxy = podnet::warp::proxy::run(other, b);
                 identities.push(serde_json::json!({
                     "listen": listen_doc(&proxy.listen)["listen"],
                     "identity": identity.display().to_string(),
@@ -5361,13 +5383,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
             for proxy in &proxies {
                 match &proxy.listen {
-                    cfrs::vnet::proxy::ProxyListen::Tcp(addr) => {
-                        println!("cfrs: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
+                    podnet::vnet::proxy::ProxyListen::Tcp(addr) => {
+                        println!("podnet: warp proxy  socks5h://{addr}  (and HTTP CONNECT)");
                         println!("  export ALL_PROXY=socks5h://{addr} HTTPS_PROXY=http://{addr}");
                     }
-                    cfrs::vnet::proxy::ProxyListen::Unix(path) => {
-                        println!("cfrs: warp proxy  unix:{}", path.display());
-                        println!("  cfrs pod -x socks5://unix:{} -- PROGRAM", path.display());
+                    podnet::vnet::proxy::ProxyListen::Unix(path) => {
+                        println!("podnet: warp proxy  unix:{}", path.display());
+                        println!(
+                            "  podnet pod -x socks5://unix:{} -- PROGRAM",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -5388,7 +5413,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .collect::<Vec<_>>()
                 .into();
             doc["identities"] = identities.into();
-            cfrs::detach::ready(doc);
+            podnet::detach::ready(doc);
             sleep_or_signal(run_for).await;
             for proxy in &proxies {
                 proxy.abort();
@@ -5404,17 +5429,17 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 143: check each rule before any bind or session (exit 64).
             let rules = local
                 .iter()
-                .map(|spec| cfrs::warp::forward::Rule::parse(spec))
+                .map(|spec| podnet::warp::forward::Rule::parse(spec))
                 .collect::<Result<Vec<_>>>()
                 .fault(Fault::Usage)?;
             let mut bound = Vec::new();
             let mut failed = Vec::new();
             for rule in rules {
-                match cfrs::warp::proxy::bind(&rule.listen).await {
+                match podnet::warp::proxy::bind(&rule.listen).await {
                     Ok(b) => bound.push((b, rule)),
                     Err(err) => {
                         eprintln!(
-                            "cfrs: warp forward: {} is not available: {err:#}",
+                            "podnet: warp forward: {} is not available: {err:#}",
                             rule.target()
                         );
                         failed.push((rule, err));
@@ -5427,7 +5452,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     .map(|(_, err)| format!("{err:#}"))
                     .collect::<Vec<_>>()
                     .join("; ");
-                return Err(cfrs::exit::fault(
+                return Err(podnet::exit::fault(
                     Fault::Unavailable,
                     anyhow::anyhow!("warp forward: a listener did not start: {list}"),
                 ));
@@ -5436,16 +5461,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
-            cfrs::warp::proxy::health_log(live.clone());
+            podnet::warp::proxy::health_log(live.clone());
             let forwards: Vec<_> = bound
                 .into_iter()
-                .map(|(b, rule)| cfrs::warp::forward::run(live.clone(), b, rule, max_connections))
+                .map(|(b, rule)| podnet::warp::forward::run(live.clone(), b, rule, max_connections))
                 .collect();
             let mut docs = Vec::new();
             for forward in &forwards {
                 let listen = listen_doc(&forward.listen)["listen"].clone();
                 println!(
-                    "cfrs: warp forward  {}  ->  {} (through WARP)",
+                    "podnet: warp forward  {}  ->  {} (through WARP)",
                     listen.as_str().unwrap_or("?"),
                     forward.rule.target()
                 );
@@ -5464,7 +5489,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .into();
-            cfrs::detach::ready(doc);
+            podnet::detach::ready(doc);
             sleep_or_signal(run_for).await;
             for forward in &forwards {
                 forward.abort();
@@ -5484,7 +5509,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 102: a TUN that cannot be made, or a session that
             // cannot open, is an unavailable path (69), as for warp up --tun.
             let tun =
-                cfrs::warp::tun::Tun::create(&name, address, 1280).fault(Fault::Unavailable)?;
+                podnet::warp::tun::Tun::create(&name, address, 1280).fault(Fault::Unavailable)?;
             let session = client.connect_raw().await.fault(Fault::Unavailable)?;
             // The IPv6-only kit, 0001: the front door of the session, not
             // the first address of the device record.
@@ -5492,17 +5517,17 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .endpoint_in_use()
                 .map(|e| e.ip().to_string())
                 .unwrap_or_default();
-            println!("cfrs: tun      {} {address}/32 mtu 1280", tun.name);
+            println!("podnet: tun      {} {address}/32 mtu 1280", tun.name);
             if let Some(v6) = client.device().ipv6() {
                 match tun.add_ipv6(v6) {
-                    Ok(()) => println!("cfrs: tun      {} {v6}/128", tun.name),
+                    Ok(()) => println!("podnet: tun      {} {v6}/128", tun.name),
                     Err(err) => {
                         tracing::warn!(error = %format!("{err:#}"), "the TUN has no IPv6 address")
                     }
                 }
             }
             println!(
-                "cfrs: masque   {endpoint} (do not route this address into {})",
+                "podnet: masque   {endpoint} (do not route this address into {})",
                 tun.name
             );
             println!(
@@ -5528,16 +5553,16 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 // The front door of the session (or its proxy) must stay
                 // outside the TUN; the relay of a later session should,
                 // where a route to it exists.
-                let session_host = match cfrs::egress::proxy_for(&endpoint, 443) {
+                let session_host = match podnet::egress::proxy_for(&endpoint, 443) {
                     Some(proxy) => proxy.host().to_string(),
                     None => endpoint.clone(),
                 };
                 let mut relay_host = String::new();
                 if !args.no_relay {
-                    if let Ok(relay) = cfrs::ws_relay::Relay::from_env(None) {
+                    if let Ok(relay) = podnet::ws_relay::Relay::from_env(None) {
                         // Issue 105: a relay that is reached through the
                         // proxy needs no route of its own.
-                        relay_host = match cfrs::egress::proxy_for(relay.host(), relay.port()) {
+                        relay_host = match podnet::egress::proxy_for(relay.host(), relay.port()) {
                             Some(proxy) => proxy.host().to_string(),
                             None => relay.host().to_string(),
                         };
@@ -5547,12 +5572,12 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     if host.is_empty() {
                         return Vec::new();
                     }
-                    cfrs::resolve::resolve(&host).await.unwrap_or_default()
+                    podnet::resolve::resolve(&host).await.unwrap_or_default()
                 };
                 let required = addresses(session_host).await;
                 let mut optional = addresses(relay_host).await;
                 optional.retain(|ip| !required.contains(ip));
-                let routes = cfrs::warp::route::Routes::setup(
+                let routes = podnet::warp::route::Routes::setup(
                     &tun.name,
                     required,
                     optional,
@@ -5566,7 +5591,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 println!(
-                    "cfrs: routes   the default routes go to {}; outside: {}",
+                    "podnet: routes   the default routes go to {}; outside: {}",
                     tun.name,
                     if outside.is_empty() {
                         "none needed (the MASQUE connection goes through loopback or a connected subnet)".to_string()
@@ -5578,7 +5603,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             } else {
                 None
             };
-            cfrs::detach::ready(serde_json::json!({
+            podnet::detach::ready(serde_json::json!({
                 "tun": tun.name,
                 "address": address.to_string(),
                 "default_route": default_route,
@@ -5613,14 +5638,14 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                         if let Err(err) = up {
                             // #278: no session with half of the default
                             // routes; up() removed the half that was in.
-                            tracing::error!(error = %format!("{err:#}"), next_try_s = delay.as_secs(), "no default routes on the TUN; cfrs tries again");
+                            tracing::error!(error = %format!("{err:#}"), next_try_s = delay.as_secs(), "no default routes on the TUN; podnet tries again");
                             drop(current);
                             tokio::time::sleep(delay).await;
                             delay = (delay * 2).min(std::time::Duration::from_secs(30));
                             continue;
                         }
                     }
-                    if let Err(err) = cfrs::warp::tun::run(tun_ref, current).await {
+                    if let Err(err) = podnet::warp::tun::run(tun_ref, current).await {
                         tracing::warn!(error = %format!("{err:#}"), "the WARP session ended; opening a new one");
                     }
                     if let Some(routes) = routes_ref {
@@ -5636,7 +5661,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             drop(routes);
         }
         #[cfg(not(target_os = "linux"))]
-        WarpCommand::Tun { .. } => bail!("cfrs warp tun is available on Linux only"),
+        WarpCommand::Tun { .. } => bail!("podnet warp tun is available on Linux only"),
         WarpCommand::Up { .. }
         | WarpCommand::Down
         | WarpCommand::Export { .. }
@@ -5652,24 +5677,26 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             shutdown,
             ..
         } => {
-            // No cfrs warp up runs: a session of this process. Issue 115:
+            // No podnet warp up runs: a session of this process. Issue 115:
             // say so, because the two ways fail in other ways.
-            tracing::info!("cfrs warp up is not running; warp nc opens a WARP session of its own");
+            tracing::info!(
+                "podnet warp up is not running; warp nc opens a WARP session of its own"
+            );
             let stack = Arc::new(client.connect().await.fault(Fault::Unavailable)?);
             if udp {
-                let (out, back) = cfrs::warp::nc::udp_via_stack(stack, &host, port)
+                let (out, back) = podnet::warp::nc::udp_via_stack(stack, &host, port)
                     .await
                     .fault(Fault::Unavailable)?;
                 return udp_nc(out, back, idle.unwrap_or(UDP_NC_IDLE)).await;
             }
             let target = match host.parse::<std::net::IpAddr>() {
-                Ok(ip) => pod_netns::socks::ProxyHost::Ip(ip),
-                Err(_) => pod_netns::socks::ProxyHost::Domain(host.clone()),
+                Ok(ip) => podnet_netns::socks::ProxyHost::Ip(ip),
+                Err(_) => podnet_netns::socks::ProxyHost::Domain(host.clone()),
             };
-            let io = cfrs::warp::proxy::dial(stack, target, port)
+            let io = podnet::warp::proxy::dial(stack, target, port)
                 .await
                 .fault(Fault::Unavailable)?;
-            cfrs::warp::nc::pipe(Box::new(io), nc_end(idle, shutdown))
+            podnet::warp::nc::pipe(Box::new(io), nc_end(idle, shutdown))
                 .await
                 .fault(Fault::Unavailable)?;
         }
@@ -5684,20 +5711,20 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // raw packets: TCP, UDP, ICMP and IPv6 with no root. auto takes
             // it when this host can make the namespace.
             let raw = backend == "netns-raw"
-                || (backend == "auto" && rules.is_empty() && pod_netns::raw::available());
+                || (backend == "auto" && rules.is_empty() && podnet_netns::raw::available());
             if raw {
                 match warp_run_raw(&client, &program, keep_proxy_env).await {
                     Ok(code) => std::process::exit(code),
                     // Issue 251: the program cannot run. The proxy pod
                     // cannot run it either: exit 3, as the netns backend.
-                    Err(err) if err.downcast_ref::<pod_netns::raw::ExecError>().is_some() => {
-                        eprintln!("cfrs: warp run: {err:#}");
-                        std::process::exit(cfrs::exit::NO_BACKEND);
+                    Err(err) if err.downcast_ref::<podnet_netns::raw::ExecError>().is_some() => {
+                        eprintln!("podnet: warp run: {err:#}");
+                        std::process::exit(podnet::exit::NO_BACKEND);
                     }
                     Err(err) if backend == "auto" => {
                         tracing::info!(error = %format!("{err:#}"), "the netns-raw backend cannot run here; the pod with a proxy runs");
                     }
-                    Err(err) => return Err(cfrs::exit::fault(Fault::Unavailable, err)),
+                    Err(err) => return Err(podnet::exit::fault(Fault::Unavailable, err)),
                 }
             }
             let backend = if backend == "netns-raw" {
@@ -5706,14 +5733,14 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 backend
             };
             let socket =
-                std::env::temp_dir().join(format!("cfrs-warp-{}.sock", std::process::id()));
+                std::env::temp_dir().join(format!("podnet-warp-{}.sock", std::process::id()));
             let live = Arc::new(client)
                 .connect_live()
                 .await
                 .fault(Fault::Unavailable)?;
-            let proxy = cfrs::warp::proxy::serve(
+            let proxy = podnet::warp::proxy::serve(
                 live,
-                cfrs::vnet::proxy::ProxyListen::Unix(socket.clone()),
+                podnet::vnet::proxy::ProxyListen::Unix(socket.clone()),
             )
             .await?;
             let mut argv = vec![
@@ -5738,10 +5765,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
             argv.push("--".to_string());
             argv.extend(program);
-            // pod-netns makes its own runtime, so run it on a plain thread.
+            // podnet-netns makes its own runtime, so run it on a plain thread.
             let (done_tx, done_rx) = tokio::sync::oneshot::channel();
             std::thread::spawn(move || {
-                let _ = done_tx.send(pod_netns::main_with_args(&argv));
+                let _ = done_tx.send(podnet_netns::main_with_args(&argv));
             });
             let code = done_rx.await.unwrap_or(1);
             proxy.abort();
@@ -5752,11 +5779,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
     Ok(())
 }
 
-/// `cfrs warp run --backend netns-raw`: the program in a raw pod whose TUN
+/// `podnet warp run --backend netns-raw`: the program in a raw pod whose TUN
 /// packets go through WARP; a session that ends is opened again. Gives the
 /// exit code of the program.
 async fn warp_run_raw(
-    client: &cfrs::warp::WarpClient,
+    client: &podnet::warp::WarpClient,
     program: &[String],
     keep_proxy_env: bool,
 ) -> Result<i32> {
@@ -5765,16 +5792,16 @@ async fn warp_run_raw(
         .ipv4()
         .context("the device has no IPv4 address")?;
     let mut session = Some(client.connect_raw().await?);
-    let pod = pod_netns::raw::spawn(&pod_netns::raw::RawOptions {
+    let pod = podnet_netns::raw::spawn(&podnet_netns::raw::RawOptions {
         program: program.to_vec(),
         keep_proxy_env,
         v4,
         v6: client.device().ipv6(),
-        mtu: cfrs::warp::ip::TUNNEL_MTU,
+        mtu: podnet::warp::ip::TUNNEL_MTU,
         nameserver: std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)),
     })?;
     let pid = pod.pid;
-    let tun = cfrs::warp::tun::Tun::from_fd(pod.tun, "eth0")?;
+    let tun = podnet::warp::tun::Tun::from_fd(pod.tun, "eth0")?;
     tracing::info!(pid, "the program runs in a raw pod (netns-raw)");
     let carry = async {
         let mut delay = std::time::Duration::from_secs(1);
@@ -5795,14 +5822,14 @@ async fn warp_run_raw(
                     }
                 },
             };
-            if let Err(err) = cfrs::warp::tun::run(&tun, current).await {
+            if let Err(err) = podnet::warp::tun::run(&tun, current).await {
                 tracing::warn!(error = %format!("{err:#}"), "the WARP session ended; opening a new one");
             }
         }
     };
     let exited = async {
         loop {
-            if let Some(code) = pod_netns::raw::try_wait(pid) {
+            if let Some(code) = podnet_netns::raw::try_wait(pid) {
                 return code;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -5814,7 +5841,7 @@ async fn warp_run_raw(
     }
 }
 
-fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>) {
+fn print_device(client: &podnet::warp::WarpClient, path: Option<&std::path::Path>) {
     let device = client.device();
     println!("device      {}", device.id);
     println!("account     {}", device.account.id);
@@ -5836,7 +5863,7 @@ fn print_device(client: &cfrs::warp::WarpClient, path: Option<&std::path::Path>)
     println!("protocol    {}", device.policy.tunnel_protocol);
     match path {
         Some(path) => println!("saved       {}", path.display()),
-        None => println!("saved       no (--ephemeral or CFRS_STATE_DIR=none)"),
+        None => println!("saved       no (--ephemeral or PODNET_STATE_DIR=none)"),
     }
 }
 
@@ -5874,10 +5901,10 @@ enum NetCommand {
 #[derive(Args, Debug)]
 struct TailscaleArgs {
     /// The LocalAPI socket of tailscaled.
-    #[arg(long, default_value = pod_netns::tailscale::DEFAULT_SOCKET)]
+    #[arg(long, default_value = podnet_netns::tailscale::DEFAULT_SOCKET)]
     socket: String,
     /// Where to accept proxy clients: unix:/path or tcp://[bind:]port.
-    #[arg(long, default_value = "unix:/tmp/cfrssocks.sock")]
+    #[arg(long, default_value = "unix:/tmp/podnet-socks.sock")]
     listen: String,
     /// Port to use when a client omits one.
     #[arg(long, default_value_t = 80)]
@@ -5892,9 +5919,9 @@ struct SocksifyArgs {
     /// Directory to write and compile the shim into.
     #[arg(long)]
     out: Option<PathBuf>,
-    /// The unix socket of the front door (exported as CFRSSOCKS_PROXY). It
-    /// is not --proxy: that is the global proxy URL of cfrs.
-    #[arg(long, value_name = "PATH", default_value = "/tmp/cfrssocks.sock")]
+    /// The unix socket of the front door (exported as PODNET_SOCKS_PROXY). It
+    /// is not --proxy: that is the global proxy URL of podnet.
+    #[arg(long, value_name = "PATH", default_value = "/tmp/podnet-socks.sock")]
     socket: String,
     /// Log each redirect to stderr.
     #[arg(long)]
@@ -5908,7 +5935,7 @@ struct SocksifyArgs {
 struct TsShimsArgs {
     /// Directory for passwd, group, getent, id and fakepwd.so. It must
     /// belong to this user, and other users must not write it. Default:
-    /// `cfrs-ts-shims` in the first private directory that is not noexec
+    /// `podnet-ts-shims` in the first private directory that is not noexec
     /// (as for `net shim`).
     #[arg(long)]
     out: Option<PathBuf>,
@@ -5950,7 +5977,7 @@ struct ProxyArgs {
     #[command(flatten)]
     detach: DetachArgs,
     /// Where to accept proxy clients: unix:/path or tcp://[bind:]port.
-    #[arg(long, default_value = "unix:/tmp/cfrsnet.socks")]
+    #[arg(long, default_value = "unix:/tmp/podnet-vnet.socks")]
     listen: String,
     /// Name-to-address entries, repeatable: --map web=10.66.0.2
     #[arg(long = "map", value_name = "NAME=ADDR")]
@@ -5971,7 +5998,7 @@ struct ProxyArgs {
     #[arg(long)]
     switch: Option<String>,
     /// With a TCP --switch: read the shared token of the switch from this
-    /// file. Without it, the token is the variable CFRS_SWITCH_TOKEN.
+    /// file. Without it, the token is the variable PODNET_SWITCH_TOKEN.
     #[arg(long, value_name = "PATH", requires = "switch")]
     switch_token_file: Option<PathBuf>,
     /// The IPv4 address of this stack on the switch, for example 10.66.0.3.
@@ -5993,7 +6020,7 @@ struct ProxyArgs {
     #[arg(long, default_value_t = 1, requires = "switch")]
     seed: u64,
     /// With --switch: serve the shim control socket with this abstract name.
-    /// A shim program with CFRSNET_CONTROL=NAME that binds a virtual address
+    /// A shim program with PODNET_VNET_CONTROL=NAME that binds a virtual address
     /// can then accept connections from other hosts.
     #[arg(long)]
     control: Option<String>,
@@ -6006,12 +6033,12 @@ struct ProxyArgs {
 #[derive(Args, Debug)]
 struct SwitchArgs {
     /// Where to accept stacks: unix:/path or tcp://host:port. A TCP
-    /// listener needs a shared token (CFRS_SWITCH_TOKEN or
+    /// listener needs a shared token (PODNET_SWITCH_TOKEN or
     /// --switch-token-file); a unix listener takes the same user only.
-    #[arg(long, default_value = "unix:/tmp/cfrsnet.switch")]
+    #[arg(long, default_value = "unix:/tmp/podnet-vnet.switch")]
     listen: String,
     /// With a TCP --listen: read the shared token from this file. Without
-    /// it, the token is the variable CFRS_SWITCH_TOKEN. Each TCP peer must
+    /// it, the token is the variable PODNET_SWITCH_TOKEN. Each TCP peer must
     /// send it.
     #[arg(long, value_name = "PATH")]
     switch_token_file: Option<PathBuf>,
@@ -6025,7 +6052,7 @@ struct SwitchArgs {
 async fn net(args: NetArgs) -> Result<()> {
     match args.command {
         NetCommand::Demo => {
-            let report = cfrs::vnet::stack::loopback_proof();
+            let report = podnet::vnet::stack::loopback_proof();
             print!("{}", report.render());
             if !report.passed() {
                 bail!("userspace TCP proof did not complete");
@@ -6033,17 +6060,17 @@ async fn net(args: NetArgs) -> Result<()> {
             Ok(())
         }
         NetCommand::Doctor { json } => {
-            cfrs::udp::check_edge_env()?;
-            let mut probes = cfrs::vnet::doctor::run();
-            let target = cfrs::udp::probe_target();
+            podnet::udp::check_edge_env()?;
+            let mut probes = podnet::vnet::doctor::run();
+            let target = podnet::udp::probe_target();
             probes.push(
-                tokio::task::spawn_blocking(move || cfrs::vnet::doctor::udp_probe(target))
+                tokio::task::spawn_blocking(move || podnet::vnet::doctor::udp_probe(target))
                     .await
                     .context("the UDP probe")?,
             );
-            let verdict = cfrs::vnet::doctor::verdict(&probes);
+            let verdict = podnet::vnet::doctor::verdict(&probes);
             if json {
-                use cfrs::vnet::doctor::ProbeResult;
+                use podnet::vnet::doctor::ProbeResult;
                 let rows: Vec<_> = probes
                     .iter()
                     .map(|p| {
@@ -6058,15 +6085,17 @@ async fn net(args: NetArgs) -> Result<()> {
                     .collect();
                 println!(
                     "{}",
-                    cfrs::status::stamped(serde_json::json!({"probes": rows, "verdict": verdict}))
+                    podnet::status::stamped(
+                        serde_json::json!({"probes": rows, "verdict": verdict})
+                    )
                 );
                 return Ok(());
             }
-            print!("{}", cfrs::vnet::doctor::render(&probes));
-            print!("\n{}", cfrs::vnet::doctor::NEEDS);
+            print!("{}", podnet::vnet::doctor::render(&probes));
+            print!("\n{}", podnet::vnet::doctor::NEEDS);
             println!("\n{verdict}");
-            if verdict.starts_with("cfrsnet: not ready") {
-                println!("cfrsnet: the host conditions that cfrs handles: https://github.com/Azathothas/cfrs/blob/main/docs/target-environment.md");
+            if verdict.starts_with("podnet-vnet: not ready") {
+                println!("podnet-vnet: the host conditions that podnet handles: https://github.com/Azathothas/podnet/blob/main/docs/target-environment.md");
             }
             Ok(())
         }
@@ -6090,48 +6119,48 @@ async fn net(args: NetArgs) -> Result<()> {
                     serde_json::json!({
                         "v4_subnet": subnet.v4.to_string(),
                         "v6_subnet": subnet.v6.to_string(),
-                        "gateway_v4": subnet.gateway(cfrs::vnet::Family::V4).to_string(),
-                        "gateway_v6": subnet.gateway(cfrs::vnet::Family::V6).to_string(),
+                        "gateway_v4": subnet.gateway(podnet::vnet::Family::V4).to_string(),
+                        "gateway_v6": subnet.gateway(podnet::vnet::Family::V6).to_string(),
                         "examples": examples,
                     })
                 );
                 return Ok(());
             }
-            println!("cfrsnet: v4 subnet {}", subnet.v4);
-            println!("cfrsnet: v6 subnet {}", subnet.v6);
+            println!("podnet-vnet: v4 subnet {}", subnet.v4);
+            println!("podnet-vnet: v6 subnet {}", subnet.v6);
             println!(
-                "cfrsnet: gateway  {} / {}",
-                subnet.gateway(cfrs::vnet::Family::V4),
-                subnet.gateway(cfrs::vnet::Family::V6)
+                "podnet-vnet: gateway  {} / {}",
+                subnet.gateway(podnet::vnet::Family::V4),
+                subnet.gateway(podnet::vnet::Family::V6)
             );
             // Issue 254: the columns have names.
-            println!("cfrsnet: {:<20} ABSTRACT SOCKET", "ADDRESS");
+            println!("podnet-vnet: {:<20} ABSTRACT SOCKET", "ADDRESS");
             for port in [53u16, 80, 443, 8080] {
                 let addr = VirtAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(10, 66, 0, 2)), port);
-                println!("cfrsnet: {addr:<20} \\0{}", addr.abstract_name()?);
+                println!("podnet-vnet: {addr:<20} \\0{}", addr.abstract_name()?);
             }
             Ok(())
         }
         NetCommand::Proxy(args) => net_proxy(args).await,
         NetCommand::Switch(args) => {
-            let listen = cfrs::vnet::proxy::ProxyListen::parse(&args.listen)?;
+            let listen = podnet::vnet::proxy::ProxyListen::parse(&args.listen)?;
             // Issue 309: a TCP switch needs a shared token.
-            let token =
-                cfrs::vnet::switch::token(args.switch_token_file.as_deref()).fault(Fault::Usage)?;
+            let token = podnet::vnet::switch::token(args.switch_token_file.as_deref())
+                .fault(Fault::Usage)?;
             if let Some(token) = &token {
-                cfrs::report::hide(token);
+                podnet::report::hide(token);
             }
-            if matches!(listen, cfrs::vnet::proxy::ProxyListen::Tcp(_)) && token.is_none() {
+            if matches!(listen, podnet::vnet::proxy::ProxyListen::Tcp(_)) && token.is_none() {
                 return Err(anyhow::anyhow!(
                     "a TCP switch needs a shared token: set {}, or give --switch-token-file",
-                    cfrs::vnet::switch::TOKEN_VARIABLE
+                    podnet::vnet::switch::TOKEN_VARIABLE
                 ))
                 .fault(Fault::Usage);
             }
-            let switch = cfrs::vnet::switch::serve(listen, token).await?;
+            let switch = podnet::vnet::switch::serve(listen, token).await?;
             // Issue 300: the bound address (a TCP port 0 gives the port).
-            println!("cfrs: switch   {}", switch.listen);
-            cfrs::detach::ready(listen_doc(&switch.listen));
+            println!("podnet: switch   {}", switch.listen);
+            podnet::detach::ready(listen_doc(&switch.listen));
             sleep_or_signal(args.run_for).await;
             switch.abort();
             Ok(())
@@ -6147,15 +6176,15 @@ fn net_shim(args: ShimArgs) -> Result<()> {
         .out
         .clone()
         .map(Ok)
-        .unwrap_or_else(|| cfrs::state::exec_dir("cfrsnet"))?;
-    let shim = match cfrs::vnet::shim::locate() {
+        .unwrap_or_else(|| podnet::state::exec_dir("podnet-vnet"))?;
+    let shim = match podnet::vnet::shim::locate() {
         Some(shim) if args.out.is_none() => shim,
-        _ => cfrs::vnet::shim::build(&directory)?,
+        _ => podnet::vnet::shim::build(&directory)?,
     };
-    let options = cfrs::vnet::shim::ShimOptions {
+    let options = podnet::vnet::shim::ShimOptions {
         log: args.log,
         map_loopback: args.map_loopback,
-        ..cfrs::vnet::shim::ShimOptions::default()
+        ..podnet::vnet::shim::ShimOptions::default()
     };
     let env = options.environment(&shim.path);
     if args.json {
@@ -6165,8 +6194,8 @@ fn net_shim(args: ShimArgs) -> Result<()> {
             .collect();
         println!("{}", serde_json::to_string_pretty(&object)?);
     } else {
-        println!("cfrs: shim     {}", shim.path.display());
-        println!("cfrs: origin   {:?}", shim.origin);
+        println!("podnet: shim     {}", shim.path.display());
+        println!("podnet: origin   {:?}", shim.origin);
         for (key, value) in &env {
             println!("  export {key}={value}");
         }
@@ -6186,22 +6215,22 @@ fn probability(value: &str) -> std::result::Result<f64, String> {
 }
 
 async fn net_proxy(args: ProxyArgs) -> Result<()> {
-    use cfrs::vnet::proxy::{ProxyListen, Resolver};
+    use podnet::vnet::proxy::{ProxyListen, Resolver};
 
     let mut _link = None;
     let net = match &args.switch {
-        None => Arc::new(cfrs::vnet::NetStack::loopback()),
+        None => Arc::new(podnet::vnet::NetStack::loopback()),
         Some(switch) => {
             let address = args
                 .address
                 .context("--switch needs --address, the address of this stack")
                 .fault(Fault::Usage)?;
-            let config = cfrs::vnet::StackConfig {
+            let config = podnet::vnet::StackConfig {
                 local_v4: address,
-                ..cfrs::vnet::StackConfig::default()
+                ..podnet::vnet::StackConfig::default()
             };
-            let net = Arc::new(cfrs::vnet::NetStack::over_link(config));
-            let faults = cfrs::vnet::switch::Faults {
+            let net = Arc::new(podnet::vnet::NetStack::over_link(config));
+            let faults = podnet::vnet::switch::Faults {
                 drop: args.drop,
                 duplicate: args.duplicate,
                 reorder: args.reorder,
@@ -6211,40 +6240,40 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
                 .context("--switch")
                 .fault(Fault::Usage)?;
             // Issue 309: a TCP switch needs its shared token.
-            let token =
-                cfrs::vnet::switch::token(args.switch_token_file.as_deref()).fault(Fault::Usage)?;
+            let token = podnet::vnet::switch::token(args.switch_token_file.as_deref())
+                .fault(Fault::Usage)?;
             if let Some(token) = &token {
-                cfrs::report::hide(token);
+                podnet::report::hide(token);
             }
             if matches!(switch, ProxyListen::Tcp(_)) && token.is_none() {
                 return Err(anyhow::anyhow!(
                     "a TCP switch needs its token: set {}, or give --switch-token-file",
-                    cfrs::vnet::switch::TOKEN_VARIABLE
+                    podnet::vnet::switch::TOKEN_VARIABLE
                 ))
                 .fault(Fault::Usage);
             }
             _link = Some(
-                cfrs::vnet::switch::attach(&net, &switch, faults, token.as_deref())
+                podnet::vnet::switch::attach(&net, &switch, faults, token.as_deref())
                     .await
                     .fault(Fault::Unavailable)?,
             );
             #[cfg(target_os = "linux")]
             {
                 if let Some(name) = &args.control {
-                    cfrs::vnet::switch::serve_control(net.clone(), name)?;
-                    println!("cfrs: control  \\0{name}  (CFRSNET_CONTROL={name})");
+                    podnet::vnet::switch::serve_control(net.clone(), name)?;
+                    println!("podnet: control  \\0{name}  (PODNET_VNET_CONTROL={name})");
                 }
                 for spec in &args.imports {
                     let virt: VirtAddr = spec.trim().parse()?;
-                    cfrs::vnet::switch::import(net.clone(), virt)?;
-                    println!("cfrs: import   {virt}");
+                    podnet::vnet::switch::import(net.clone(), virt)?;
+                    println!("podnet: import   {virt}");
                 }
             }
             match &switch {
                 ProxyListen::Unix(path) => {
-                    println!("cfrs: switch   unix:{} as {address}", path.display())
+                    println!("podnet: switch   unix:{} as {address}", path.display())
                 }
-                ProxyListen::Tcp(addr) => println!("cfrs: switch   tcp://{addr} as {address}"),
+                ProxyListen::Tcp(addr) => println!("podnet: switch   tcp://{addr} as {address}"),
             }
             net
         }
@@ -6263,7 +6292,7 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
         );
     }
     let listen = ProxyListen::parse(&args.listen)?;
-    let mut proxy = cfrs::vnet::proxy::serve(net.clone(), listen, resolver, args.port).await?;
+    let mut proxy = podnet::vnet::proxy::serve(net.clone(), listen, resolver, args.port).await?;
     for spec in &args.forwards {
         let (virt, real) = spec
             .split_once('=')
@@ -6275,11 +6304,11 @@ async fn net_proxy(args: ProxyArgs) -> Result<()> {
             let real = dial_real.clone();
             async move { real.dial().await }
         });
-        println!("cfrs: forward  {virt} -> {}", real.describe());
+        println!("podnet: forward  {virt} -> {}", real.describe());
     }
     // Issue 300: the bound address (a TCP port 0 gives the port).
-    println!("cfrs: proxy    {}", proxy.listen);
-    cfrs::detach::ready(listen_doc(&proxy.listen));
+    println!("podnet: proxy    {}", proxy.listen);
+    podnet::detach::ready(listen_doc(&proxy.listen));
     sleep_or_signal(args.run_for).await;
     proxy.abort();
     Ok(())
@@ -6341,8 +6370,8 @@ trait DialStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> DialStream for T {}
 
 async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
-    use cfrs::vnet::proxy::ProxyListen;
-    use cfrs::vnet::tailscale::{self, Dialer};
+    use podnet::vnet::proxy::ProxyListen;
+    use podnet::vnet::tailscale::{self, Dialer};
 
     let listen = ProxyListen::parse(&args.listen)?;
     // The LocalAPI socket of tailscaled must answer before the front door
@@ -6359,10 +6388,10 @@ async fn net_tailscale(args: TailscaleArgs) -> Result<()> {
         .fault(Fault::Unavailable)?;
     let proxy = tailscale::serve(Dialer::new(&args.socket), listen, args.port).await?;
     // Issue 300: the bound address (a TCP port 0 gives the port).
-    println!("cfrs: proxy    {}", proxy.listen);
-    println!("cfrs: localapi {}", args.socket);
-    println!("cfrs: note     run tailscaled with --tun=userspace-networking");
-    println!("cfrs: shim     eval \"$(cfrs net socksify --socket <listen-path>)\"");
+    println!("podnet: proxy    {}", proxy.listen);
+    println!("podnet: localapi {}", args.socket);
+    println!("podnet: note     run tailscaled with --tun=userspace-networking");
+    println!("podnet: shim     eval \"$(podnet net socksify --socket <listen-path>)\"");
     sleep_or_signal(args.run_for).await;
     proxy.abort();
     Ok(())
@@ -6388,10 +6417,10 @@ fn net_socksify(args: SocksifyArgs) -> Result<()> {
         .out
         .clone()
         .map(Ok)
-        .unwrap_or_else(|| cfrs::state::exec_dir("cfrssocks"))?;
-    let shim = match cfrs::vnet::shim::locate_socks() {
+        .unwrap_or_else(|| podnet::state::exec_dir("podnet-socks"))?;
+    let shim = match podnet::vnet::shim::locate_socks() {
         Some(shim) if args.out.is_none() => shim,
-        _ => cfrs::vnet::shim::build_socks(&directory)?,
+        _ => podnet::vnet::shim::build_socks(&directory)?,
     };
     let preload = match std::env::var("LD_PRELOAD") {
         Ok(existing) if !existing.is_empty() => format!("{}:{existing}", shim.path.display()),
@@ -6399,26 +6428,26 @@ fn net_socksify(args: SocksifyArgs) -> Result<()> {
     };
     let mut environment = vec![
         ("LD_PRELOAD".to_string(), preload),
-        ("CFRSSOCKS_PROXY".to_string(), args.socket.clone()),
+        ("PODNET_SOCKS_PROXY".to_string(), args.socket.clone()),
     ];
     if args.log {
-        environment.push(("CFRSSOCKS_LOG".to_string(), "1".to_string()));
+        environment.push(("PODNET_SOCKS_LOG".to_string(), "1".to_string()));
     }
     if !args.json {
-        eprintln!("cfrs: shim     {}", shim.path.display());
-        eprintln!("cfrs: origin   {:?}", shim.origin);
+        eprintln!("podnet: shim     {}", shim.path.display());
+        eprintln!("podnet: origin   {:?}", shim.origin);
     }
     print_environment(environment, args.json, "export ")
 }
 
 fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
-    use cfrs::vnet::tailscale_ssh;
+    use podnet::vnet::tailscale_ssh;
 
     let directory = args
         .out
         .clone()
         .map(Ok)
-        .unwrap_or_else(|| cfrs::state::exec_dir("cfrs-ts-shims"))?;
+        .unwrap_or_else(|| podnet::state::exec_dir("podnet-ts-shims"))?;
     let mut user = tailscale_ssh::current_user();
     if let Some(name) = args.user {
         user.name = name;
@@ -6435,19 +6464,19 @@ fn net_ts_shims(args: TsShimsArgs) -> Result<()> {
     let shims = tailscale_ssh::install(&directory, std::slice::from_ref(&user))?;
     let environment = tailscale_ssh::client_environment(&shims);
     if !args.json {
-        println!("cfrs: shims    {}", shims.dir.display());
+        println!("podnet: shims    {}", shims.dir.display());
         println!(
-            "cfrs: user     {} uid={} gid={}",
+            "podnet: user     {} uid={} gid={}",
             user.name, user.uid, user.gid
         );
-        println!("cfrs: passwd   {}", shims.passwd.display());
-        println!("cfrs: fakepwd  {}", shims.fakepwd.display());
+        println!("podnet: passwd   {}", shims.passwd.display());
+        println!("podnet: fakepwd  {}", shims.fakepwd.display());
         println!(
-            "cfrs: daemon   PATH={}:$PATH tailscaled ... --statedir {}",
+            "podnet: daemon   PATH={}:$PATH tailscaled ... --statedir {}",
             shims.dir.display(),
             shims.dir.display()
         );
-        println!("cfrs: note     --statedir lets the daemon keep its SSH host keys");
+        println!("podnet: note     --statedir lets the daemon keep its SSH host keys");
     }
     print_environment(environment, args.json, "  export ")
 }
@@ -6473,7 +6502,7 @@ mod tests {
         let mut screens = Vec::new();
         let mut root = Cli::command();
         root.build();
-        walk(&root, "cfrs".into(), &mut screens);
+        walk(&root, "podnet".into(), &mut screens);
         let mut faults = Vec::new();
         for (path, help) in &screens {
             for line in help.lines() {
@@ -6503,7 +6532,7 @@ mod tests {
         assert!(faults.is_empty(), "{}", faults.join("\n"));
         let completions = &screens
             .iter()
-            .find(|(p, _)| p == "cfrs completions")
+            .find(|(p, _)| p == "podnet completions")
             .unwrap()
             .1;
         assert!(completions.contains("PowerShell"), "{completions}");
@@ -6523,7 +6552,7 @@ mod tests {
         assert!(ended.is_err(), "the watch ended at the first check");
     }
 
-    /// E1: each command of cfrs is in one group of the top help.
+    /// E1: each command of podnet is in one group of the top help.
     #[test]
     fn each_command_is_in_one_help_group() {
         let cmd = Cli::command();
@@ -6554,7 +6583,7 @@ mod tests {
     #[test]
     fn a_foreground_server_with_no_terminal_gets_one_line() {
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let tunnel = argv(&["cfrs", "tunnel", "--url", "http://localhost:1"]);
+        let tunnel = argv(&["podnet", "tunnel", "--url", "http://localhost:1"]);
         let line = foreground_hint(Some("tunnel"), &tunnel, false, true).unwrap();
         assert!(
             line.contains("--detach") && line.contains("--run-for"),
@@ -6590,24 +6619,24 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            run(&["cfrs", "--no-autoupdate", "tunnel", "run", "--token", "T"]),
-            ["cfrs", "tunnel", "--token", "T"]
+            run(&["podnet", "--no-autoupdate", "tunnel", "run", "--token", "T"]),
+            ["podnet", "tunnel", "--token", "T"]
         );
         assert_eq!(
-            run(&["cfrs", "tunnel", "--loglevel", "debug", "--url", "u"]),
-            ["cfrs", "tunnel", "-v", "--url", "u"]
+            run(&["podnet", "tunnel", "--loglevel", "debug", "--url", "u"]),
+            ["podnet", "tunnel", "-v", "--url", "u"]
         );
         assert_eq!(
-            run(&["cfrs", "tunnel", "--loglevel=warn"]),
-            ["cfrs", "tunnel", "-q"]
+            run(&["podnet", "tunnel", "--loglevel=warn"]),
+            ["podnet", "tunnel", "-q"]
         );
         assert_eq!(
-            run(&["cfrs", "tunnel", "--loglevel", "info"]),
-            ["cfrs", "tunnel"]
+            run(&["podnet", "tunnel", "--loglevel", "info"]),
+            ["podnet", "tunnel"]
         );
         // Not for another command, and not after --.
         let other = [
-            "cfrs",
+            "podnet",
             "warp",
             "run",
             "--",
@@ -6616,11 +6645,11 @@ mod tests {
             "--no-autoupdate",
         ];
         assert_eq!(run(&other), other);
-        let other = ["cfrs", "serve", "--name", "tunnel", "--dir", "run"];
+        let other = ["podnet", "serve", "--name", "tunnel", "--dir", "run"];
         assert_eq!(run(&other), other);
         // A parse of the result works.
         let parsed = top_command().try_get_matches_from(run(&[
-            "cfrs",
+            "podnet",
             "tunnel",
             "run",
             "--no-autoupdate",
@@ -6631,7 +6660,7 @@ mod tests {
         ]));
         assert!(parsed.is_ok(), "{parsed:?}");
         let err = top_command()
-            .try_get_matches_from(["cfrs", "tunnel", "--logfile", "x"])
+            .try_get_matches_from(["podnet", "tunnel", "--logfile", "x"])
             .unwrap_err();
         let hints = usage_hints(&err);
         assert!(
@@ -6654,24 +6683,27 @@ mod tests {
         let tunnel = help(&["tunnel"]);
         assert!(tunnel.contains("Examples:"), "{tunnel}");
         assert!(
-            tunnel.contains("cfrs tunnel --url http://127.0.0.1:8080"),
+            tunnel.contains("podnet tunnel --url http://127.0.0.1:8080"),
             "{tunnel}"
         );
-        assert!(!tunnel.contains("cfrs warp"), "{tunnel}");
+        assert!(!tunnel.contains("podnet warp"), "{tunnel}");
         let node = help(&["relay", "node"]);
-        assert!(node.contains("cfrs relay node --to 127.0.0.1:22"), "{node}");
-        assert_eq!(
-            example_path(&Cli::command(), "cfrs warp proxy -r 1080"),
-            "cfrs warp proxy"
+        assert!(
+            node.contains("podnet relay node --to 127.0.0.1:22"),
+            "{node}"
         );
-        // Each example belongs to a command (not to cfrs alone).
-        for e in cfrs::manual::facts::EXAMPLES
+        assert_eq!(
+            example_path(&Cli::command(), "podnet warp proxy -r 1080"),
+            "podnet warp proxy"
+        );
+        // Each example belongs to a command (not to podnet alone).
+        for e in podnet::manual::facts::EXAMPLES
             .iter()
-            .filter(|e| e.command.starts_with("cfrs "))
+            .filter(|e| e.command.starts_with("podnet "))
         {
             assert_ne!(
                 example_path(&Cli::command(), e.command),
-                "cfrs",
+                "podnet",
                 "{}",
                 e.command
             );
@@ -6682,11 +6714,11 @@ mod tests {
     #[test]
     fn a_word_that_is_no_command_gets_a_hint() {
         let hint = |w: &str| word_hint(w).unwrap_or_default();
-        assert!(hint("8080").contains("cfrs tunnel --url http://localhost:8080"));
-        assert!(hint("https://example.org").contains("cfrs tunnel --url https://example.org"));
-        assert!(hint("wss://x.example").contains("cfrs connect --local"));
-        assert!(hint("/").contains("cfrs serve --dir /"));
-        assert!(hint("Cargo.toml").contains("cfrs share --mode download --file Cargo.toml"));
+        assert!(hint("8080").contains("podnet tunnel --url http://localhost:8080"));
+        assert!(hint("https://example.org").contains("podnet tunnel --url https://example.org"));
+        assert!(hint("wss://x.example").contains("podnet connect --local"));
+        assert!(hint("/").contains("podnet serve --dir /"));
+        assert!(hint("Cargo.toml").contains("podnet share --mode download --file Cargo.toml"));
         assert_eq!(word_hint("tunel"), None);
         assert_eq!(word_hint("123456"), None, "not a port");
     }
@@ -6695,18 +6727,18 @@ mod tests {
     #[test]
     fn an_unknown_command_names_the_version() {
         let err = top_command()
-            .try_get_matches_from(["cfrs", "8080"])
+            .try_get_matches_from(["podnet", "8080"])
             .unwrap_err();
         let lines = usage_hints(&err);
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines[1].contains(env!("CARGO_PKG_VERSION")), "{lines:?}");
-        assert!(lines[1].contains("cfrs update --check"), "{lines:?}");
+        assert!(lines[1].contains("podnet update --check"), "{lines:?}");
         let err = top_command()
-            .try_get_matches_from(["cfrs", "tunnel", "--bogus"])
+            .try_get_matches_from(["podnet", "tunnel", "--bogus"])
             .unwrap_err();
         assert!(usage_hints(&err)[0].contains("'--bogus'"));
         let err = top_command()
-            .try_get_matches_from(["cfrs", "tunnel", "--port", "x"])
+            .try_get_matches_from(["podnet", "tunnel", "--port", "x"])
             .unwrap_err();
         assert!(
             usage_hints(&err).is_empty(),
@@ -6715,7 +6747,7 @@ mod tests {
     }
 
     fn share_args(argv: &[&str]) -> ShareArgs {
-        let cli = Cli::try_parse_from(["cfrs", "share"].iter().chain(argv)).unwrap();
+        let cli = Cli::try_parse_from(["podnet", "share"].iter().chain(argv)).unwrap();
         match cli.command {
             Command::Share(args) => args,
             other => panic!("{other:?}"),
@@ -6743,7 +6775,7 @@ mod tests {
             &["--mode", "proxy", "--dir", "d"][..],
         ] {
             let err = mode(bad).unwrap_err();
-            assert_eq!(cfrs::exit::code_of(&err), 64, "{bad:?}: {err}");
+            assert_eq!(podnet::exit::code_of(&err), 64, "{bad:?}: {err}");
         }
     }
 
@@ -6802,7 +6834,7 @@ mod tests {
     #[test]
     fn warp_up_tun_keeps_the_front_door() {
         let cli = Cli::try_parse_from([
-            "cfrs",
+            "podnet",
             "warp",
             "--masque-endpoint",
             "[2606:4700:103::2]:443",
@@ -6826,7 +6858,7 @@ mod tests {
         assert!(argv.contains(&"--ephemeral".to_string()));
         let tun = argv.iter().position(|a| a == "tun").unwrap();
         assert!(argv.iter().position(|a| a == "--masque-endpoint").unwrap() < tun);
-        let parsed = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(argv));
+        let parsed = Cli::try_parse_from(std::iter::once("podnet".to_string()).chain(argv));
         assert!(parsed.is_ok(), "the argv parses");
     }
 
@@ -6839,26 +6871,26 @@ mod tests {
             !unix_only.iter().any(|c| c.contains("eval")),
             "{unix_only:?}"
         );
-        assert!(unix_only.iter().any(|c| c.contains("cfrs warp exec")));
+        assert!(unix_only.iter().any(|c| c.contains("podnet warp exec")));
         assert!(unix_only.iter().any(|c| c.contains("ssh-config")));
         let tcp = agent_commands(true, true);
         assert!(tcp[0].starts_with("eval"), "{tcp:?}");
         let direct = agent_commands(false, true);
-        assert_eq!(direct, ["cfrs agent status", "cfrs agent down"]);
+        assert_eq!(direct, ["podnet agent status", "podnet agent down"]);
     }
 
     // Issue 115: with the TCP listener refused, the first line names the
     // unix socket that works.
     #[test]
     fn the_warp_up_summary_starts_with_what_works() {
-        let socket = std::path::Path::new("/run/cfrs/warp.sock");
+        let socket = std::path::Path::new("/run/podnet/warp.sock");
         let lines = up_summary(false, 40000, true, socket);
         assert_eq!(lines.len(), 1);
         assert!(
-            lines[0].contains("runs on unix:/run/cfrs/warp.sock"),
+            lines[0].contains("runs on unix:/run/podnet/warp.sock"),
             "{lines:?}"
         );
-        assert!(lines[0].contains("cfrs warp exec"), "{lines:?}");
+        assert!(lines[0].contains("podnet warp exec"), "{lines:?}");
         assert!(up_summary(true, 40000, true, socket).is_empty());
         assert_eq!(up_summary(true, 40000, false, socket).len(), 1);
     }
@@ -6875,7 +6907,7 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             install_signals();
-            cfrs::detach::arm_stop();
+            podnet::detach::arm_stop();
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(200));
                 // SAFETY: kill() to this process.
@@ -6937,11 +6969,11 @@ mod tests {
     /// Each example of the manual is a command line that the parser accepts.
     #[test]
     fn each_example_of_the_manual_parses() {
-        for example in cfrs::manual::facts::EXAMPLES {
+        for example in podnet::manual::facts::EXAMPLES {
             let words: Vec<&str> = example.command.split_whitespace().collect();
-            assert_eq!(words[0], "cfrs", "{}", example.command);
+            assert_eq!(words[0], "podnet", "{}", example.command);
             if words.get(1) == Some(&"pod") {
-                // pod has its own parser, in pod-netns.
+                // pod has its own parser, in podnet-netns.
                 continue;
             }
             if let Err(err) = Cli::try_parse_from(&words) {
@@ -6953,14 +6985,14 @@ mod tests {
     /// The manual names each command and each flag of the command tree.
     #[test]
     fn the_manual_names_each_command_and_flag() {
-        let manual = cfrs::manual::model::build(Cli::command());
-        let text = cfrs::manual::text::render(&manual);
+        let manual = podnet::manual::model::build(Cli::command());
+        let text = podnet::manual::text::render(&manual);
         fn walk(cmd: &clap::Command, path: &mut Vec<String>, text: &str) {
             for sub in cmd.get_subcommands().filter(|c| c.get_name() != "help") {
                 path.push(sub.get_name().to_string());
                 assert!(
-                    text.contains(&format!("cfrs {}", path.join(" "))),
-                    "the manual has no section for cfrs {}",
+                    text.contains(&format!("podnet {}", path.join(" "))),
+                    "the manual has no section for podnet {}",
                     path.join(" ")
                 );
                 for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
@@ -6968,7 +7000,7 @@ mod tests {
                         if long != "help" && long != "version" {
                             assert!(
                                 text.contains(&format!("--{long}")),
-                                "the manual has no --{long} (cfrs {})",
+                                "the manual has no --{long} (podnet {})",
                                 path.join(" ")
                             );
                         }
@@ -6980,20 +7012,21 @@ mod tests {
         }
         walk(&Cli::command(), &mut Vec::new(), &text);
         assert!(
-            text.contains("pod-netns"),
-            "the pod section has the pod-netns usage"
+            text.contains("podnet-netns"),
+            "the pod section has the podnet-netns usage"
         );
     }
 
     #[test]
     fn the_warp_proxy_of_warp_up_parses() {
         let cli =
-            Cli::try_parse_from(["cfrs", "warp", "--no-relay", "up", "--port", "40100"]).unwrap();
+            Cli::try_parse_from(["podnet", "warp", "--no-relay", "up", "--port", "40100"]).unwrap();
         let Command::Warp(args) = cli.command else {
             panic!("not warp")
         };
         let argv = warp_up_args(&args, 40100, std::path::Path::new("/r/warp.sock"), 30);
-        let parsed = Cli::try_parse_from(std::iter::once("cfrs".to_string()).chain(argv)).unwrap();
+        let parsed =
+            Cli::try_parse_from(std::iter::once("podnet".to_string()).chain(argv)).unwrap();
         let Command::Warp(inner) = parsed.command else {
             panic!("not warp: the child command line")
         };
@@ -7010,7 +7043,7 @@ mod tests {
 
     #[test]
     fn a_bad_command_line_is_a_usage_error() {
-        let err = Cli::try_parse_from(["cfrs", "tunel"]).unwrap_err();
+        let err = Cli::try_parse_from(["podnet", "tunel"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
         assert!(
             err.to_string().contains("tunnel"),
@@ -7022,24 +7055,24 @@ mod tests {
     fn the_command_name_of_the_report() {
         let argv = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(
-            command_name(&argv("cfrs warp run -- curl")).as_deref(),
+            command_name(&argv("podnet warp run -- curl")).as_deref(),
             Some("warp run")
         );
         assert_eq!(
-            command_name(&argv("cfrs tunnel --url x")).as_deref(),
+            command_name(&argv("podnet tunnel --url x")).as_deref(),
             Some("tunnel")
         );
-        assert_eq!(command_name(&argv("cfrs nothing")), None);
+        assert_eq!(command_name(&argv("podnet nothing")), None);
         // Issue 181: options before the command are skipped.
         for (line, want) in [
-            ("cfrs -q tunnel", "tunnel"),
-            ("cfrs -vv doctor", "doctor"),
-            ("cfrs --proxy http://x:1 warp run -- curl", "warp run"),
+            ("podnet -q tunnel", "tunnel"),
+            ("podnet -vv doctor", "doctor"),
+            ("podnet --proxy http://x:1 warp run -- curl", "warp run"),
             (
-                "cfrs --color never --log-format json net doctor",
+                "podnet --color never --log-format json net doctor",
                 "net doctor",
             ),
-            ("cfrs --ca-file=a.pem status", "status"),
+            ("podnet --ca-file=a.pem status", "status"),
         ] {
             assert_eq!(command_name(&argv(line)).as_deref(), Some(want), "{line}");
         }
@@ -7049,7 +7082,7 @@ mod tests {
     #[test]
     fn license_and_expose_classes() {
         let api = |status| {
-            anyhow::Error::new(cfrs::warp::register::ApiError {
+            anyhow::Error::new(podnet::warp::register::ApiError {
                 status,
                 body: String::new(),
             })
@@ -7075,7 +7108,7 @@ mod tests {
     // quotes; warp_plus_active follows the account.
     #[test]
     fn warp_license_and_status_fields() {
-        let err = Cli::try_parse_from(["cfrs", "warp", "license", ""]).unwrap_err();
+        let err = Cli::try_parse_from(["podnet", "warp", "license", ""]).unwrap_err();
         assert_eq!(err.exit_code(), 2, "clap error");
         assert!(non_empty_key("  ").is_err());
         assert_eq!(non_empty_key(" k ").unwrap(), "k");
@@ -7092,11 +7125,11 @@ mod tests {
     fn the_pod_keeps_its_double_dash() {
         let v = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(
-            pod_args_of(&v("cfrs -v pod -- true"), &v("true")),
+            pod_args_of(&v("podnet -v pod -- true"), &v("true")),
             v("-- true")
         );
         assert_eq!(
-            pod_args_of(&v("cfrs pod -x u -- a"), &v("-x u -- a")),
+            pod_args_of(&v("podnet pod -x u -- a"), &v("-x u -- a")),
             v("-x u -- a")
         );
     }

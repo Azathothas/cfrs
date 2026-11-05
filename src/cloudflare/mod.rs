@@ -63,7 +63,7 @@ pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
 /// Cloudflare-internal roots the edge certificate chains to.
 ///
 /// From `cloudflared`'s `tlsconfig/cloudflare_ca.go`, Apache-2.0.
-/// The cloudflared release whose protocol cfrs speaks (the tag of
+/// The cloudflared release whose protocol podnet speaks (the tag of
 /// `cloudflared-pin.txt`). Errors that a protocol change can cause name it.
 pub const SPEAKS: &str = "cloudflared 2026.10.7";
 
@@ -331,7 +331,7 @@ mod tests {
         );
         assert_eq!(ips(2), ips(0));
         assert_eq!(ips(3), ips(1));
-        // One region (CFRS_EDGE): the order stays.
+        // One region (PODNET_EDGE): the order stays.
         let one: Vec<EdgeAddr> = edges.iter().map(|e| e.in_region(0)).collect();
         assert_eq!(for_connection(&one, 1), one);
     }

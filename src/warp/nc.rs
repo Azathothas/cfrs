@@ -1,8 +1,8 @@
-//! `cfrs warp nc HOST PORT` and `cfrs warp ssh-config` (issue 85): a byte
+//! `podnet warp nc HOST PORT` and `podnet warp ssh-config` (issue 85): a byte
 //! pipe from stdin and stdout to HOST:PORT, for `ssh -o ProxyCommand` and
 //! git over SSH on a network that refuses port 22.
 //!
-//! The pipe goes through the running `cfrs warp up` (SOCKS5 on its unix
+//! The pipe goes through the running `podnet warp up` (SOCKS5 on its unix
 //! socket), else through a WARP session of this process, else (with
 //! `--via-relay`) through the WebSocket relay straight to HOST:PORT. SSH
 //! checks the host key of the server as on a direct connection.
@@ -23,16 +23,16 @@ pub fn target(host: &str, port: u16) -> String {
     }
 }
 
-/// Through the running `cfrs warp up`, if its socket answers.
+/// Through the running `podnet warp up`, if its socket answers.
 pub async fn via_running(host: &str, port: u16) -> Result<Option<BoxedIo>> {
     let socket = super::up::socket_path()?;
     if std::os::unix::net::UnixStream::connect(&socket).is_err() {
         return Ok(None);
     }
-    let proxy = pod_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
-    let upstream = pod_netns::upstream::connect_upstream_async(&[proxy], &target(host, port))
+    let proxy = podnet_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
+    let upstream = podnet_netns::upstream::connect_upstream_async(&[proxy], &target(host, port))
         .await
-        .with_context(|| format!("{host}:{port} through cfrs warp up"))?;
+        .with_context(|| format!("{host}:{port} through podnet warp up"))?;
     Ok(Some(Box::new(upstream)))
 }
 
@@ -54,7 +54,7 @@ pub async fn via_relay(relay: &crate::ws_relay::Relay, host: &str, port: u16) ->
         .await
 }
 
-/// When the TCP pipe of `cfrs warp nc` sends its FIN, and when it ends.
+/// When the TCP pipe of `podnet warp nc` sends its FIN, and when it ends.
 #[derive(Clone, Copy, Debug)]
 pub struct PipeEnd {
     /// `-N`: send the FIN at the end of the input, then wait for the far
@@ -140,7 +140,7 @@ where
     Ok(())
 }
 
-/// `cfrs warp nc -u` (issue 115): each read of `input` is one datagram to
+/// `podnet warp nc -u` (issue 115): each read of `input` is one datagram to
 /// the far end (`out`); each datagram that comes back (`back`) goes to
 /// `output`. After the end of the input, the pipe ends when no datagram
 /// came for `idle`.
@@ -197,7 +197,7 @@ fn udp_payload(datagram: &[u8]) -> Option<&[u8]> {
     datagram.get(off..)
 }
 
-/// The two channels of a UDP pipe through the running `cfrs warp up` (the
+/// The two channels of a UDP pipe through the running `podnet warp up` (the
 /// association in the stream, 0x83, on its unix socket), or `None` when it
 /// does not run.
 pub async fn udp_via_running(
@@ -209,16 +209,16 @@ pub async fn udp_via_running(
         tokio::sync::mpsc::Receiver<Vec<u8>>,
     )>,
 > {
-    use pod_netns::upstream::{read_udp_frame, wrap_udp, wrap_udp_name, write_udp_frame};
+    use podnet_netns::upstream::{read_udp_frame, wrap_udp, wrap_udp_name, write_udp_frame};
     let socket = super::up::socket_path()?;
     if std::os::unix::net::UnixStream::connect(&socket).is_err() {
         return Ok(None);
     }
-    let proxy = pod_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
-    let stream = pod_netns::upstream::dial_proxy(&proxy).await?;
-    let stream = pod_netns::upstream::socks5_udp_in_stream(stream, &proxy)
+    let proxy = podnet_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
+    let stream = podnet_netns::upstream::dial_proxy(&proxy).await?;
+    let stream = podnet_netns::upstream::socks5_udp_in_stream(stream, &proxy)
         .await
-        .context("a UDP association through cfrs warp up")?;
+        .context("a UDP association through podnet warp up")?;
     let (mut read, mut write) = tokio::io::split(stream);
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     let (back_tx, back_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
@@ -278,11 +278,11 @@ pub async fn udp_via_stack(
     Ok((out_tx, back_rx))
 }
 
-/// An SSH config block and `GIT_SSH_COMMAND` that use `cfrs warp nc`.
+/// An SSH config block and `GIT_SSH_COMMAND` that use `podnet warp nc`.
 pub fn ssh_config(exe: &Path, host: &str) -> String {
     let exe = exe.display();
     format!(
-        "# cfrs warp ssh-config: SSH through WARP (cfrs warp nc)\n\
+        "# podnet warp ssh-config: SSH through WARP (podnet warp nc)\n\
 Host {host}\n    ProxyCommand {exe} warp nc %h %p\n\n\
 # For git over SSH with no SSH config:\n\
 # export GIT_SSH_COMMAND='ssh -o ProxyCommand=\"{exe} warp nc %h %p\"'\n"
@@ -341,8 +341,8 @@ mod tests {
 
     #[test]
     fn the_ssh_config_uses_warp_nc() {
-        let text = ssh_config(Path::new("/b/cfrs"), "github.com");
-        assert!(text.contains("Host github.com\n    ProxyCommand /b/cfrs warp nc %h %p\n"));
+        let text = ssh_config(Path::new("/b/podnet"), "github.com");
+        assert!(text.contains("Host github.com\n    ProxyCommand /b/podnet warp nc %h %p\n"));
         assert!(text.contains("GIT_SSH_COMMAND"));
     }
 

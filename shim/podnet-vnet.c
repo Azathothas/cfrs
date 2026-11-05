@@ -1,19 +1,19 @@
 /*
- * libcfrsnet.so — map AF_INET/AF_INET6 sockets into a userspace virtual
+ * libpodnet-vnet.so — map AF_INET/AF_INET6 sockets into a userspace virtual
  * network by rewriting them to AF_UNIX (abstract) sockets.
  *
  * The kernel never sees an AF_INET bind(2), connect(2) or listen(2). Each IP
  * endpoint becomes a name in the abstract namespace:
  *
- *     \0cfrsnet/<family>/<address>/<port>
+ *     \0podnet-vnet/<family>/<address>/<port>
  *
  * Two interposed programs on the same host therefore talk over AF_UNIX with
- * no host process at all ("direct mode"). When CFRSNET_CONTROL names the
+ * no host process at all ("direct mode"). When PODNET_VNET_CONTROL names the
  * stack's control socket, bind(2) also registers the endpoint so the stack
  * can bridge it to a tunnel.
  *
  * This file is compiled from the embedded copy in src/vnet/shim.rs, so a
- * cfrs binary can build it anywhere. It is deliberately C: interposition has
+ * podnet binary can build it anywhere. It is deliberately C: interposition has
  * to happen at the libc symbol boundary, before any Rust constructor runs.
  */
 #define _GNU_SOURCE
@@ -64,11 +64,11 @@ static int (*r_getaddrinfo)(const char *, const char *, const struct addrinfo *,
 /* ── configuration ────────────────────────────────────────────────────────── */
 
 struct config {
-    char prefix[64];       /* abstract-name prefix, default "cfrsnet" */
+    char prefix[64];       /* abstract-name prefix, default "podnet-vnet" */
     char control[108];     /* control socket name without NUL, empty = direct */
     int log;
     int map_loopback;      /* rewrite loopback endpoints to local_addr */
-    struct in_addr local_v4;   /* CFRSNET_LOCAL_ADDR, default 10.66.0.2 */
+    struct in_addr local_v4;   /* PODNET_VNET_LOCAL_ADDR, default 10.66.0.2 */
     int max_fds;
     /* hosts table: name -> address, for getaddrinfo interception */
     struct hostent_override { char name[256]; char addr[64]; } hosts[64];
@@ -89,7 +89,7 @@ static void logf_(const char *fmt, ...) {
     if (!cfg.log) return;
     va_list ap;
     va_start(ap, fmt);
-    fputs("[cfrsnet] ", stderr);
+    fputs("[podnet-vnet] ", stderr);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
@@ -97,27 +97,27 @@ static void logf_(const char *fmt, ...) {
 static void parse_config(void) {
     const char *v;
     memset(&cfg, 0, sizeof cfg);
-    snprintf(cfg.prefix, sizeof cfg.prefix, "cfrsnet");
+    snprintf(cfg.prefix, sizeof cfg.prefix, "podnet-vnet");
     cfg.max_fds = 65536;
     cfg.local_v4.s_addr = htonl((10u << 24) | (66u << 16) | (0u << 8) | 2u);
-    if ((v = getenv("CFRSNET_PREFIX")) && *v) {
+    if ((v = getenv("PODNET_VNET_PREFIX")) && *v) {
         snprintf(cfg.prefix, sizeof cfg.prefix, "%s", v);
     }
-    if ((v = getenv("CFRSNET_CONTROL")) && *v) {
+    if ((v = getenv("PODNET_VNET_CONTROL")) && *v) {
         snprintf(cfg.control, sizeof cfg.control, "%s", v);
     }
-    cfg.log = (v = getenv("CFRSNET_LOG")) && *v && *v != '0';
-    cfg.map_loopback = (v = getenv("CFRSNET_MAP_LOOPBACK")) && *v && *v != '0';
-    if ((v = getenv("CFRSNET_LOCAL_ADDR")) && *v) {
+    cfg.log = (v = getenv("PODNET_VNET_LOG")) && *v && *v != '0';
+    cfg.map_loopback = (v = getenv("PODNET_VNET_MAP_LOOPBACK")) && *v && *v != '0';
+    if ((v = getenv("PODNET_VNET_LOCAL_ADDR")) && *v) {
         if (inet_pton(AF_INET, v, &cfg.local_v4) != 1) {
-            logf_("CFRSNET_LOCAL_ADDR %s is not an IPv4 address\n", v);
+            logf_("PODNET_VNET_LOCAL_ADDR %s is not an IPv4 address\n", v);
         }
     }
-    if ((v = getenv("CFRSNET_MAX_FDS")) && *v) {
+    if ((v = getenv("PODNET_VNET_MAX_FDS")) && *v) {
         long n = strtol(v, NULL, 10);
         if (n > 0) cfg.max_fds = (int)n;
     }
-    if ((v = getenv("CFRSNET_HOSTS")) && *v) {
+    if ((v = getenv("PODNET_VNET_HOSTS")) && *v) {
         char *copy = strdup(v);
         if (copy) {
             char *save = NULL;
@@ -386,7 +386,7 @@ static int to_abstract(const struct sockaddr *sa, socklen_t len,
     return 0;
 }
 
-/* Parse \0cfrsnet/4/10.66.0.2/8080 back into a sockaddr. */
+/* Parse \0podnet-vnet/4/10.66.0.2/8080 back into a sockaddr. */
 static int from_abstract_name(const char *name, struct sockaddr_storage *out, socklen_t *out_len) {
     char prefix[96];
     snprintf(prefix, sizeof prefix, "%s/", cfg.prefix);
@@ -716,7 +716,7 @@ static int finish_accept(int listener, int client, const struct sockaddr_storage
     pthread_mutex_unlock(&fd_lock);
     fd_mark(client, family ? family : AF_INET, 0);
     if (local_len) fd_record_local(client, (struct sockaddr *)&local, local_len);
-    /* The logical peer: the cfrsnet name of the client, from the whole
+    /* The logical peer: the podnet-vnet name of the client, from the whole
        answer of the kernel (a local buffer, so a 16-byte sockaddr_in of the
        caller does not cut the abstract name). A client that bound no name
        gets the wildcard address of the family, as a peer of port 0: a

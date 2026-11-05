@@ -4,7 +4,7 @@
 //! The shim and the stack agree to render it as an `AF_UNIX` abstract name:
 //!
 //! ```text
-//! \0cfrsnet/<family>/<address>/<port>
+//! \0podnet-vnet/<family>/<address>/<port>
 //! ```
 //!
 //! `/` separates the fields precisely because IPv6 literals contain `:`.
@@ -22,9 +22,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use anyhow::{bail, Result};
 
 /// The abstract-name prefix, without the leading NUL.
-pub const ABSTRACT_PREFIX: &str = "cfrsnet";
+pub const ABSTRACT_PREFIX: &str = "podnet-vnet";
 /// The control socket name, without the leading NUL.
-pub const CONTROL_NAME: &str = "cfrsnet/ctl";
+pub const CONTROL_NAME: &str = "podnet-vnet/ctl";
 /// Longest `sun_path` name, in bytes: `sizeof(sun_path) - 1`.
 pub const MAX_NAME: usize = 107;
 
@@ -123,37 +123,37 @@ impl VirtAddr {
         Ok(bytes)
     }
 
-    /// Parse `cfrsnet/4/10.66.0.2/8080`, with or without a leading NUL.
+    /// Parse `podnet-vnet/4/10.66.0.2/8080`, with or without a leading NUL.
     pub fn from_abstract_name(name: &str) -> Result<Self> {
         let name = name.strip_prefix('\0').unwrap_or(name);
         let mut parts = name.split('/');
         let prefix = parts.next().unwrap_or_default();
         if prefix != ABSTRACT_PREFIX {
-            bail!("not a cfrsnet name: {name:?}");
+            bail!("not a podnet-vnet name: {name:?}");
         }
         let family = Family::from_number(
             parts
                 .next()
                 .unwrap_or_default()
                 .parse()
-                .map_err(|_| anyhow::anyhow!("cfrsnet name has no family: {name:?}"))?,
+                .map_err(|_| anyhow::anyhow!("podnet-vnet name has no family: {name:?}"))?,
         )?;
         let host = parts
             .next()
-            .ok_or_else(|| anyhow::anyhow!("cfrsnet name has no address: {name:?}"))?;
+            .ok_or_else(|| anyhow::anyhow!("podnet-vnet name has no address: {name:?}"))?;
         let port: u16 = parts
             .next()
-            .ok_or_else(|| anyhow::anyhow!("cfrsnet name has no port: {name:?}"))?
+            .ok_or_else(|| anyhow::anyhow!("podnet-vnet name has no port: {name:?}"))?
             .parse()
-            .map_err(|_| anyhow::anyhow!("cfrsnet name has a bad port: {name:?}"))?;
+            .map_err(|_| anyhow::anyhow!("podnet-vnet name has a bad port: {name:?}"))?;
         if parts.next().is_some() {
-            bail!("cfrsnet name has trailing fields: {name:?}");
+            bail!("podnet-vnet name has trailing fields: {name:?}");
         }
         let ip: IpAddr = host
             .parse()
-            .map_err(|_| anyhow::anyhow!("cfrsnet name has a bad address: {name:?}"))?;
+            .map_err(|_| anyhow::anyhow!("podnet-vnet name has a bad address: {name:?}"))?;
         if Family::from_ip(&ip) != family {
-            bail!("cfrsnet name family {family:?} does not match address {host:?}");
+            bail!("podnet-vnet name family {family:?} does not match address {host:?}");
         }
         Ok(Self { ip, port })
     }
@@ -420,33 +420,33 @@ mod tests {
     #[test]
     fn abstract_names_round_trip() {
         let a = VirtAddr::v4(v4("10.66.0.2"), 8080);
-        assert_eq!(a.abstract_name().unwrap(), "cfrsnet/4/10.66.0.2/8080");
+        assert_eq!(a.abstract_name().unwrap(), "podnet-vnet/4/10.66.0.2/8080");
         assert_eq!(
-            VirtAddr::from_abstract_name("cfrsnet/4/10.66.0.2/8080").unwrap(),
+            VirtAddr::from_abstract_name("podnet-vnet/4/10.66.0.2/8080").unwrap(),
             a
         );
         assert_eq!(
-            VirtAddr::from_abstract_name("\0cfrsnet/4/10.66.0.2/8080").unwrap(),
+            VirtAddr::from_abstract_name("\0podnet-vnet/4/10.66.0.2/8080").unwrap(),
             a
         );
         let b = VirtAddr::v6("fd00::2".parse().unwrap(), 443);
-        assert_eq!(b.abstract_name().unwrap(), "cfrsnet/6/fd00::2/443");
+        assert_eq!(b.abstract_name().unwrap(), "podnet-vnet/6/fd00::2/443");
         assert_eq!(
-            VirtAddr::from_abstract_name("cfrsnet/6/fd00::2/443").unwrap(),
+            VirtAddr::from_abstract_name("podnet-vnet/6/fd00::2/443").unwrap(),
             b
         );
         // Family must match the literal.
-        assert!(VirtAddr::from_abstract_name("cfrsnet/4/fd00::2/443").is_err());
-        assert!(VirtAddr::from_abstract_name("cfrsnet/6/10.66.0.2/443").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/4/fd00::2/443").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/6/10.66.0.2/443").is_err());
     }
 
     #[test]
     fn abstract_name_rejects_junk() {
-        assert!(VirtAddr::from_abstract_name("cfrsnet/4/10.66.0.2").is_err());
-        assert!(VirtAddr::from_abstract_name("cfrsnet/9/10.66.0.2/1").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/4/10.66.0.2").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/9/10.66.0.2/1").is_err());
         assert!(VirtAddr::from_abstract_name("other/4/10.66.0.2/1").is_err());
-        assert!(VirtAddr::from_abstract_name("cfrsnet/4/10.66.0.2/1/extra").is_err());
-        assert!(VirtAddr::from_abstract_name("cfrsnet/4/999.1.1.1/1").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/4/10.66.0.2/1/extra").is_err());
+        assert!(VirtAddr::from_abstract_name("podnet-vnet/4/999.1.1.1/1").is_err());
     }
 
     #[test]
@@ -455,7 +455,7 @@ mod tests {
             .abstract_name_bytes()
             .unwrap();
         assert_eq!(bytes[0], 0);
-        assert_eq!(&bytes[1..], b"cfrsnet/4/10.66.0.2/80");
+        assert_eq!(&bytes[1..], b"podnet-vnet/4/10.66.0.2/80");
     }
 
     #[test]
@@ -512,8 +512,8 @@ mod tests {
         );
         let name = longest.abstract_name().unwrap();
         assert!(name.len() <= MAX_NAME, "{name} is {} bytes", name.len());
-        // 10 + 39 + 1 + 5 = 55.
-        assert_eq!(name.len(), 55);
+        // 14 + 39 + 1 + 5 = 59.
+        assert_eq!(name.len(), 59);
     }
 
     #[test]

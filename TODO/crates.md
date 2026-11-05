@@ -31,7 +31,7 @@ checks do not run, until they change.
   `src/report.rs`, `src/config.rs`, `src/quicktunnel.rs` and `src/tunnel.rs` read them.
 - The variable scan of `src/manual/facts.rs` reads fixed directories.
 - `.github/workflows/ci.yml` lists two packages for `cargo package --list`.
-  `tests/docs.rs::pod_netns_ships_the_license` checks the licence of one crate.
+  `tests/docs.rs::podnet_netns_ships_the_license` checks the licence of one crate.
 - `need_loopback!` and `need_localhost!` are in `tests/test_host/mod.rs`, included by
   `#[path]`. A crate cannot include a file outside its directory and still package.
 

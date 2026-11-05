@@ -37,7 +37,7 @@ pub enum FeatureError {
     /// An operating-system call failed, with a description of what was being
     /// attempted.
     Io {
-        /// What cfrs was trying to do, e.g. `bind /tmp/cfrs-metrics.sock`.
+        /// What podnet was trying to do, e.g. `bind /tmp/podnet-metrics.sock`.
         context: String,
         /// The underlying error.
         source: io::Error,
@@ -282,7 +282,7 @@ pub enum DenyReason {
     /// No credential was presented but the policy demands one. Answered with
     /// 401 and a `WWW-Authenticate` challenge.
     CredentialsMissing {
-        /// The scheme to advertise, e.g. `Basic realm="cfrs"`.
+        /// The scheme to advertise, e.g. `Basic realm="podnet"`.
         challenge: String,
     },
     /// A credential was presented and did not match. Answered with 403: the
@@ -1320,7 +1320,10 @@ impl ShareLink {
         if let Some(note) = &self.note {
             out.push_str(&format!("// {note}\n"));
         }
-        out.push_str(&format!("// shared from cfrs ({})\n", self.source.label()));
+        out.push_str(&format!(
+            "// shared from podnet ({})\n",
+            self.source.label()
+        ));
         out
     }
 
@@ -1343,8 +1346,8 @@ impl ShareLink {
              <style>\nbody{{font-family:system-ui,sans-serif;margin:2rem auto;max-width:40rem;\
              text-align:center;line-height:1.4}}\npre{{font-family:ui-monospace,monospace;\
              font-size:0.5rem;line-height:1}}\na{{word-break:break-all}}\n\
-             </style>\n</head>\n<body>\n<h1>cfrs</h1>\n\
-             <p>A tunnel published by cfrs, {label}.</p>\n{note}\
+             </style>\n</head>\n<body>\n<h1>podnet</h1>\n\
+             <p>A tunnel published by podnet, {label}.</p>\n{note}\
              <pre>{qr}</pre>\n<p><a href=\"{url}\">{url}</a></p>\n\
              <p>Scan the code, or open the link.</p>\n</body>\n</html>\n",
             host = html_escape(self.host()),
@@ -1391,7 +1394,7 @@ mod tests {
     }
 
     fn tmpdir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("cfrs-feature-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("podnet-feature-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("mkdir");
         d
@@ -1425,7 +1428,7 @@ mod tests {
         // would confirm to a stranger that a credential exists on this tunnel.
         let mut c = AccessController::open();
         c.deny_ip(IpRange::parse("203.0.113.0/24").expect("parse"))
-            .require_basic_auth("cfrs", &["u:p"])
+            .require_basic_auth("podnet", &["u:p"])
             .expect("build");
         let ip: IpAddr = "203.0.113.9".parse().expect("parse");
         let decision = c.authorize(&req("GET", "/"), &ip);
@@ -1511,7 +1514,7 @@ mod tests {
     #[test]
     fn basic_auth_challenges_then_accepts_the_right_credential() {
         let mut c = AccessController::open();
-        c.require_basic_auth("cfrs", &["alice:s3cret"])
+        c.require_basic_auth("podnet", &["alice:s3cret"])
             .expect("build");
         let ip: IpAddr = "203.0.113.1".parse().expect("parse");
 
@@ -1519,7 +1522,7 @@ mod tests {
         assert_eq!(status_line(&refused.to_bytes()), 401);
         assert!(String::from_utf8(refused.to_bytes())
             .expect("utf8")
-            .contains("WWW-Authenticate: Basic realm=\"cfrs\""));
+            .contains("WWW-Authenticate: Basic realm=\"podnet\""));
 
         // base64("alice:s3cret")
         let good = req_with_auth("/", "Basic YWxpY2U6czNjcmV0");
@@ -1529,7 +1532,7 @@ mod tests {
     #[test]
     fn wrong_and_malformed_credentials_are_403_not_401() {
         let mut c = AccessController::open();
-        c.require_basic_auth("cfrs", &["alice:s3cret"])
+        c.require_basic_auth("podnet", &["alice:s3cret"])
             .expect("build");
         let ip: IpAddr = "203.0.113.1".parse().expect("parse");
 
@@ -1553,7 +1556,7 @@ mod tests {
         // The message is the only thing an attacker reads. It must not confirm
         // which user or password would be accepted.
         let mut c = AccessController::open();
-        c.require_basic_auth("cfrs", &["alice:s3cret"])
+        c.require_basic_auth("podnet", &["alice:s3cret"])
             .expect("build");
         let ip: IpAddr = "203.0.113.1".parse().expect("parse");
         let text = String::from_utf8(c.authorize(&req("GET", "/"), &ip).to_bytes()).expect("utf8");
@@ -1566,7 +1569,7 @@ mod tests {
         // Failing open here would be the worst possible default: a flag that
         // names no users would publish the tunnel to everyone.
         let mut empty = AccessController::open();
-        assert!(empty.require_basic_auth("cfrs", &[]).is_err());
+        assert!(empty.require_basic_auth("podnet", &[]).is_err());
 
         let too_many: Vec<String> = (0..=MAX_ALLOWED_IDENTITIES)
             .map(|i| format!("u{i}:p{i}"))
@@ -1574,7 +1577,7 @@ mod tests {
         let refs: Vec<&str> = too_many.iter().map(String::as_str).collect();
         let mut too_many_controller = AccessController::open();
         assert!(too_many_controller
-            .require_basic_auth("cfrs", &refs)
+            .require_basic_auth("podnet", &refs)
             .is_err());
     }
 
@@ -1895,13 +1898,13 @@ mod tests {
         // The wrapper must not weaken the guarantee StaticDir already makes.
         let d = tmpdir("static-traverse");
         std::fs::write(d.join("index.html"), b"index").expect("write");
-        let secret = d.join("..").join("cfrs-feature-secret");
+        let secret = d.join("..").join("podnet-feature-secret");
         std::fs::write(&secret, b"SECRET").expect("write secret");
 
         let origin =
             crate::origin::Origin::parse(&format!("static:{}", d.display())).expect("parse");
         let server = StaticServer::from_origin(&origin).expect("from origin");
-        for attack in ["/../cfrs-feature-secret", "/%2e%2e/cfrs-feature-secret"] {
+        for attack in ["/../podnet-feature-secret", "/%2e%2e/podnet-feature-secret"] {
             let resp = server.respond(&req("GET", attack)).expect("respond");
             assert_eq!(resp.status, 404, "{attack} must not be served");
             assert!(
@@ -2112,7 +2115,7 @@ mod tests {
             "a blank note must not leave a dangling comment line: {}",
             link.terminal()
         );
-        assert!(link.terminal().contains("// shared from cfrs (manual)"));
+        assert!(link.terminal().contains("// shared from podnet (manual)"));
     }
 
     #[test]

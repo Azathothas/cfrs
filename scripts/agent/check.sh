@@ -7,7 +7,7 @@
 #   sh scripts/agent/check.sh [notest]
 set -u
 cd "$(dirname "$0")/../.." || exit 1
-log=${TMPDIR:-/tmp}/cfrs-check
+log=${TMPDIR:-/tmp}/podnet-check
 mkdir -p "$log"
 rc=0
 cargo fmt --all --check > "$log/fmt.log" 2>&1; f=$?

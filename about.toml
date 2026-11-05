@@ -1,4 +1,4 @@
-# cargo-about: the licenses of the crates in a release binary of cfrs, with
+# cargo-about: the licenses of the crates in a release binary of podnet, with
 # their texts, for THIRD-PARTY-LICENSES.md (the job notes of
 # .github/workflows/release.yml, with about.hbs).
 accepted = [

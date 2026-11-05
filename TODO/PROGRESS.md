@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 135 entries: 125 open, 0 partial, 10 blocked, 0 done.
+`TODO/INDEX.md` holds 135 entries: 118 open, 1 partial, 9 blocked, 7 done.
 
 ## State
 
@@ -17,10 +17,9 @@ Finish each entry, close it in place, change this page in the same commit, then 
 one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes first when it does
 not wait for a larger one.
 
-1. **M0, the record and the guards:** T-008, T-009, T-010, then T-013, T-014, T-011 and T-012.
-2. **M1, the rename:** T-016 (with T-017 in its commit when possible) is the last push of its
-   session. The owner then renames the repository (T-021). Then T-019, T-020, T-022, T-023 and
-   T-024. T-018 and T-025 wait for the owner.
+1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
+2. **M1, the rename:** the owner renames the repository (T-021). Then T-022, T-023 and T-024;
+   T-017 needs its rebuild check. T-025 waits for the owner.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,
    T-079, T-080. A fix in a pod backend lands before T-040 starts, or after it ends.
@@ -69,7 +68,6 @@ Each call is in its entry, and the work goes on with it until the owner rules ot
 | Entry | Action |
 | --- | --- |
 | T-021 | Rename the repository `Azathothas/cfrs` to `Azathothas/podnet`, after the push of T-016 |
-| T-018 | Give the instruction to change `CLAUDE.md` |
 | T-025 | Set the ghcr package `podnet` to public, after T-023 |
 
 ## Questions for the owner

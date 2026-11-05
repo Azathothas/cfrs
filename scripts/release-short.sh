@@ -1,11 +1,11 @@
 #!/bin/sh
-# The short release check: run a release binary of cfrs on its own platform.
+# The short release check: run a release binary of podnet on its own platform.
 #
 #   sh scripts/release-short.sh BINARY [--net]
 #
-# Offline: the version (with the commit of CFRS_BUILD_COMMIT when it is set),
+# Offline: the version (with the commit of PODNET_BUILD_COMMIT when it is set),
 # the help, the address plan and the in-process TCP proof of the userspace
-# stack, and the pod-netns doctor (exit 0, or 3 when no backend can run in
+# stack, and the podnet pod doctor (exit 0, or 3 when no backend can run in
 # this container). With --net: a quick tunnel that serves the built-in
 # origin, and a fetch of its public URL (three attempts, because the
 # quick-tunnel service can refuse a burst).
@@ -17,13 +17,13 @@ net=${2:-}
 version=$("$bin" --version)
 echo "version: $version"
 case "$version" in
-    "cfrs "*) ;;
-    *) echo "the version line does not start with 'cfrs '" >&2; exit 1 ;;
+    "podnet "*) ;;
+    *) echo "the version line does not start with 'podnet '" >&2; exit 1 ;;
 esac
-if [ -n "${CFRS_BUILD_COMMIT:-}" ]; then
+if [ -n "${PODNET_BUILD_COMMIT:-}" ]; then
     case "$version" in
-        *"($CFRS_BUILD_COMMIT)") ;;
-        *) echo "the version line does not name the commit $CFRS_BUILD_COMMIT" >&2; exit 1 ;;
+        *"($PODNET_BUILD_COMMIT)") ;;
+        *) echo "the version line does not name the commit $PODNET_BUILD_COMMIT" >&2; exit 1 ;;
     esac
 fi
 "$bin" --help > /dev/null

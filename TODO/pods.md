@@ -24,7 +24,7 @@ called this the highest cost of the session.
 ## Premise
 
 - Read: `supervise_seccomp` sets `shutdown` when `waitpid` returns for the first child, drains
-  the relays for `RELAY_DRAIN`, and exits (`crates/pod-netns/src/seccomp.rs`).
+  the relays for `RELAY_DRAIN`, and exits (`crates/podnet-netns/src/seccomp.rs`).
 - The notification descriptor gives POLLHUP when no task uses the filter.
 
 ## Approach
@@ -63,7 +63,7 @@ The netns backend ends its router when the first program exits, as the seccomp b
 ## Premise
 
 - Read: the netns backend returns when `waitpid` returns for its child
-  (`crates/pod-netns/src/netns.rs`).
+  (`crates/podnet-netns/src/netns.rs`).
 
 ## Approach
 
@@ -172,9 +172,9 @@ emulates the sockets. Thus a user must choose between UDP and correct socket cal
 ## Premise
 
 - Read: `answer_dns` takes the DNS datagrams from the TUN before smoltcp
-  (`crates/pod-netns/src/netns.rs`).
+  (`crates/podnet-netns/src/netns.rs`).
 - The upstream chain carries UDP in the stream with 0x83 frames
-  (`crates/pod-netns/src/upstream.rs`).
+  (`crates/podnet-netns/src/upstream.rs`).
 - A smoltcp UDP socket for each port loses datagrams of two flows to one port (the defect of the
   vn kit).
 
@@ -209,7 +209,7 @@ gateway address for it.
 
 ## Premise
 
-- The gateway of the TUN of the pod is fixed (`crates/pod-netns/src/netns.rs`).
+- The gateway of the TUN of the pod is fixed (`crates/podnet-netns/src/netns.rs`).
 - A map of the gateway to the host loopback lets the pod reach each service on 127.0.0.1 of the
   host.
 
@@ -247,7 +247,7 @@ sockets.
 
 ## Premise
 
-- Read: `src/warp/up.rs` passes `--prefer-udp`, and `crates/pod-netns/src/lib.rs` orders the
+- Read: `src/warp/up.rs` passes `--prefer-udp`, and `crates/podnet-netns/src/lib.rs` orders the
   backends.
 - After T-063 and T-064, the seccomp backend keeps TCP sockets correct. After T-111, the netns
   backend carries each UDP flow.

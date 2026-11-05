@@ -23,7 +23,7 @@ use crate::egress::Proxy;
 /// API host. Reachable on TCP 443, which is the point of this module.
 pub const API_BASE: &str = "https://api.cloudflareclient.com";
 
-/// A second name of the same API (podssh): cfrs tries it after a dial, TLS
+/// A second name of the same API (podssh): podnet tries it after a dial, TLS
 /// or 5xx failure of the first. It resolved on 2026-11-02 to other
 /// Cloudflare addresses. A proxy allowlist can have one name and not the
 /// other.
@@ -31,7 +31,7 @@ pub const API_SECOND: &str = "https://api.devices.cloudflare.com";
 
 /// The environment variable with the one API base to use
 /// (`https://HOST[:PORT]`).
-pub const API_VARIABLE: &str = "CFRS_WARP_API";
+pub const API_VARIABLE: &str = "PODNET_WARP_API";
 
 /// The API bases to try, in order: [`API_VARIABLE`] alone when it is set,
 /// else [`API_BASE`] and [`API_SECOND`].
@@ -91,7 +91,7 @@ async fn send_api_to(
             }
             Err(err) => failures.push(format!("{base}: {err:#}")),
         }
-        tracing::info!(failed = %failures.last().map(String::as_str).unwrap_or(""), "the WARP API: cfrs tries the next host");
+        tracing::info!(failed = %failures.last().map(String::as_str).unwrap_or(""), "the WARP API: podnet tries the next host");
     }
     unreachable!("the last base returns")
 }
@@ -281,9 +281,9 @@ pub struct DeviceHints {
 }
 
 /// The variables of [`DeviceHints`].
-pub const DEVICE_NAME_VARIABLE: &str = "CFRS_WARP_DEVICE_NAME";
-pub const DEVICE_MODEL_VARIABLE: &str = "CFRS_WARP_DEVICE_MODEL";
-pub const DEVICE_LOCALE_VARIABLE: &str = "CFRS_WARP_DEVICE_LOCALE";
+pub const DEVICE_NAME_VARIABLE: &str = "PODNET_WARP_DEVICE_NAME";
+pub const DEVICE_MODEL_VARIABLE: &str = "PODNET_WARP_DEVICE_MODEL";
+pub const DEVICE_LOCALE_VARIABLE: &str = "PODNET_WARP_DEVICE_LOCALE";
 
 static HINTS: std::sync::OnceLock<DeviceHints> = std::sync::OnceLock::new();
 
@@ -558,7 +558,7 @@ pub async fn get_account(
 
 /// Hide the license key in an account record (`GET /reg/{id}/account`):
 /// each key named `license`, at any depth, with a non-empty string value
-/// becomes `"<hidden>"`. `cfrs warp status --json` prints the record.
+/// becomes `"<hidden>"`. `podnet warp status --json` prints the record.
 pub fn redact_account(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {

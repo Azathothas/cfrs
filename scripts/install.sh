@@ -1,8 +1,8 @@
 #!/bin/sh
-# Install the static Linux binary of cfrs from a GitHub release (issue 160).
+# Install the static Linux binary of podnet from a GitHub release (issue 160).
 #
-#   s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh) && sh -c "$s"
-#   s=$(wget -qO- https://raw.githubusercontent.com/Azathothas/cfrs/main/scripts/install.sh) && sh -c "$s"
+#   s=$(curl -fsSL https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh) && sh -c "$s"
+#   s=$(wget -qO- https://raw.githubusercontent.com/Azathothas/podnet/main/scripts/install.sh) && sh -c "$s"
 #
 # Do not use `curl ... | sh` in a script: a pipe has the exit status of sh,
 # and sh exits 0 when curl fails (issue 165).
@@ -16,17 +16,16 @@
 # install directory; only then does it replace the old binary.
 #
 # Variables:
-#   CFRS_VERSION       The release: latest (the newest, also a prerelease;
+#   PODNET_VERSION       The release: latest (the newest, also a prerelease;
 #                      the default), or a tag (v0.3.0-beta.7, or 0.3.0-beta.7).
 #                      latest reads the GitHub API, else releases.atom (no
 #                      quota). A tag needs neither.
-#   CFRS_INSTALL_DIR   The directory of the binary. Default: /usr/local/bin
+#   PODNET_INSTALL_DIR   The directory of the binary. Default: /usr/local/bin
 #                      for root, else $XDG_BIN_HOME, else ~/.local/bin.
-#   CFRS_POD_NETNS=1   Also install pod-netns.
-#   CFRS_REPO          OWNER/NAME of the releases (Azathothas/cfrs). cfrs
+#   PODNET_REPO          OWNER/NAME of the releases (Azathothas/podnet). podnet
 #                      update does not read it.
-#   CFRS_NO_VERIFY=1   Install with no SHA256 check (no tool for it).
-#   CFRS_DOWNLOADER    Use this downloader (one of the list above).
+#   PODNET_NO_VERIFY=1   Install with no SHA256 check (no tool for it).
+#   PODNET_DOWNLOADER    Use this downloader (one of the list above).
 #   GITHUB_TOKEN       Sent to api.github.com only (curl, wget), for its
 #   GH_TOKEN           quota on a shared address. Not sent to other hosts.
 #   NO_COLOR           No colors.
@@ -38,8 +37,8 @@ set -eu
 
 main() {
     if [ -n "${DEBUG:-}" ]; then set -x; fi
-    repo=${CFRS_REPO:-Azathothas/cfrs}
-    version=${CFRS_VERSION:-latest}
+    repo=${PODNET_REPO:-Azathothas/podnet}
+    version=${PODNET_VERSION:-latest}
 
     if [ -z "${NO_COLOR:-}" ] && [ -t 2 ]; then
         red=$(printf '\033[0;31m'); green=$(printf '\033[0;32m')
@@ -52,13 +51,13 @@ main() {
 
     case $(uname -s 2> /dev/null || echo unknown) in
         Linux) ;;
-        *) fail "cfrs has Linux binaries only (this system: $(uname -s 2> /dev/null || echo unknown))" ;;
+        *) fail "podnet has Linux binaries only (this system: $(uname -s 2> /dev/null || echo unknown))" ;;
     esac
 
     target=$(detect_target)
     if ! downloader=$(detect_downloader); then
-        if [ -n "${CFRS_DOWNLOADER:-}" ]; then
-            fail "CFRS_DOWNLOADER=$CFRS_DOWNLOADER: not found or not usable (valid: curl wget aria2c http python3 python perl busybox)"
+        if [ -n "${PODNET_DOWNLOADER:-}" ]; then
+            fail "PODNET_DOWNLOADER=$PODNET_DOWNLOADER: not found or not usable (valid: curl wget aria2c http python3 python perl busybox)"
         fi
         fail "no downloader: install curl or wget"
     fi
@@ -67,15 +66,12 @@ main() {
 
     # The directory first: a bad directory fails before the downloads.
     dir=$(install_dir)
-    names="cfrs"
-    if [ "${CFRS_POD_NETNS:-}" = 1 ]; then names="cfrs pod-netns"; fi
+    name=podnet
     # Issue 270: mv into a directory with the name of the binary moves the
     # file into it. A symlink to a file is allowed.
-    for name in $names; do
-        if [ -e "$dir/$name" ] && [ ! -f "$dir/$name" ]; then
-            fail "$dir/$name exists and is not a file; remove it or set CFRS_INSTALL_DIR"
-        fi
-    done
+    if [ -e "$dir/$name" ] && [ ! -f "$dir/$name" ]; then
+        fail "$dir/$name exists and is not a file; remove it or set PODNET_INSTALL_DIR"
+    fi
 
     tmp=$(make_temp)
     new_files=
@@ -90,50 +86,31 @@ main() {
 
     get "$base/SHA256SUMS" "$tmp/SHA256SUMS" SHA256SUMS
     verify_signature "$base" "$tmp"
-    for name in $names; do
-        file="$name-$target"
-        get "$base/$file" "$tmp/$file" "$file"
-        check_sum "$tmp/SHA256SUMS" "$tmp" "$file"
-    done
+    file="$name-$target"
+    get "$base/$file" "$tmp/$file" "$file"
+    check_sum "$tmp/SHA256SUMS" "$tmp" "$file"
 
     # A copy in the directory, a run of the copy, then a rename: a binary
     # that does not run does not replace the old one (issues 169, 175), and a
     # running binary is not changed in place. The run is in the directory of
     # the binary, because /tmp is often noexec. Issue 270: the copy has a
     # new name from mktemp (a symlink is not followed), and mode 0755 also
-    # with a restrictive umask. cfrs must print the version of the tag.
-    for name in $names; do
-        file="$name-$target"
-        new=$(new_file "$dir/.$name.new")
-        new_files="$new_files
-$new"
-        cat "$tmp/$file" > "$new"
-        chmod 0755 "$new"
-        if ! shown=$(run_version "$new"); then
-            fail "$file does not run on this machine (uname -m: $(uname -m 2> /dev/null || echo unknown)); $dir/$name is not changed"
-        fi
-        case "$name" in
-            cfrs)
-                case "$shown" in
-                    "cfrs ${tag#v}" | "cfrs ${tag#v} "*) ;;
-                    *) fail "$file prints '$shown', not 'cfrs ${tag#v}'; $dir/$name is not changed" ;;
-                esac
-                version_line=$shown
-                new_cfrs=$new
-                ;;
-            *) new_pod_netns=$new ;;
-        esac
-    done
-    for name in $names; do
-        case "$name" in
-            cfrs) new=$new_cfrs ;;
-            *) new=$new_pod_netns ;;
-        esac
-        mv -f "$new" "$dir/$name"
-        ok "installed $dir/$name"
-    done
+    # with a restrictive umask. podnet must print the version of the tag.
+    new=$(new_file "$dir/.$name.new")
+    new_files=$new
+    cat "$tmp/$file" > "$new"
+    chmod 0755 "$new"
+    if ! shown=$(run_version "$new"); then
+        fail "$file does not run on this machine (uname -m: $(uname -m 2> /dev/null || echo unknown)); $dir/$name is not changed"
+    fi
+    case "$shown" in
+        "podnet ${tag#v}" | "podnet ${tag#v} "*) ;;
+        *) fail "$file prints '$shown', not 'podnet ${tag#v}'; $dir/$name is not changed" ;;
+    esac
+    mv -f "$new" "$dir/$name"
+    ok "installed $dir/$name"
     new_files=
-    printf '%s\n' "$version_line"
+    printf '%s\n' "$shown"
     path_hint "$dir"
 }
 
@@ -168,11 +145,11 @@ run_version() {
     fi
 }
 
-info() { printf '%s\n' "${blue}cfrs install:${reset} $*" >&2; }
-ok() { printf '%s\n' "${green}cfrs install:${reset} $*" >&2; }
-warn() { printf '%s\n' "${yellow}cfrs install:${reset} $*" >&2; }
+info() { printf '%s\n' "${blue}podnet install:${reset} $*" >&2; }
+ok() { printf '%s\n' "${green}podnet install:${reset} $*" >&2; }
+warn() { printf '%s\n' "${yellow}podnet install:${reset} $*" >&2; }
 fail() {
-    printf '%s\n' "${red}cfrs install: $*${reset}" >&2
+    printf '%s\n' "${red}podnet install: $*${reset}" >&2
     exit 1
 }
 
@@ -191,7 +168,7 @@ detect_target() {
         riscv64) echo riscv64gc-unknown-linux-musl ;;
         ppc64le) echo powerpc64le-unknown-linux-musl ;;
         loongarch64 | loong64) echo loongarch64-unknown-linux-musl ;;
-        *) fail "no cfrs binary for the machine $machine" ;;
+        *) fail "no podnet binary for the machine $machine" ;;
     esac
 }
 
@@ -206,7 +183,7 @@ busybox_tls() {
 # applet (Alpine) is busybox too.
 detect_downloader() {
     fallback=
-    for tool in ${CFRS_DOWNLOADER:-curl wget aria2c http python3 python perl busybox}; do
+    for tool in ${PODNET_DOWNLOADER:-curl wget aria2c http python3 python perl busybox}; do
         if ! command -v "$tool" > /dev/null 2>&1; then continue; fi
         case "$tool" in
             wget)
@@ -338,13 +315,13 @@ make_temp() {
     if command -v mktemp > /dev/null 2>&1; then
         mktemp -d 2> /dev/null && return 0
     fi
-    d="${TMPDIR:-/tmp}/cfrs-install.$$"
+    d="${TMPDIR:-/tmp}/podnet-install.$$"
     (umask 077 && mkdir "$d") || fail "cannot make $d"
     echo "$d"
 }
 
 # The tag of VERSION: latest is the newest release of the API, prereleases
-# too (cfrs has prereleases only, and /releases/latest skips them). When
+# too (podnet has prereleases only, and /releases/latest skips them). When
 # the API fails (403 on a shared address, issue 166), releases.atom gives
 # the newest tag.
 resolve_tag() {
@@ -365,7 +342,7 @@ resolve_tag() {
             fi
             if [ -z "$t" ]; then
                 tail -n 3 "$tmp/api.err" "$tmp/atom.err" >&2 2> /dev/null || true
-                fail "cannot read the releases of $repo (the API and releases.atom); set CFRS_VERSION=vX.Y.Z"
+                fail "cannot read the releases of $repo (the API and releases.atom); set PODNET_VERSION=vX.Y.Z"
             fi
             echo "$t" ;;
         v*) echo "$1" ;;
@@ -425,11 +402,11 @@ check_sum() {
     want=$(awk -v f="$3" '$2 == f || $2 == "*" f { print $1 }' "$1")
     [ -n "$want" ] || fail "$3 is not in SHA256SUMS"
     if ! got=$(sha256_of "$2/$3"); then
-        if [ "${CFRS_NO_VERIFY:-}" = 1 ]; then
-            warn "no SHA256 tool: $3 is not checked (CFRS_NO_VERIFY=1)"
+        if [ "${PODNET_NO_VERIFY:-}" = 1 ]; then
+            warn "no SHA256 tool: $3 is not checked (PODNET_NO_VERIFY=1)"
             return 0
         fi
-        fail "no SHA256 tool (sha256sum, shasum, openssl, busybox, python3); set CFRS_NO_VERIFY=1 to install with no check"
+        fail "no SHA256 tool (sha256sum, shasum, openssl, busybox, python3); set PODNET_NO_VERIFY=1 to install with no check"
     fi
     [ "$got" = "$want" ] || fail "the SHA256 of $3 is $got, not $want"
     ok "SHA256 of $3: ok"
@@ -439,7 +416,7 @@ check_sum() {
 # certificate must name release.yml of the repository at the tag.
 verify_signature() {
     if ! command -v cosign > /dev/null 2>&1; then
-        info "no cosign: the signature of SHA256SUMS is not checked (cfrs update checks it)"
+        info "no cosign: the signature of SHA256SUMS is not checked (podnet update checks it)"
         return 0
     fi
     get "$1/SHA256SUMS.sigstore.json" "$2/SHA256SUMS.sigstore.json" SHA256SUMS.sigstore.json
@@ -457,18 +434,18 @@ verify_signature() {
 # of busybox sh says yes for root on a read-only file system (issue 175).
 writable_dir() {
     [ -d "$1" ] || return 1
-    probe="$1/.cfrs-probe.$$"
+    probe="$1/.podnet-probe.$$"
     (: > "$probe") 2> /dev/null || return 1
     rm -f "$probe"
 }
 
 # The directory of the binary, as an absolute path.
 install_dir() {
-    if [ -n "${CFRS_INSTALL_DIR:-}" ]; then
-        mkdir -p "$CFRS_INSTALL_DIR" 2> /dev/null || true
-        writable_dir "$CFRS_INSTALL_DIR" ||
-            fail "CFRS_INSTALL_DIR ($CFRS_INSTALL_DIR) is not a writable directory"
-        (cd "$CFRS_INSTALL_DIR" && pwd -P)
+    if [ -n "${PODNET_INSTALL_DIR:-}" ]; then
+        mkdir -p "$PODNET_INSTALL_DIR" 2> /dev/null || true
+        writable_dir "$PODNET_INSTALL_DIR" ||
+            fail "PODNET_INSTALL_DIR ($PODNET_INSTALL_DIR) is not a writable directory"
+        (cd "$PODNET_INSTALL_DIR" && pwd -P)
         return 0
     fi
     if [ "$(id -u 2> /dev/null || echo 1)" = 0 ] && writable_dir /usr/local/bin; then
@@ -483,7 +460,7 @@ install_dir() {
             return 0
         fi
     done
-    fail "no writable directory for the binary; set CFRS_INSTALL_DIR"
+    fail "no writable directory for the binary; set PODNET_INSTALL_DIR"
 }
 
 # Say how to put DIR in PATH when it is not there.

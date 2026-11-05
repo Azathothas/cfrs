@@ -123,7 +123,7 @@ fn challenges(value: &str) -> Vec<(&str, Vec<&str>)> {
 /// The Digest challenge of a `Proxy-Authenticate` value. The scheme name
 /// has any case, and the value can hold other challenges before or after
 /// it (issue 274). `None` when the value has no Digest challenge, or the
-/// challenge names an algorithm that cfrs does not have.
+/// challenge names an algorithm that podnet does not have.
 pub fn parse_challenge(value: &str) -> Option<Challenge> {
     let (_, params) = challenges(value)
         .into_iter()
@@ -357,7 +357,7 @@ pub fn detect(home: Option<&Path>) -> Option<(String, PathBuf)> {
     })
 }
 
-/// The user and the password that a client of a proxy of cfrs must give
+/// The user and the password that a client of a proxy of podnet must give
 /// (issue 146): SOCKS5 RFC 1929, or HTTP `Proxy-Authorization: Basic`.
 #[derive(Clone)]
 pub struct Credentials {
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn challenges_that_cfrs_does_not_take() {
+    fn challenges_that_podnet_does_not_take() {
         assert!(parse_challenge("Basic realm=\"x\"").is_none());
         assert!(
             parse_challenge("Digest realm=\"x\", nonce=\"n\", algorithm=SHA-512-256").is_none()

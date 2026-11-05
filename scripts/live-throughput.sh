@@ -1,19 +1,19 @@
 #!/bin/sh
 # Measure the throughput of one quick tunnel. For each size in SIZES (MiB):
 # a GET and a POST on the HTTP path. For the largest size: the same through
-# `cfrs connect` (a --forward WebSocket) and through a WebSocket client in
+# `podnet connect` (a --forward WebSocket) and through a WebSocket client in
 # Python. Then the tunnel must still answer: a GET of the largest size again,
 # and a GET of /. Each GET checks the byte count. The log of CI is public: the
-# tunnel host is masked before it can be printed, and no output of cfrs is
+# tunnel host is masked before it can be printed, and no output of podnet is
 # printed without the mask.
 #
-#   sh scripts/live-throughput.sh CFRS PROTOCOL [SIZES] [TRANSPORT]
+#   sh scripts/live-throughput.sh PODNET PROTOCOL [SIZES] [TRANSPORT]
 #
 # SIZES is a list such as "1 4 16" (default "16"); TRANSPORT is direct
 # (default) or warp. The script prints one line for each transfer:
 # "rate PROTOCOL+TRANSPORT PATH METHOD MiB/s".
 set -eu
-cfrs=$1
+podnet=$1
 protocol=$2
 sizes=${3:-16}
 transport=${4:-direct}
@@ -29,7 +29,7 @@ label="$protocol+$transport"
 python3 -I "$here/origin-sink.py" "$port" &
 sleep 1
 
-"$cfrs" tunnel --url "http://127.0.0.1:$port" --forward "tcp://127.0.0.1:$port" \
+"$podnet" tunnel --url "http://127.0.0.1:$port" --forward "tcp://127.0.0.1:$port" \
     --protocol "$protocol" --transport "$transport" --json --no-verify \
     > "$dir/tunnel.out" 2> "$dir/tunnel.err" &
 i=0
@@ -44,9 +44,9 @@ until grep -q '"event":"ready"' "$dir/tunnel.out" 2> /dev/null; do
 done
 url=$(jq -r 'select(.event == "ready") | .url' "$dir/tunnel.out")
 host=${url#https://}
-# Issue 203: the ready event gives the endpoint for cfrs connect.
+# Issue 203: the ready event gives the endpoint for podnet connect.
 forward=$(jq -r 'select(.event == "ready") | .forward' "$dir/tunnel.out")
-[ "$forward" = "wss://$host/__cfrs/ws" ] || { echo "the ready event has no forward endpoint"; exit 1; }
+[ "$forward" = "wss://$host/__podnet/ws" ] || { echo "the ready event has no forward endpoint"; exit 1; }
 echo "::add-mask::$host"
 # A new name takes some seconds to resolve (issue 119).
 sh "$(dirname "$0")/live-wait-name.sh" "$host" 240
@@ -88,13 +88,13 @@ for s in $sizes; do
     rate http POST "$url/sink" "$s"
 done
 
-"$cfrs" connect -L "tcp://127.0.0.1:$local" "$forward" > "$dir/connect.out" 2> "$dir/connect.err" &
+"$podnet" connect -L "tcp://127.0.0.1:$local" "$forward" > "$dir/connect.out" 2> "$dir/connect.err" &
 sleep 2
 rate connect GET "http://127.0.0.1:$local/$largest.bin" "$largest"
 rate connect POST "http://127.0.0.1:$local/sink" "$largest"
 
 # Issue 206: the median time of 20 small requests, a new connection each,
-# over the public URL and over cfrs connect.
+# over the public URL and over podnet connect.
 latency() {
     # latency NAME URL
     for _ in $(seq 20); do
@@ -111,7 +111,7 @@ latency http "$url/"
 latency connect "http://127.0.0.1:$local/"
 
 if python3 -c 'import websockets' 2> /dev/null; then
-    python3 -I "$here/ws-client.py" "wss://$host/__cfrs/ws" "$largest" | sed "s/^/rate $label /"
+    python3 -I "$here/ws-client.py" "wss://$host/__podnet/ws" "$largest" | sed "s/^/rate $label /"
 fi
 
 # The tunnel still works after the large transfers.

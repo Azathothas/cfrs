@@ -1,5 +1,5 @@
 //! Entry points for the fuzz targets of `fuzz/` (cargo-fuzz). Each function
-//! takes untrusted bytes, runs one parser of cfrs on them, and must not
+//! takes untrusted bytes, runs one parser of podnet on them, and must not
 //! panic, hang or allocate much more than the input. The functions give no
 //! result: a parse error is a correct answer to bad bytes.
 //!
@@ -156,7 +156,7 @@ pub fn doh_json(data: &[u8]) {
     }
 }
 
-/// An ACL rule of `cfrs net`.
+/// An ACL rule of `podnet net`.
 pub fn acl_rule(data: &[u8]) {
     if let Some(line) = text(data) {
         let _ = crate::vnet::policy::AclRule::parse(line);
@@ -220,7 +220,7 @@ pub fn request_head(data: &[u8]) {
             let crlf = head.matches("\r\n").count();
             assert_eq!(head.matches('\r').count(), crlf, "{head:?}");
             assert_eq!(head.matches('\n').count(), crlf, "{head:?}");
-            // Each header line is a pair of the input, or a line that cfrs
+            // Each header line is a pair of the input, or a line that podnet
             // writes: no field makes a line of its own.
             let pairs: Vec<String> = fields
                 .get(3..)

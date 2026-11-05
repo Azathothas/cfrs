@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare the cloudflared files that cfrs follows with cloudflared.
+"""Compare the cloudflared files that podnet follows with cloudflared.
 
   python3 -I tools/check-upstream.py [--plant-sum PATH] [PIN]
 
 PIN is src/cloudflare/cloudflared-pin.txt when it is not given. The checks:
 
-1. Each `copy` file of cfrs has the recorded SHA-256, and each `roots` file
+1. Each `copy` file of podnet has the recorded SHA-256, and each `roots` file
    has the certificates of the upstream file.
 2. Each upstream file at the pinned tag has the recorded SHA-256.
 3. Each upstream file at the newest release has the recorded SHA-256. A
@@ -13,7 +13,7 @@ PIN is src/cloudflare/cloudflared-pin.txt when it is not given. The checks:
 4. The pinned release is at most 9 months old.
 
 --plant-sum PATH changes the recorded sum of PATH (an upstream path or the
-path of the copy in cfrs) before the checks: the check of that file must
+path of the copy in podnet) before the checks: the check of that file must
 then fail. Exit 0: all checks pass. Exit 1: a check failed; each line names
 the file. Exit 2: a file or the network could not be read.
 """
@@ -39,7 +39,7 @@ class Unreadable(Exception):
 
 def get_json(path: str):
     url = f"{API}/{path}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "cfrs-check-upstream"})
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "podnet-check-upstream"})
     token = os.environ.get("GITHUB_TOKEN")
     if token and API.startswith("https://api.github.com"):
         request.add_header("Authorization", f"Bearer {token}")
@@ -93,7 +93,7 @@ def main(argv: list[str]) -> int:
     faults = []
     try:
         for kind, path, want, *local in files:
-            # 1. The copies of cfrs.
+            # 1. The copies of podnet.
             if kind == "copy":
                 got = sha256(open(local[0], "rb").read())
                 if got != want:
@@ -118,7 +118,7 @@ def main(argv: list[str]) -> int:
                     moved.append(path)
             if moved:
                 for path in moved:
-                    faults.append(f"{path}: changed between {meta['tag']} and {tag}; check the code of cfrs that follows it, then move the pin")
+                    faults.append(f"{path}: changed between {meta['tag']} and {tag}; check the code of podnet that follows it, then move the pin")
             else:
                 print(f"check-upstream: {tag} is newer than the pin {meta['tag']}, and the files are the same; move the pin")
     except Unreadable as e:

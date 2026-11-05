@@ -1,4 +1,4 @@
-//! `cfrs doctor`: the path from this host to the Cloudflare edge.
+//! `podnet doctor`: the path from this host to the Cloudflare edge.
 //!
 //! The doctor tests each hop that a tunnel needs, and gives a verdict for
 //! each: `ok`, `refused` or `unknown`.
@@ -11,7 +11,7 @@
 //!   apart, in at most 10 s for all paths: best, median, p95, jitter, loss.
 //!   A refusal (a proxy 403, a TCP reset) is an answer, not a loss.
 //! * TLS on each open path: the issuer of the chain, and if the chain ends at
-//!   the roots that cfrs expects. A proxy that answers 200 and sends no byte
+//!   the roots that podnet expects. A proxy that answers 200 and sends no byte
 //!   is named.
 //! * UDP 7844: one QUIC packet (see [`crate::udp`]). A bind is not a test.
 //!
@@ -76,7 +76,7 @@ impl Verdict {
 /// The TLS that a target speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tls {
-    /// A public web name: the roots of cfrs (`--ca-file`, the system, webpki).
+    /// A public web name: the roots of podnet (`--ca-file`, the system, webpki).
     Web,
     /// The edge: SNI `h2.cftunnel.com`, and the Cloudflare edge roots.
     Edge,
@@ -158,7 +158,7 @@ pub fn targets() -> Vec<Target> {
             tls: Tls::Masque,
         }),
     )
-    // Issue 128: the WebSocket relay is a road of its own (CFRS_RELAY).
+    // Issue 128: the WebSocket relay is a road of its own (PODNET_RELAY).
     .chain(
         crate::ws_relay::Relay::from_env(None)
             .ok()
@@ -260,7 +260,7 @@ pub struct Clock {
 /// A skew of the clock above this breaks TLS (certificates) and tokens.
 pub const CLOCK_LIMIT: i64 = 300;
 
-/// The roads of cfrs and their legs: a road works when one of its legs
+/// The roads of podnet and their legs: a road works when one of its legs
 /// works.
 pub const ROADS: &[(&str, &[&str])] = &[
     ("direct", &["quic", "http2"]),
@@ -443,7 +443,7 @@ impl Report {
             .filter(|l| l.verdict == Verdict::Ok)
             .count();
         out.push_str(&format!(
-            "\ncfrs doctor: {can} of {} legs can work on this host\n",
+            "\npodnet doctor: {can} of {} legs can work on this host\n",
             self.legs.len()
         ));
         out.push_str(&format!("next: {}\n", self.next()));
@@ -465,11 +465,11 @@ impl Report {
         let url = "--url http://localhost:8080";
         if ok("quic") || ok("http2") || ok("quic+warp") {
             // --transport auto tries quic, http2 and quic+warp in turn.
-            format!("cfrs tunnel {url} (the default legs work here)")
+            format!("podnet tunnel {url} (the default legs work here)")
         } else if ok("http2+relay") {
-            format!("cfrs tunnel --transport relay {url} (only the relay works here)")
+            format!("podnet tunnel --transport relay {url} (only the relay works here)")
         } else {
-            "no leg works: read the proxy and path lines above, then cfrs bug-report --doctor for an issue".to_string()
+            "no leg works: read the proxy and path lines above, then podnet bug-report --doctor for an issue".to_string()
         }
     }
 }
@@ -926,7 +926,7 @@ async fn tls(target: &Target, timeout: Duration) -> TlsResult {
     };
     let inner = match verifier(target.tls) {
         Ok(v) => v,
-        Err(e) => return unknown(format!("the roots of cfrs: {e}")),
+        Err(e) => return unknown(format!("the roots of podnet: {e}")),
     };
     let recorder = Arc::new(Recorder {
         inner,
@@ -1012,7 +1012,7 @@ async fn tls(target: &Target, timeout: Duration) -> TlsResult {
                 TlsResult {
                     verdict: Verdict::Refused,
                     issuer,
-                    detail: format!("the certificate is issued by {who}, not by a root that cfrs expects; {hint}"),
+                    detail: format!("the certificate is issued by {who}, not by a root that podnet expects; {hint}"),
                 }
             } else if got == 0 {
                 carries_nothing()
@@ -1052,7 +1052,7 @@ fn legs(paths: &[Path], udp: &Egress) -> Vec<Leg> {
         Leg {
             name: "quic",
             verdict: Verdict::Refused,
-            reason: "CFRS_UDP=off".into(),
+            reason: "PODNET_UDP=off".into(),
         }
     } else if via_proxy {
         Leg {
@@ -1264,7 +1264,7 @@ mod tests {
 
         // E5: the last line names the step to take.
         assert!(report.text().ends_with(
-            "next: cfrs tunnel --url http://localhost:8080 (the default legs work here)\n"
+            "next: podnet tunnel --url http://localhost:8080 (the default legs work here)\n"
         ));
         assert_eq!(json["next"], report.next());
         let mut relay_only = report.clone();
@@ -1275,7 +1275,7 @@ mod tests {
         assert!(relay_only.next().contains("--transport relay"));
         let mut none = report.clone();
         none.legs = vec![leg("http2", Verdict::Refused)];
-        assert!(none.next().contains("cfrs bug-report --doctor"));
+        assert!(none.next().contains("podnet bug-report --doctor"));
         let mut clock = report.clone();
         clock.clock = clock_of(1000, 100, "api.example");
         assert!(clock.next().contains("set the clock"), "{}", clock.next());

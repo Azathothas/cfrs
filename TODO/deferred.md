@@ -16,13 +16,13 @@ the text of its issue that the work needs.
 
 The goal of the issue: "A sandbox with basic networking (an allowlisted
 HTTPS proxy only, or TCP 80/443 only, no UDP, no IPv6, no root) gets
-working dev networking from one command, and cfrs runs in the background
+working dev networking from one command, and podnet runs in the background
 with no further care."
 
 The rulings in the issue: MASQUE through the WebSocket relay with an
 automatic fallback (`--no-relay` turns it off); later shells join through
-`cfrs warp env`, a `--persist` shell hook, `cfrs warp exec` and
-`cfrs warp shell`; detached instances restart by default and record a new
+`podnet warp env`, a `--persist` shell hook, `podnet warp exec` and
+`podnet warp shell`; detached instances restart by default and record a new
 quick-tunnel URL; tests of network paths run on GitHub runners
 (`.github/workflows/live.yml`), not through a way around the policy of a
 sandbox.
@@ -33,12 +33,12 @@ autostart, the WARP reconnect, MASQUE through the relay, pod loopback and
 UDP, later shells, `warp up` with root, netns raw IP with no root, IPv6,
 `doctor --agent`, `warp nc`, the CA bundle inside WARP, proxy detection
 and Digest, UDP with no kernel `AF_INET` bind, the reverse relay, and
-`cfrs agent up`. GitHub has each of them closed.
+`podnet agent up`. GitHub has each of them closed.
 
 ## Premise
 
 Read: the issue and its comments, and `docs/decisions.md`. A tester ran
-`cfrs agent up` end to end on a host of the target class with
+`podnet agent up` end to end on a host of the target class with
 0.3.0-beta.6 (no root, no TUN, TCP bind refused, TCP egress 80/443 only):
 WARP registration, the detached `warp proxy` on a Unix socket, then
 `warp exec`, `warp shell` and `warp nc`. Not measured in this sandbox.
@@ -53,7 +53,7 @@ WARP registration, the detached `warp proxy` on a Unix socket, then
 ## Prove
 
 ```sh
-curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/cfrs/issues/89?n=$RANDOM" |
+curl -qfsS "https://forge.web.pkgforge.dev/github/repos/Azathothas/podnet/issues/89?n=$RANDOM" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])'
 ```
 
@@ -77,7 +77,7 @@ the work that remains.
 
 ## Problem
 
-The issue: each TCP client of `cfrs warp proxy` becomes IP packets in the
+The issue: each TCP client of `podnet warp proxy` becomes IP packets in the
 userspace stack over one CONNECT-IP stream. Each flow has TCP buffers of
 512 KiB in each direction, all flows share one driver task and one HTTP/2
 stream window, and a name costs two DNS queries in the tunnel before the
@@ -93,7 +93,7 @@ with `--dns` or `--listen-identity`). The live runs show that QUIC, TLS
 and the pinned key of the device work with the TLS names
 `consumer-masque-proxy.cloudflareclient.com` and
 `consumer-masque.cloudflareclient.com`. The door answers 403 to each
-CONNECT, in each of three forms (`CFRS_WARP_L4_FORM`):
+CONNECT, in each of three forms (`PODNET_WARP_L4_FORM`):
 
 - `plain`: `:method CONNECT`, `:authority host:port` (RFC 9114,
   section 4.4);
@@ -122,7 +122,7 @@ the L4 door, or the door wants a form that is not one of the three.
 ## Prove
 
 ```sh
-cargo test -p cfrs --lib warp::l4
+cargo test -p podnet --lib warp::l4
 ```
 
 Then the `--l4` step of `scripts/live-batch2.sh` in a run of
@@ -148,7 +148,7 @@ keeps the issue open until it comes.
 
 `src/warp/register.rs` creates an anonymous consumer device only; the
 requests have no field for a team credential. An organization that runs
-Zero Trust cannot enrol a host with cfrs: the device must come from the
+Zero Trust cannot enrol a host with podnet: the device must come from the
 dashboard or the official client, and the front-door name must be set by
 hand (`--masque-sni`) on each command. `Account` has `id`,
 `account_type` and `license` only, so a managed account prints as a
@@ -156,9 +156,9 @@ consumer account with no licence.
 
 The proposal of the issue:
 
-- Flags: `--team-token TOKEN` (`CFRS_WARP_TEAM_TOKEN`; hidden from `ps`
-  and the logs), `--team-token-file PATH` (`CFRS_WARP_TEAM_TOKEN_FILE`,
-  mode 0600), `--team-sni NAME` (`CFRS_WARP_TEAM_SNI`; default: the host
+- Flags: `--team-token TOKEN` (`PODNET_WARP_TEAM_TOKEN`; hidden from `ps`
+  and the logs), `--team-token-file PATH` (`PODNET_WARP_TEAM_TOKEN_FILE`,
+  mode 0600), `--team-sni NAME` (`PODNET_WARP_TEAM_SNI`; default: the host
   of the `iss` of the token). The two token forms conflict with each other
   and with `--ephemeral`. With an existing identity file, the flag has no
   effect (one debug line).
@@ -177,7 +177,7 @@ The proposal of the issue:
 ## Premise
 
 Read: `src/warp/register.rs`. The enrolment through a team token is not
-documented. cfrs has no Zero Trust organization to test with. A wrong
+documented. podnet has no Zero Trust organization to test with. A wrong
 request can register devices that a team does not want. The header name
 of the proposal is not measured.
 
@@ -187,15 +187,15 @@ of the proposal is not measured.
    the request and the answer of the team token step (the path, the
    headers without the token, the JSON body with the secrets replaced),
    and the `POST /reg` request and answer of that device.
-2. Add the flags to `cfrs warp register`. Keep the anonymous path as it
+2. Add the flags to `podnet warp register`. Keep the anonymous path as it
    is.
 3. Test the parse of the token, the header and the exit codes against a
-   loopback API stand-in (`CFRS_WARP_API`).
+   loopback API stand-in (`PODNET_WARP_API`).
 
 ## Prove
 
 ```sh
-cargo test -p cfrs --lib warp::register
+cargo test -p podnet --lib warp::register
 ```
 
 ## Blocker
@@ -215,13 +215,13 @@ team. A tester or the owner gives it. The ruling "#149" of 2026-11-04 in
 
 ## Problem
 
-Each TLS connection of cfrs sends the server name in the clear. The
+Each TLS connection of podnet sends the server name in the clear. The
 builders are `client_config` in `src/trust.rs` (the WARP API, the edge
 legs, the relay), `tls_config` in `src/warp/session.rs` (MASQUE, with the
 pinned key) and `client_config` in `src/cloudflare/quic.rs` (QUIC to the
 edge). None of them enables ECH.
 
-The proposal of the issue: `--ech auto|off|CONFIG` (`CFRS_ECH`, default
+The proposal of the issue: `--ech auto|off|CONFIG` (`PODNET_ECH`, default
 `off`), `--ech-front NAME` (default `cloudflare-ech.com`),
 `--ech-hops LIST` (`api,edge,masque`), `--ech-allow-plaintext`,
 `--ech-grease`. Fetch the config from the HTTPS record (type 65) through
@@ -238,10 +238,10 @@ A limit: the public config of `cloudflare-ech.com` has
 ## Premise
 
 Read: `src/trust.rs`, `src/warp/session.rs`, `src/cloudflare/quic.rs`.
-ECH needs HPKE. The crypto provider of cfrs is ring, which has no HPKE.
+ECH needs HPKE. The crypto provider of podnet is ring, which has no HPKE.
 The HPKE of rustls is in the aws-lc-rs provider (a C build on each of the
 8 targets) or in another crate. The MASQUE front door and the WARP API
-publish no ECH config that cfrs can use, so ECH changes nothing on them.
+publish no ECH config that podnet can use, so ECH changes nothing on them.
 Done in place of ECH: the ClientHello of MASQUE can be split into records
 (#135, commit `b811b8e`), and the session can go over HTTP/3 or WireGuard
 (#157, #152).
@@ -249,7 +249,7 @@ Done in place of ECH: the ClientHello of MASQUE can be split into records
 ## Approach
 
 1. Look for an `ech=` parameter in the HTTPS records of the hops that
-   cfrs uses.
+   podnet uses.
 2. When a hop publishes a config: write a client HPKE over ring (X25519,
    HKDF-SHA256, AES-128-GCM) with the test vectors of RFC 9180, then add
    `--ech` (off by default) for that hop.
@@ -257,12 +257,12 @@ Done in place of ECH: the ClientHello of MASQUE can be split into records
 ## Prove
 
 ```sh
-cargo test -p cfrs --lib ech
+cargo test -p podnet --lib ech
 ```
 
 ## Blocker
 
-A hop of cfrs must publish an ECH config, and the owner must accept an
+A hop of podnet must publish an ECH config, and the owner must accept an
 HPKE provider. The ruling "#151" of 2026-11-04 in `docs/decisions.md`
 defers the work.
 
@@ -278,18 +278,18 @@ defers the work.
 ## Problem
 
 `Tunnel`, `WarpClient` and the userspace network stack are public API of
-the library crate. The issue asks to publish the CLI and `pod-netns` on
+the library crate. The issue asks to publish the CLI and `podnet-netns` on
 crates.io. Facts of the issue:
 
-- The name `cfrs` on crates.io belongs to another project (T-007).
+- The name `cfrs` on crates.io belongs to another project; `podnet` is free (T-007).
 - A publish needs a crates.io token as a secret of the repository, and a
   manual step in the release (or a `publish` input).
-- `pod-netns` is a path dependency. It must be published first, with the
+- `podnet-netns` is a path dependency. It must be published first, with the
   same version.
 
 ## Premise
 
-Read: `Cargo.toml`, `crates/pod-netns/Cargo.toml`, and the step "Package
+Read: `Cargo.toml`, `crates/podnet-netns/Cargo.toml`, and the step "Package
 lists" of `.github/workflows/ci.yml`. The packaging defects that a publish
 shows are fixed (commit `6080d99`), and CI runs `cargo package --list` for
 both crates.
@@ -305,8 +305,8 @@ both crates.
 ## Prove
 
 ```sh
-cargo publish --dry-run --locked -p pod-netns
-cargo publish --dry-run --locked -p cfrs
+cargo publish --dry-run --locked -p podnet-netns
+cargo publish --dry-run --locked -p podnet
 ```
 
 ## Blocker
@@ -314,7 +314,7 @@ cargo publish --dry-run --locked -p cfrs
 The owner. The ruling "crates.io" of 2026-11-05 in `docs/decisions.md`:
 publish nothing now, and keep the packaging ready for a publish.
 
-# T-006: crates.io: the workspace version and the `pod-netns` requirement are prereleases (GitHub #222)
+# T-006: crates.io: the workspace version and the `podnet-netns` requirement are prereleases (GitHub #222)
 
 **Source:** GitHub #222.
 **Category:** release
@@ -326,11 +326,11 @@ publish nothing now, and keep the packaging ready for a publish.
 ## Problem
 
 `Cargo.toml` has the workspace version `0.3.0-beta.12`, and the
-dependency `pod-netns` requires `0.3.0-beta.12`. crates.io marks a version
+dependency `podnet-netns` requires `0.3.0-beta.12`. crates.io marks a version
 with a pre-release identifier as a prerelease: it does not satisfy
 `^0.3.0`, and `cargo install` skips it unless `--version` names it. A
 requirement `^0.3.0-beta.N` matches only prereleases, so it does not match
-a stable `pod-netns` `0.3.0`. The first stable version of a line is
+a stable `podnet-netns` `0.3.0`. The first stable version of a line is
 `X.Y.0` of that line (`0.3.0` now; podnet starts at `v0.4.0-beta.1`, the
 ruling "Rename" of 2026-11-05). Change the workspace version and each
 requirement between the crates in one commit. The release notes tell the
@@ -376,7 +376,7 @@ collision. A publish needs a new package name (the binary keeps its name
 through `[[bin]] name`), or a transfer of the name through crates.io
 support. The same commit changes the install text of `README.md`, the
 program-name strings of the CLI, the cross-references of
-`crates/pod-netns/README.md`, and adds a crates.io install section
+`crates/podnet-netns/README.md`, and adds a crates.io install section
 (`cargo install NAME`, `cargo add`) and a docs.rs badge to `README.md`.
 
 ## Premise

@@ -19,7 +19,7 @@
 //!
 //! ```no_run
 //! # async fn demo() -> anyhow::Result<()> {
-//! use cfrs::warp::WarpClient;
+//! use podnet::warp::WarpClient;
 //!
 //! // Register anonymously and enrol a MASQUE identity in one call.
 //! let client = WarpClient::register().await?;
@@ -95,7 +95,7 @@ pub struct WarpClient {
 
 /// The order of the front door addresses: the one that worked last first,
 /// then the others; IPv6 only with an IPv6 route (or a proxy or a relay,
-/// which reach it for cfrs).
+/// which reach it for podnet).
 fn endpoint_order(
     all: Vec<std::net::SocketAddr>,
     won: Option<std::net::SocketAddr>,
@@ -193,7 +193,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// How cfrs reaches the MASQUE front door (issue 76).
+/// How podnet reaches the MASQUE front door (issue 76).
 #[derive(Clone, Debug, Default)]
 pub struct MasqueOptions {
     /// No WebSocket relay when the direct path fails.
@@ -316,7 +316,7 @@ impl WarpClient {
     }
 
     /// The relay of the fallback: the relay of `--transport relay` when it
-    /// is set, else the relay of `CFRS_RELAY` or the default relay. None
+    /// is set, else the relay of `PODNET_RELAY` or the default relay. None
     /// with `--no-relay`.
     fn relay(&self) -> Option<std::sync::Arc<crate::ws_relay::Relay>> {
         if self.masque.no_relay {
@@ -453,7 +453,7 @@ impl WarpClient {
     /// per start.
     ///
     /// A file that cannot be read, or that other users can read, is an
-    /// error: cfrs does not write over it.
+    /// error: podnet does not write over it.
     pub async fn register_or_load(path: &std::path::Path) -> Result<Self> {
         // Issue 178: a stat error is an error, not a missing file.
         if crate::state::exists(path)? {
@@ -476,7 +476,7 @@ impl WarpClient {
     }
 
     /// The default place for the saved identity: `warp.json` in the state
-    /// directory of [`crate::state`], or `None` with `CFRS_STATE_DIR=none`.
+    /// directory of [`crate::state`], or `None` with `PODNET_STATE_DIR=none`.
     pub fn default_identity_path() -> Result<Option<std::path::PathBuf>> {
         Ok(crate::state::state_dir()?.map(|dir| dir.join("warp.json")))
     }
@@ -678,7 +678,7 @@ impl WarpClient {
             .context("the device has no MASQUE endpoint")?;
         let pinned = device
             .peer_public_key_pem()
-            .context("the device has no peer key to pin; cfrs does not connect without one")
+            .context("the device has no peer key to pin; podnet does not connect without one")
             .and_then(identity::spki_from_pem)
             .context("parsing the pinned peer key")?;
         Ok((endpoint, pinned))
@@ -952,7 +952,7 @@ pub(crate) fn check_private(path: &std::path::Path) -> Result<()> {
     let uid = unsafe { libc::geteuid() };
     if meta.uid() != uid {
         anyhow::bail!(
-            "{} belongs to user {}, not to this user ({uid}); cfrs does not use it",
+            "{} belongs to user {}, not to this user ({uid}); podnet does not use it",
             path.display(),
             meta.uid()
         );
@@ -1066,7 +1066,7 @@ mod private_file_tests {
     #[test]
     fn a_private_file_has_mode_0600_and_a_loose_one_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state/cfrs/warp.json");
+        let path = dir.path().join("state/podnet/warp.json");
         write_private(&path, b"{}").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);

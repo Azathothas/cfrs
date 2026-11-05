@@ -1,6 +1,6 @@
 //! The shim/stack control protocol.
 //!
-//! The shim's `bind`/`connect` connects to `\0cfrsnet/ctl` and registers the
+//! The shim's `bind`/`connect` connects to `\0podnet-vnet/ctl` and registers the
 //! logical endpoint; the stack binds the corresponding abstract name and
 //! multiplexes logical connections over one `AF_UNIX` connection with a
 //! per-connection stream id. File descriptors are never passed (`SCM_RIGHTS`),

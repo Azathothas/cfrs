@@ -4,7 +4,7 @@
 //! stack transmits land in an outbound queue, and packets read from the
 //! outside world are pushed into an inbound queue. A pump (the reactor, or a
 //! tunnel task) moves bytes between those queues and the real link, whatever
-//! it is — a unix socket, a QUIC stream, or a `cfrs` WebSocket forward.
+//! it is — a unix socket, a QUIC stream, or a `podnet` WebSocket forward.
 //!
 //! Keeping the smoltcp `Device` purely in-process means it never has to be
 //! generic over an async transport, and the same device serves loopback (the

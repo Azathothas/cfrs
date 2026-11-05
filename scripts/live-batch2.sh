@@ -3,27 +3,27 @@
 # scan, the rules of warp proxy, warp forward, a nested session, warp
 # export, and a QUIC probe of the front door.
 #
-#   sh scripts/live-batch2.sh CFRS
+#   sh scripts/live-batch2.sh PODNET
 #
 # The log of CI is public: no line prints a device id, a token, a private
 # key or the exit address.
 set -eu
-cfrs=${1:?usage: live-batch2.sh CFRS}
+podnet=${1:?usage: live-batch2.sh PODNET}
 dir=$(mktemp -d)
 pids=""
 cleanup() {
     for pid in $pids; do kill "$pid" 2> /dev/null || true; done
     for id in a b; do
         if [ -f "$dir/$id.json" ]; then
-            "$cfrs" warp --identity "$dir/$id.json" delete > /dev/null 2>&1 || true
+            "$podnet" warp --identity "$dir/$id.json" delete > /dev/null 2>&1 || true
         fi
     done
     # The WireGuard device of --transport wireguard (the state directory),
     # and the carried device of --carry wg.
-    "$cfrs" warp export --delete > /dev/null 2>&1 || true
-    "$cfrs" warp export --export-identity "${XDG_STATE_HOME:-$HOME/.local/state}/cfrs/warp-carry.json" --delete > /dev/null 2>&1 || true
+    "$podnet" warp export --delete > /dev/null 2>&1 || true
+    "$podnet" warp export --export-identity "${XDG_STATE_HOME:-$HOME/.local/state}/podnet/warp-carry.json" --delete > /dev/null 2>&1 || true
     if [ -f "$dir/wg.json" ]; then
-        "$cfrs" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1 || true
+        "$podnet" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1 || true
     fi
     rm -rf "$dir"
 }
@@ -44,7 +44,7 @@ wait_port() {
 }
 
 echo "== warp exit (issue 147)"
-"$cfrs" warp --identity "$dir/a.json" exit --json > "$dir/exit.json"
+"$podnet" warp --identity "$dir/a.json" exit --json > "$dir/exit.json"
 python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -61,7 +61,7 @@ else:
 ' "$dir/exit.json"
 
 echo "== warp scan (issue 139)"
-"$cfrs" warp --identity "$dir/a.json" scan --candidate 162.159.198.1 --json > "$dir/scan.json" || true
+"$podnet" warp --identity "$dir/a.json" scan --candidate 162.159.198.1 --json > "$dir/scan.json" || true
 python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -78,10 +78,10 @@ printf 'domain:.example.org=reject\n' > "$dir/rules"
 # A local web server with a mark of its own (an earlier step of live.yml
 # keeps a proxy on 18080).
 mkdir -p "$dir/www"
-echo "cfrs-batch2-$$" > "$dir/www/mark.txt"
+echo "podnet-batch2-$$" > "$dir/www/mark.txt"
 python3 -m http.server 18731 --bind 127.0.0.1 --directory "$dir/www" > /dev/null 2>&1 &
 pids="$pids $!"
-"$cfrs" warp --identity "$dir/a.json" proxy --listen tcp://127.0.0.1:40010 \
+"$podnet" warp --identity "$dir/a.json" proxy --listen tcp://127.0.0.1:40010 \
     -r cidr:127.0.0.0/8=direct -r domain:example.com=reject \
     --rules-file "$dir/rules" --run-for 240 > "$dir/rules.log" 2>&1 &
 pids="$pids $!"
@@ -101,7 +101,7 @@ until nc -z 127.0.0.1 18731 2> /dev/null; do
     sleep 0.25
 done
 mark=$(curl -fsS --max-time 10 -x socks5h://127.0.0.1:40010 http://127.0.0.1:18731/mark.txt)
-[ "$mark" = "cfrs-batch2-$$" ] || { echo "direct to the host: another answer: $mark"; exit 1; }
+[ "$mark" = "podnet-batch2-$$" ] || { echo "direct to the host: another answer: $mark"; exit 1; }
 echo "direct to the host: the mark of the local server"
 # The rules file is read again when it changes.
 printf 'domain:.example.org=reject\ndomain:.cloudflare.com=reject\n' > "$dir/rules"
@@ -111,20 +111,20 @@ echo "reject after the reload: $code"
 [ "$code" = 403 ]
 
 echo "== warp forward (issue 143)"
-"$cfrs" warp --identity "$dir/a.json" forward -L 127.0.0.1:18443=1.1.1.1:443 --run-for 200 > "$dir/fwd.log" 2>&1 &
+"$podnet" warp --identity "$dir/a.json" forward -L 127.0.0.1:18443=1.1.1.1:443 --run-for 200 > "$dir/fwd.log" 2>&1 &
 pids="$pids $!"
 wait_port 18443 "$dir/fwd.log"
 curl -fsS --noproxy '*' --max-time 30 --resolve one.one.one.one:18443:127.0.0.1 https://one.one.one.one:18443/cdn-cgi/trace | grep '^warp='
 
 echo "== a nested session (issue 156)"
-"$cfrs" --proxy socks5h://127.0.0.1:40010 warp --identity "$dir/b.json" proxy \
+"$podnet" --proxy socks5h://127.0.0.1:40010 warp --identity "$dir/b.json" proxy \
     --listen tcp://127.0.0.1:40011 --run-for 180 > "$dir/nested.log" 2>&1 &
 pids="$pids $!"
 wait_port 40011 "$dir/nested.log"
 curl -fsS --max-time 30 -x socks5h://127.0.0.1:40011 https://one.one.one.one/cdn-cgi/trace | grep '^warp=on'
 
 echo "== warp export (issue 148)"
-"$cfrs" warp export --export-identity "$dir/wg.json" --format json > "$dir/wg-out.json" 2> /dev/null
+"$podnet" warp export --export-identity "$dir/wg.json" --format json > "$dir/wg-out.json" 2> /dev/null
 # Issue 177: the redirected file holds the private key: mode 0600.
 [ "$(stat -c %a "$dir/wg-out.json")" = 600 ] || { echo "export: the file of stdout is not 0600"; exit 1; }
 python3 -c '
@@ -134,13 +134,13 @@ assert len(d["private_key"]) == 44 and len(d["peer_public_key"]) == 44
 assert d["endpoint"].endswith(":2408"), d["endpoint"]
 print("export: keys ok, endpoint port 2408, reserved", "yes" if d["reserved"] else "no")
 ' "$dir/wg-out.json"
-"$cfrs" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1
+"$podnet" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1
 [ ! -e "$dir/wg.json" ]
 echo "export: the device is deleted"
 
 echo "== the ClientHello in records (issue 135)"
 for mode in record sni; do
-    "$cfrs" warp --identity "$dir/a.json" --no-relay --fragment-client-hello "$mode" probe > "$dir/frag.out" 2>&1 ||
+    "$podnet" warp --identity "$dir/a.json" --no-relay --fragment-client-hello "$mode" probe > "$dir/frag.out" 2>&1 ||
         { grep -E '^(FAIL|TIMEOUT)' "$dir/frag.out"; echo "the front door refused the split ClientHello ($mode)"; exit 1; }
     grep -E '^(tunnel|OK) ' "$dir/frag.out" | head -2
     echo "fragment $mode: ok"
@@ -151,7 +151,7 @@ echo "== an upload of 16 MiB with each congestion controller (issue 134)"
 # was corrupt (the TLS peer answered bad record mac).
 head -c 16777216 /dev/urandom > "$dir/up16"
 for cc in none reno cubic; do
-    "$cfrs" warp --identity "$dir/a.json" --cc "$cc" proxy --listen tcp://127.0.0.1:40012 --run-for 120 > "$dir/cc.log" 2>&1 &
+    "$podnet" warp --identity "$dir/a.json" --cc "$cc" proxy --listen tcp://127.0.0.1:40012 --run-for 120 > "$dir/cc.log" 2>&1 &
     pid=$!
     pids="$pids $pid"
     wait_port 40012 "$dir/cc.log"
@@ -169,10 +169,10 @@ for cc in none reno cubic; do
 done
 
 echo "== MASQUE over HTTP/3 (issue 157; a report, not a check yet)"
-if "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 probe > "$dir/h3.out" 2>&1; then
+if "$podnet" warp --identity "$dir/a.json" --no-relay --masque-transport h3 probe > "$dir/h3.out" 2>&1; then
     grep -E '^(tunnel|OK|exit) ' "$dir/h3.out" | head -4
     echo "h3 probe: ok"
-    "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 proxy --listen tcp://127.0.0.1:40013 --run-for 150 > "$dir/h3p.log" 2>&1 &
+    "$podnet" warp --identity "$dir/a.json" --no-relay --masque-transport h3 proxy --listen tcp://127.0.0.1:40013 --run-for 150 > "$dir/h3p.log" 2>&1 &
     pid=$!
     pids="$pids $pid"
     wait_port 40013 "$dir/h3p.log"
@@ -185,7 +185,7 @@ if "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport h3 probe 
     # window over 1 stalled on the direct path).
     for transport in h3 h2; do
         for burst in 16 none; do
-            CFRS_WARP_TCP_BURST=$burst "$cfrs" warp --identity "$dir/a.json" --no-relay --masque-transport "$transport" \
+            PODNET_WARP_TCP_BURST=$burst "$podnet" warp --identity "$dir/a.json" --no-relay --masque-transport "$transport" \
                 proxy --listen tcp://127.0.0.1:40016 --run-for 80 > "$dir/burst.log" 2>&1 &
             bpid=$!
             pids="$pids $bpid"
@@ -201,7 +201,7 @@ else
     sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/h3.out" | tail -5
 fi
 # The same download over HTTP/2, for the comparison.
-"$cfrs" warp --identity "$dir/a.json" --no-relay proxy --listen tcp://127.0.0.1:40014 --run-for 100 > "$dir/h2p.log" 2>&1 &
+"$podnet" warp --identity "$dir/a.json" --no-relay proxy --listen tcp://127.0.0.1:40014 --run-for 100 > "$dir/h2p.log" 2>&1 &
 pid=$!
 pids="$pids $pid"
 wait_port 40014 "$dir/h2p.log"
@@ -215,7 +215,7 @@ echo "== warp proxy --l4 (issue 140; a report, not a check yet)"
 for form in plain extended header; do
 for sni in consumer-masque-proxy.cloudflareclient.com consumer-masque.cloudflareclient.com; do
     echo "l4 form $form:"
-    CFRS_WARP_L4_FORM=$form "$cfrs" warp --identity "$dir/a.json" proxy --l4 --l4-sni "$sni" --listen tcp://127.0.0.1:40017 --run-for 40 > "$dir/l4.log" 2>&1 &
+    PODNET_WARP_L4_FORM=$form "$podnet" warp --identity "$dir/a.json" proxy --l4 --l4-sni "$sni" --listen tcp://127.0.0.1:40017 --run-for 40 > "$dir/l4.log" 2>&1 &
     lpid=$!
     pids="$pids $lpid"
     i=0
@@ -231,17 +231,17 @@ for sni in consumer-masque-proxy.cloudflareclient.com consumer-masque.cloudflare
     else
         echo "l4 $sni: the door did not open"
     fi
-    sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/l4.log" | grep -iE 'error|refused|cfrs: ' | tail -3
+    sed -E 's/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t\.[0-9a-f-]{8,}/<id>/g' "$dir/l4.log" | grep -iE 'error|refused|podnet: ' | tail -3
     kill "$lpid" 2> /dev/null || true
     wait "$lpid" 2> /dev/null || true
 done
 done
 
 echo "== the WireGuard leg (issue 152; a report, not a check yet)"
-if "$cfrs" warp --transport wireguard probe > "$dir/wgp.out" 2>&1; then
+if "$podnet" warp --transport wireguard probe > "$dir/wgp.out" 2>&1; then
     grep -E '^(tunnel|OK|exit) ' "$dir/wgp.out" | head -4
     echo "wireguard probe: ok"
-    "$cfrs" warp --transport wireguard proxy --listen tcp://127.0.0.1:40015 --run-for 120 > "$dir/wgproxy.log" 2>&1 &
+    "$podnet" warp --transport wireguard proxy --listen tcp://127.0.0.1:40015 --run-for 120 > "$dir/wgproxy.log" 2>&1 &
     pid=$!
     pids="$pids $pid"
     wait_port 40015 "$dir/wgproxy.log"
@@ -257,7 +257,7 @@ fi
 
 echo "== a WireGuard device in the tunnel (issues 154 and 155; a report)"
 for leg in masque wireguard; do
-    if "$cfrs" warp --identity "$dir/a.json" --transport "$leg" --carry wg exit --json > "$dir/carry.json" 2> "$dir/carry.err"; then
+    if "$podnet" warp --identity "$dir/a.json" --transport "$leg" --carry wg exit --json > "$dir/carry.json" 2> "$dir/carry.err"; then
         python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))

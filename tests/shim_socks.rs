@@ -1,7 +1,7 @@
 //! End-to-end test for the Tailscale socksifying shim.
 //!
 //! A fake `tailscaled` LocalAPI accepts the `ts-dial` upgrade and echoes
-//! whatever is written after it. The real `cfrs net tailscale` front door is
+//! whatever is written after it. The real `podnet net tailscale` front door is
 //! started on a unix socket in front of it. A compiled C program calls
 //! `connect(AF_INET, 100.64.0.1:1234)` under `LD_PRELOAD` and must reach the
 //! echo through the front door, with `getpeername` reporting the logical
@@ -14,9 +14,9 @@
 use std::io::Write;
 use std::process::Command;
 
-use cfrs::vnet::proxy::ProxyListen;
-use cfrs::vnet::shim;
-use cfrs::vnet::tailscale::{self, Dialer};
+use podnet::vnet::proxy::ProxyListen;
+use podnet::vnet::shim;
+use podnet::vnet::tailscale::{self, Dialer};
 
 fn have_compiler() -> bool {
     shim::compiler().is_ok()
@@ -123,7 +123,7 @@ int main(void){
         let shim = shim::build_socks(dir.path()).unwrap();
         let output = Command::new(&client)
             .env("LD_PRELOAD", &shim.path)
-            .env("CFRSSOCKS_PROXY", &front)
+            .env("PODNET_SOCKS_PROXY", &front)
             .output()
             .unwrap();
         assert!(

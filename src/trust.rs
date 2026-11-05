@@ -1,16 +1,16 @@
-//! The roots that cfrs trusts for each TLS connection that it opens as a
+//! The roots that podnet trusts for each TLS connection that it opens as a
 //! client: the quick-tunnel API, DNS over HTTPS, the WARP API, the fetch of
 //! the public URL, the edge, and HTTPS origins.
 //!
 //! The order:
 //!
 //! 1. A file given with `--ca-file`, else the file in `SSL_CERT_FILE`. The file
-//!    is used alone: cfrs adds no other root to it.
-//! 2. Else all of these: `cfrs-ca.pem` beside the binary, the first readable
-//!    bundle of [`SYSTEM_BUNDLES`], and the Mozilla roots compiled into cfrs
+//!    is used alone: podnet adds no other root to it.
+//! 2. Else all of these: `podnet-ca.pem` beside the binary, the first readable
+//!    bundle of [`SYSTEM_BUNDLES`], and the Mozilla roots compiled into podnet
 //!    (webpki-roots [`ROOTS_CRATE_VERSION`]).
 //!
-//! The edge also trusts the Cloudflare roots of `cf-edge-roots.pem`. cfrs has
+//! The edge also trusts the Cloudflare roots of `cf-edge-roots.pem`. podnet has
 //! no option that accepts each certificate for these connections; only an
 //! origin can turn off the check (`noTLSVerify`, `--no-tls-verify`).
 //!
@@ -29,8 +29,8 @@ use rustls::RootCertStore;
 /// The variable that names a file of roots, as in OpenSSL.
 pub const CA_FILE_VARIABLE: &str = "SSL_CERT_FILE";
 /// The name of the file of roots beside the binary.
-pub const BESIDE_BINARY: &str = "cfrs-ca.pem";
-/// The system bundles, in the order cfrs tries them. cfrs uses the first
+pub const BESIDE_BINARY: &str = "podnet-ca.pem";
+/// The system bundles, in the order podnet tries them. podnet uses the first
 /// that it can read.
 pub const SYSTEM_BUNDLES: &[&str] = &[
     "/etc/ssl/certs/ca-certificates.crt",
@@ -446,7 +446,7 @@ mod tests {
             "src/warp/session.rs",
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut stack = vec![root.join("src"), root.join("crates/pod-netns/src")];
+        let mut stack = vec![root.join("src"), root.join("crates/podnet-netns/src")];
         let mut found = Vec::new();
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap().flatten() {

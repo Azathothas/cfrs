@@ -6,7 +6,7 @@
 //!
 //! * `direct`: a kernel socket, no proxy;
 //! * `proxy`: the proxy of the environment (`HTTPS_PROXY`, `--proxy`);
-//! * `warp`: the running `cfrs warp up` (its SOCKS5 socket).
+//! * `warp`: the running `podnet warp up` (its SOCKS5 socket).
 //!
 //! A TLS check is a full handshake with the public roots, so a proxy that
 //! terminates TLS shows as `intercepted`. The verdict of each task names
@@ -145,7 +145,7 @@ impl Row {
 pub struct Report {
     pub proxy: Option<String>,
     pub warp_up: bool,
-    /// The running `cfrs warp up` has its TCP listener, so `cfrs warp env`
+    /// The running `podnet warp up` has its TCP listener, so `podnet warp env`
     /// has proxy variables (issue 110).
     pub warp_tcp: bool,
     pub rows: Vec<Row>,
@@ -201,7 +201,7 @@ async fn dial(path: Path, host: &str, port: u16, timeout: Duration) -> Result<Bo
             let io = tokio::time::timeout(timeout, crate::warp::nc::via_running(host, port))
                 .await
                 .context("no answer in time")??
-                .context("cfrs warp up does not run")?;
+                .context("podnet warp up does not run")?;
             Ok(io)
         }
     }
@@ -423,22 +423,22 @@ pub fn advice(report: &Report) -> Vec<String> {
         return out;
     }
     if report.warp_up && report.warp_tcp {
-        out.push("cfrs warp up runs: in a new shell, eval \"$(cfrs warp env)\"; for a static binary or UDP, cfrs warp exec -- CMD (or cfrs warp shell, or cfrs warp run -- CMD)".into());
+        out.push("podnet warp up runs: in a new shell, eval \"$(podnet warp env)\"; for a static binary or UDP, podnet warp exec -- CMD (or podnet warp shell, or podnet warp run -- CMD)".into());
     } else if report.warp_up {
         // Issue 110: no TCP listener, so no proxy variables to eval.
-        out.push("cfrs warp up runs on its unix socket only (this host refused its TCP listener), so there are no proxy variables: use cfrs warp exec -- CMD (or cfrs warp shell, or cfrs warp run -- CMD)".into());
+        out.push("podnet warp up runs on its unix socket only (this host refused its TCP listener), so there are no proxy variables: use podnet warp exec -- CMD (or podnet warp shell, or podnet warp run -- CMD)".into());
     } else if any_failing_everywhere || !report.udp_dns.works() {
         out.push(
-            "start WARP for this sandbox: cfrs warp up (add --persist so that new shells use it)"
+            "start WARP for this sandbox: podnet warp up (add --persist so that new shells use it)"
                 .into(),
         );
     }
     if let Some(ssh) = ssh {
         if !ssh.direct.works() {
             if ssh.warp.works() || !report.warp_up {
-                out.push("git over SSH: cfrs warp ssh-config --write --host github.com".into());
+                out.push("git over SSH: podnet warp ssh-config --write --host github.com".into());
             } else {
-                out.push("git over SSH: use HTTPS remotes, or cfrs warp nc --via-relay %h %p as ProxyCommand".into());
+                out.push("git over SSH: use HTTPS remotes, or podnet warp nc --via-relay %h %p as ProxyCommand".into());
             }
         }
     }
@@ -447,21 +447,21 @@ pub fn advice(report: &Report) -> Vec<String> {
         .iter()
         .any(|r| r.proxy == Outcome::Intercepted || r.direct == Outcome::Intercepted)
     {
-        out.push("a proxy or a gateway terminates TLS (the CA bundle of this host trusts it): through WARP the tools see the real chains; cfrs warp up names a merged CA bundle when SSL_CERT_FILE has only the proxy root".into());
+        out.push("a proxy or a gateway terminates TLS (the CA bundle of this host trusts it): through WARP the tools see the real chains; podnet warp up names a merged CA bundle when SSL_CERT_FILE has only the proxy root".into());
     }
     if !report.localhost.works() {
         out.push(
-            "TCP on 127.0.0.1 does not work here: use unix sockets (cfrs tunnel --unix, cfrs net)"
+            "TCP on 127.0.0.1 does not work here: use unix sockets (podnet tunnel --unix, podnet net)"
                 .into(),
         );
     }
     if matches!(&report.resolver, Outcome::Failed(why) if why.starts_with("synthetic")) {
-        out.push("the resolver of this host gives synthetic addresses: give names to a proxy (socks5h://, not socks5://), or map them with cfrs pod --map NAME=IP; cfrs pod sets RES_OPTIONS=single-request for glibc".into());
+        out.push("the resolver of this host gives synthetic addresses: give names to a proxy (socks5h://, not socks5://), or map them with podnet pod --map NAME=IP; podnet pod sets RES_OPTIONS=single-request for glibc".into());
     }
     if !report.ipv6.works() && !report.warp_up {
         out.push("no IPv6 here; IPv4 targets work through WARP".into());
     }
-    out.push("to expose a dev server: cfrs tunnel --port PORT --detach (add --transport relay when TCP 7844 is closed)".into());
+    out.push("to expose a dev server: podnet tunnel --port PORT --detach (add --transport relay when TCP 7844 is closed)".into());
     out
 }
 
@@ -478,7 +478,7 @@ fn mark(outcome: &Outcome) -> String {
 pub fn text(report: &Report) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "proxy: {}   cfrs warp up: {}\n\n",
+        "proxy: {}   podnet warp up: {}\n\n",
         report.proxy.as_deref().unwrap_or("none"),
         if report.warp_up {
             "runs"
@@ -509,9 +509,9 @@ pub fn text(report: &Report) -> String {
     ));
     if !report.udp_dns.works() {
         out.push_str(if report.warp_up {
-            "  UDP fails for a program that runs on this host. Under WARP it has UDP: cfrs warp exec -- CMD, cfrs warp shell, or cfrs warp run -- CMD.\n"
+            "  UDP fails for a program that runs on this host. Under WARP it has UDP: podnet warp exec -- CMD, podnet warp shell, or podnet warp run -- CMD.\n"
         } else {
-            "  UDP fails for a program that runs on this host. Under WARP it has UDP: cfrs warp run -- CMD, or start cfrs warp up and use cfrs warp exec -- CMD or cfrs warp shell.\n"
+            "  UDP fails for a program that runs on this host. Under WARP it has UDP: podnet warp run -- CMD, or start podnet warp up and use podnet warp exec -- CMD or podnet warp shell.\n"
         });
     }
     out.push('\n');
@@ -575,9 +575,9 @@ mod tests {
         r.warp_tcp = false;
         let advice = advice(&r);
         assert!(!advice[0].contains("eval"), "{advice:?}");
-        assert!(advice[0].contains("cfrs warp exec -- CMD"), "{advice:?}");
+        assert!(advice[0].contains("podnet warp exec -- CMD"), "{advice:?}");
         let r = report(rows, true, Outcome::Failed("no".into()));
-        assert!(advice_has(&r, "eval \"$(cfrs warp env)\""));
+        assert!(advice_has(&r, "eval \"$(podnet warp env)\""));
     }
 
     fn advice_has(r: &Report, text: &str) -> bool {
@@ -615,10 +615,10 @@ mod tests {
         );
         let advice = advice(&r);
         assert!(
-            advice[0].starts_with("start WARP for this sandbox: cfrs warp up"),
+            advice[0].starts_with("start WARP for this sandbox: podnet warp up"),
             "{advice:?}"
         );
-        assert!(advice.iter().any(|a| a.contains("cfrs warp ssh-config")));
+        assert!(advice.iter().any(|a| a.contains("podnet warp ssh-config")));
         assert!(advice.iter().any(|a| a.contains("no IPv6")));
     }
 
@@ -635,7 +635,7 @@ mod tests {
             Outcome::Failed("x".into()),
         );
         let advice = advice(&r);
-        assert!(advice[0].contains("cfrs warp up runs"));
+        assert!(advice[0].contains("podnet warp up runs"));
         assert!(advice.iter().any(|a| a.contains("terminates TLS")));
         assert_eq!(r.rows[0].working(), [Path::Proxy, Path::Warp]);
     }
@@ -669,16 +669,16 @@ mod tests {
         let line = t.lines().find(|l| l.contains("UDP DNS")).unwrap();
         assert!(line.starts_with("This host, direct (no WARP): UDP DNS (1.1.1.1:53): fail"));
         for cmd in [
-            "cfrs warp exec -- CMD",
-            "cfrs warp shell",
-            "cfrs warp run -- CMD",
+            "podnet warp exec -- CMD",
+            "podnet warp shell",
+            "podnet warp run -- CMD",
         ] {
             assert!(t.contains(cmd), "{cmd}: {t}");
         }
-        // No cfrs warp up yet: it is named before exec and shell.
+        // No podnet warp up yet: it is named before exec and shell.
         let t = text(&report(vec![], false, failed()));
         assert!(
-            t.contains("start cfrs warp up and use cfrs warp exec"),
+            t.contains("start podnet warp up and use podnet warp exec"),
             "{t}"
         );
         // The host UDP works: no note, the line keeps its fields.

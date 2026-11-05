@@ -41,7 +41,7 @@ The router, the file server, the file transfer and the git hosting.
 
 ## M7: Pods
 
-The pod backends (`podnet pod`, the crate of `crates/pod-netns`).
+The pod backends (`podnet pod`, the crate of `crates/podnet-netns`).
 
 ## M8: Overlays
 

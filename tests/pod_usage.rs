@@ -1,10 +1,16 @@
-//! Usage errors of `pod-netns` (issue 62): each bad upstream or rule exits
+//! Usage errors of `podnet pod` (issue 62): each bad upstream or rule exits
 //! 64, and the program does not run (it would make a marker file).
 
 use std::process::Command;
 
-#[path = "../../../tests/test_host/mod.rs"]
 mod test_host;
+
+/// `podnet pod`: the CLI of the pod is a command of the root binary.
+fn pod_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_podnet"));
+    command.arg("pod");
+    command
+}
 
 #[test]
 fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
@@ -26,7 +32,7 @@ fn a_bad_upstream_or_rule_exits_64_and_runs_nothing() {
         ],
     ];
     for case in cases {
-        let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+        let out = pod_command()
             .args(*case)
             .arg("--")
             .arg("touch")
@@ -53,7 +59,7 @@ fn an_inbound_directory_that_others_can_write_is_refused() {
     std::fs::create_dir(&open).unwrap();
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
     let marker = dir.path().join("ran");
-    let out = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let out = pod_command()
         .args(["--backend", "seccomp", "--inbound-dir"])
         .arg(&open)
         .args(["-x", "socks5://127.0.0.1:9", "--", "touch"])
@@ -72,17 +78,17 @@ fn an_inbound_directory_that_others_can_write_is_refused() {
 fn a_port_0_front_door_prints_the_bound_port() {
     test_host::need_loopback!();
     use std::io::BufRead;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pod-netns"))
+    let mut child = pod_command()
         .args(["--serve", "tcp://127.0.0.1:0", "-x", "socks5://127.0.0.1:9"])
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let mut lines = std::io::BufReader::new(child.stderr.take().unwrap()).lines();
     let line = lines
-        .find_map(|l| l.ok().filter(|l| l.starts_with("pod-netns: serving ")))
+        .find_map(|l| l.ok().filter(|l| l.starts_with("podnet-netns: serving ")))
         .expect("a serving line");
     let addr: std::net::SocketAddr = line
-        .trim_start_matches("pod-netns: serving tcp://")
+        .trim_start_matches("podnet-netns: serving tcp://")
         .split_whitespace()
         .next()
         .unwrap()

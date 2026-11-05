@@ -1,5 +1,5 @@
 //! The path decisions of this process (issue 137), counted by decision and
-//! outcome: `cfrs_decisions_total{decision="dns",outcome="doh"}`.
+//! outcome: `podnet_decisions_total{decision="dns",outcome="doh"}`.
 //!
 //! | decision | outcomes |
 //! |---|---|
@@ -43,12 +43,12 @@ pub fn prometheus() -> String {
         return String::new();
     }
     let mut out = String::from(
-        "# HELP cfrs_decisions_total The path decisions of this process.\n\
-         # TYPE cfrs_decisions_total counter\n",
+        "# HELP podnet_decisions_total The path decisions of this process.\n\
+         # TYPE podnet_decisions_total counter\n",
     );
     for ((decision, outcome), n) in counts.iter() {
         out.push_str(&format!(
-            "cfrs_decisions_total{{decision=\"{decision}\",outcome=\"{}\"}} {n}\n",
+            "podnet_decisions_total{{decision=\"{decision}\",outcome=\"{}\"}} {n}\n",
             label(outcome)
         ));
     }
@@ -85,9 +85,9 @@ mod tests {
         count("test", "other");
         assert_eq!(get("test", "a\"b"), before + 2);
         let text = prometheus();
-        assert!(text.contains("# TYPE cfrs_decisions_total counter\n"));
+        assert!(text.contains("# TYPE podnet_decisions_total counter\n"));
         assert!(text.contains(&format!(
-            "cfrs_decisions_total{{decision=\"test\",outcome=\"a\\\"b\"}} {}\n",
+            "podnet_decisions_total{{decision=\"test\",outcome=\"a\\\"b\"}} {}\n",
             before + 2
         )));
         assert!(summary().contains("test.other="));

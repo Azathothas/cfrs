@@ -1,18 +1,18 @@
 //! Exit codes.
 //!
-//! [`TABLE`] is the one list of the exit codes. `cfrs man exit-status`
+//! [`TABLE`] is the one list of the exit codes. `podnet man exit-status`
 //! renders it, and `main` maps each error to a code with [`code_of`].
 //!
 //! The codes follow sysexits.h, so that a script can tell the usage error of
-//! cfrs from the failure of another program:
+//! podnet from the failure of another program:
 //!
-//! * 64 (`EX_USAGE`): a bad command line, before cfrs does anything.
+//! * 64 (`EX_USAGE`): a bad command line, before podnet does anything.
 //! * 69 (`EX_UNAVAILABLE`): a service or a network path is not available:
 //!   the edge, the quick-tunnel service, the WARP API or its MASQUE endpoint.
 //! * 78 (`EX_CONFIG`): a configuration that cannot be used: a variable of the
-//!   environment (for example `CFRS_EDGE`) or a configuration file.
+//!   environment (for example `PODNET_EDGE`) or a configuration file.
 //!
-//! An error with no class exits 1. `cfrs pod` and `cfrs warp run` give the
+//! An error with no class exits 1. `podnet pod` and `podnet warp run` give the
 //! status of the program that they run, and 3 when no backend can run it.
 
 /// The class of a failure. Attach it to an error with [`fault`].
@@ -64,7 +64,7 @@ pub struct ExitCode {
     pub meaning: &'static str,
 }
 
-/// Each exit code of cfrs.
+/// Each exit code of podnet.
 pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: SUCCESS,
@@ -79,7 +79,7 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: NO_BACKEND,
         name: "no-backend",
-        meaning: "cfrs pod (and pod-netns) and cfrs warp run: no backend can run on this host, the program is not in PATH (or cannot run), or the setup of the backend failed. pod doctor gives 3 when no backend can run.",
+        meaning: "podnet pod and podnet warp run: no backend can run on this host, the program is not in PATH (or cannot run), or the setup of the backend failed. pod doctor gives 3 when no backend can run.",
     },
     ExitCode {
         code: USAGE,
@@ -94,12 +94,12 @@ pub const TABLE: &[ExitCode] = &[
     ExitCode {
         code: TEMPFAIL,
         name: "tempfail",
-        meaning: "The quick-tunnel service refused a provision for now (HTTP 429): the error report (CFRS_ERROR_PROGRAM) has retry_after_s. Also: --detach lost the pipe to the command that started it. Try again later.",
+        meaning: "The quick-tunnel service refused a provision for now (HTTP 429): the error report (PODNET_ERROR_PROGRAM) has retry_after_s. Also: --detach lost the pipe to the command that started it. Try again later.",
     },
     ExitCode {
         code: CONFIG,
         name: "config",
-        meaning: "A configuration that cannot be used: a variable of the environment such as CFRS_EDGE, a configuration file given with --config, a tunnel token or a credentials file (as a flag or as a key of the file), or a roots file of --ca-file.",
+        meaning: "A configuration that cannot be used: a variable of the environment such as PODNET_EDGE, a configuration file given with --config, a tunnel token or a credentials file (as a flag or as a key of the file), or a roots file of --ca-file.",
     },
     ExitCode {
         code: TIMEOUT,
@@ -167,12 +167,12 @@ mod tests {
 
     #[test]
     fn a_class_survives_context() {
-        let err = fault(Fault::Config, anyhow::anyhow!("bad CFRS_EDGE"));
+        let err = fault(Fault::Config, anyhow::anyhow!("bad PODNET_EDGE"));
         let err = Err::<(), _>(err)
             .context("starting the tunnel")
             .unwrap_err();
         assert_eq!(code_of(&err), CONFIG);
-        assert_eq!(format!("{err:#}"), "starting the tunnel: bad CFRS_EDGE");
+        assert_eq!(format!("{err:#}"), "starting the tunnel: bad PODNET_EDGE");
         assert_eq!(code_of(&anyhow::anyhow!("plain")), FAILURE);
     }
 

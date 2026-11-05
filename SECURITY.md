@@ -3,10 +3,10 @@
 ## Report a vulnerability
 
 Do not open a public issue for a vulnerability. Use the private report of
-GitHub: open <https://github.com/Azathothas/cfrs/security/advisories/new>
+GitHub: open <https://github.com/Azathothas/podnet/security/advisories/new>
 and write these items:
 
-* the version (`cfrs --version`) and the system (`cfrs status`);
+* the version (`podnet --version`) and the system (`podnet status`);
 * the steps that show the fault;
 * what an attacker can do, and what the attacker must have first.
 
@@ -23,13 +23,16 @@ suffix, for example `v0.3.0-beta.1`) is replaced by the next release.
 * `.github/workflows/deny.yml` runs `cargo deny` on each push and each day:
   advisories, licenses, bans and sources (`deny.toml`).
 * An advisory stops CI. Update the crate, or replace it. If no fixed version
-  exists and cfrs does not use the affected part, add the advisory to
+  exists and podnet does not use the affected part, add the advisory to
   `[advisories] ignore` in `deny.toml` with the reason and the date it was
   read.
 * Dependabot opens the updates of crates, actions and images each week.
 
 The release files have checksums, provenance and a signature. See "Release
 binaries" in `README.md`.
+The releases up to v0.3.0-beta.12 have the old name `cfrs`, and the
+identity of the repository `Azathothas/cfrs` signs them. `README.md` gives
+their file names and their identity.
 
 ## What Cloudflare can see
 
@@ -37,72 +40,72 @@ binaries" in `README.md`.
   edge sees each request and each response of the origin in clear text.
 * The hostname of a quick tunnel (`*.trycloudflare.com`) is public. Anyone
   who has the URL can send requests to the origin. A quick tunnel has no
-  access control. `cfrs share` adds a PIN with `--password` (and always in
-  proxy mode). `cfrs serve` and `cfrs tunnel` add nothing.
-* `cfrs serve` and `cfrs share` publish files to the internet. Serve only
+  access control. `podnet share` adds a PIN with `--password` (and always in
+  proxy mode). `podnet serve` and `podnet tunnel` add nothing.
+* `podnet serve` and `podnet share` publish files to the internet. Serve only
   the files that you want to give to all users.
 * The WARP service sees the destination, the time and the volume of each
   connection that goes through WARP, and the content of each connection that
   has no TLS of its own.
 * The edge, the quick-tunnel service and the WARP API see the public IP
   address of the host.
-* When the system resolver gives no address, cfrs asks DNS over HTTPS at
+* When the system resolver gives no address, podnet asks DNS over HTTPS at
   Cloudflare (1.1.1.1, 1.0.0.1) and Google (8.8.8.8, 8.8.4.4). These servers
-  see the names that cfrs resolves. A pin (`--resolve`) or a proxy sends no
+  see the names that podnet resolves. A pin (`--resolve`) or a proxy sends no
   name to them.
 
 ## What the relay can see
 
 The WebSocket-to-TCP relay of `--transport relay` and of the reverse mode
-(`cfrs relay`) is a service of the owner of cfrs
+(`podnet relay`) is a service of the owner of podnet
 (`tcp.ssh.relay.ajam.dev` and the hosts of its pool). Another relay is set
-with `--relay` or `CFRS_RELAY`.
+with `--relay` or `PODNET_RELAY`.
 
 * `--transport relay`: the relay opens TCP to the edge. It sees the edge
   address and port, the public IP address of the host, the time and the
   volume. It does not see the tunnel: the TLS to the edge (with the edge
-  roots of cfrs) is inside the WebSocket.
+  roots of podnet) is inside the WebSocket.
 * The reverse mode (`relay node`, `relay connect`): the relay carries the
   bytes of each session as they are. There is no encryption from end to
-  end in cfrs. Use a protocol with its own encryption through it (SSH,
+  end in podnet. Use a protocol with its own encryption through it (SSH,
   TLS).
 * The token goes only to the hosts of one deployment: the hosts under the
   parent domain of the first host (`src/relay_pool.rs`). A fixed token
-  (`CFRS_RELAY_TOKEN`) goes to each host of the list.
+  (`PODNET_RELAY_TOKEN`) goes to each host of the list.
 * The relay can end a session at any time. It ends each session at 64 MiB
-  or after 12 h. cfrs replaces an edge connection before that (60 MiB,
+  or after 12 h. podnet replaces an edge connection before that (60 MiB,
   11 h 30 min).
 
 ## What listens
 
-cfrs listens only when a command asks for it. A tunnel connects out to the
+podnet listens only when a command asks for it. A tunnel connects out to the
 edge; it does not listen. The commands below listen:
 
 | Command | Default address | Who can connect |
 | --- | --- | --- |
-| `cfrs warp proxy` | `tcp://127.0.0.1:40000` | Each user of the host (loopback TCP). Use `--listen unix:/path` for the owner only. |
-| `cfrs net proxy` | `unix:/tmp/cfrsnet.socks` | The owner only (socket mode 0600). |
-| `cfrs net switch` | `unix:/tmp/cfrsnet.switch` | The owner only (socket mode 0600, and the user of the peer, `SO_PEERCRED`). A TCP listener takes each peer that sends the shared token (`CFRS_SWITCH_TOKEN` or `--switch-token-file`); with no token it does not start. The token is not encrypted. The switch drops a packet whose source address is of another peer. |
-| `cfrs net proxy --control NAME`, `--import VIRT`, the shim | abstract names `\0NAME`, `\0cfrsnet/...` | The same user only (`SO_PASSCRED`, `SO_PEERCRED`). An abstract name has no file permissions. |
-| `cfrs net tailscale` | `unix:/tmp/cfrssocks.sock` | The owner only (socket mode 0600). |
-| `cfrs connect -L` | no default | `tcp://port` binds `127.0.0.1`. A Unix socket has mode 0600. |
-| `pod-netns --serve` | no default | A Unix socket has mode 0600. A TCP address is open to each user who can reach it. |
-| `cfrs pod`, `cfrs warp run` (seccomp backend) | `$XDG_RUNTIME_DIR/pod-netns-inbound/<port>.sock`, else `$TMPDIR/pod-netns-inbound-<uid>/<port>.sock` | The owner only (socket mode 0600, directory of the user, mode 0700). One socket for each port that the program listens on. cfrs refuses a directory of another user, and a directory that the group or others can write. |
+| `podnet warp proxy` | `tcp://127.0.0.1:40000` | Each user of the host (loopback TCP). Use `--listen unix:/path` for the owner only. |
+| `podnet net proxy` | `unix:/tmp/podnet-vnet.socks` | The owner only (socket mode 0600). |
+| `podnet net switch` | `unix:/tmp/podnet-vnet.switch` | The owner only (socket mode 0600, and the user of the peer, `SO_PEERCRED`). A TCP listener takes each peer that sends the shared token (`PODNET_SWITCH_TOKEN` or `--switch-token-file`); with no token it does not start. The token is not encrypted. The switch drops a packet whose source address is of another peer. |
+| `podnet net proxy --control NAME`, `--import VIRT`, the shim | abstract names `\0NAME`, `\0podnet-vnet/...` | The same user only (`SO_PASSCRED`, `SO_PEERCRED`). An abstract name has no file permissions. |
+| `podnet net tailscale` | `unix:/tmp/podnet-socks.sock` | The owner only (socket mode 0600). |
+| `podnet connect -L` | no default | `tcp://port` binds `127.0.0.1`. A Unix socket has mode 0600. |
+| `podnet pod --serve` | no default | A Unix socket has mode 0600. A TCP address is open to each user who can reach it. |
+| `podnet pod`, `podnet warp run` (seccomp backend) | `$XDG_RUNTIME_DIR/podnet-netns-inbound/<port>.sock`, else `$TMPDIR/podnet-netns-inbound-<uid>/<port>.sock` | The owner only (socket mode 0600, directory of the user, mode 0700). One socket for each port that the program listens on. podnet refuses a directory of another user, and a directory that the group or others can write. |
 
-A TCP address that is not a loopback address is open to the network. cfrs
+A TCP address that is not a loopback address is open to the network. podnet
 does not refuse it, because some hosts permit no other listener.
 
 `tests/cli.rs` (`the_listen_defaults_agree_with_the_manual`) checks the
-defaults in this table against `cfrs man --json`.
+defaults in this table against `podnet man --json`.
 
 ## Secrets
 
-| Secret | Where cfrs keeps it |
+| Secret | Where podnet keeps it |
 | --- | --- |
 | Named-tunnel token and secret | In memory only. Give it in `TUNNEL_TOKEN`, a file (`--token-file`, `TUNNEL_TOKEN_FILE`), a config file or a cloudflared credentials file. `--token` also works, but other users of the host can read a command line. |
-| WARP device token, MASQUE private key, WARP+ license | The identity file (`cfrs man files`), mode 0600, in a directory with mode 0700. cfrs writes it to a new file and then renames it. cfrs refuses an identity file that belongs to another user, or that the group or other users can read. |
+| WARP device token, MASQUE private key, WARP+ license | The identity file (`podnet man files`), mode 0600, in a directory with mode 0700. podnet writes it to a new file and then renames it. podnet refuses an identity file that belongs to another user, or that the group or other users can read. |
 | Proxy user and password | In the proxy variables or `-x`. |
-| Relay token | `CFRS_RELAY_TOKEN`, or a minted token in `relay-token-HOST.json` (mode 0600) in the state directory. cfrs does not use a cache file that is a link, of another user, readable by others or over 64 KiB. |
+| Relay token | `PODNET_RELAY_TOKEN`, or a minted token in `relay-token-HOST.json` (mode 0600) in the state directory. podnet does not use a cache file that is a link, of another user, readable by others or over 64 KiB. |
 | Relay pair (node, connect and stop tokens) | `relay/NAME.json` in the state directory, mode 0600. |
 
 These rules apply to each secret:
@@ -112,19 +115,19 @@ These rules apply to each secret:
   `<hidden>`. Each error line and each line of the failure report goes
   through `report::mask`, which hides the user and the password of each URL,
   the value of each proxy variable that has a user part, and the token.
-* `tests/cli.rs` (`the_log_holds_no_secret`) runs cfrs with `RUST_LOG=trace`
+* `tests/cli.rs` (`the_log_holds_no_secret`) runs podnet with `RUST_LOG=trace`
   and a token, a WARP identity and a proxy password. The test fails when one
   of them is in the output.
 
 ## TLS
 
-Each TLS connection that cfrs opens as a client checks the certificate and
+Each TLS connection that podnet opens as a client checks the certificate and
 the host name. `src/trust.rs` gives the roots:
 
-1. The file of `--ca-file`, else the file of `SSL_CERT_FILE`. cfrs uses this
+1. The file of `--ca-file`, else the file of `SSL_CERT_FILE`. podnet uses this
    file alone.
-2. Else `cfrs-ca.pem` beside the binary, the first system bundle that cfrs
-   can read, and the Mozilla roots compiled into cfrs (webpki-roots, version
+2. Else `podnet-ca.pem` beside the binary, the first system bundle that podnet
+   can read, and the Mozilla roots compiled into podnet (webpki-roots, version
    in `trust::ROOTS_CRATE_VERSION`; a test compares it with `Cargo.lock`).
 
 The edge also trusts the Cloudflare roots of `src/cloudflare/cf-edge-roots.pem`.
@@ -153,13 +156,13 @@ ESC, BEL, CR and C1 controls through the error path.
 
 ## Known gaps
 
-* No third party has audited cfrs.
+* No third party has audited podnet.
 * The Cap'n Proto encoding, the RPC subset, the HTTP/2 edge transport, the
-  MASQUE client and the YAML reader are written for cfrs. Each parser of
+  MASQUE client and the YAML reader are written for podnet. Each parser of
   bytes from the network has a libFuzzer target in `fuzz/`
   (`.github/workflows/fuzz.yml`), but fuzzing finds only some defects.
-* cfrs is for Linux only. It does not read the certificate stores of
+* podnet is for Linux only. It does not read the certificate stores of
   Windows or macOS, and no release is built for them.
 * The `/tmp` paths of the Unix sockets are known to each user. Another user
-  can make the path first. Then the bind fails; cfrs does not use the file of
+  can make the path first. Then the bind fails; podnet does not use the file of
   the other user. Use `--listen unix:` with a path in a private directory.

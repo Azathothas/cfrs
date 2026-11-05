@@ -1,19 +1,19 @@
-//! The limit of open files (issue 126). A server command of cfrs holds one
+//! The limit of open files (issue 126). A server command of podnet holds one
 //! descriptor for each connection; the soft limit of a shell or a container
-//! (often 1024) is then low. cfrs raises the soft limit to the hard limit
+//! (often 1024) is then low. podnet raises the soft limit to the hard limit
 //! at start, with a ceiling of [`CEILING`].
 
 use std::sync::OnceLock;
 
-/// The highest soft limit that cfrs sets: a hard limit can be "unlimited".
+/// The highest soft limit that podnet sets: a hard limit can be "unlimited".
 pub const CEILING: u64 = 1 << 20;
 
-/// The limit of open files, and the soft limit before cfrs raised it.
+/// The limit of open files, and the soft limit before podnet raised it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoFile {
     pub soft: u64,
     pub hard: u64,
-    /// The soft limit before the raise, when cfrs raised it.
+    /// The soft limit before the raise, when podnet raised it.
     pub raised_from: Option<u64>,
 }
 
@@ -31,7 +31,7 @@ fn get() -> Option<(u64, u64)> {
         .then_some((limit.rlim_cur as u64, limit.rlim_max as u64))
 }
 
-/// The soft limit that cfrs sets for `soft` and `hard`.
+/// The soft limit that podnet sets for `soft` and `hard`.
 pub fn target(soft: u64, hard: u64) -> u64 {
     hard.min(CEILING).max(soft)
 }

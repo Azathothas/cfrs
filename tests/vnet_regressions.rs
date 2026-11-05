@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use cfrs::vnet::addr::{subnet_addr, VirtualSubnet};
-use cfrs::vnet::control::{
+use podnet::vnet::addr::{subnet_addr, VirtualSubnet};
+use podnet::vnet::control::{
     ControlDecoder, ControlMessage, ControlOp, ErrorCode, MAX_CONTROL_PAYLOAD,
 };
-use cfrs::vnet::{NetStack, StackConfig, VirtAddr};
+use podnet::vnet::{NetStack, StackConfig, VirtAddr};
 
 /// An address inside the default virtual subnet.
 ///

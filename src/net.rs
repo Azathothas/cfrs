@@ -38,7 +38,7 @@ pub fn claim_socket_path(path: &std::path::Path, replace: bool) -> Result<()> {
                 return Err(fault(
                     Fault::Unavailable,
                     anyhow::anyhow!(
-                        "unix:{} is served by another process (cfrs ps; cfrs stop NAME, or --replace where the command has it)",
+                        "unix:{} is served by another process (podnet ps; podnet stop NAME, or --replace where the command has it)",
                         path.display()
                     ),
                 ));
@@ -235,7 +235,7 @@ fn note_unverified(origin: &str) -> bool {
     if seen.len() < 256 {
         seen.push(origin.to_string());
     }
-    tracing::warn!(%origin, "noTLSVerify: cfrs does not check the TLS certificate of this origin");
+    tracing::warn!(%origin, "noTLSVerify: podnet does not check the TLS certificate of this origin");
     true
 }
 

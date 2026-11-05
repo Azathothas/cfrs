@@ -380,8 +380,8 @@ mod tests {
     #[test]
     fn only_paths_of_this_repository_are_citations() {
         assert_eq!(
-            citation("crates/pod-netns/src/lib.rs:52"),
-            Some(("crates/pod-netns/src/lib.rs", Some(52)))
+            citation("crates/podnet-netns/src/lib.rs:52"),
+            Some(("crates/podnet-netns/src/lib.rs", Some(52)))
         );
         assert_eq!(
             citation("crates/x.rs:36-38"),
@@ -402,8 +402,8 @@ mod tests {
             None
         );
         assert_eq!(citation("lib/noise.rs:1-92"), None);
-        assert_eq!(citation("cfrs warp proxy --l4"), None);
-        assert_eq!(citation("crates/pod-netns/src/{pipe,node}.rs"), None);
+        assert_eq!(citation("podnet warp proxy --l4"), None);
+        assert_eq!(citation("crates/podnet-netns/src/{pipe,node}.rs"), None);
         assert_eq!(citation("crates"), None);
     }
 

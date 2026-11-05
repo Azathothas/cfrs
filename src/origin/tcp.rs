@@ -92,7 +92,7 @@ impl TcpOrigin {
 
 /// A unix-domain-socket origin, optionally wrapped in TLS.
 ///
-/// This is the origin that makes cfrs usable in a sandbox that refuses
+/// This is the origin that makes podnet usable in a sandbox that refuses
 /// `bind()` on TCP: the socket can be created and `connect()`ed because it is
 /// `AF_UNIX`, not `AF_INET`.
 pub struct UnixOrigin {
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_unix_socket_is_reported_as_not_found() {
-        let o = UnixOrigin::new(PathBuf::from("/tmp/cfrs-no-such-socket-xyz.sock"));
+        let o = UnixOrigin::new(PathBuf::from("/tmp/podnet-no-such-socket-xyz.sock"));
         let err = match o.connect(Duration::from_millis(500)).await {
             Err(e) => e,
             Ok(_) => panic!("expected NotFound for a missing socket"),

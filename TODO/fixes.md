@@ -27,14 +27,14 @@ handshake. With `--backend netns`, the same program works. The reporter lost abo
 ## Premise
 
 - Read: after a TCP connect succeeds, `handle_connect` removes the descriptor from the table of
-  the supervisor (`crates/pod-netns/src/seccomp.rs`). Then `setsockopt` goes to the kernel
+  the supervisor (`crates/podnet-netns/src/seccomp.rs`). Then `setsockopt` goes to the kernel
   AF_UNIX socket and gives EOPNOTSUPP for `TCP_NODELAY` and `TCP_KEEPIDLE`. `getsockname` and
   `getpeername` go to the kernel and give the AF_UNIX address.
 - The evidence log shows `ss_family: 1` for the local and the peer address
   (`docs/reports/field-report-2026-11-05-evidence.log`).
 - Read: `getpeername` of a tracked stream gives the local bound address, not the peer.
-- The only test of the addresses uses a UDP socket (`crates/pod-netns/tests/seccomp.rs`).
-  `crates/pod-netns/README.md` says that each socket shows its logical address.
+- The only test of the addresses uses a UDP socket (`tests/pod_seccomp.rs`).
+  `crates/podnet-netns/README.md` says that each socket shows its logical address.
 - Not proven: that the AF_UNIX addresses, not the options, cause the resets. A run of
   radicle-node decides it.
 
@@ -46,7 +46,7 @@ handshake. With `--backend netns`, the same program works. The reporter lost abo
    `setsockopt` of the IP and TCP levels with 0, and `getsockopt` with the value that the program
    set.
 3. Make `getpeername` of a tracked stream give its peer.
-4. Change `crates/pod-netns/README.md` and the words of `pod doctor` about these calls.
+4. Change `crates/podnet-netns/README.md` and the words of `pod doctor` about these calls.
 
 ## Prove
 
@@ -78,7 +78,7 @@ made by `dup`, `dup2` or `fcntl(F_DUPFD)` has no entry, so it sends to the wrong
 
 ## Premise
 
-- Read: the descriptor table and the `close` branch in `crates/pod-netns/src/seccomp.rs`.
+- Read: the descriptor table and the `close` branch in `crates/podnet-netns/src/seccomp.rs`.
 - `docs/research/podnet/vn.md`, section 3.1: the C supervisor of vn counts references and misses
   `F_DUPFD`. The Rust `try_clone` uses `F_DUPFD_CLOEXEC`.
 
@@ -120,7 +120,7 @@ an AF_UNIX socket pair, not the upstream socket.
 
 - The kernel can install a descriptor at a number of the target process
   (`SECCOMP_IOCTL_NOTIF_ADDFD` with `SECCOMP_ADDFD_FLAG_SETFD`). The seccomp backend uses ADDFD
-  already (`crates/pod-netns/src/seccomp.rs`).
+  already (`crates/podnet-netns/src/seccomp.rs`).
 - After a handoff, the supervisor sees no byte of that flow: no byte count, no idle limit, no
   log line of the flow.
 
@@ -164,10 +164,10 @@ Three calls get a wrong result under the seccomp backend:
 
 ## Premise
 
-- Read: `handle_socket` does not read the protocol argument (`crates/pod-netns/src/seccomp.rs`).
+- Read: `handle_socket` does not read the protocol argument (`crates/podnet-netns/src/seccomp.rs`).
 - `recvmmsg` is not in the list of intercepted calls. The ruling of 2026-11-04 names `recvfrom`
   and `recvmsg` (`docs/decisions.md`, pod seccomp UDP).
-- `wrap_udp_name` cuts a name over 255 bytes (`crates/pod-netns/src/seccomp.rs`).
+- `wrap_udp_name` cuts a name over 255 bytes (`crates/podnet-netns/src/seccomp.rs`).
 
 ## Approach
 
@@ -209,7 +209,7 @@ ends. A program with a slow upstream freezes in calls that need no network.
 ## Premise
 
 - Read: the notification loop dials the upstream before it answers the next notification
-  (`supervise_seccomp` and `handle_connect` in `crates/pod-netns/src/seccomp.rs`).
+  (`supervise_seccomp` and `handle_connect` in `crates/podnet-netns/src/seccomp.rs`).
 - A notification id stays valid until the supervisor answers it. `SECCOMP_IOCTL_NOTIF_ID_VALID`
   tells whether the task still waits.
 
@@ -336,7 +336,7 @@ only with both the state directory variable and the WARP socket variable set.
 - Read: `exec_in_pod`, `shell`, the `nc` path and the agent use `socket_path()`, which is the
   run directory and `warp.sock` (`src/warp/up.rs`, `src/warp/nc.rs`, `src/agent.rs`).
 - Read: `run_dir()` depends on the state directory (`src/instances.rs`).
-- Read: `warp up` writes `CFRS_WARP_SOCKET` to `warp.env` and to the program of the pod, but
+- Read: `warp up` writes `PODNET_WARP_SOCKET` to `warp.env` and to the program of the pod, but
   nothing reads it (`src/warp/up.rs`).
 - `warp.env` is in the same directory, so to read the env file alone does not help.
 
@@ -381,9 +381,9 @@ the peer.
 ## Premise
 
 - Read: `warp exec` always passes `--prefer-udp` (`src/warp/up.rs`), so `auto` takes seccomp
-  first where netns works (`crates/pod-netns/src/lib.rs`).
+  first where netns works (`crates/podnet-netns/src/lib.rs`).
 - `warp exec` and `warp shell` have no `--backend`.
-- The words about the seccomp limits are in `crates/pod-netns/src/doctor.rs`.
+- The words about the seccomp limits are in `crates/podnet-netns/src/doctor.rs`.
 
 ## Approach
 
@@ -650,7 +650,7 @@ The test asserts that `/a%20b` matches the rule `^/a b$`.
 
 # T-078: `pod doctor` uses the verdict words of `doctor` and has a `schema` key
 
-**Source:** `docs/maintenance.md`, section "Open work" (`cfrs pod doctor`); the owner's ruling of
+**Source:** `docs/maintenance.md`, section "Open work" (`podnet pod doctor`); the owner's ruling of
 2026-11-04 (`docs/decisions.md`, Doctor).
 **Category:** defect
 **Milestone:** M5
@@ -665,7 +665,7 @@ doctors and `status` use one vocabulary and a schema.
 
 ## Premise
 
-- `crates/pod-netns/src/doctor.rs` writes the words of the pod.
+- `crates/podnet-netns/src/doctor.rs` writes the words of the pod.
 - `src/doctor.rs` and `src/report.rs` write the vocabulary of the other doctors.
 
 ## Approach
@@ -771,7 +771,7 @@ its limit of 10 s, and the user gets no hint.
 
 ## Premise
 
-- `crates/pod-netns/src/tailscale.rs` has the dial limit (`DIAL_TIMEOUT`) and a log line.
+- `crates/podnet-netns/src/tailscale.rs` has the dial limit (`DIAL_TIMEOUT`) and a log line.
 - The LocalAPI of `tailscaled` gives `BackendState` at `/localapi/v0/status`.
 
 ## Approach
@@ -789,10 +789,10 @@ cargo test --workspace -- tailscale_front_door_warns_when_logged_out
 A fake LocalAPI on a unix socket answers `NeedsLogin`. The headscale harness of T-114 runs the
 same check against a real `tailscaled`.
 
-# T-135: `cfrs pod` prints its own program name in each message and in `--version`
+# T-135: `podnet pod` prints its own program name in each message and in `--version`
 
 **Source:** the rename trial of 2026-11-05 (`docs/research/podnet/rename.md`); the ruling
-"pod-netns" of 2026-11-05 in `docs/decisions.md`.
+"podnet-netns" of 2026-11-05 in `docs/decisions.md`.
 **Category:** defect
 **Milestone:** M5
 **Priority:** P3
@@ -801,7 +801,7 @@ same check against a real `tailscaled`.
 
 ## Problem
 
-The `pod-netns` binary is dropped; `cfrs pod` is the only CLI of the pod backends. The library
+The `podnet-netns` binary is dropped; `podnet pod` is the only CLI of the pod backends. The library
 still writes its fixed prefix in each message, and `--version` prints the version line of the
 library, not of the CLI. A user then sees a program name that does not exist.
 
@@ -814,7 +814,7 @@ library, not of the CLI. A user then sees a program name that does not exist.
 
 1. Write each message prefix of the pod library from the program name that `set_program_name`
    gives.
-2. Make `cfrs pod --version` print the version line of the CLI.
+2. Make `podnet pod --version` print the version line of the CLI.
 3. Change the expected texts of the pod tests.
 
 ## Prove
@@ -823,8 +823,8 @@ library, not of the CLI. A user then sees a program name that does not exist.
 cargo test --workspace pod
 ```
 
-A test asserts that `cfrs pod --version` starts with the name of the CLI and that an error of
-`cfrs pod` starts with `cfrs pod:`.
+A test asserts that `podnet pod --version` starts with the name of the CLI and that an error of
+`podnet pod` starts with `podnet pod:`.
 
 ## Start condition
 

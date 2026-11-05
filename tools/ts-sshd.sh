@@ -13,7 +13,7 @@
 # `tailscale serve --tcp` then exposes that socket on the tailnet, which is
 # stock Tailscale.
 #
-# Requires a shims directory from `cfrs net ts-shims` (passwd/group/getent/id/
+# Requires a shims directory from `podnet net ts-shims` (passwd/group/getent/id/
 # fakepwd), a running tailscaled, and sandhome's shell files (fetched pinned
 # below unless --sandhome names a checkout).
 #
@@ -58,7 +58,7 @@ done
 
 [ -n "$shims" ] || usage
 [ -n "$dir" ] || dir="$shims/sshd"
-[ -f "$shims/fakepwd.so" ] || { echo "ts-sshd: $shims/fakepwd.so missing; run 'cfrs net ts-shims --out $shims'" >&2; exit 1; }
+[ -f "$shims/fakepwd.so" ] || { echo "ts-sshd: $shims/fakepwd.so missing; run 'podnet net ts-shims --out $shims'" >&2; exit 1; }
 mkdir -p "$dir"
 
 verify() {
