@@ -406,8 +406,11 @@ cargo package --locked --list --workspace
 
 ## Blocker
 
-The owner: the placeholders of the seven other crate names, and the first
-publish of a real version (the ruling "crates.io" of 2026-11-05 in
+The owner: the placeholders of the five other crate names of podnet
+(`podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`,
+`podnet-serve`; the WARP and Cloudflare adapters become `pod-warp` and
+`pod-cloudflare` of `PodUtils/podcrates`), and the first publish of a real
+version (the rulings "crates.io" and "Shared crates" of 2026-11-05 in
 `docs/decisions.md`).
 
 ## Correction

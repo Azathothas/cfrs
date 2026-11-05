@@ -40,12 +40,18 @@ The sidecar paths have no CI test with a real `tailscaled`: `net tailscale --soc
 The owner, 2026-11-05 (`docs/decisions.md`, Tailscale): the `tailscaled` sidecar now, with a
 headscale harness in CI.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
 gh workflow run ts-headscale.yml
 gh workflow run ts-headscale.yml -f plant=unknown-key   # must fail
 ```
+
+## Start condition
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-115: The tailnet as a network of the registry and of the router
 

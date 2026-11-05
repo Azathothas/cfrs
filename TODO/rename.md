@@ -391,6 +391,8 @@ v0.3.0-beta.12. Each rename breaks a user of cfrs, and the note must tell how to
 The owner, 2026-11-05 (`docs/decisions.md`, Rename): the first podnet release is `v0.4.0-beta.1`,
 after the rename of the repository.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Order): no release `v0.4.0-beta.1` now.
+
 ## Prove
 
 ```sh
@@ -401,6 +403,8 @@ sh scripts/agent/check.sh
 ## Start condition
 
 T-016, T-017, T-019 and T-020 are done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-023: Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs
 
@@ -439,6 +443,8 @@ and the image `ghcr.io/podutils/podnet:beta` does not exist.
 The owner (`CLAUDE.md`, Releases): cut the next prerelease unattended when a batch is green: a
 dry run, then `publish=vX`, then a check of `release-proofs.yml`.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Order): no release `v0.4.0-beta.1` now.
+
 ## Prove
 
 ```sh
@@ -451,6 +457,8 @@ curl -fsSL https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/instal
 ## Start condition
 
 T-021 and T-022 are done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-024: The update checks pass against a podnet release again
 
@@ -481,6 +489,10 @@ release.
    `verify_bundle` with the podnet identity on the default path.
 3. Keep the test of the cfrs fixture through `identity_in("Azathothas/cfrs", ...)`.
 
+## Decision
+
+The owner, 2026-11-05 (`docs/decisions.md`, Order): no release `v0.4.0-beta.1` now.
+
 ## Prove
 
 ```sh
@@ -493,6 +505,8 @@ The live step "update to v0.4.0-beta.1" passes.
 ## Start condition
 
 T-023 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-025: The image `ghcr.io/podutils/podnet` is public
 

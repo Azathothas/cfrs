@@ -233,6 +233,8 @@ device, and the service limits the new devices of each address.
 The owner, 2026-11-05 (`docs/decisions.md`, Code of podssh): copy podssh code into podnet and
 change it as necessary. The code of podssh needs no credit.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -241,6 +243,10 @@ cargo test --workspace -- warp_stand_in_
 
 Each new test name starts with `warp_stand_in_`. Plant: a wrong pinned key in the edge stand-in.
 The test of `warp proxy` must fail on the pin.
+
+## Start condition
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-013: A daily check that the record's list of GitHub numbers agrees with GitHub
 

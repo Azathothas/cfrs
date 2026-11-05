@@ -11,8 +11,8 @@ then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
   `pod-netns` binary is gone, `podnet pod` is the CLI), the record tool
   `podnet-todo`, the record `TODO/` (entries T-001 to T-135) and the size
   check `scripts/check-size.py`.
-* The newest release is `v0.3.0-beta.12` of cfrs. The first podnet
-  release is T-023.
+* The newest release is `v0.3.0-beta.12` of cfrs. No podnet release is
+  planned before the shared crates exist (T-023 waits).
 * The owner transfers the GitHub repository `Azathothas/cfrs` to the
   organization `PodUtils` and renames it `podnet` after the session of
   2026-11-05. GitHub then redirects the old URLs. Nobody may create a new `Azathothas/cfrs`: that
@@ -28,26 +28,20 @@ then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
    curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet?n=$RANDOM" | head -c 200
    ```
 
-2. Read the CI runs of the head of `main`. Before the transfer, each step
-   that reads `PodUtils/podnet` fails with HTTP 404 (live run
-   41994001349: `podnet update` could not read the release list). Until the first podnet
-   release, the live step of the update asserts that `podnet update`
-   refuses `v0.3.0-beta.1` (the identity of the old repository). The
-   install script and the README one-line install fail until the first
-   podnet release exists.
-3. Release `v0.4.0-beta.1` (`docs/maintenance.md`, Release; T-022,
-   T-023). The note lists under `## Breaking` the whole
-   rename: the binary, the crate paths, each `CFRS_*` variable (now
-   `PODNET_*`), the state and run directories, the TUN name, the unit
-   names, the shim names, `/__podnet/ws`, the asset names, the image, the
-   dropped `pod-netns` binary. Users of cfrs install podnet fresh.
-4. After the release: the owner makes the image
-   `ghcr.io/podutils/podnet` public if it is private (T-025); restore
-   the positive update check in `live.yml` (T-024).
-5. Arm the issue watcher (`scripts/agent/watch-issues.sh`). New issues
+2. Read the CI runs of the head of `main` (T-136). Before the move, each
+   step that reads `PodUtils/podnet` fails with HTTP 404 (live run
+   41994001349: `podnet update` could not read the release list). After
+   the move, the live step of the update must pass: `podnet update`
+   refuses `v0.3.0-beta.1` for its identity. Close GitHub #311 with the
+   failed runs, their causes and the run that passed.
+3. Arm the issue watcher (`scripts/agent/watch-issues.sh`). New issues
    become record entries (`CLAUDE.md`, "The plan").
-6. Continue the work order of `TODO/PROGRESS.md`: M2 (file splits) next.
-   The fixes of M5 can run in parallel.
+4. Hold. The ruling "Order" of 2026-11-05: no release `v0.4.0-beta.1`
+   now, and each other entry waits until the shared crates exist in
+   `PodUtils/podcrates` (T-137). The work on the shared crates happens in
+   that repository. When they exist, do T-137: depend on them, move the
+   WARP and Cloudflare adapters (T-050, T-052), and write the new order in
+   `TODO/PROGRESS.md`.
 
 ## Facts for the next session
 

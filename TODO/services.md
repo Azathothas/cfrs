@@ -186,6 +186,8 @@ The owner, 2026-11-05 (`docs/decisions.md`, Code of podssh and Crypto crates): c
 and change it as necessary; no wire compatibility with podssh is promised. `snow` 0.10 is
 accepted. `cargo deny` stays green with no ignored advisory.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -197,6 +199,8 @@ gh workflow run release.yml --ref main   # the dry run builds the eight targets
 ## Start condition
 
 T-049 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-087: `relay node` and `relay connect` resume a session past the limits of the relay
 
@@ -866,6 +870,8 @@ The owner, 2026-11-05 (`docs/decisions.md`, File transfer and Crypto crates): `p
 `podnet receive` speak magic-wormhole (mailbox, SPAKE2, transit), with the public mailbox and
 transit servers as the default. `spake2` 0.4 and `crypto_secretbox` are accepted.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -878,6 +884,8 @@ A wrong code fails at both ends. A loopback test runs against a stand-in of the 
 ## Start condition
 
 T-049 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-103: The file-transfer protocol and the transit protocol of magic-wormhole
 

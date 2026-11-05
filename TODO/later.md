@@ -201,6 +201,8 @@ tailnet.
 The owner, 2026-11-05 (`docs/decisions.md`, Tailscale): an in-process Tailscale from podssh comes
 later, behind a feature that is off by default.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -211,6 +213,8 @@ python3 -I scripts/check-vendored.py
 ## Start condition
 
 T-114 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-124: Tailscale in the process: an adapter crate behind a feature that is off by default, with the static build proven
 
@@ -391,6 +395,10 @@ of Tailscale need no account and run on TCP 443.
 2. Use it as a carrier of the layer of T-086 and of a transfer.
 3. Test it against `derper` in a workflow.
 
+## Decision
+
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -401,6 +409,8 @@ cargo deny check
 ## Start condition
 
 T-086 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-129: An ACME client for a public listener
 
@@ -502,6 +512,8 @@ the identity. A fix in one is ported by hand to the other.
 The owner, 2026-11-05 (`docs/decisions.md`, Code of podssh): copy podssh code now; a shared crate
 comes later.
 
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -512,6 +524,8 @@ cargo deny check
 ## Start condition
 
 T-087 is done, and the owner chose the source of the shared crate (`docs/decisions.md`).
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-132: `try_update` in place of the macro `update_atomic!`
 
@@ -615,6 +629,10 @@ the relay (`tcp.ssh.relay.ajam.dev`) breaks the relay commands with no warning.
    the mint and the limits) and check them against `https://tcp.ssh.relay.ajam.dev/llms-full.txt`.
 4. Run both in `.github/workflows/upstream.yml`.
 
+## Decision
+
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the shared crates of `PodUtils/podcrates` hold this code. podnet depends on the shared crate; it does not copy the code.
+
 ## Prove
 
 ```sh
@@ -626,3 +644,5 @@ gh workflow run upstream.yml
 ## Start condition
 
 T-086 is done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).

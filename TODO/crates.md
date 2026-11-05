@@ -189,7 +189,7 @@ gh workflow run live.yml
 
 T-047 is done.
 
-# T-050: Extract the crate `podnet-warp`
+# T-050: Move the WARP adapter to the shared crate `pod-warp` in `PodUtils/podcrates`
 
 **Source:** `docs/research/podnet/architecture.md`, section 4.1.
 **Category:** chore
@@ -210,8 +210,13 @@ The WARP adapter (`src/warp/`, 21 files, about 14,500 lines) is in the root crat
 
 ## Approach
 
-1. Make crates/podnet-warp with `src/warp/`.
-2. Keep the WARP CLI in the root crate.
+1. Move `src/warp/` to `pod-warp` in `PodUtils/podcrates`, with the stand-ins of T-012 as its tests.
+2. Replace the links to the crates of podnet with traits of `pod-warp`.
+3. podnet depends on `pod-warp` from crates.io, and keeps the WARP CLI in the root crate.
+
+## Decision
+
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the WARP adapter moves to `PodUtils/podcrates` as `pod-warp`. A shared crate cannot depend on the crates of podnet: the links to `podnet-vnet`, `podnet-relay` and `podnet-netns` become traits of the shared crate, or move to shared crates too.
 
 ## Prove
 
@@ -225,6 +230,8 @@ gh workflow run live.yml
 ## Start condition
 
 T-048 and T-049 are done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-051: Extract the crate `podnet-serve`, with the library-only modules
 
@@ -270,7 +277,7 @@ cargo test --test api_surface
 
 T-047 is done.
 
-# T-052: Extract the crate `podnet-cloudflare`
+# T-052: Move the Cloudflare adapter to the shared crate `pod-cloudflare` in `PodUtils/podcrates`
 
 **Source:** `docs/research/podnet/architecture.md`, sections 4.1 and 4.2 (the row cargo package).
 **Category:** chore
@@ -297,15 +304,19 @@ podnet.
 
 ## Approach
 
-1. Make crates/podnet-cloudflare with these modules. It depends on the core, `podnet-relay`,
-   `podnet-warp` and `podnet-serve`.
-2. Move the two tests that read files outside the crate to the root crate.
-3. Change the path of the pin file in `tools/check-upstream.py` and `upstream.yml`.
+1. Move the edge client, the tunnel and the quick tunnels to `pod-cloudflare` in `PodUtils/podcrates`.
+2. Replace the links to the crates of podnet with traits of `pod-cloudflare`.
+3. podnet depends on `pod-cloudflare` from crates.io, and keeps the tunnel CLI in the root crate.
+4. Move the two tests that read files outside the crate to the root crate of podnet.
+5. Move the pin file of `tools/check-upstream.py` and the watch of `.github/workflows/upstream.yml`
+   to `PodUtils/podcrates` with the edge client.
 
 ## Decision
 
 The owner, 2026-11-05 (`docs/decisions.md`, Name): the Cloudflare tunnel code is one adapter of
 podnet.
+
+The owner, 2026-11-05 (`docs/decisions.md`, Shared crates): the Cloudflare adapter (the edge client of `src/cloudflare/`, the tunnel, the quick tunnels) moves to `PodUtils/podcrates` as `pod-cloudflare`. podssh uses it for its quick tunnels.
 
 ## Prove
 
@@ -319,6 +330,8 @@ gh workflow run live.yml
 ## Start condition
 
 T-049, T-050 and T-051 are done.
+
+The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
 
 # T-053: The root package is the CLI and a facade that keeps each library path
 
@@ -409,3 +422,53 @@ gh workflow run release-proofs.yml -f tag=v0.4.0-beta.N
 ## Start condition
 
 T-053 is done.
+
+# T-137: podnet uses the shared crates of `PodUtils/podcrates`
+
+**Source:** the owner, 2026-11-05 (`docs/decisions.md`, Shared crates and Order); the proposal of
+the podssh session of 2026-11-05 for `PodUtils/podcrates`.
+**Category:** chore
+**Milestone:** M3
+**Priority:** P1
+**Effort:** M
+**Status:** blocked
+
+## Problem
+
+The ruling "Order" of 2026-11-05 holds each plan of the record until the shared crates exist.
+podnet copies no code of podssh: the shared crates hold it. The WARP adapter and the Cloudflare
+adapter of podnet move to the shared repository (T-050, T-052).
+
+## Premise
+
+- The proposal of the podssh session (2026-11-05), each name free on crates.io that day:
+  `pod-todo` (podssh-todo and `crates/podnet-todo`), `pod-session`, `pod-e2e`, `pod-identity`,
+  `pod-wormhole`, `pod-transit`, `pod-derp`, `pod-acme` and `pod-testkit` first; then `pod-tls`,
+  `pod-dns`, `pod-proxy`, `pod-ws`, `pod-egress`, `pod-relay`, `pod-relay-serve`, `pod-ts`,
+  `pod-iroh`; from podnet `pod-warp` and `pod-cloudflare`.
+- A shared crate takes a stream or dialer trait and a rustls `CryptoProvider`; the binary chooses
+  the provider (podnet keeps ring). No git source: the crates come from crates.io (`deny.toml`).
+- `podnet-relay` and the proposed `pod-relay` overlap: the client of the relay contract.
+
+## Approach
+
+1. When the owner has created `PodUtils/podcrates` and ruled the names: move `crates/podnet-todo`
+   to `pod-todo` (podnet depends on it), and do T-050 and T-052 there.
+2. Replace each copy entry of the record with a dependency on its shared crate (T-012, T-086,
+   T-102, T-114, T-123, T-128, T-131, T-134).
+3. Decide with the owner whether `podnet-relay` becomes `pod-relay`.
+4. Write the new order of the record in `TODO/PROGRESS.md`.
+
+## Prove
+
+```sh
+cargo tree --workspace --depth 1
+sh scripts/agent/check.sh
+```
+
+The tree shows the shared crates from crates.io.
+
+## Blocker
+
+The owner: create the repository `PodUtils/podcrates`, rule the names and the order of the shared
+crates, and reserve the names on crates.io.

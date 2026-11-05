@@ -1,17 +1,25 @@
 # Progress
 
-`TODO/INDEX.md` holds 136 entries: 119 open, 1 partial, 9 blocked, 7 done.
+`TODO/INDEX.md` holds 137 entries: 119 open, 1 partial, 10 blocked, 7 done.
 
 ## State
 
-- The record holds the plan of the rename cfrs -> podnet and of the work
-  after it (`docs/decisions.md`, rulings of 2026-11-05;
-  `docs/research/podnet/`). T-001 to T-007 are the GitHub issues that the
-  owner deferred.
-- Keep this section short. Write the current state only; git keeps the
-  history.
+- The rename cfrs -> podnet is on `main`. The owner moves the repository to `PodUtils/podnet`
+  (T-021).
+- The ruling "Order" of 2026-11-05 (`docs/decisions.md`): only the move goes on now. There is no
+  release `v0.4.0-beta.1` now. Each other entry waits until the shared crates exist in
+  `PodUtils/podcrates` (T-137). The WARP and Cloudflare adapters move there (T-050, T-052).
+- Keep this section short. Write the current state only; git keeps the history.
 
 ## Work order
+
+1. **Now:** the owner moves the repository (T-021). Then read the next live run and close
+   GitHub #311 (T-136).
+2. **Hold:** each other entry waits until the shared crates exist in `PodUtils/podcrates`
+   (T-137). Then write the new order here (T-137, step 4). The order below is the order before
+   the hold; T-137 changes it.
+
+### The order before the hold
 
 Finish each entry, close it in place, change this page in the same commit, then take the next
 one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes first when it does
@@ -69,7 +77,8 @@ Each call is in its entry, and the work goes on with it until the owner rules ot
 | Entry | Action |
 | --- | --- |
 | T-021 | Transfer the repository `Azathothas/cfrs` to the organization `PodUtils` and rename it `podnet` |
-| T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`, `podnet-warp`, `podnet-serve`, `podnet-cloudflare` (0.0.0 placeholders, as `podnet`) |
+| T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay` and `podnet-serve` (0.0.0 placeholders, as `podnet`) |
+| T-137 | Create `PodUtils/podcrates`, and rule the names and the order of the shared crates (`pod-warp` and `pod-cloudflare` from podnet) |
 | T-025 | Set the ghcr package `podnet` to public, after T-023 |
 
 ## Questions for the owner

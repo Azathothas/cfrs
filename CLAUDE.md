@@ -49,9 +49,11 @@ These rules apply to each session. Obey them before any other default.
   Services: file server, file transfer, git hosting, router.
 - Workspace: `podnet` (root: CLI and library), `crates/podnet-netns` (the
   pod backends, library only), `crates/podnet-todo` (the record tool). The
-  target is eight crates (`docs/decisions.md`, 2026-11-05; record
-  milestone M3). Do not add a dependency for the edge protocol: it is
-  implemented in `src/cloudflare/`.
+  target is six crates here; the WARP and Cloudflare adapters move to the
+  shared repository `PodUtils/podcrates` as `pod-warp` and `pod-cloudflare`
+  (`docs/decisions.md`, 2026-11-05, Shared crates). Do not add a
+  dependency for the edge protocol: it is implemented in `src/cloudflare/`
+  (later in `pod-cloudflare`).
 - A source file has at most 800 lines (`scripts/check-size.py`). A file in
   its allowlist can only get smaller; lower its count when it shrinks.
 - Check before each push (`sh scripts/agent/check.sh`):
@@ -96,9 +98,13 @@ These rules apply to each session. Obey them before any other default.
   commit. Do not merge the Dependabot branch.
 - Platforms: Linux only. No Windows or macOS builds. Build static Linux
   binaries for all major architectures with cargo-zigbuild (zig cc).
-- Releases: cut the next prerelease (`v0.4.0-beta.N`) unattended when a
-  batch of fixes is green: dry run, then `publish=vX`, then check
-  `release-proofs.yml`.
+- Releases: no podnet release now (`docs/decisions.md`, 2026-11-05,
+  Order). When the owner allows releases again: cut the next prerelease
+  (`v0.4.0-beta.N`) unattended when a batch of fixes is green: dry run,
+  then `publish=vX`, then check `release-proofs.yml`.
+- Order: only the move of the repository goes on now. Each other entry of
+  the record waits until the shared crates exist in `PodUtils/podcrates`
+  (T-137).
 - `docs/decisions.md` has each ruling with its date, and the questions
   for the owner. When a question is not urgent, make the call, record it
   there, and continue.

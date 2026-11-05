@@ -43,10 +43,8 @@ form of the rulings that apply to each session.
 | 2026-11-05 | Rename | A clean break: no compatibility layer (no `CFRS_*` aliases, no move of old state, no `cfrs` alias), no bridge release. The code rename is the last push of the session of 2026-11-05. The first podnet release is `v0.4.0-beta.1`, after the rename of the repository. |
 | 2026-11-05 | Regressions | "No regression" means: no feature or capability of the code is lost. It does not mean compatibility for users of cfrs. A breaking change is allowed when it improves the project. |
 | 2026-11-05 | pod-netns | The crate becomes `podnet-netns`, a library only. The `pod-netns` binary is dropped; `podnet pod` is the only CLI. Its integration tests move to the root crate. |
-| 2026-11-05 | Crates | Eight crates: `podnet` (the CLI, at the root), `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`, `podnet-warp`, `podnet-serve`, `podnet-cloudflare`. Order: file splits, then the crate extraction from the bottom up, each commit green. |
 | 2026-11-05 | File size | A source file has at most 800 lines. A script checks it in CI; the files that are larger now are in an allowlist and can only get smaller. |
 | 2026-11-05 | Plan tracking | The TODO model of podssh: the record in `TODO/`, checked by the tool `podnet-todo` (a copy of `podssh-todo`) in CI. GitHub issues are an inbox: each issue becomes entries; the record keeps its text. |
-| 2026-11-05 | Code of podssh | Copy podssh code into podnet and change it as necessary. A shared crate comes later. There is no wire compatibility promise with podssh. Code of podssh is 0BSD and needs no credit. |
 | 2026-11-05 | File transfer | `podnet send` and `podnet receive` speak magic-wormhole (mailbox, SPAKE2, transit). The public mailbox and transit servers are the default. The podnet relay is one more carrier. |
 | 2026-11-05 | Crypto crates | `snow` 0.10, `spake2` 0.4 and `crypto_secretbox` are accepted. `cargo deny` stays green with no ignored advisory. |
 | 2026-11-05 | Tailscale | The `tailscaled` sidecar now, with a headscale harness in CI. An in-process Tailscale (from podssh) comes later, behind a feature that is off by default. |
@@ -56,6 +54,8 @@ form of the rulings that apply to each session.
 | 2026-11-05 | Live WARP devices | A live test of the router registers and deletes a WARP device in each run. |
 | 2026-11-05 | crates.io | Publish no real version yet. The owner reserves the crate names with 0.0.0 placeholders (`podnet` is reserved). The packaging stays ready for a publish. |
 | 2026-11-05 | Home | Each project moves to the GitHub organization `PodUtils`: the repository is `PodUtils/podnet` (a transfer of `Azathothas/cfrs` and a rename), the image is `ghcr.io/podutils/podnet`, podssh is `PodUtils/podssh`. The certificate identity of a release is `https://github.com/PodUtils/podnet/.github/workflows/release.yml@refs/tags/TAG`. |
+| 2026-11-05 | Shared crates | The repository `PodUtils/podcrates` holds the crates that the PodUtils projects share (prefix `pod-`). The WARP adapter and the Cloudflare adapter of podnet move there as `pod-warp` and `pod-cloudflare`. podnet then has six crates: `podnet`, `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`, `podnet-serve`. The code of podssh comes to podnet through the shared crates, not as copies. |
+| 2026-11-05 | Order | Only the move of the repository (T-021) goes on now. There is no release `v0.4.0-beta.1` now. Each other plan of the record waits until the shared crates exist in `PodUtils/podcrates`. |
 
 ## Superseded
 
@@ -63,6 +63,9 @@ form of the rulings that apply to each session.
 | --- | --- | --- |
 | 2026-11-01 | Releases: cut the next prerelease unattended when a batch of fixes is green. | 2026-11-04, Releases: no release until the owner says go. |
 | 2026-11-04 | Releases: no release until the owner says go. | 2026-11-04, Releases: unattended again. |
+| 2026-11-05 | Crates: eight crates, with `podnet-warp` and `podnet-cloudflare`. | 2026-11-05, Shared crates: six crates in podnet; `pod-warp` and `pod-cloudflare` in `PodUtils/podcrates`. |
+| 2026-11-05 | Code of podssh: copy it into podnet now, a shared crate later. | 2026-11-05, Shared crates: the code comes through `PodUtils/podcrates`. |
+| 2026-11-05 | Rename: the first podnet release `v0.4.0-beta.1` after the move. | 2026-11-05, Order: no release now; the plans wait for the shared crates. |
 
 ## Questions for the owner
 
