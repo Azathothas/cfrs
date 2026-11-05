@@ -42,7 +42,10 @@ pub fn rows(file: &str, index: &str) -> (Vec<Row>, Vec<Problem>) {
         let parsed = link
             .strip_prefix('[')
             .and_then(|s| s.split_once("]("))
-            .and_then(|(id, rest)| rest.strip_suffix(')').map(|f| (id.to_string(), f.to_string())));
+            .and_then(|(id, rest)| {
+                rest.strip_suffix(')')
+                    .map(|f| (id.to_string(), f.to_string()))
+            });
         match parsed {
             Some((id, target)) if c.len() == 7 => rows.push(Row {
                 id,
@@ -86,13 +89,23 @@ pub fn entries(file: &str, text: &str) -> (Vec<Entry>, Vec<Problem>) {
                     });
                     in_header = true;
                 }
-                _ => problems.push(Problem::new(file, line_no, "an H1 that is not an entry (`# T-NNN: Title`)")),
+                _ => problems.push(Problem::new(
+                    file,
+                    line_no,
+                    "an H1 that is not an entry (`# T-NNN: Title`)",
+                )),
             }
             continue;
         }
-        let Some(entry) = entries.last_mut() else { continue };
+        let Some(entry) = entries.last_mut() else {
+            continue;
+        };
         if !fenced && line.starts_with("## ") {
-            entry.sections.push(Section { name: line[3..].trim().to_string(), line: line_no, body: String::new() });
+            entry.sections.push(Section {
+                name: line[3..].trim().to_string(),
+                line: line_no,
+                body: String::new(),
+            });
             in_header = false;
             continue;
         }
@@ -108,16 +121,30 @@ pub fn entries(file: &str, text: &str) -> (Vec<Entry>, Vec<Problem>) {
 
 /// One line of an entry's header: `**Name:** value`, or the continuation of
 /// the field above it.
-fn header_line(entry: &mut Entry, line: &str, line_no: usize, file: &str, problems: &mut Vec<Problem>) {
+fn header_line(
+    entry: &mut Entry,
+    line: &str,
+    line_no: usize,
+    file: &str,
+    problems: &mut Vec<Problem>,
+) {
     if line.trim().is_empty() {
         return;
     }
     if let Some(rest) = line.strip_prefix("**") {
         if let Some((name, value)) = rest.split_once(":**") {
             if FIELDS.contains(&name) {
-                entry.fields.push(Field { name: name.to_string(), value: value.trim().to_string(), line: line_no });
+                entry.fields.push(Field {
+                    name: name.to_string(),
+                    value: value.trim().to_string(),
+                    line: line_no,
+                });
             } else {
-                problems.push(Problem::new(file, line_no, format!("`{name}` is not a field of an entry")));
+                problems.push(Problem::new(
+                    file,
+                    line_no,
+                    format!("`{name}` is not a field of an entry"),
+                ));
             }
             return;
         }
@@ -127,7 +154,11 @@ fn header_line(entry: &mut Entry, line: &str, line_no: usize, file: &str, proble
             f.value.push(' ');
             f.value.push_str(line.trim());
         }
-        None => problems.push(Problem::new(file, line_no, "text before the first field of the entry")),
+        None => problems.push(Problem::new(
+            file,
+            line_no,
+            "text before the first field of the entry",
+        )),
     }
 }
 
@@ -136,12 +167,17 @@ fn header_line(entry: &mut Entry, line: &str, line_no: usize, file: &str, proble
 pub fn counts_phrase(line: &str) -> Option<(usize, Counts, std::ops::Range<usize>)> {
     let key = " entries: ";
     let at = line.find(key)?;
-    let start = line[..at].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    let start = line[..at]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
     let total: usize = line[start..at].parse().ok()?;
     let rest = &line[at + key.len()..];
     let end_rel = rest.find('.')?;
     let mut c = Counts::default();
-    for (part, want) in rest[..end_rel].split(", ").zip(["open", "partial", "blocked", "done"]) {
+    for (part, want) in rest[..end_rel]
+        .split(", ")
+        .zip(["open", "partial", "blocked", "done"])
+    {
         let (n, word) = part.split_once(' ')?;
         if word != want {
             return None;
@@ -176,9 +212,21 @@ pub fn counts_row(line: &str) -> Option<(String, Counts, usize)> {
     if c.len() != 6 {
         return None;
     }
-    let n: Vec<usize> = c[1..].iter().map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    let n: Vec<usize> = c[1..]
+        .iter()
+        .map(|v| v.parse().ok())
+        .collect::<Option<_>>()?;
     let label = c[0].trim_matches('*').to_string();
-    Some((label, Counts { open: n[0], partial: n[1], blocked: n[2], done: n[3] }, n[4]))
+    Some((
+        label,
+        Counts {
+            open: n[0],
+            partial: n[1],
+            blocked: n[2],
+            done: n[3],
+        },
+        n[4],
+    ))
 }
 
 /// The body of the `## Heading` section of a document, up to the next `## `.
@@ -224,7 +272,10 @@ mod tests {
         let (total, c, range) = counts_phrase(line).unwrap();
         assert_eq!(total, 12);
         assert_eq!((c.open, c.partial, c.blocked, c.done), (5, 1, 2, 4));
-        assert_eq!(&line[range], "12 entries: 5 open, 1 partial, 2 blocked, 4 done.");
+        assert_eq!(
+            &line[range],
+            "12 entries: 5 open, 1 partial, 2 blocked, 4 done."
+        );
         let line = "`TODO/INDEX.md` holds 7 entries: 1 open, 2 partial, 3 blocked, 1 done.";
         assert_eq!(counts_phrase(line).unwrap().0, 7);
         assert!(counts_phrase("7 entries: 1 open, 2 partial, 3 done.").is_none());

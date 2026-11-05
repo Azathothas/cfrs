@@ -62,9 +62,16 @@ pub fn read_list(text: &str, p: &mut Vec<Problem>) -> BTreeMap<u32, Number> {
         let words: Vec<&str> = line.split_whitespace().collect();
         let parsed = match words.as_slice() {
             [n, kind, state] => match (n.parse::<u32>(), *kind, *state) {
-                (Ok(n), "issue" | "pull", "open" | "closed") => {
-                    Some((n, if *kind == "issue" { Kind::Issue } else { Kind::Pull }, *state == "open", false))
-                }
+                (Ok(n), "issue" | "pull", "open" | "closed") => Some((
+                    n,
+                    if *kind == "issue" {
+                        Kind::Issue
+                    } else {
+                        Kind::Pull
+                    },
+                    *state == "open",
+                    false,
+                )),
                 // Only an issue can be deleted on GitHub; a pull request stays.
                 (Ok(n), "issue", "deleted") => Some((n, Kind::Issue, false, true)),
                 _ => None,
@@ -79,7 +86,18 @@ pub fn read_list(text: &str, p: &mut Vec<Problem>) -> BTreeMap<u32, Number> {
             ));
             continue;
         };
-        if list.insert(n, Number { kind, open, deleted, line: i + 1 }).is_some() {
+        if list
+            .insert(
+                n,
+                Number {
+                    kind,
+                    open,
+                    deleted,
+                    line: i + 1,
+                },
+            )
+            .is_some()
+        {
             p.push(Problem::new(LIST, i + 1, format!("#{n} is listed twice")));
         }
     }
@@ -88,18 +106,28 @@ pub fn read_list(text: &str, p: &mut Vec<Problem>) -> BTreeMap<u32, Number> {
 
 /// `#N` at the start of `text`: its number.
 fn number_at(text: &str) -> Option<u32> {
-    let digits: String = text.strip_prefix('#')?.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = text
+        .strip_prefix('#')?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
 /// Each number of `text`, a range `#A to #B` as each number in it.
 fn numbers_in(text: &str) -> Vec<u32> {
     let mut out = Vec::new();
-    let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect();
     let mut i = 0;
     while i < words.len() {
         if let Some(a) = number_at(words[i]) {
-            match (words.get(i + 1), words.get(i + 2).and_then(|w| number_at(w))) {
+            match (
+                words.get(i + 1),
+                words.get(i + 2).and_then(|w| number_at(w)),
+            ) {
                 (Some(&"to"), Some(b)) if b >= a => {
                     out.extend(a..=b);
                     i += 3;
@@ -122,14 +150,24 @@ pub fn read_map(text: &str) -> Map {
         let line = raw.trim_start();
         if let Some(rest) = line.strip_prefix('|') {
             let cells: Vec<&str> = rest.split('|').map(str::trim).collect();
-            if let Some(n) = cells.first().and_then(|c| number_at(c)).filter(|_| cells[0].len() > 1) {
+            if let Some(n) = cells
+                .first()
+                .and_then(|c| number_at(c))
+                .filter(|_| cells[0].len() > 1)
+            {
                 if cells[0][1..].chars().all(|c| c.is_ascii_digit()) {
                     let state = cells.get(2).map(|s| s.to_string());
-                    map.issues.entry(n).or_default().push(Place { line: i + 1, state });
+                    map.issues
+                        .entry(n)
+                        .or_default()
+                        .push(Place { line: i + 1, state });
                 }
             }
         } else if let Some(n) = line.strip_prefix("**").and_then(number_at) {
-            map.issues.entry(n).or_default().push(Place { line: i + 1, state: None });
+            map.issues.entry(n).or_default().push(Place {
+                line: i + 1,
+                state: None,
+            });
         } else if let Some((before, _)) = line.split_once("are pull requests") {
             map.pulls = Some((i + 1, numbers_in(before)));
         }
@@ -146,10 +184,18 @@ pub fn check(root: &Path, p: &mut Vec<Problem>) {
         (Err(_), Err(_)) => return,
         (Ok(map), Ok(list)) => (map, list),
         (Ok(_), Err(e)) => {
-            return p.push(Problem::new(LIST, 0, format!("the map has no list of GitHub's numbers: {e}")))
+            return p.push(Problem::new(
+                LIST,
+                0,
+                format!("the map has no list of GitHub's numbers: {e}"),
+            ))
         }
         (Err(e), Ok(_)) => {
-            return p.push(Problem::new(MAP, 0, format!("the list of GitHub's numbers has no map: {e}")))
+            return p.push(Problem::new(
+                MAP,
+                0,
+                format!("the list of GitHub's numbers has no map: {e}"),
+            ))
         }
     };
     let list = read_list(&list_text, p);
@@ -162,7 +208,11 @@ pub fn agree(list: &BTreeMap<u32, Number>, map: &Map, p: &mut Vec<Problem>) {
     for (n, number) in list {
         match number.kind {
             Kind::Issue => match map.issues.get(n).map(Vec::as_slice) {
-                None | Some([]) => p.push(Problem::new(MAP, 0, format!("issue #{n} has no place in the map"))),
+                None | Some([]) => p.push(Problem::new(
+                    MAP,
+                    0,
+                    format!("issue #{n} has no place in the map"),
+                )),
                 Some([one]) => {
                     let want = match (number.deleted, number.open) {
                         (true, _) => "deleted",
@@ -180,7 +230,11 @@ pub fn agree(list: &BTreeMap<u32, Number>, map: &Map, p: &mut Vec<Problem>) {
                 Some(many) => p.push(Problem::new(
                     MAP,
                     many[1].line,
-                    format!("issue #{n} has {} places in the map, at lines {}", many.len(), lines(many)),
+                    format!(
+                        "issue #{n} has {} places in the map, at lines {}",
+                        many.len(),
+                        lines(many)
+                    ),
                 )),
             },
             Kind::Pull => {
@@ -203,7 +257,11 @@ pub fn agree(list: &BTreeMap<u32, Number>, map: &Map, p: &mut Vec<Problem>) {
     }
     for (n, places) in &map.issues {
         if !list.contains_key(n) {
-            p.push(Problem::new(MAP, places[0].line, format!("the map names #{n}, which TODO/{LIST} does not hold")));
+            p.push(Problem::new(
+                MAP,
+                places[0].line,
+                format!("the map names #{n}, which TODO/{LIST} does not hold"),
+            ));
         }
     }
     for n in &pulls {
@@ -213,16 +271,22 @@ pub fn agree(list: &BTreeMap<u32, Number>, map: &Map, p: &mut Vec<Problem>) {
                 pull_line,
                 format!("the line of pull requests names #{n}, which TODO/{LIST} does not hold"),
             )),
-            Some(number) if number.kind == Kind::Issue => {
-                p.push(Problem::new(MAP, pull_line, format!("the line of pull requests names #{n}, an issue")))
-            }
+            Some(number) if number.kind == Kind::Issue => p.push(Problem::new(
+                MAP,
+                pull_line,
+                format!("the line of pull requests names #{n}, an issue"),
+            )),
             Some(_) => {}
         }
     }
 }
 
 fn lines(places: &[Place]) -> String {
-    places.iter().map(|place| place.line.to_string()).collect::<Vec<_>>().join(", ")
+    places
+        .iter()
+        .map(|place| place.line.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -231,7 +295,10 @@ mod tests {
 
     #[test]
     fn a_range_is_each_number_in_it() {
-        assert_eq!(numbers_in("#37 to #40, #52, #57 and #77"), [37, 38, 39, 40, 52, 57, 77]);
+        assert_eq!(
+            numbers_in("#37 to #40, #52, #57 and #77"),
+            [37, 38, 39, 40, 52, 57, 77]
+        );
     }
 
     #[test]
@@ -240,8 +307,20 @@ mod tests {
             "| Issue | Subject | State | Entries |\n| --- | --- | --- | --- |\n| #1 | a | closed (`f502fba`) | T-1 |\n\
              **#18, transports.** text\n#37 to #39 and #41 are pull requests; more\n| Report | Entries |\n| lablup | T-1 |\n",
         );
-        assert_eq!(map.issues[&1], [Place { line: 3, state: Some("closed (`f502fba`)".into()) }]);
-        assert_eq!(map.issues[&18], [Place { line: 4, state: None }]);
+        assert_eq!(
+            map.issues[&1],
+            [Place {
+                line: 3,
+                state: Some("closed (`f502fba`)".into())
+            }]
+        );
+        assert_eq!(
+            map.issues[&18],
+            [Place {
+                line: 4,
+                state: None
+            }]
+        );
         assert_eq!(map.pulls, Some((5, vec![37, 38, 39, 41])));
         assert_eq!(map.issues.len(), 2, "a report's row is no issue");
     }
@@ -249,7 +328,10 @@ mod tests {
     #[test]
     fn a_line_of_the_list_that_is_not_its_form_is_named() {
         let mut p = Vec::new();
-        let list = read_list("# a comment\n1 issue open\n2 pull closed\nthree issue open\n1 issue closed\n", &mut p);
+        let list = read_list(
+            "# a comment\n1 issue open\n2 pull closed\nthree issue open\n1 issue closed\n",
+            &mut p,
+        );
         assert_eq!(list.len(), 2);
         assert_eq!(p.len(), 2, "{p:?}");
     }

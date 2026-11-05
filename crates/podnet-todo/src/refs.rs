@@ -17,15 +17,32 @@ pub const ROADMAP: &str = "docs/ROADMAP.md";
 /// span that starts with one of them is a citation that must exist; another
 /// project's file is written `owner/repo:path`, which never starts so.
 const TOP_DIRS: [&str; 6] = ["crates", "scripts", "docs", ".github", "TODO", "vendor"];
-const ROOT_FILES: [&str; 6] = ["Cargo.toml", "Cargo.lock", "README.md", "AGENTS.md", "SECURITY.md", "LICENSE"];
+const ROOT_FILES: [&str; 6] = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "AGENTS.md",
+    "SECURITY.md",
+    "LICENSE",
+];
 
 pub fn check(root: &Path, r: &Record, p: &mut Vec<Problem>) {
-    let status: HashMap<&str, &str> = r.rows.iter().map(|row| (row.id.as_str(), row.status.as_str())).collect();
+    let status: HashMap<&str, &str> = r
+        .rows
+        .iter()
+        .map(|row| (row.id.as_str(), row.status.as_str()))
+        .collect();
     for rel in documents(root) {
-        let Some(text) = read(root, &rel) else { continue };
+        let Some(text) = read(root, &rel) else {
+            continue;
+        };
         for (id, line) in ids_in(&text) {
             if !status.contains_key(id.as_str()) {
-                p.push(Problem::new(&rel, line, format!("{id} is not an entry of the index")));
+                p.push(Problem::new(
+                    &rel,
+                    line,
+                    format!("{id} is not an entry of the index"),
+                ));
             }
         }
         if rel.starts_with("TODO/") {
@@ -41,7 +58,10 @@ pub fn check(root: &Path, r: &Record, p: &mut Vec<Problem>) {
 /// The Markdown files whose `T-NNN` references must resolve, and whose
 /// citations `remap` moves.
 pub fn documents(root: &Path) -> Vec<String> {
-    let mut out: Vec<String> = ["README.md", "AGENTS.md", "SECURITY.md"].iter().map(|s| s.to_string()).collect();
+    let mut out: Vec<String> = ["README.md", "AGENTS.md", "SECURITY.md"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for dir in ["TODO", "docs"] {
         walk(root, dir, &mut out);
     }
@@ -51,7 +71,9 @@ pub fn documents(root: &Path) -> Vec<String> {
 }
 
 fn walk(root: &Path, rel: &str, out: &mut Vec<String>) {
-    let Ok(dir) = fs::read_dir(root.join(rel)) else { return };
+    let Ok(dir) = fs::read_dir(root.join(rel)) else {
+        return;
+    };
     for e in dir.filter_map(|e| e.ok()) {
         let name = e.file_name().to_string_lossy().into_owned();
         let child = format!("{rel}/{name}");
@@ -66,7 +88,9 @@ fn walk(root: &Path, rel: &str, out: &mut Vec<String>) {
 /// A code span that cites a path of this repository: the path, and the last
 /// line it names (`path:N` or `path:N-M`).
 pub fn citation(span: &str) -> Option<(&str, Option<usize>)> {
-    if span.is_empty() || span.contains(char::is_whitespace) || span.contains(['*', '{', '}', '<', '>', '?', '[', '|'])
+    if span.is_empty()
+        || span.contains(char::is_whitespace)
+        || span.contains(['*', '{', '}', '<', '>', '?', '[', '|'])
     {
         return None;
     }
@@ -82,7 +106,9 @@ pub fn citation(span: &str) -> Option<(&str, Option<usize>)> {
     }
     let line = suffix.and_then(|s| {
         let last = s.rsplit('-').next()?;
-        let ok = s.split('-').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        let ok = s
+            .split('-')
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
         ok.then(|| last.parse().ok()).flatten()
     });
     Some((path, line))
@@ -98,14 +124,24 @@ fn citations(root: &Path, rel: &str, text: &str, p: &mut Vec<Problem>) {
             continue;
         }
         for span in code_spans(line) {
-            let Some((path, last)) = citation(span) else { continue };
+            let Some((path, last)) = citation(span) else {
+                continue;
+            };
             if !exists_exactly(root, path.trim_end_matches('/')) {
-                p.push(Problem::new(rel, no, format!("`{path}` does not exist in this repository")));
+                p.push(Problem::new(
+                    rel,
+                    no,
+                    format!("`{path}` does not exist in this repository"),
+                ));
                 continue;
             }
             let Some(n) = last else { continue };
-            let first: usize =
-                span.rsplit(':').next().and_then(|s| s.split('-').next()).and_then(|s| s.parse().ok()).unwrap_or(n);
+            let first: usize = span
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.split('-').next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(n);
             // A range that ends before it starts, or a line 0, names no line:
             // a half-moved range looks like this.
             if first == 0 || first > n {
@@ -119,12 +155,22 @@ fn citations(root: &Path, rel: &str, text: &str, p: &mut Vec<Problem>) {
             let cited = fs::read_to_string(root.join(path)).unwrap_or_default();
             let count = cited.lines().count();
             if n > count {
-                p.push(Problem::new(rel, no, format!("`{span}`: {path} has {count} lines")));
+                p.push(Problem::new(
+                    rel,
+                    no,
+                    format!("`{span}`: {path} has {count} lines"),
+                ));
                 continue;
             }
-            let Some(quote) = quote_after(line, span, &lines[k + 1..]) else { continue };
+            let Some(quote) = quote_after(line, span, &lines[k + 1..]) else {
+                continue;
+            };
             let (a, b) = (first.max(1), n.max(1));
-            let held: Vec<&str> = cited.lines().skip(a - 1).take(b.saturating_sub(a) + 1).collect();
+            let held: Vec<&str> = cited
+                .lines()
+                .skip(a - 1)
+                .take(b.saturating_sub(a) + 1)
+                .collect();
             if !squash(&held.join(" ")).contains(&squash(&quote)) {
                 p.push(Problem::new(
                     rel,
@@ -162,8 +208,13 @@ fn squash(s: &str) -> String {
 fn exists_exactly(root: &Path, rel: &str) -> bool {
     let mut at = root.to_path_buf();
     for part in rel.split('/') {
-        let Ok(dir) = fs::read_dir(&at) else { return false };
-        if !dir.filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy() == part) {
+        let Ok(dir) = fs::read_dir(&at) else {
+            return false;
+        };
+        if !dir
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy() == part)
+        {
             return false;
         }
         at.push(part);
@@ -182,12 +233,20 @@ fn work_order(r: &Record, status: &HashMap<&str, &str>, p: &mut Vec<Problem>) {
         for (id, _) in ids_in(line) {
             named += 1;
             if status.get(id.as_str()) == Some(&"done") {
-                p.push(Problem::new(PROGRESS, no, format!("the work order names {id}, which is done")));
+                p.push(Problem::new(
+                    PROGRESS,
+                    no,
+                    format!("the work order names {id}, which is done"),
+                ));
             }
         }
     }
     if named == 0 && r.rows.iter().any(|row| row.status != "done") {
-        p.push(Problem::new(PROGRESS, head, "the work order names no entry, but some entries are not done"));
+        p.push(Problem::new(
+            PROGRESS,
+            head,
+            "the work order names no entry, but some entries are not done",
+        ));
     }
 }
 
@@ -198,7 +257,9 @@ fn questions(r: &Record, p: &mut Vec<Problem>) {
         .map(|(_, body)| body.iter().flat_map(|(_, l)| q_tokens(l)).collect())
         .unwrap_or_default();
     for e in &r.entries {
-        let Some(b) = e.section("Blocker") else { continue };
+        let Some(b) = e.section("Blocker") else {
+            continue;
+        };
         for q in q_tokens(&b.body) {
             if !asked.contains(&q) {
                 p.push(Problem::new(
@@ -217,7 +278,9 @@ fn questions(r: &Record, p: &mut Vec<Problem>) {
 /// The words `Q1`, `Q2`, ... of a text.
 fn q_tokens(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| w.len() >= 2 && w.starts_with('Q') && w[1..].bytes().all(|b| b.is_ascii_digit()))
+        .filter(|w| {
+            w.len() >= 2 && w.starts_with('Q') && w[1..].bytes().all(|b| b.is_ascii_digit())
+        })
         .map(str::to_string)
         .collect()
 }
@@ -234,7 +297,11 @@ fn roadmap(root: &Path, r: &Record, p: &mut Vec<Problem>) {
         ));
         return;
     };
-    let milestone: HashMap<&str, &str> = r.rows.iter().map(|row| (row.id.as_str(), row.milestone.as_str())).collect();
+    let milestone: HashMap<&str, &str> = r
+        .rows
+        .iter()
+        .map(|row| (row.id.as_str(), row.milestone.as_str()))
+        .collect();
     let mut current: Option<String> = None;
     for (no, line, fenced) in lines_with_fences(&text) {
         if fenced {
@@ -258,7 +325,11 @@ fn roadmap(root: &Path, r: &Record, p: &mut Vec<Problem>) {
         for (id, _) in ids_in(line) {
             if let Some(have) = milestone.get(id.as_str()) {
                 if have != m {
-                    p.push(Problem::new(ROADMAP, no, format!("{id} is listed under {m}, but its milestone is {have}")));
+                    p.push(Problem::new(
+                        ROADMAP,
+                        no,
+                        format!("{id} is listed under {m}, but its milestone is {have}"),
+                    ));
                 }
             }
         }
@@ -271,11 +342,23 @@ mod tests {
 
     #[test]
     fn only_paths_of_this_repository_are_citations() {
-        assert_eq!(citation("crates/podssh-cli/src/tree.rs:52"), Some(("crates/podssh-cli/src/tree.rs", Some(52))));
-        assert_eq!(citation("crates/x.rs:36-38"), Some(("crates/x.rs", Some(38))));
-        assert_eq!(citation("docs/cli.md#the-manual"), Some(("docs/cli.md", None)));
+        assert_eq!(
+            citation("crates/podssh-cli/src/tree.rs:52"),
+            Some(("crates/podssh-cli/src/tree.rs", Some(52)))
+        );
+        assert_eq!(
+            citation("crates/x.rs:36-38"),
+            Some(("crates/x.rs", Some(38)))
+        );
+        assert_eq!(
+            citation("docs/cli.md#the-manual"),
+            Some(("docs/cli.md", None))
+        );
         assert_eq!(citation("Cargo.toml"), Some(("Cargo.toml", None)));
-        assert_eq!(citation("crates/podssh-cli/src/flags.rs:VERBS"), Some(("crates/podssh-cli/src/flags.rs", None)));
+        assert_eq!(
+            citation("crates/podssh-cli/src/flags.rs:VERBS"),
+            Some(("crates/podssh-cli/src/flags.rs", None))
+        );
         assert_eq!(citation("lablup/bssh:crates/bssh-russh-sftp/x.patch"), None);
         assert_eq!(citation("src/noise.rs:1-92"), None);
         assert_eq!(citation("podssh ssh -G"), None);
@@ -285,6 +368,9 @@ mod tests {
 
     #[test]
     fn questions_are_words() {
-        assert_eq!(q_tokens("question Q1 in `TODO/PROGRESS.md` (Q12); not QA, not Q"), ["Q1", "Q12"]);
+        assert_eq!(
+            q_tokens("question Q1 in `TODO/PROGRESS.md` (Q12); not QA, not Q"),
+            ["Q1", "Q12"]
+        );
     }
 }

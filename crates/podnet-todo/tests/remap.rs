@@ -15,7 +15,14 @@ const TWO: &str = "crates/x/src/two.rs";
 /// Each file of the tree, as HEAD has it.
 fn snapshot(t: &Tree) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    for rel in ["TODO/INDEX.md", "TODO/PROGRESS.md", "TODO/area.md", "docs/ROADMAP.md", "README.md", LIB] {
+    for rel in [
+        "TODO/INDEX.md",
+        "TODO/PROGRESS.md",
+        "TODO/area.md",
+        "docs/ROADMAP.md",
+        "README.md",
+        LIB,
+    ] {
         out.insert(rel.to_string(), t.read(rel));
     }
     for rel in ["docs/notes.md", TWO] {
@@ -44,7 +51,10 @@ fn a_line_added_above_a_cited_line_moves_the_citation() {
     let area = t.read("TODO/area.md");
     assert!(area.contains("`crates/x/src/lib.rs:4`."), "{area}");
     assert!(area.contains("`crates/x/src/lib.rs:3-5`"), "{area}");
-    assert!(area.contains("`crates/x/src/lib.rs:5` says \"line 4\""), "{area}");
+    assert!(
+        area.contains("`crates/x/src/lib.rs:5` says \"line 4\""),
+        "{area}"
+    );
     assert_eq!(r.moved.len(), 3, "{r:#?}");
     assert!(r.review.is_empty() && r.kept.is_empty(), "{r:#?}");
     // The record agrees, the quote included: line 5 says "line 4" now.
@@ -61,8 +71,18 @@ fn a_change_inside_a_cited_range_is_listed_and_not_moved() {
     assert!(area.contains("`crates/x/src/lib.rs:3`."), "{area}");
     assert!(area.contains("`crates/x/src/lib.rs:2-4`"), "{area}");
     assert_eq!(r.review.len(), 2, "{r:#?}");
-    assert!(r.review.iter().any(|l| l.contains("lib.rs 3:") && l.contains("move the citation by hand")), "{r:#?}");
-    assert!(r.review.iter().any(|l| l.contains("lib.rs 2-4:") && l.contains("a line inside it changed")), "{r:#?}");
+    assert!(
+        r.review
+            .iter()
+            .any(|l| l.contains("lib.rs 3:") && l.contains("move the citation by hand")),
+        "{r:#?}"
+    );
+    assert!(
+        r.review
+            .iter()
+            .any(|l| l.contains("lib.rs 2-4:") && l.contains("a line inside it changed")),
+        "{r:#?}"
+    );
     assert!(r.moved.is_empty(), "{r:#?}");
 }
 
@@ -83,8 +103,16 @@ fn a_range_moves_by_its_ends_when_a_line_inside_changed() {
     let r = run(&t, &head, true);
     let area = t.read("TODO/area.md");
     assert!(area.contains("`crates/x/src/lib.rs:3-5`"), "{area}");
-    assert!(area.contains("`crates/x/src/lib.rs:3`."), "a changed single line stays: {area}");
-    assert!(r.review.iter().any(|l| l.contains("lib.rs 3-5: moved by its ends")), "{r:#?}");
+    assert!(
+        area.contains("`crates/x/src/lib.rs:3`."),
+        "a changed single line stays: {area}"
+    );
+    assert!(
+        r.review
+            .iter()
+            .any(|l| l.contains("lib.rs 3-5: moved by its ends")),
+        "{r:#?}"
+    );
     // An end that changed keeps the range where it was.
     let t = Tree::new("remap-range-end-changed");
     let head = snapshot(&t);
@@ -98,7 +126,12 @@ fn a_range_moves_by_its_ends_when_a_line_inside_changed() {
     );
     let r = run(&t, &head, true);
     assert!(t.read("TODO/area.md").contains("`crates/x/src/lib.rs:2-4`"));
-    assert!(r.review.iter().any(|l| l.contains("lib.rs 2-4:") && l.contains("by hand")), "{r:#?}");
+    assert!(
+        r.review
+            .iter()
+            .any(|l| l.contains("lib.rs 2-4:") && l.contains("by hand")),
+        "{r:#?}"
+    );
 }
 
 #[test]
@@ -122,14 +155,27 @@ fn a_second_run_after_a_second_edit_moves_from_head_not_twice() {
 fn a_citation_moved_by_hand_is_kept_on_the_next_run() {
     let t = Tree::new("remap-by-hand");
     let head = snapshot(&t);
-    t.write(LIB, &format!("line 0\n{}", SOURCE.replace("line 3", "line three")));
+    t.write(
+        LIB,
+        &format!("line 0\n{}", SOURCE.replace("line 3", "line three")),
+    );
     let first = run(&t, &head, true);
-    assert!(first.review.iter().any(|l| l.contains("lib.rs 3:")), "{first:#?}");
+    assert!(
+        first.review.iter().any(|l| l.contains("lib.rs 3:")),
+        "{first:#?}"
+    );
     // The person reads the changed line and moves the citation to it.
-    t.plant("TODO/area.md", "`crates/x/src/lib.rs:3`.", "`crates/x/src/lib.rs:4`.");
+    t.plant(
+        "TODO/area.md",
+        "`crates/x/src/lib.rs:3`.",
+        "`crates/x/src/lib.rs:4`.",
+    );
     let second = run(&t, &head, true);
     assert!(t.read("TODO/area.md").contains("`crates/x/src/lib.rs:4`."));
-    assert!(!second.review.iter().any(|l| l.contains("lib.rs 4:")), "{second:#?}");
+    assert!(
+        !second.review.iter().any(|l| l.contains("lib.rs 4:")),
+        "{second:#?}"
+    );
 }
 
 #[test]
@@ -143,9 +189,18 @@ fn a_bare_line_after_a_citation_moves_and_a_fence_does_not() {
     t.write(LIB, &format!("line 0\n{SOURCE}"));
     run(&t, &head, true);
     let notes = t.read("docs/notes.md");
-    assert!(notes.contains("See `crates/x/src/lib.rs:3` and\n`:5-6`."), "{notes}");
-    assert!(notes.contains("sed -n 3p `crates/x/src/lib.rs:3`"), "a fenced line moved: {notes}");
-    assert!(notes.contains("Alone: `:3`."), "a bare span with no citation before it moved: {notes}");
+    assert!(
+        notes.contains("See `crates/x/src/lib.rs:3` and\n`:5-6`."),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("sed -n 3p `crates/x/src/lib.rs:3`"),
+        "a fenced line moved: {notes}"
+    );
+    assert!(
+        notes.contains("Alone: `:3`."),
+        "a bare span with no citation before it moved: {notes}"
+    );
 }
 
 #[test]
@@ -154,23 +209,38 @@ fn a_line_new_in_this_change_is_kept() {
     let head = snapshot(&t);
     t.write(LIB, &format!("line 0\n{SOURCE}"));
     // Written after the edit, with the new numbers.
-    t.plant("TODO/area.md", "Bound the wait.", "Bound the wait at `crates/x/src/lib.rs:6`.");
+    t.plant(
+        "TODO/area.md",
+        "Bound the wait.",
+        "Bound the wait at `crates/x/src/lib.rs:6`.",
+    );
     let r = run(&t, &head, true);
-    assert!(t.read("TODO/area.md").contains("Bound the wait at `crates/x/src/lib.rs:6`."));
+    assert!(t
+        .read("TODO/area.md")
+        .contains("Bound the wait at `crates/x/src/lib.rs:6`."));
     assert_eq!(r.kept.len(), 1, "{r:#?}");
 }
 
 #[test]
 fn line_endings_are_kept_and_a_dry_run_writes_nothing() {
     let t = Tree::new("remap-crlf");
-    t.write("docs/notes.md", "# Notes\r\n\r\nSee `crates/x/src/lib.rs:2`.\r\n");
+    t.write(
+        "docs/notes.md",
+        "# Notes\r\n\r\nSee `crates/x/src/lib.rs:2`.\r\n",
+    );
     let head = snapshot(&t);
     t.write(LIB, &format!("line 0\n{SOURCE}"));
     let dry = run(&t, &head, false);
     assert_eq!(dry.moved.len(), 4, "{dry:#?}");
-    assert_eq!(t.read("docs/notes.md"), "# Notes\r\n\r\nSee `crates/x/src/lib.rs:2`.\r\n");
+    assert_eq!(
+        t.read("docs/notes.md"),
+        "# Notes\r\n\r\nSee `crates/x/src/lib.rs:2`.\r\n"
+    );
     run(&t, &head, true);
-    assert_eq!(t.read("docs/notes.md"), "# Notes\r\n\r\nSee `crates/x/src/lib.rs:3`.\r\n");
+    assert_eq!(
+        t.read("docs/notes.md"),
+        "# Notes\r\n\r\nSee `crates/x/src/lib.rs:3`.\r\n"
+    );
 }
 
 #[test]
@@ -181,7 +251,10 @@ fn a_file_that_is_not_in_head_moves_nothing() {
     t.write(LIB, &format!("line 0\n{SOURCE}"));
     let r = run(&t, &head, true);
     assert!(r.moved.is_empty(), "{r:#?}");
-    assert!(r.notes.iter().any(|n| n.contains("no text in the base")), "{r:#?}");
+    assert!(
+        r.notes.iter().any(|n| n.contains("no text in the base")),
+        "{r:#?}"
+    );
 }
 
 #[test]
@@ -204,7 +277,9 @@ See `crates/x/src/lib.rs:2` and `crates/x/src/two.rs:3`.
         ),
     );
     run_on(&t, &head, LIB, true);
-    assert!(t.read("docs/notes.md").contains("`crates/x/src/lib.rs:3` and `crates/x/src/two.rs:3`"));
+    assert!(t
+        .read("docs/notes.md")
+        .contains("`crates/x/src/lib.rs:3` and `crates/x/src/two.rs:3`"));
     // The line differs from HEAD now; the run for the second file still
     // finds it, and keeps what the first run did.
     t.write(
@@ -217,7 +292,10 @@ line 0
     );
     let r = run_on(&t, &head, TWO, true);
     let notes = t.read("docs/notes.md");
-    assert!(notes.contains("`crates/x/src/lib.rs:3` and `crates/x/src/two.rs:5`"), "{notes}");
+    assert!(
+        notes.contains("`crates/x/src/lib.rs:3` and `crates/x/src/two.rs:5`"),
+        "{notes}"
+    );
     assert!(r.kept.is_empty(), "{r:#?}");
 }
 
@@ -241,7 +319,12 @@ fn an_edit_with_no_remap_is_found_by_the_check() {
     let found = forgotten(Some(vec![LIB.to_string()]));
     assert_eq!(found.len(), 3, "{found:#?}");
     assert!(found[0].starts_with("TODO/area.md:"), "{found:#?}");
-    assert!(found.iter().all(|p| p.contains("run `cargo todo remap crates/x/src/lib.rs`")), "{found:#?}");
+    assert!(
+        found
+            .iter()
+            .all(|p| p.contains("run `cargo todo remap crates/x/src/lib.rs`")),
+        "{found:#?}"
+    );
     assert!(forgotten(None).is_empty(), "no git: nothing to say");
 
     remap(t.path(), &[LIB.to_string()], &get, true).unwrap();
@@ -274,9 +357,19 @@ fn a_changed_file_that_is_not_text_leaves_the_check_running() {
     let get = |rel: &str| Ok::<_, String>(head.get(rel).cloned());
     let found = unmoved(&t, &[bin, LIB], &get);
     assert_eq!(found.len(), 3, "{found:#?}");
-    assert!(found.iter().all(|p| p.contains("run `cargo todo remap crates/x/src/lib.rs`")), "{found:#?}");
+    assert!(
+        found
+            .iter()
+            .all(|p| p.contains("run `cargo todo remap crates/x/src/lib.rs`")),
+        "{found:#?}"
+    );
     let r = remap(t.path(), &[bin.to_string(), LIB.to_string()], &get, false).unwrap();
-    assert!(r.notes.iter().any(|n| n.contains("fixture.bin is not UTF-8 text")), "{r:#?}");
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n.contains("fixture.bin is not UTF-8 text")),
+        "{r:#?}"
+    );
     assert_eq!(r.moved.len(), 3, "{r:#?}");
 }
 
@@ -289,12 +382,21 @@ fn a_range_that_starts_at_a_blank_line_moves_by_its_first_line_with_text() {
     // The last line changes too, so that the blank line is not in the
     // common tail, which would anchor it.
     t.write(LIB, "intro\n\n## Servers\nbody 1\nbody 2\nfooter\n");
-    t.write("docs/notes.md", "# Notes\n\nThe servers: `crates/x/src/lib.rs:2-5`.\n");
+    t.write(
+        "docs/notes.md",
+        "# Notes\n\nThe servers: `crates/x/src/lib.rs:2-5`.\n",
+    );
     let head = snapshot(&t);
-    t.write(LIB, "a new intro\n\na new part\n\nits end\n\n## Servers\nbody 1\nbody 2\na new footer\n");
+    t.write(
+        LIB,
+        "a new intro\n\na new part\n\nits end\n\n## Servers\nbody 1\nbody 2\na new footer\n",
+    );
     let r = run(&t, &head, true);
     let notes = t.read("docs/notes.md");
-    assert!(notes.contains("The servers: `crates/x/src/lib.rs:6-9`."), "{notes} {r:#?}");
+    assert!(
+        notes.contains("The servers: `crates/x/src/lib.rs:6-9`."),
+        "{notes} {r:#?}"
+    );
     assert!(r.review.is_empty(), "{r:#?}");
 }
 
@@ -304,15 +406,36 @@ fn a_range_that_starts_at_a_blank_line_moves_by_its_first_line_with_text() {
 fn a_range_whose_first_line_with_text_changed_is_listed_for_review() {
     let t = Tree::new("remap-blank-review");
     t.write(LIB, "intro\n\n## Servers\nbody 1\nbody 2\n");
-    t.write("docs/notes.md", "# Notes\n\nThe servers: `crates/x/src/lib.rs:2-5`.\n");
+    t.write(
+        "docs/notes.md",
+        "# Notes\n\nThe servers: `crates/x/src/lib.rs:2-5`.\n",
+    );
     let head = snapshot(&t);
-    t.write(LIB, "a new intro\n\na new part\n\nits end\n\n## The servers\nbody 1\nbody 2\n");
+    t.write(
+        LIB,
+        "a new intro\n\na new part\n\nits end\n\n## The servers\nbody 1\nbody 2\n",
+    );
     let r = run(&t, &head, true);
-    assert!(t.read("docs/notes.md").contains("`crates/x/src/lib.rs:2-5`"), "{r:#?}");
-    assert!(r.review.iter().any(|l| l.contains("lib.rs 2-5:") && l.contains("by hand")), "{r:#?}");
-    t.write("docs/notes.md", "# Notes\n\nThe servers: `crates/x/src/lib.rs:6-9`.\n");
+    assert!(
+        t.read("docs/notes.md")
+            .contains("`crates/x/src/lib.rs:2-5`"),
+        "{r:#?}"
+    );
+    assert!(
+        r.review
+            .iter()
+            .any(|l| l.contains("lib.rs 2-5:") && l.contains("by hand")),
+        "{r:#?}"
+    );
+    t.write(
+        "docs/notes.md",
+        "# Notes\n\nThe servers: `crates/x/src/lib.rs:6-9`.\n",
+    );
     let get = |rel: &str| Ok::<_, String>(head.get(rel).cloned());
-    assert!(unmoved(&t, &[LIB], &get).is_empty(), "a person's move is taken for a stale citation");
+    assert!(
+        unmoved(&t, &[LIB], &get).is_empty(),
+        "a person's move is taken for a stale citation"
+    );
 }
 
 /// A remap that cannot run is a problem of the check, not a pass.
@@ -321,9 +444,17 @@ fn a_remap_that_fails_is_a_problem_of_the_check() {
     let t = Tree::new("remap-fails");
     let head = snapshot(&t);
     t.write(LIB, &format!("line 0\n{SOURCE}"));
-    let get =
-        |rel: &str| if rel == LIB { Err("planted: git show failed".to_string()) } else { Ok(head.get(rel).cloned()) };
+    let get = |rel: &str| {
+        if rel == LIB {
+            Err("planted: git show failed".to_string())
+        } else {
+            Ok(head.get(rel).cloned())
+        }
+    };
     let found = unmoved(&t, &[LIB], &get);
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert!(found[0].starts_with("remap: ") && found[0].contains("could not run: planted"), "{found:#?}");
+    assert!(
+        found[0].starts_with("remap: ") && found[0].contains("could not run: planted"),
+        "{found:#?}"
+    );
 }

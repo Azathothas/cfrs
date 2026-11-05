@@ -35,7 +35,10 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn have_git() -> bool {
-    let found = Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success());
+    let found = Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
     if !found {
         eprintln!("git is not on PATH: this test needs it, and did not run");
     }
@@ -55,12 +58,18 @@ fn run(args: &[&str]) -> (i32, String, String) {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = podssh_todo::run(&args, &mut out, &mut err);
-    (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+    (
+        code,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    )
 }
 
 /// The lines of the check's report that ask for the remap of LIB.
 fn asks(err: &str, command: &str) -> usize {
-    err.lines().filter(|l| l.contains(&format!("run `{command} {LIB}`"))).count()
+    err.lines()
+        .filter(|l| l.contains(&format!("run `{command} {LIB}`")))
+        .count()
 }
 
 #[test]
@@ -71,7 +80,10 @@ fn a_commit_made_without_a_remap_is_found_against_its_parent() {
     let t = committed("base-commit");
     let root = t.path().to_str().unwrap();
     t.write(LIB, &format!("line 0\n{SOURCE}"));
-    git(t.path(), &["commit", "-q", "-a", "-m", "an edit with no remap"]);
+    git(
+        t.path(),
+        &["commit", "-q", "-a", "-m", "an edit with no remap"],
+    );
 
     // Against HEAD the tree has no change, so no citation left behind shows.
     let (_, _, err) = run(&["check", "--root", root]);
@@ -101,7 +113,10 @@ fn a_base_that_git_cannot_read_fails_the_check() {
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = run(&["check", "--root", root, "--base", "no-such-revision"]);
     assert_eq!(code, 1, "{err}");
-    assert!(err.contains("--base: git cannot compare the tree with `no-such-revision`"), "{err}");
+    assert!(
+        err.contains("--base: git cannot compare the tree with `no-such-revision`"),
+        "{err}"
+    );
     // A revision that would reach git as an option is refused.
     let (code, _, err) = run(&["check", "--root", root, "--base", "--output=x"]);
     assert_eq!(code, 64, "{err}");

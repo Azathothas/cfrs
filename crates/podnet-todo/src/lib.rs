@@ -36,7 +36,10 @@ Options: --root DIR (default: the nearest directory above the current one with T
 
 /// The nearest directory at or above `start` that has `TODO/INDEX.md`.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
-    start.ancestors().find(|d| d.join("TODO").join("INDEX.md").is_file()).map(Path::to_path_buf)
+    start
+        .ancestors()
+        .find(|d| d.join("TODO").join("INDEX.md").is_file())
+        .map(Path::to_path_buf)
 }
 
 /// Run the command line; returns the exit code (0, 1 for a disagreement, 64
@@ -96,14 +99,27 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write, err: &mut dyn std::io:
         },
         ["remap", rest @ ..] => {
             let dry = rest.iter().any(|w| *w == "--dry-run" || *w == "-n");
-            let files: Vec<String> = rest.iter().filter(|w| !w.starts_with('-')).map(|w| w.to_string()).collect();
-            if files.is_empty() || rest.iter().any(|w| w.starts_with('-') && *w != "--dry-run" && *w != "-n") {
-                return usage(err, "remap needs one FILE or more, and takes only --dry-run");
+            let files: Vec<String> = rest
+                .iter()
+                .filter(|w| !w.starts_with('-'))
+                .map(|w| w.to_string())
+                .collect();
+            if files.is_empty()
+                || rest
+                    .iter()
+                    .any(|w| w.starts_with('-') && *w != "--dry-run" && *w != "-n")
+            {
+                return usage(
+                    err,
+                    "remap needs one FILE or more, and takes only --dry-run",
+                );
             }
             remap_command(&root, &files, dry, base, out, err)
         }
         ["interop"] => interop_command(&root, &[], out, err),
-        ["interop", "--logs", logs @ ..] if !logs.is_empty() => interop_command(&root, logs, out, err),
+        ["interop", "--logs", logs @ ..] if !logs.is_empty() => {
+            interop_command(&root, logs, out, err)
+        }
         ["interop", ..] => usage(err, "interop takes only --logs LOG..."),
         _ => usage(err, "unknown command"),
     }
@@ -157,17 +173,32 @@ fn remap_command(
 
 /// Check the interop harnesses against their baseline, and score the logs
 /// named, each a run named by its file's stem (T-199).
-fn interop_command(root: &Path, logs: &[&str], out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> i32 {
+fn interop_command(
+    root: &Path,
+    logs: &[&str],
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
     let checked = interop::check(root);
     let mut problems = checked.problems;
     if !logs.is_empty() {
         let mut runs = Vec::new();
         for log in logs {
             let path = Path::new(log);
-            let run = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+            let run = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
             match std::fs::read_to_string(path) {
-                Ok(text) => runs.push(interop::Log { shown: log.to_string(), run, text }),
-                Err(e) => problems.push(model::Problem::new(log, 0, format!("cannot be read: {e}"))),
+                Ok(text) => runs.push(interop::Log {
+                    shown: log.to_string(),
+                    run,
+                    text,
+                }),
+                Err(e) => {
+                    problems.push(model::Problem::new(log, 0, format!("cannot be read: {e}")))
+                }
             }
         }
         let (rows, more) = interop::score(&checked.baseline, &runs);
@@ -190,7 +221,11 @@ fn interop_command(root: &Path, logs: &[&str], out: &mut dyn std::io::Write, err
         for p in &problems {
             let _ = writeln!(err, "{p}");
         }
-        let _ = writeln!(err, "podssh-todo: {} problems in the interop checks", problems.len());
+        let _ = writeln!(
+            err,
+            "podssh-todo: {} problems in the interop checks",
+            problems.len()
+        );
         1
     }
 }
@@ -201,7 +236,12 @@ fn usage(err: &mut dyn std::io::Write, why: &str) -> i32 {
 }
 
 /// Run the reader and print what it found.
-fn report(root: &Path, base: Option<&str>, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> i32 {
+fn report(
+    root: &Path,
+    base: Option<&str>,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> i32 {
     let r = check::check(root, base);
     if r.problems.is_empty() {
         let _ = writeln!(out, "podssh-todo: the record agrees: {}", r.counts.phrase());
@@ -210,7 +250,11 @@ fn report(root: &Path, base: Option<&str>, out: &mut dyn std::io::Write, err: &m
         for p in &r.problems {
             let _ = writeln!(err, "{p}");
         }
-        let _ = writeln!(err, "podssh-todo: {} problems in the record", r.problems.len());
+        let _ = writeln!(
+            err,
+            "podssh-todo: {} problems in the record",
+            r.problems.len()
+        );
         1
     }
 }

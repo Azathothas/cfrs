@@ -8,15 +8,41 @@ pub const STATUSES: [&str; 4] = ["open", "partial", "blocked", "done"];
 pub const PRIORITIES: [&str; 4] = ["P0", "P1", "P2", "P3"];
 /// No `XL`: an entry that big is two entries.
 pub const EFFORTS: [&str; 3] = ["S", "M", "L"];
-pub const MILESTONES: [&str; 10] = ["M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "backlog", "none"];
-pub const CATEGORIES: [&str; 7] = ["defect", "feature", "measurement", "release", "chore", "research", "docs"];
+pub const MILESTONES: [&str; 10] = [
+    "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "backlog", "none",
+];
+pub const CATEGORIES: [&str; 7] = [
+    "defect",
+    "feature",
+    "measurement",
+    "release",
+    "chore",
+    "research",
+    "docs",
+];
 
 /// The header fields of an entry, each given once.
-pub const FIELDS: [&str; 6] = ["Source", "Category", "Milestone", "Priority", "Effort", "Status"];
+pub const FIELDS: [&str; 6] = [
+    "Source",
+    "Category",
+    "Milestone",
+    "Priority",
+    "Effort",
+    "Status",
+];
 
 /// The sections an entry can have, in this order.
-pub const SECTIONS: [&str; 9] =
-    ["Problem", "Premise", "Approach", "Decision", "Prove", "Blocker", "Start condition", "Correction", "Done"];
+pub const SECTIONS: [&str; 9] = [
+    "Problem",
+    "Premise",
+    "Approach",
+    "Decision",
+    "Prove",
+    "Blocker",
+    "Start condition",
+    "Correction",
+    "Done",
+];
 pub const REQUIRED_SECTIONS: [&str; 4] = ["Problem", "Premise", "Approach", "Prove"];
 
 /// The files of `TODO/` that hold no entries.
@@ -31,8 +57,15 @@ pub struct Problem {
 
 impl Problem {
     pub fn new(file: &str, line: usize, what: impl Into<String>) -> Self {
-        let at = if line == 0 { file.to_string() } else { format!("{file}:{line}") };
-        Self { at, what: what.into() }
+        let at = if line == 0 {
+            file.to_string()
+        } else {
+            format!("{file}:{line}")
+        };
+        Self {
+            at,
+            what: what.into(),
+        }
     }
 }
 
@@ -86,7 +119,10 @@ pub struct Entry {
 impl Entry {
     /// The value of a field, when the entry gives it.
     pub fn field(&self, name: &str) -> Option<&str> {
-        self.fields.iter().find(|f| f.name == name).map(|f| f.value.as_str())
+        self.fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.value.as_str())
     }
 
     pub fn section(&self, name: &str) -> Option<&Section> {
@@ -121,7 +157,10 @@ impl Counts {
     /// The counts of the rows, for one priority or (with `None`) for all.
     pub fn of(rows: &[Row], priority: Option<&str>) -> Self {
         let mut c = Self::default();
-        for r in rows.iter().filter(|r| priority.is_none_or(|p| r.priority == p)) {
+        for r in rows
+            .iter()
+            .filter(|r| priority.is_none_or(|p| r.priority == p))
+        {
             c.add(&r.status);
         }
         c
@@ -142,7 +181,14 @@ impl Counts {
 
     /// A row of the table of counts in the index.
     pub fn table_row(&self, label: &str) -> String {
-        format!("| {label} | {} | {} | {} | {} | {} |", self.open, self.partial, self.blocked, self.done, self.total())
+        format!(
+            "| {label} | {} | {} | {} | {} | {} |",
+            self.open,
+            self.partial,
+            self.blocked,
+            self.done,
+            self.total()
+        )
     }
 }
 
@@ -164,8 +210,12 @@ pub fn ids_in(text: &str) -> Vec<(String, usize)> {
         let mut at = 0;
         while let Some(pos) = line[at..].find("T-") {
             let start = at + pos;
-            let before_ok = start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'-');
-            let digits = bytes[start + 2..].iter().take_while(|b| b.is_ascii_digit()).count();
+            let before_ok = start == 0
+                || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'-');
+            let digits = bytes[start + 2..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
             let end = start + 2 + digits;
             let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
             if before_ok && digits >= 3 && after_ok {
@@ -183,15 +233,25 @@ mod tests {
 
     #[test]
     fn ids_are_found_as_words_only() {
-        let found: Vec<String> =
-            ids_in("T-001 and (T-012), not XT-003, not T-04, T-1234.").into_iter().map(|(id, _)| id).collect();
+        let found: Vec<String> = ids_in("T-001 and (T-012), not XT-003, not T-04, T-1234.")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(found, ["T-001", "T-012", "T-1234"]);
     }
 
     #[test]
     fn the_phrase_is_derived_from_the_counts() {
-        let c = Counts { open: 3, partial: 1, blocked: 2, done: 4 };
-        assert_eq!(c.phrase(), "10 entries: 3 open, 1 partial, 2 blocked, 4 done.");
+        let c = Counts {
+            open: 3,
+            partial: 1,
+            blocked: 2,
+            done: 4,
+        };
+        assert_eq!(
+            c.phrase(),
+            "10 entries: 3 open, 1 partial, 2 blocked, 4 done."
+        );
         assert_eq!(c.table_row("P1"), "| P1 | 3 | 1 | 2 | 4 | 10 |");
     }
 }

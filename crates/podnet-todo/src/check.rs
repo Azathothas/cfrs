@@ -7,8 +7,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::model::{
-    Counts, Entry, Problem, Row, CATEGORIES, EFFORTS, FIELDS, MILESTONES, PRIORITIES, RECORD_FILES, REQUIRED_SECTIONS,
-    SECTIONS, STATUSES,
+    Counts, Entry, Problem, Row, CATEGORIES, EFFORTS, FIELDS, MILESTONES, PRIORITIES, RECORD_FILES,
+    REQUIRED_SECTIONS, SECTIONS, STATUSES,
 };
 use crate::parse;
 
@@ -31,7 +31,9 @@ pub struct Record {
 
 /// Read a file of the tree as text, with `\r\n` read as `\n`.
 pub fn read(root: &Path, rel: &str) -> Option<String> {
-    fs::read_to_string(root.join(rel)).ok().map(|t| t.replace("\r\n", "\n"))
+    fs::read_to_string(root.join(rel))
+        .ok()
+        .map(|t| t.replace("\r\n", "\n"))
 }
 
 /// The area files of `TODO/`: each Markdown file that is not a record file.
@@ -71,7 +73,12 @@ pub fn load(root: &Path, problems: &mut Vec<Problem>) -> Option<Record> {
         entries.append(&mut e);
         problems.append(&mut p);
     }
-    Some(Record { rows, entries, index, progress })
+    Some(Record {
+        rows,
+        entries,
+        index,
+        progress,
+    })
 }
 
 /// Run every check of the reader on the tree at `root`, and, when git can
@@ -100,10 +107,18 @@ pub fn check(root: &Path, base: Option<&str>) -> Report {
 
 /// [`check`], given the files changed since the base `rev` (`None`:
 /// unknown) and their texts in it, so a test needs no git.
-pub fn check_with(root: &Path, changed: Option<Vec<String>>, head: &crate::remap::Head, rev: &str) -> Report {
+pub fn check_with(
+    root: &Path,
+    changed: Option<Vec<String>>,
+    head: &crate::remap::Head,
+    rev: &str,
+) -> Report {
     let mut problems = Vec::new();
     let Some(record) = load(root, &mut problems) else {
-        return Report { problems, counts: Counts::default() };
+        return Report {
+            problems,
+            counts: Counts::default(),
+        };
     };
     if record.rows.is_empty() {
         problems.push(Problem::new(INDEX, 0, "the index has no rows"));
@@ -118,14 +133,20 @@ pub fn check_with(root: &Path, changed: Option<Vec<String>>, head: &crate::remap
     // GitHub's numbers in the map (T-360).
     crate::github::check(root, &mut problems);
     // The claims of "yet", and a status beside an id (T-362).
-    let status: std::collections::HashMap<&str, &str> =
-        record.rows.iter().map(|r| (r.id.as_str(), r.status.as_str())).collect();
+    let status: std::collections::HashMap<&str, &str> = record
+        .rows
+        .iter()
+        .map(|r| (r.id.as_str(), r.status.as_str()))
+        .collect();
     crate::claims::check(root, &status, &mut problems);
     check_proves(root, &record.entries, &mut problems);
     if let Some(files) = changed.filter(|f| !f.is_empty()) {
         unmoved(root, &files, head, rev, &mut problems);
     }
-    Report { problems, counts: Counts::of(&record.rows, None) }
+    Report {
+        problems,
+        counts: Counts::of(&record.rows, None),
+    }
 }
 
 /// A citation of a file that changed since the base `rev` which a remap
@@ -134,7 +155,13 @@ pub fn check_with(root: &Path, changed: Option<Vec<String>>, head: &crate::remap
 /// because the line still exists. A citation that a person must read is not
 /// counted: only `remap` decides those, and it lists them. A remap that
 /// fails is a problem, not a pass.
-fn unmoved(root: &Path, files: &[String], head: &crate::remap::Head, rev: &str, p: &mut Vec<Problem>) {
+fn unmoved(
+    root: &Path,
+    files: &[String],
+    head: &crate::remap::Head,
+    rev: &str,
+    p: &mut Vec<Problem>,
+) {
     let r = match crate::remap::remap(root, files, head, false) {
         Ok(r) => r,
         Err(e) => {
@@ -146,9 +173,15 @@ fn unmoved(root: &Path, files: &[String], head: &crate::remap::Head, rev: &str, 
             return;
         }
     };
-    let command = if rev == "HEAD" { "cargo todo remap".to_string() } else { format!("cargo todo remap --base {rev}") };
+    let command = if rev == "HEAD" {
+        "cargo todo remap".to_string()
+    } else {
+        format!("cargo todo remap --base {rev}")
+    };
     for moved in r.moved {
-        let Some((at, rest)) = moved.split_once(": ") else { continue };
+        let Some((at, rest)) = moved.split_once(": ") else {
+            continue;
+        };
         let path = rest.split(' ').next().unwrap_or(rest);
         p.push(Problem {
             at: at.to_string(),
@@ -160,21 +193,37 @@ fn unmoved(root: &Path, files: &[String], head: &crate::remap::Head, rev: &str, 
 fn check_rows(rows: &[Row], p: &mut Vec<Problem>) {
     let allowed = |what: &str, value: &str, set: &[&str], line: usize, p: &mut Vec<Problem>| {
         if !set.contains(&value) {
-            p.push(Problem::new(INDEX, line, format!("{what} `{value}` is not one of {}", set.join(", "))));
+            p.push(Problem::new(
+                INDEX,
+                line,
+                format!("{what} `{value}` is not one of {}", set.join(", ")),
+            ));
         }
     };
     let mut last = 0;
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for r in rows {
         if !crate::model::is_id(&r.id) {
-            p.push(Problem::new(INDEX, r.line, format!("`{}` is not an id (T-NNN)", r.id)));
+            p.push(Problem::new(
+                INDEX,
+                r.line,
+                format!("`{}` is not an id (T-NNN)", r.id),
+            ));
         }
         if let Some(first) = seen.insert(&r.id, r.line) {
-            p.push(Problem::new(INDEX, r.line, format!("{} has a row already, on line {first}", r.id)));
+            p.push(Problem::new(
+                INDEX,
+                r.line,
+                format!("{} has a row already, on line {first}", r.id),
+            ));
         }
         let n = crate::model::id_number(&r.id);
         if n <= last {
-            p.push(Problem::new(INDEX, r.line, format!("{} is out of order: the rows are sorted by id", r.id)));
+            p.push(Problem::new(
+                INDEX,
+                r.line,
+                format!("{} is out of order: the rows are sorted by id", r.id),
+            ));
         }
         last = last.max(n);
         allowed("the priority", &r.priority, &PRIORITIES, r.line, p);
@@ -182,15 +231,25 @@ fn check_rows(rows: &[Row], p: &mut Vec<Problem>) {
         allowed("the milestone", &r.milestone, &MILESTONES, r.line, p);
         allowed("the category", &r.category, &CATEGORIES, r.line, p);
         allowed("the status", &r.status, &STATUSES, r.line, p);
-        if RECORD_FILES.contains(&r.file.as_str()) || r.file.contains('/') || !r.file.ends_with(".md") {
+        if RECORD_FILES.contains(&r.file.as_str())
+            || r.file.contains('/')
+            || !r.file.ends_with(".md")
+        {
             p.push(Problem::new(
                 INDEX,
                 r.line,
-                format!("{} links `{}`, which is not an area file of TODO/", r.id, r.file),
+                format!(
+                    "{} links `{}`, which is not an area file of TODO/",
+                    r.id, r.file
+                ),
             ));
         }
         if r.title.is_empty() {
-            p.push(Problem::new(INDEX, r.line, format!("{} has no title", r.id)));
+            p.push(Problem::new(
+                INDEX,
+                r.line,
+                format!("{} has no title", r.id),
+            ));
         }
     }
 }
@@ -204,13 +263,20 @@ fn check_agreement(rows: &[Row], entries: &[Entry], p: &mut Vec<Problem>) {
             p.push(Problem::new(
                 &format!("TODO/{}", e.file),
                 e.line,
-                format!("{} is also an entry in TODO/{}:{}", e.id, first.file, first.line),
+                format!(
+                    "{} is also an entry in TODO/{}:{}",
+                    e.id, first.file, first.line
+                ),
             ));
         }
     }
     for r in rows {
         let Some(e) = by_id.get(r.id.as_str()) else {
-            p.push(Problem::new(INDEX, r.line, format!("{} has a row and no entry in TODO/{}", r.id, r.file)));
+            p.push(Problem::new(
+                INDEX,
+                r.line,
+                format!("{} has a row and no entry in TODO/{}", r.id, r.file),
+            ));
             continue;
         };
         let at = format!("TODO/{}", e.file);
@@ -218,11 +284,21 @@ fn check_agreement(rows: &[Row], entries: &[Entry], p: &mut Vec<Problem>) {
             p.push(Problem::new(
                 &at,
                 e.line,
-                format!("{} is in TODO/{}, but its row links TODO/{}", r.id, e.file, r.file),
+                format!(
+                    "{} is in TODO/{}, but its row links TODO/{}",
+                    r.id, e.file, r.file
+                ),
             ));
         }
         if e.title != r.title {
-            p.push(Problem::new(&at, e.line, format!("{}: the title differs from the row's: \"{}\"", r.id, r.title)));
+            p.push(Problem::new(
+                &at,
+                e.line,
+                format!(
+                    "{}: the title differs from the row's: \"{}\"",
+                    r.id, r.title
+                ),
+            ));
         }
         for (name, want) in [
             ("Priority", &r.priority),
@@ -236,7 +312,10 @@ fn check_agreement(rows: &[Row], entries: &[Entry], p: &mut Vec<Problem>) {
                     p.push(Problem::new(
                         &at,
                         e.line,
-                        format!("{}: the entry says {name} {have}, the index says {want}", r.id),
+                        format!(
+                            "{}: the entry says {name} {have}, the index says {want}",
+                            r.id
+                        ),
                     ));
                 }
             }
@@ -245,7 +324,11 @@ fn check_agreement(rows: &[Row], entries: &[Entry], p: &mut Vec<Problem>) {
     let with_row: std::collections::HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     for e in entries {
         if !with_row.contains(e.id.as_str()) {
-            p.push(Problem::new(&format!("TODO/{}", e.file), e.line, format!("{} has no row in the index", e.id)));
+            p.push(Problem::new(
+                &format!("TODO/{}", e.file),
+                e.line,
+                format!("{} has no row in the index", e.id),
+            ));
         }
     }
 }
@@ -256,19 +339,37 @@ fn check_proves(root: &Path, entries: &[Entry], p: &mut Vec<Problem>) {
     let packages = crate::prove::Packages::of(root);
     for e in entries.iter().filter(|e| e.field("Status") == Some("done")) {
         for (line, what) in prove_gaps(root, &packages, e) {
-            p.push(Problem::new(&format!("TODO/{}", e.file), line, format!("{}: {what}", e.id)));
+            p.push(Problem::new(
+                &format!("TODO/{}", e.file),
+                line,
+                format!("{}: {what}", e.id),
+            ));
         }
     }
 }
 
 /// What the Prove of `e` names and the tree does not hold, each with its
 /// line and its words.
-pub fn prove_gaps(root: &Path, packages: &crate::prove::Packages, e: &Entry) -> Vec<(usize, String)> {
-    let Some(prove) = e.section("Prove") else { return Vec::new() };
-    let correction = e.section("Correction").map(|c| c.body.as_str()).unwrap_or("");
+pub fn prove_gaps(
+    root: &Path,
+    packages: &crate::prove::Packages,
+    e: &Entry,
+) -> Vec<(usize, String)> {
+    let Some(prove) = e.section("Prove") else {
+        return Vec::new();
+    };
+    let correction = e
+        .section("Correction")
+        .map(|c| c.body.as_str())
+        .unwrap_or("");
     crate::prove::missing(root, packages, &prove.body, prove.line, correction)
         .into_iter()
-        .map(|(line, what)| (line, format!("its Prove names {what}; a target that moved is named in `## Correction`")))
+        .map(|(line, what)| {
+            (
+                line,
+                format!("its Prove names {what}; a target that moved is named in `## Correction`"),
+            )
+        })
         .collect()
 }
 
@@ -278,9 +379,17 @@ fn check_entry(e: &Entry, p: &mut Vec<Problem>) {
     let at = format!("TODO/{}", e.file);
     for name in FIELDS {
         match e.fields.iter().filter(|f| f.name == name).count() {
-            0 => p.push(Problem::new(&at, e.line, format!("{}: the field {name} is missing", e.id))),
+            0 => p.push(Problem::new(
+                &at,
+                e.line,
+                format!("{}: the field {name} is missing", e.id),
+            )),
             1 => {}
-            _ => p.push(Problem::new(&at, e.line, format!("{}: the field {name} is given more than once", e.id))),
+            _ => p.push(Problem::new(
+                &at,
+                e.line,
+                format!("{}: the field {name} is given more than once", e.id),
+            )),
         }
     }
     for f in &e.fields {
@@ -296,53 +405,97 @@ fn check_entry(e: &Entry, p: &mut Vec<Problem>) {
             p.push(Problem::new(
                 &at,
                 f.line,
-                format!("{}: {} `{}` is not one of {}", e.id, f.name, f.value, set.join(", ")),
+                format!(
+                    "{}: {} `{}` is not one of {}",
+                    e.id,
+                    f.name,
+                    f.value,
+                    set.join(", ")
+                ),
             ));
         }
     }
     if e.field("Source").is_some_and(str::is_empty) {
-        p.push(Problem::new(&at, e.line, format!("{}: the source is empty", e.id)));
+        p.push(Problem::new(
+            &at,
+            e.line,
+            format!("{}: the source is empty", e.id),
+        ));
     }
     let mut last = None;
     for s in &e.sections {
         let Some(pos) = SECTIONS.iter().position(|n| *n == s.name) else {
-            p.push(Problem::new(&at, s.line, format!("{}: `## {}` is not a section of an entry", e.id, s.name)));
+            p.push(Problem::new(
+                &at,
+                s.line,
+                format!("{}: `## {}` is not a section of an entry", e.id, s.name),
+            ));
             continue;
         };
         if last.is_some_and(|l| pos <= l) {
-            p.push(Problem::new(&at, s.line, format!("{}: `## {}` is out of order or repeated", e.id, s.name)));
+            p.push(Problem::new(
+                &at,
+                s.line,
+                format!("{}: `## {}` is out of order or repeated", e.id, s.name),
+            ));
         }
         last = Some(pos);
         if s.body.trim().is_empty() {
-            p.push(Problem::new(&at, s.line, format!("{}: `## {}` is empty", e.id, s.name)));
+            p.push(Problem::new(
+                &at,
+                s.line,
+                format!("{}: `## {}` is empty", e.id, s.name),
+            ));
         }
     }
     for name in REQUIRED_SECTIONS {
         if e.section(name).is_none() {
-            p.push(Problem::new(&at, e.line, format!("{}: the section `## {name}` is missing", e.id)));
+            p.push(Problem::new(
+                &at,
+                e.line,
+                format!("{}: the section `## {name}` is missing", e.id),
+            ));
         }
     }
     if let Some(prove) = e.section("Prove") {
         if !prove.body.contains('`') {
-            p.push(Problem::new(&at, prove.line, format!("{}: a Prove with no command is a paragraph", e.id)));
+            p.push(Problem::new(
+                &at,
+                prove.line,
+                format!("{}: a Prove with no command is a paragraph", e.id),
+            ));
         }
     }
     let status = e.field("Status").unwrap_or("");
     match (status, e.section("Blocker")) {
-        ("blocked", None) => p.push(Problem::new(&at, e.line, format!("{}: blocked, with no `## Blocker`", e.id))),
-        (s, Some(b)) if s != "blocked" => {
-            p.push(Problem::new(&at, b.line, format!("{}: a `## Blocker` on an entry that is {s}", e.id)))
-        }
+        ("blocked", None) => p.push(Problem::new(
+            &at,
+            e.line,
+            format!("{}: blocked, with no `## Blocker`", e.id),
+        )),
+        (s, Some(b)) if s != "blocked" => p.push(Problem::new(
+            &at,
+            b.line,
+            format!("{}: a `## Blocker` on an entry that is {s}", e.id),
+        )),
         _ => {}
     }
     match (status, e.section("Done")) {
-        ("done", None) => p.push(Problem::new(&at, e.line, format!("{}: done, with no `## Done` evidence", e.id))),
-        ("done" | "partial", Some(d)) if !has_date(&d.body) => {
-            p.push(Problem::new(&at, d.line, format!("{}: `## Done` gives no date (YYYY-MM-DD)", e.id)))
-        }
-        ("open" | "blocked", Some(d)) => {
-            p.push(Problem::new(&at, d.line, format!("{}: a `## Done` on an entry that is {status}", e.id)))
-        }
+        ("done", None) => p.push(Problem::new(
+            &at,
+            e.line,
+            format!("{}: done, with no `## Done` evidence", e.id),
+        )),
+        ("done" | "partial", Some(d)) if !has_date(&d.body) => p.push(Problem::new(
+            &at,
+            d.line,
+            format!("{}: `## Done` gives no date (YYYY-MM-DD)", e.id),
+        )),
+        ("open" | "blocked", Some(d)) => p.push(Problem::new(
+            &at,
+            d.line,
+            format!("{}: a `## Done` on an entry that is {status}", e.id),
+        )),
         _ => {}
     }
 }
@@ -352,7 +505,15 @@ pub fn has_date(text: &str) -> bool {
     let b = text.as_bytes();
     (0..b.len().saturating_sub(9)).any(|i| {
         let d = |k: usize| b[i + k].is_ascii_digit();
-        d(0) && d(1) && d(2) && d(3) && b[i + 4] == b'-' && d(5) && d(6) && b[i + 7] == b'-' && d(8) && d(9)
+        d(0) && d(1)
+            && d(2)
+            && d(3)
+            && b[i + 4] == b'-'
+            && d(5)
+            && d(6)
+            && b[i + 7] == b'-'
+            && d(8)
+            && d(9)
     })
 }
 
@@ -363,36 +524,63 @@ fn check_counts(r: &Record, p: &mut Vec<Problem>) {
         Some((line, total, c)) if total != all.total() || c != all => p.push(Problem::new(
             INDEX,
             line,
-            format!("the counts line says {total} entries ({c:?}); the rows give {}", all.phrase()),
+            format!(
+                "the counts line says {total} entries ({c:?}); the rows give {}",
+                all.phrase()
+            ),
         )),
         Some(_) => {}
-        None => p.push(Problem::new(INDEX, 0, format!("no counts line; it reads: {}", all.phrase()))),
+        None => p.push(Problem::new(
+            INDEX,
+            0,
+            format!("no counts line; it reads: {}", all.phrase()),
+        )),
     }
     for label in PRIORITIES.iter().copied().chain(["All"]) {
         let want = Counts::of(&r.rows, (label != "All").then_some(label));
-        let found = parse::lines_with_fences(&r.index).into_iter().find_map(|(no, line, fenced)| {
-            (!fenced).then(|| parse::counts_row(line)).flatten().filter(|(l, ..)| l == label).map(|x| (no, x))
-        });
+        let found =
+            parse::lines_with_fences(&r.index)
+                .into_iter()
+                .find_map(|(no, line, fenced)| {
+                    (!fenced)
+                        .then(|| parse::counts_row(line))
+                        .flatten()
+                        .filter(|(l, ..)| l == label)
+                        .map(|x| (no, x))
+                });
         match found {
-            Some((no, (_, c, total))) if c != want || total != want.total() => p.push(Problem::new(
-                INDEX,
-                no,
-                format!(
-                    "the {label} row of the counts table disagrees with the rows; it reads: {}",
-                    want.table_row(label)
-                ),
-            )),
+            Some((no, (_, c, total))) if c != want || total != want.total() => {
+                p.push(Problem::new(
+                    INDEX,
+                    no,
+                    format!(
+                        "the {label} row of the counts table disagrees with the rows; it reads: {}",
+                        want.table_row(label)
+                    ),
+                ))
+            }
             Some(_) => {}
-            None => p.push(Problem::new(INDEX, 0, format!("the counts table has no {label} row"))),
+            None => p.push(Problem::new(
+                INDEX,
+                0,
+                format!("the counts table has no {label} row"),
+            )),
         }
     }
     match parse::find_counts(&r.progress) {
         Some((line, total, c)) if total != all.total() || c != all => p.push(Problem::new(
             PROGRESS,
             line,
-            format!("the counts line says {total} entries ({c:?}); the rows give {}", all.phrase()),
+            format!(
+                "the counts line says {total} entries ({c:?}); the rows give {}",
+                all.phrase()
+            ),
         )),
         Some(_) => {}
-        None => p.push(Problem::new(PROGRESS, 0, format!("no counts line; it reads: {}", all.phrase()))),
+        None => p.push(Problem::new(
+            PROGRESS,
+            0,
+            format!("no counts line; it reads: {}", all.phrase()),
+        )),
     }
 }

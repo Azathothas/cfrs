@@ -35,8 +35,11 @@ pub fn line_map(old: &[&str], new: &[&str]) -> Vec<Option<usize>> {
     let mut lcs = vec![0u32; (a.len() + 1) * w];
     for i in (0..a.len()).rev() {
         for j in (0..b.len()).rev() {
-            lcs[i * w + j] =
-                if a[i] == b[j] { lcs[(i + 1) * w + j + 1] + 1 } else { lcs[(i + 1) * w + j].max(lcs[i * w + j + 1]) };
+            lcs[i * w + j] = if a[i] == b[j] {
+                lcs[(i + 1) * w + j + 1] + 1
+            } else {
+                lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+            };
         }
     }
     // Two equal lines can always be matched: some longest subsequence does.
@@ -86,20 +89,32 @@ mod tests {
 
     #[test]
     fn an_unchanged_text_maps_to_itself() {
-        assert_eq!(map("a\nb\nc\n", "a\nb\nc\n"), vec![Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            map("a\nb\nc\n", "a\nb\nc\n"),
+            vec![Some(1), Some(2), Some(3)]
+        );
         assert_eq!(map("", ""), Vec::<Option<usize>>::new());
     }
 
     #[test]
     fn a_line_added_above_moves_each_line_below() {
-        assert_eq!(map("a\nb\nc\n", "new\na\nb\nc\n"), vec![Some(2), Some(3), Some(4)]);
-        assert_eq!(map("a\nb\nc\n", "a\nnew\nnew\nb\nc\n"), vec![Some(1), Some(4), Some(5)]);
+        assert_eq!(
+            map("a\nb\nc\n", "new\na\nb\nc\n"),
+            vec![Some(2), Some(3), Some(4)]
+        );
+        assert_eq!(
+            map("a\nb\nc\n", "a\nnew\nnew\nb\nc\n"),
+            vec![Some(1), Some(4), Some(5)]
+        );
     }
 
     #[test]
     fn a_changed_or_removed_line_has_no_new_number() {
         assert_eq!(map("a\nb\nc\n", "a\nB\nc\n"), vec![Some(1), None, Some(3)]);
-        assert_eq!(map("a\nb\nc\nd\n", "a\nd\n"), vec![Some(1), None, None, Some(2)]);
+        assert_eq!(
+            map("a\nb\nc\nd\n", "a\nd\n"),
+            vec![Some(1), None, None, Some(2)]
+        );
     }
 
     /// New code after a closing line, with a change above it: the old
@@ -108,13 +123,19 @@ mod tests {
     fn an_addition_after_a_closing_line_comes_after_it() {
         let old = "top\nfn a {\nx\n}\n}\n";
         let new = "TOP\nfn a {\nx\n}\nfn b {\ny\n}\n}\n";
-        assert_eq!(map(old, new), vec![None, Some(2), Some(3), Some(4), Some(8)]);
+        assert_eq!(
+            map(old, new),
+            vec![None, Some(2), Some(3), Some(4), Some(8)]
+        );
     }
 
     #[test]
     fn the_middle_is_aligned_around_a_change() {
         let old = "h\nx\n1\n2\n3\ny\nt\n";
         let new = "h\nX\n0\n1\n2\n3\nY\nt\n";
-        assert_eq!(map(old, new), vec![Some(1), None, Some(4), Some(5), Some(6), None, Some(8)]);
+        assert_eq!(
+            map(old, new),
+            vec![Some(1), None, Some(4), Some(5), Some(6), None, Some(8)]
+        );
     }
 }

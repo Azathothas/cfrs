@@ -68,7 +68,9 @@ pub fn git_at(root: &Path, rev: &str, rel: &str) -> Result<Option<String>, Strin
         .arg(root)
         .args(["show", &format!("{rev}:{rel}")])
         .output()
-        .map_err(|e| format!("git cannot run here ({e}); remap needs each file as it is in {rev}"))?;
+        .map_err(|e| {
+            format!("git cannot run here ({e}); remap needs each file as it is in {rev}")
+        })?;
     if out.status.success() {
         return Ok(String::from_utf8(out.stdout).ok());
     }
@@ -84,13 +86,22 @@ pub fn git_at(root: &Path, rev: &str, rel: &str) -> Result<Option<String>, Strin
 /// exist, by `git diff --name-only REV`; `None` when git cannot say (no git,
 /// no repository, no such revision).
 pub fn changed_since(root: &Path, rev: &str) -> Option<Vec<String>> {
-    let out =
-        std::process::Command::new("git").arg("-C").arg(root).args(["diff", "--name-only", rev, "--"]).output().ok()?;
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", rev, "--"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8(out.stdout).ok()?;
-    Some(text.lines().filter(|l| !l.is_empty() && root.join(l).is_file()).map(str::to_string).collect())
+    Some(
+        text.lines()
+            .filter(|l| !l.is_empty() && root.join(l).is_file())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Move the citations of `files` in each document. With `write` false,
@@ -106,16 +117,26 @@ pub fn remap(root: &Path, files: &[String], head: &Head, write: bool) -> Result<
         // cite. It is passed over, so that the other files still move and
         // the check of a commit that changed it still runs.
         let Ok(now) = String::from_utf8(bytes) else {
-            report.notes.push(format!("{rel} is not UTF-8 text: it has no lines to move"));
+            report
+                .notes
+                .push(format!("{rel} is not UTF-8 text: it has no lines to move"));
             continue;
         };
         match head(&rel)? {
-            None => report.notes.push(format!("{rel} has no text in the base: a new file has no old line numbers")),
+            None => report.notes.push(format!(
+                "{rel} has no text in the base: a new file has no old line numbers"
+            )),
             Some(old) => {
                 let old: Vec<&str> = old.lines().collect();
                 let now: Vec<&str> = now.lines().collect();
                 let blank = old.iter().map(|l| l.trim().is_empty()).collect();
-                maps.insert(rel, FileMap { to: line_map(&old, &now), blank });
+                maps.insert(
+                    rel,
+                    FileMap {
+                        to: line_map(&old, &now),
+                        blank,
+                    },
+                );
             }
         }
     }
@@ -124,7 +145,9 @@ pub fn remap(root: &Path, files: &[String], head: &Head, write: bool) -> Result<
         return Ok(report);
     }
     for doc in documents(root) {
-        let Ok(now) = fs::read_to_string(root.join(&doc)) else { continue };
+        let Ok(now) = fs::read_to_string(root.join(&doc)) else {
+            continue;
+        };
         // A bare `:N` needs a full citation earlier in its paragraph, so a
         // document that names no file has nothing to move.
         if !names.iter().any(|f| now.contains(f)) {
@@ -134,7 +157,11 @@ pub fn remap(root: &Path, files: &[String], head: &Head, write: bool) -> Result<
         if let Some(text) = remap_doc(&doc, &now, &old, &names, &maps, &mut report) {
             if write {
                 let crlf = now.contains("\r\n");
-                let mut out = if crlf { text.replace('\n', "\r\n") } else { text };
+                let mut out = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text
+                };
                 if !now.ends_with('\n') && out.ends_with('\n') {
                     out.pop();
                     if crlf {
@@ -176,13 +203,35 @@ fn remap_doc(
         let source = if !mine.iter().any(|c| c.moves) {
             None
         } else {
-            from[i].or_else(|| same_line(i, &from, &old_lines, &old_cites, &key(line, mine), &mut used))
+            from[i].or_else(|| {
+                same_line(
+                    i,
+                    &from,
+                    &old_lines,
+                    &old_cites,
+                    &key(line, mine),
+                    &mut used,
+                )
+            })
         };
         let new_line = match source {
-            Some(o) => rebuild(line, mine, old_lines[o], &old_cites[o], maps, &format!("{doc}:{}", i + 1), report),
+            Some(o) => rebuild(
+                line,
+                mine,
+                old_lines[o],
+                &old_cites[o],
+                maps,
+                &format!("{doc}:{}", i + 1),
+                report,
+            ),
             None => {
                 for c in mine.iter().filter(|c| c.moves) {
-                    report.kept.push(format!("{doc}:{}: {} {}", i + 1, c.path, &line[c.range.clone()]));
+                    report.kept.push(format!(
+                        "{doc}:{}: {} {}",
+                        i + 1,
+                        c.path,
+                        &line[c.range.clone()]
+                    ));
                 }
                 line.to_string()
             }
@@ -207,9 +256,13 @@ fn same_line(
     used: &mut HashSet<usize>,
 ) -> Option<usize> {
     let lo = from[..i].iter().rev().find_map(|o| *o).map_or(0, |o| o + 1);
-    let hi = from[i + 1..].iter().find_map(|o| *o).unwrap_or(old_lines.len());
-    let found = (lo..hi)
-        .find(|&o| !used.contains(&o) && !old_cites[o].is_empty() && key(old_lines[o], &old_cites[o]) == want)?;
+    let hi = from[i + 1..]
+        .iter()
+        .find_map(|o| *o)
+        .unwrap_or(old_lines.len());
+    let found = (lo..hi).find(|&o| {
+        !used.contains(&o) && !old_cites[o].is_empty() && key(old_lines[o], &old_cites[o]) == want
+    })?;
     used.insert(found);
     Some(found)
 }
@@ -257,7 +310,9 @@ fn rebuild(
             Some((a, b)) => {
                 let new = b.map_or_else(|| a.to_string(), |b| format!("{a}-{b}"));
                 if new != now {
-                    report.moved.push(format!("{at}: {} {now} -> {new}", c.path));
+                    report
+                        .moved
+                        .push(format!("{at}: {} {now} -> {new}", c.path));
                 }
                 if changed_inside(h, maps) {
                     report.review.push(format!(
@@ -297,7 +352,9 @@ fn moved_range(c: &Cite, maps: &Maps) -> Option<(usize, Option<usize>)> {
     // blank margins: a blank end could have matched any blank line.
     let text = |n: &usize| !map.blank[n - 1];
     let first = (c.first..=end).find(text).unwrap_or(c.first);
-    let start = map.to[first - 1]?.checked_sub(first - c.first).filter(|n| *n > 0)?;
+    let start = map.to[first - 1]?
+        .checked_sub(first - c.first)
+        .filter(|n| *n > 0)?;
     let last = match c.last {
         Some(l) => {
             let at = (c.first..=l).rev().find(text).unwrap_or(l);
@@ -310,7 +367,9 @@ fn moved_range(c: &Cite, maps: &Maps) -> Option<(usize, Option<usize>)> {
 
 /// Whether the change removed or changed a line inside a cited range.
 fn changed_inside(c: &Cite, maps: &Maps) -> bool {
-    let Some(map) = maps.get(&c.path) else { return false };
+    let Some(map) = maps.get(&c.path) else {
+        return false;
+    };
     let end = c.last.unwrap_or(c.first).min(map.to.len());
     (c.first.max(1)..=end).any(|n| map.to[n - 1].is_none())
 }
@@ -332,17 +391,33 @@ fn cites(text: &str, names: &HashSet<&str>) -> Vec<Vec<Cite>> {
             if let Some(nums) = span.strip_prefix(':') {
                 if let (Some(path), Some((first, last))) = (context.as_ref(), numbers(nums)) {
                     let moves = names.contains(path.as_str());
-                    here.push(Cite { range: start + 1..start + span.len(), path: path.clone(), first, last, moves });
+                    here.push(Cite {
+                        range: start + 1..start + span.len(),
+                        path: path.clone(),
+                        first,
+                        last,
+                        moves,
+                    });
                 }
                 continue;
             }
-            let Some((path, _)) = citation(span) else { continue };
+            let Some((path, _)) = citation(span) else {
+                continue;
+            };
             context = Some(path.to_string());
-            let Some((_, nums)) = span.split_once(':') else { continue };
+            let Some((_, nums)) = span.split_once(':') else {
+                continue;
+            };
             if let Some((first, last)) = numbers(nums) {
                 let end = start + span.len();
                 let moves = names.contains(path);
-                here.push(Cite { range: end - nums.len()..end, path: path.to_string(), first, last, moves });
+                here.push(Cite {
+                    range: end - nums.len()..end,
+                    path: path.to_string(),
+                    first,
+                    last,
+                    moves,
+                });
             }
         }
         out.push(here);
@@ -366,7 +441,9 @@ fn spans(line: &str) -> Vec<(usize, &str)> {
     let mut at = 0;
     while let Some(open) = line[at..].find('`') {
         let start = at + open + 1;
-        let Some(close) = line[start..].find('`') else { break };
+        let Some(close) = line[start..].find('`') else {
+            break;
+        };
         out.push((start, &line[start..start + close]));
         at = start + close + 1;
     }

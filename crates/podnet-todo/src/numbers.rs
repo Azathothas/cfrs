@@ -19,12 +19,22 @@ use crate::refs::citation;
 pub fn check(root: &Path, rel: &str, text: &str, p: &mut Vec<Problem>) {
     for para in paragraphs(text) {
         let (joined, starts) = join(&para);
-        let line_at = |at: usize| starts.iter().rev().find(|(o, _)| *o <= at).map_or(0, |(_, no)| *no);
+        let line_at = |at: usize| {
+            starts
+                .iter()
+                .rev()
+                .find(|(o, _)| *o <= at)
+                .map_or(0, |(_, no)| *no)
+        };
         let spans = spans_of(&para, &starts);
         bare(root, rel, &spans, &line_at, p);
         for (range, words) in plain(&joined, &spans) {
-            let cited = spans.iter().any(|s| s.range.end <= range.start && s.cites.is_some());
-            let read = spans.iter().any(|s| s.range.end <= range.start && s.commit_read);
+            let cited = spans
+                .iter()
+                .any(|s| s.range.end <= range.start && s.cites.is_some());
+            let read = spans
+                .iter()
+                .any(|s| s.range.end <= range.start && s.commit_read);
             if cited && !read && !at_commit(&joined[range.end..]) {
                 p.push(Problem::new(
                     rel,
@@ -116,7 +126,11 @@ fn spans_of(para: &[(usize, &str)], starts: &[(usize, usize)]) -> Vec<Span> {
             }
             // A run that nothing closes is text.
             let Some((s, e)) = close else { continue };
-            let inner = if run == 1 { &line[i..s] } else { line[i..s].trim_matches(' ') };
+            let inner = if run == 1 {
+                &line[i..s]
+            } else {
+                line[i..s].trim_matches(' ')
+            };
             let before = line[..open].trim_end();
             let after_at = before.ends_with(" at") || before == "at" || before.ends_with("(at");
             out.push(Span {
@@ -134,14 +148,22 @@ fn spans_of(para: &[(usize, &str)], starts: &[(usize, usize)]) -> Vec<Span> {
 /// Each bare `:N` names a line of the file that the last citation before it
 /// in its paragraph names. A bare `:N` that follows no citation names no
 /// file, as for `remap`, and is not read.
-fn bare(root: &Path, rel: &str, spans: &[Span], line_at: &dyn Fn(usize) -> usize, p: &mut Vec<Problem>) {
+fn bare(
+    root: &Path,
+    rel: &str,
+    spans: &[Span],
+    line_at: &dyn Fn(usize) -> usize,
+    p: &mut Vec<Problem>,
+) {
     let mut context: Option<&str> = None;
     for s in spans {
         if let Some(path) = &s.cites {
             context = Some(path.as_str());
             continue;
         }
-        let (Some(path), Some((first, last))) = (context, s.inner.strip_prefix(':').and_then(numbers)) else {
+        let (Some(path), Some((first, last))) =
+            (context, s.inner.strip_prefix(':').and_then(numbers))
+        else {
             continue;
         };
         let at = line_at(s.range.start);
@@ -149,14 +171,23 @@ fn bare(root: &Path, rel: &str, spans: &[Span], line_at: &dyn Fn(usize) -> usize
             p.push(Problem::new(
                 rel,
                 at,
-                format!("`{}`: a range runs from line 1 or later to a line at or after its start", s.inner),
+                format!(
+                    "`{}`: a range runs from line 1 or later to a line at or after its start",
+                    s.inner
+                ),
             ));
             continue;
         }
-        let Ok(cited) = fs::read_to_string(root.join(path)) else { continue };
+        let Ok(cited) = fs::read_to_string(root.join(path)) else {
+            continue;
+        };
         let count = cited.lines().count();
         if last > count {
-            p.push(Problem::new(rel, at, format!("`{}` after `{path}`: {path} has {count} lines", s.inner)));
+            p.push(Problem::new(
+                rel,
+                at,
+                format!("`{}` after `{path}`: {path} has {count} lines", s.inner),
+            ));
         }
     }
 }
@@ -176,13 +207,19 @@ fn numbers(s: &str) -> Option<(usize, usize)> {
 
 /// A commit as the record writes one: 7 to 40 lower-case hex digits.
 fn is_commit(s: &str) -> bool {
-    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    (7..=40).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The text after a number begins "at `COMMIT`", on the same line or the next.
 fn at_commit(rest: &str) -> bool {
-    let Some(r) = rest.trim_start().strip_prefix("at") else { return false };
-    let Some(r) = r.trim_start().strip_prefix('`') else { return false };
+    let Some(r) = rest.trim_start().strip_prefix("at") else {
+        return false;
+    };
+    let Some(r) = r.trim_start().strip_prefix('`') else {
+        return false;
+    };
     r.split_once('`').is_some_and(|(inner, _)| is_commit(inner))
 }
 
@@ -214,7 +251,9 @@ fn plain(joined: &str, spans: &[Span]) -> Vec<(Range<usize>, String)> {
         }
         let word_start = i == 0 || !b[i - 1].is_ascii_alphanumeric();
         let rest = &joined[i..];
-        let head = ["line ", "lines ", "Line ", "Lines "].iter().find(|w| rest.starts_with(**w));
+        let head = ["line ", "lines ", "Line ", "Lines "]
+            .iter()
+            .find(|w| rest.starts_with(**w));
         let (true, true, Some(head)) = (text[i], word_start, head) else {
             i += 1;
             continue;
@@ -253,7 +292,9 @@ fn number_list(s: &str, at: usize, text: &[bool]) -> Option<usize> {
     };
     let mut end = number(at)?;
     loop {
-        let more = [", and ", ", or ", " and ", " or ", ", "].iter().find(|sep| s[end..].starts_with(**sep));
+        let more = [", and ", ", or ", " and ", " or ", ", "]
+            .iter()
+            .find(|sep| s[end..].starts_with(**sep));
         let Some(sep) = more else { break };
         match number(end + sep.len()) {
             Some(next) => end = next,
@@ -262,7 +303,9 @@ fn number_list(s: &str, at: usize, text: &[bool]) -> Option<usize> {
     }
     // A number that runs into a word or a decimal point is not a line.
     let next = b.get(end).copied().unwrap_or(b' ');
-    (!next.is_ascii_alphanumeric() && !(next == b'.' && b.get(end + 1).is_some_and(u8::is_ascii_digit))).then_some(end)
+    (!next.is_ascii_alphanumeric()
+        && !(next == b'.' && b.get(end + 1).is_some_and(u8::is_ascii_digit)))
+    .then_some(end)
 }
 
 #[cfg(test)]
@@ -279,7 +322,10 @@ mod tests {
     fn a_plain_number_after_a_citation_is_found() {
         let p = found("Read `crates/podssh-todo/src/lib.rs:3`, and lines 5 and 7-8.\n");
         assert_eq!(p.len(), 1, "{p:?}");
-        assert!(p[0].contains("\"lines 5 and 7-8\" follows a citation"), "{p:?}");
+        assert!(
+            p[0].contains("\"lines 5 and 7-8\" follows a citation"),
+            "{p:?}"
+        );
         // A character of more than one byte before it.
         let p = found("Read `crates/podssh-todo/src/lib.rs:3` — and line 5.\n");
         assert_eq!(p.len(), 1, "{p:?}");

@@ -30,7 +30,9 @@ impl Packages {
         }
         let mut packages = Packages::default();
         for manifest in manifests {
-            let Ok(text) = std::fs::read_to_string(&manifest) else { continue };
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
             let (name, tests) = read_manifest(&text);
             if let (Some(name), Some(dir)) = (name, manifest.parent()) {
                 packages.by_name.insert(name, (dir.to_path_buf(), tests));
@@ -40,7 +42,9 @@ impl Packages {
     }
 
     fn has_test(&self, package: &str, test: &str) -> bool {
-        let Some((dir, named)) = self.by_name.get(package) else { return false };
+        let Some((dir, named)) = self.by_name.get(package) else {
+            return false;
+        };
         named.iter().any(|n| n == test)
             || dir.join("tests").join(format!("{test}.rs")).is_file()
             || dir.join("tests").join(test).join("main.rs").is_file()
@@ -48,8 +52,14 @@ impl Packages {
 }
 
 fn children(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<PathBuf> = read.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
     out.sort();
     out
 }
@@ -63,7 +73,11 @@ fn read_manifest(text: &str) -> (Option<String>, Vec<String>) {
             section = line.to_string();
             continue;
         }
-        let Some(value) = line.strip_prefix("name").map(str::trim_start).and_then(|r| r.strip_prefix('=')) else {
+        let Some(value) = line
+            .strip_prefix("name")
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix('='))
+        else {
             continue;
         };
         let value = value.trim().trim_matches('"').to_string();
@@ -81,8 +95,10 @@ fn read_manifest(text: &str) -> (Option<String>, Vec<String>) {
 fn targets(text: &str) -> Vec<(usize, Vec<String>, Vec<String>)> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
-        let words: Vec<&str> =
-            line.split(|c: char| c.is_whitespace() || c == '`' || c == ';').filter(|w| !w.is_empty()).collect();
+        let words: Vec<&str> = line
+            .split(|c: char| c.is_whitespace() || c == '`' || c == ';')
+            .filter(|w| !w.is_empty())
+            .collect();
         let mut at = 0;
         while let Some(start) = (at..words.len()).find(|&k| words[k] == "cargo") {
             let mut k = start + 1;
@@ -95,13 +111,21 @@ fn targets(text: &str) -> Vec<(usize, Vec<String>, Vec<String>)> {
             }
             let (mut packages, mut tests) = (Vec::new(), Vec::new());
             k += 1;
-            while k < words.len() && words[k] != "--" && words[k] != "cargo" && words[k] != "&&" && words[k] != "||" {
+            while k < words.len()
+                && words[k] != "--"
+                && words[k] != "cargo"
+                && words[k] != "&&"
+                && words[k] != "||"
+            {
                 let word = words[k];
                 match word {
                     "-p" | "--package" => packages.extend(words.get(k + 1).map(|w| w.to_string())),
                     "--test" => tests.extend(words.get(k + 1).map(|w| w.to_string())),
                     _ => {
-                        if let Some(v) = word.strip_prefix("--package=").or_else(|| word.strip_prefix("-p")) {
+                        if let Some(v) = word
+                            .strip_prefix("--package=")
+                            .or_else(|| word.strip_prefix("-p"))
+                        {
                             if !v.is_empty() {
                                 packages.push(v.to_string());
                             }
@@ -127,10 +151,13 @@ fn scripts(text: &str) -> Vec<(usize, String)> {
         let mut rest = line;
         while let Some(at) = rest.find("scripts/") {
             let tail = &rest[at..];
-            let len = tail.find(|c: char| !(c.is_ascii_alphanumeric() || "_./-".contains(c))).unwrap_or(tail.len());
+            let len = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "_./-".contains(c)))
+                .unwrap_or(tail.len());
             let path = tail[..len].trim_end_matches(['.', '/']);
             // A path of another tree (`.tmp/x/scripts/...`) is not this one's.
-            let ours = at == 0 || !rest[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || "_./-".contains(c));
+            let ours = at == 0
+                || !rest[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || "_./-".contains(c));
             if ours && path.len() > "scripts/".len() {
                 out.push((i, path.to_string()));
             }
@@ -143,12 +170,27 @@ fn scripts(text: &str) -> Vec<(usize, String)> {
 /// What of `prove` (a section's body, at `line`) does not exist, each with
 /// its line: a package, a test target or a script; none that `correction`
 /// names.
-pub fn missing(root: &Path, packages: &Packages, prove: &str, line: usize, correction: &str) -> Vec<(usize, String)> {
+pub fn missing(
+    root: &Path,
+    packages: &Packages,
+    prove: &str,
+    line: usize,
+    correction: &str,
+) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (i, named, tests) in targets(prove) {
-        let known: Vec<&String> = named.iter().filter(|p| packages.by_name.contains_key(*p)).collect();
-        for package in named.iter().filter(|p| !packages.by_name.contains_key(*p) && !correction.contains(p.as_str())) {
-            out.push((line + 1 + i, format!("the package {package}, which the tree does not hold")));
+        let known: Vec<&String> = named
+            .iter()
+            .filter(|p| packages.by_name.contains_key(*p))
+            .collect();
+        for package in named
+            .iter()
+            .filter(|p| !packages.by_name.contains_key(*p) && !correction.contains(p.as_str()))
+        {
+            out.push((
+                line + 1 + i,
+                format!("the package {package}, which the tree does not hold"),
+            ));
         }
         for test in tests.iter().filter(|t| !correction.contains(t.as_str())) {
             let found = if known.is_empty() && named.is_empty() {
@@ -157,7 +199,10 @@ pub fn missing(root: &Path, packages: &Packages, prove: &str, line: usize, corre
                 known.iter().any(|p| packages.has_test(p, test))
             };
             if !found && !(known.is_empty() && !named.is_empty()) {
-                out.push((line + 1 + i, format!("the test target {test}, which no package of its command has")));
+                out.push((
+                    line + 1 + i,
+                    format!("the test target {test}, which no package of its command has"),
+                ));
             }
         }
     }
@@ -184,8 +229,12 @@ mod tests {
 
     #[test]
     fn a_script_s_path_is_read_and_another_tree_s_is_not() {
-        let found = scripts("sh scripts/dev.sh check, then `scripts/plant.sh`; .tmp/x/scripts/y.sh");
-        assert_eq!(found, [(0, "scripts/dev.sh".into()), (0, "scripts/plant.sh".into())]);
+        let found =
+            scripts("sh scripts/dev.sh check, then `scripts/plant.sh`; .tmp/x/scripts/y.sh");
+        assert_eq!(
+            found,
+            [(0, "scripts/dev.sh".into()), (0, "scripts/plant.sh".into())]
+        );
     }
 
     #[test]

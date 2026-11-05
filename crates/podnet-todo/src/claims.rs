@@ -29,7 +29,9 @@ fn files(root: &Path) -> Vec<String> {
 /// row of a table.
 fn starts_unit(line: &str) -> bool {
     let t = line.trim_start();
-    let numbered = t.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let numbered = t
+        .split_once(". ")
+        .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     t.starts_with('#')
         || t.starts_with("- ")
         || t.starts_with("* ")
@@ -70,7 +72,13 @@ pub fn units(text: &str) -> Vec<(usize, Vec<&str>)> {
 fn prose(line: &str) -> String {
     line.split('`')
         .enumerate()
-        .map(|(i, part)| if i % 2 == 1 { " ".repeat(part.len()) } else { part.to_string() })
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                " ".repeat(part.len())
+            } else {
+                part.to_string()
+            }
+        })
         .collect()
 }
 
@@ -98,12 +106,21 @@ pub fn dated(text: &str) -> bool {
     let b = text.as_bytes();
     let date = (0..b.len().saturating_sub(9)).any(|i| {
         let w = &b[i..i + 10];
-        let shape = w.iter().enumerate().all(|(k, c)| if k == 4 || k == 7 { *c == b'-' } else { c.is_ascii_digit() });
+        let shape = w.iter().enumerate().all(|(k, c)| {
+            if k == 4 || k == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
         let edge = |j: usize| j >= b.len() || !b[j].is_ascii_alphanumeric();
         shape && (i == 0 || edge(i - 1)) && edge(i + 10)
     });
     let commit = text.split('`').skip(1).step_by(2).any(|span| {
-        (7..=40).contains(&span.len()) && span.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        (7..=40).contains(&span.len())
+            && span
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
     });
     date || commit
 }
@@ -117,7 +134,8 @@ fn statuses(line: &str) -> Vec<(String, &'static str)> {
             let rest = &line[at + pos + id.len()..];
             if let Some(after) = rest.strip_prefix(", ") {
                 if let Some(status) = STATUSES.iter().find(|s| {
-                    after.starts_with(**s) && !after[s.len()..].starts_with(|c: char| c.is_ascii_alphanumeric())
+                    after.starts_with(**s)
+                        && !after[s.len()..].starts_with(|c: char| c.is_ascii_alphanumeric())
                 }) {
                     out.push((id.clone(), *status));
                 }
@@ -134,12 +152,17 @@ pub fn check_text(rel: &str, text: &str, status: &HashMap<&str, &str>, p: &mut V
         let joined = lines.join("\n");
         let reading = dated(&joined);
         let ids: Vec<String> = ids_in(&joined).into_iter().map(|(id, _)| id).collect();
-        let pending = ids.iter().any(|id| status.get(id.as_str()).is_some_and(|s| *s != "done"));
+        let pending = ids
+            .iter()
+            .any(|id| status.get(id.as_str()).is_some_and(|s| *s != "done"));
         for (k, line) in lines.iter().enumerate() {
             let at = first + k;
             if has_word(line, "yet") && !reading {
                 let beside: Vec<String> = ids_in(line).into_iter().map(|(id, _)| id).collect();
-                let done: Vec<&String> = beside.iter().filter(|id| status.get(id.as_str()) == Some(&"done")).collect();
+                let done: Vec<&String> = beside
+                    .iter()
+                    .filter(|id| status.get(id.as_str()) == Some(&"done"))
+                    .collect();
                 if !beside.is_empty() && done.len() == beside.len() {
                     let named: Vec<&str> = done.iter().map(|id| id.as_str()).collect();
                     p.push(Problem::new(
@@ -190,7 +213,8 @@ mod tests {
     use super::*;
 
     fn found(text: &str) -> Vec<String> {
-        let status: HashMap<&str, &str> = [("T-001", "open"), ("T-002", "done"), ("T-003", "partial")].into();
+        let status: HashMap<&str, &str> =
+            [("T-001", "open"), ("T-002", "done"), ("T-003", "partial")].into();
         let mut p = Vec::new();
         check_text("docs/x.md", text, &status, &mut p);
         p.iter().map(|p| p.to_string()).collect()
@@ -200,7 +224,10 @@ mod tests {
     fn a_yet_needs_an_entry_that_is_not_done_or_a_date() {
         assert_eq!(found("It does not exist yet.\n").len(), 1);
         assert!(found("It does not exist yet (T-001).\n").is_empty());
-        assert!(found("It is not built yet;\nT-003 builds it.\n").is_empty(), "the entry may be on another line");
+        assert!(
+            found("It is not built yet;\nT-003 builds it.\n").is_empty(),
+            "the entry may be on another line"
+        );
         assert!(found("On 2026-10-10 it was not built yet.\n").is_empty());
         assert!(found("At `8554930` it was not built yet.\n").is_empty());
     }
@@ -208,21 +235,33 @@ mod tests {
     #[test]
     fn a_done_entry_beside_a_yet_is_named() {
         let said = found("It does not exist yet (T-002).\n");
-        assert!(said.len() == 1 && said[0].contains("T-002, done"), "{said:?}");
+        assert!(
+            said.len() == 1 && said[0].contains("T-002, done"),
+            "{said:?}"
+        );
     }
 
     #[test]
     fn each_item_of_a_list_and_each_row_is_its_own_unit() {
         // The id of the next item covers no claim of this one.
-        assert_eq!(found("- It does not exist yet.\n- T-001 is another.\n").len(), 1);
+        assert_eq!(
+            found("- It does not exist yet.\n- T-001 is another.\n").len(),
+            1
+        );
         assert_eq!(found("| a | not yet |\n| b | T-001 |\n").len(), 1);
-        assert!(found("- It does not exist yet,\n  and T-001 builds it.\n").is_empty(), "a continued item");
+        assert!(
+            found("- It does not exist yet,\n  and T-001 builds it.\n").is_empty(),
+            "a continued item"
+        );
     }
 
     #[test]
     fn a_fenced_block_is_no_claim_and_yet_is_a_word() {
         assert!(found("```\nnot yet\n```\n").is_empty());
-        assert!(found("It prints `(not implemented yet)`.\n").is_empty(), "a span quotes output");
+        assert!(
+            found("It prints `(not implemented yet)`.\n").is_empty(),
+            "a span quotes output"
+        );
         assert!(found("The yeti and the eyetest.\n").is_empty());
         assert_eq!(found("Yet it is not built.\n").len(), 1);
     }
@@ -230,10 +269,16 @@ mod tests {
     #[test]
     fn a_status_beside_an_id_agrees_with_the_index_unless_it_is_a_reading() {
         let said = found("Over IRC too (T-002, partial).\n");
-        assert!(said.len() == 1 && said[0].contains("T-002, partial: the index says done"), "{said:?}");
+        assert!(
+            said.len() == 1 && said[0].contains("T-002, partial: the index says done"),
+            "{said:?}"
+        );
         assert!(found("Over IRC too (T-003, partial).\n").is_empty());
         assert!(found("On 2026-10-10, T-002, partial, carried it.\n").is_empty());
-        assert!(found("T-002, partially so.\n").is_empty(), "partially is no status");
+        assert!(
+            found("T-002, partially so.\n").is_empty(),
+            "partially is no status"
+        );
     }
 
     #[test]

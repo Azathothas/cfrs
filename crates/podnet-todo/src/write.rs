@@ -12,8 +12,14 @@ use crate::parse;
 /// Write a text back with the line endings that the file had.
 fn write_like(root: &Path, rel: &str, text: &str) -> Result<(), String> {
     let path = root.join(rel);
-    let crlf = fs::read(&path).map(|b| b.windows(2).any(|w| w == b"\r\n")).unwrap_or(false);
-    let out = if crlf { text.replace('\n', "\r\n") } else { text.to_string() };
+    let crlf = fs::read(&path)
+        .map(|b| b.windows(2).any(|w| w == b"\r\n"))
+        .unwrap_or(false);
+    let out = if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text.to_string()
+    };
     fs::write(&path, out).map_err(|e| format!("{rel}: {e}"))
 }
 
@@ -50,7 +56,10 @@ pub fn recount(index: &str, progress: &str, rows: &[Row]) -> (String, String) {
         let mut done = false;
         let mut out = String::with_capacity(text.len());
         for (_, line, fenced) in parse::lines_with_fences(text) {
-            match (!fenced && !done).then(|| parse::counts_phrase(line)).flatten() {
+            match (!fenced && !done)
+                .then(|| parse::counts_phrase(line))
+                .flatten()
+            {
                 Some((_, _, range)) => {
                     out.push_str(&line[..range.start]);
                     out.push_str(&all.phrase());
@@ -82,7 +91,10 @@ pub fn recount(index: &str, progress: &str, rows: &[Row]) -> (String, String) {
 /// blocker: the writer refuses a status that the entry cannot support.
 pub fn set_status(root: &Path, id: &str, status: &str) -> Result<(), String> {
     if !STATUSES.contains(&status) {
-        return Err(format!("`{status}` is not a status; use one of {}", STATUSES.join(", ")));
+        return Err(format!(
+            "`{status}` is not a status; use one of {}",
+            STATUSES.join(", ")
+        ));
     }
     let index = read(root, INDEX).ok_or("TODO/INDEX.md is missing")?;
     let progress = read(root, PROGRESS).ok_or("TODO/PROGRESS.md is missing")?;
@@ -90,19 +102,34 @@ pub fn set_status(root: &Path, id: &str, status: &str) -> Result<(), String> {
     if let Some(p) = problems.first() {
         return Err(format!("the index must be read first: {p}"));
     }
-    let row = rows.iter_mut().find(|r| r.id == id).ok_or(format!("{id} has no row in the index"))?;
+    let row = rows
+        .iter_mut()
+        .find(|r| r.id == id)
+        .ok_or(format!("{id} has no row in the index"))?;
     let area = format!("TODO/{}", row.file);
     let text = read(root, &area).ok_or(format!("{area} is missing"))?;
     let (entries, _) = parse::entries(&area, &text);
-    let entry = entries.iter().find(|e| e.id == id).ok_or(format!("{id} is not an entry of {area}"))?;
+    let entry = entries
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or(format!("{id} is not an entry of {area}"))?;
     match status {
-        "done" if !entry.section("Done").is_some_and(|d| crate::check::has_date(&d.body)) => {
-            return Err(format!("{id}: write the evidence first, in `## Done` with its date"))
+        "done"
+            if !entry
+                .section("Done")
+                .is_some_and(|d| crate::check::has_date(&d.body)) =>
+        {
+            return Err(format!(
+                "{id}: write the evidence first, in `## Done` with its date"
+            ))
         }
         // A Prove that names what the tree does not hold did not run (T-361).
         "done" => {
             let packages = crate::prove::Packages::of(root);
-            if let Some((_, what)) = crate::check::prove_gaps(root, &packages, entry).into_iter().next() {
+            if let Some((_, what)) = crate::check::prove_gaps(root, &packages, entry)
+                .into_iter()
+                .next()
+            {
                 return Err(format!("{id}: {what}"));
             }
         }
@@ -110,14 +137,22 @@ pub fn set_status(root: &Path, id: &str, status: &str) -> Result<(), String> {
             return Err(format!("{id}: write what blocks it first, in `## Blocker`"))
         }
         s if s != "blocked" && entry.section("Blocker").is_some() => {
-            return Err(format!("{id}: the entry still has `## Blocker`; record how it cleared, then remove it"))
+            return Err(format!(
+                "{id}: the entry still has `## Blocker`; record how it cleared, then remove it"
+            ))
         }
         s if !matches!(s, "done" | "partial") && entry.section("Done").is_some() => {
-            return Err(format!("{id}: the entry has `## Done`; move that text to `## Correction` to open it again"))
+            return Err(format!(
+                "{id}: the entry has `## Done`; move that text to `## Correction` to open it again"
+            ))
         }
         _ => {}
     }
-    let old_line = index.lines().nth(row.line - 1).unwrap_or_default().to_string();
+    let old_line = index
+        .lines()
+        .nth(row.line - 1)
+        .unwrap_or_default()
+        .to_string();
     let mut cells = parse::cells(&old_line);
     cells[5] = status.to_string();
     let new_line = format!("| {} |", cells.join(" | "));
@@ -127,7 +162,13 @@ pub fn set_status(root: &Path, id: &str, status: &str) -> Result<(), String> {
     let index_with_row: String = index
         .lines()
         .enumerate()
-        .map(|(i, l)| if i + 1 == row.line { new_line.clone() } else { l.to_string() })
+        .map(|(i, l)| {
+            if i + 1 == row.line {
+                new_line.clone()
+            } else {
+                l.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
@@ -154,6 +195,10 @@ pub fn counts(root: &Path) -> Result<(), String> {
 pub fn next_id(root: &Path) -> Result<String, String> {
     let index = read(root, INDEX).ok_or("TODO/INDEX.md is missing")?;
     let (rows, _) = parse::rows(INDEX, &index);
-    let max = rows.iter().map(|r| crate::model::id_number(&r.id)).max().unwrap_or(0);
+    let max = rows
+        .iter()
+        .map(|r| crate::model::id_number(&r.id))
+        .max()
+        .unwrap_or(0);
     Ok(format!("T-{:03}", max + 1))
 }

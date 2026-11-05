@@ -153,7 +153,8 @@ impl Tree {
     pub fn new(name: &str) -> Self {
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("podssh-todo-{}-{name}-{call}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("podssh-todo-{}-{name}-{call}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let t = Self { root };
         t.write("TODO/INDEX.md", INDEX);
@@ -164,7 +165,10 @@ impl Tree {
         // The package that the Proves name, with a test target (T-361).
         t.write("crates/x/Cargo.toml", "[package]\nname = \"x\"\n");
         t.write("crates/x/tests/third.rs", "#[test]\nfn third() {}\n");
-        t.write("README.md", "# x\n\nThe work order is in `TODO/PROGRESS.md` (T-001 first).\n");
+        t.write(
+            "README.md",
+            "# x\n\nThe work order is in `TODO/PROGRESS.md` (T-001 first).\n",
+        );
         t
     }
 
@@ -181,12 +185,19 @@ impl Tree {
     /// Replace `old` with `new` in one file; the plant must apply.
     pub fn plant(&self, rel: &str, old: &str, new: &str) {
         let text = self.read(rel);
-        assert!(text.contains(old), "the plant does not apply to {rel}: {old:?}");
+        assert!(
+            text.contains(old),
+            "the plant does not apply to {rel}: {old:?}"
+        );
         self.write(rel, &text.replacen(old, new, 1));
     }
 
     pub fn problems(&self) -> Vec<String> {
-        podssh_todo::check::check(&self.root, None).problems.iter().map(|p| p.to_string()).collect()
+        podssh_todo::check::check(&self.root, None)
+            .problems
+            .iter()
+            .map(|p| p.to_string())
+            .collect()
     }
 
     pub fn path(&self) -> &Path {
