@@ -39,6 +39,22 @@ form of the rulings that apply to each session.
 | 2026-11-04 | `path:` (#269 item 3) | An ingress `path:` is a regular expression, as in cloudflared. Add the `regex` dependency. |
 | 2026-11-04 | Library `StaticServer` (#276 item 1) | `StaticServer` streams the body of a file of any size. The response type gets a body reader. Breaking for the library. |
 | 2026-11-04 | Deferred issues | Keep #89, #140, #149, #151, #161, #222 and #224 open, each with a status comment. Close each other issue when it is fixed. |
+| 2026-11-05 | Name | The project is `podnet`. The GitHub repository `Azathothas/cfrs` becomes `Azathothas/podnet`. The Cloudflare tunnel code is one adapter of podnet. |
+| 2026-11-05 | Rename | A clean break: no compatibility layer (no `CFRS_*` aliases, no move of old state, no `cfrs` alias), no bridge release. The code rename is the last push of the session of 2026-11-05. The first podnet release is `v0.4.0-beta.1`, after the rename of the repository. |
+| 2026-11-05 | Regressions | "No regression" means: no feature or capability of the code is lost. It does not mean compatibility for users of cfrs. A breaking change is allowed when it improves the project. |
+| 2026-11-05 | pod-netns | The crate becomes `podnet-netns`, a library only. The `pod-netns` binary is dropped; `podnet pod` is the only CLI. Its integration tests move to the root crate. |
+| 2026-11-05 | Crates | Eight crates: `podnet` (the CLI, at the root), `podnet-core`, `podnet-netns`, `podnet-vnet`, `podnet-relay`, `podnet-warp`, `podnet-serve`, `podnet-cloudflare`. Order: file splits, then the crate extraction from the bottom up, each commit green. |
+| 2026-11-05 | File size | A source file has at most 800 lines. A script checks it in CI; the files that are larger now are in an allowlist and can only get smaller. |
+| 2026-11-05 | Plan tracking | The TODO model of podssh: the record in `TODO/`, checked by the tool `podnet-todo` (a copy of `podssh-todo`) in CI. GitHub issues are an inbox: each issue becomes entries; the record keeps its text. |
+| 2026-11-05 | Code of podssh | Copy podssh code into podnet and change it as necessary. A shared crate comes later. There is no wire compatibility promise with podssh. Code of podssh is 0BSD and needs no credit. |
+| 2026-11-05 | File transfer | `podnet send` and `podnet receive` speak magic-wormhole (mailbox, SPAKE2, transit). The public mailbox and transit servers are the default. The podnet relay is one more carrier. |
+| 2026-11-05 | Crypto crates | `snow` 0.10, `spake2` 0.4 and `crypto_secretbox` are accepted. `cargo deny` stays green with no ignored advisory. |
+| 2026-11-05 | Tailscale | The `tailscaled` sidecar now, with a headscale harness in CI. An in-process Tailscale (from podssh) comes later, behind a feature that is off by default. |
+| 2026-11-05 | Router | The userspace router first (per flow, no `CAP_NET_ADMIN`): groups, weights, TCP health checks, failover, a kill switch. A kernel mode for root hosts comes later. |
+| 2026-11-05 | Git hosting | `podnet git serve` uses the installed `git` now (`git http-backend`, and upload-pack and receive-pack under a russh SSH server). A native server comes later. |
+| 2026-11-05 | Pod backend | After the fix of the TCP sockets of the seccomp backend and generic UDP in the netns backend, `warp exec` and `warp shell` try the netns backend first, then seccomp. They get `--backend` and a line that names the backend. |
+| 2026-11-05 | Live WARP devices | A live test of the router registers and deletes a WARP device in each run. |
+| 2026-11-05 | crates.io | Publish nothing yet. The packaging stays ready for a publish. |
 
 ## Superseded
 

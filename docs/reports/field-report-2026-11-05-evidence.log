@@ -1,0 +1,38 @@
+2026-11-05T04:59:18.646Z INFO  node     Starting node..
+2026-11-05T04:59:18.646Z INFO  node     Version 1.10.3 (7e1cb406bb935c3de008d2171e8961f57b4336ea)
+2026-11-05T04:59:18.646Z INFO  node     Unlocking node keystore..
+2026-11-05T04:59:18.849Z INFO  node     Node ID is z6Mko2EP9VVBFB558bAL4AzcCAxtQWK8ipLHepnjff3dJnWx
+2026-11-05T04:59:18.849Z INFO  node     Opening policy database..
+2026-11-05T04:59:18.853Z INFO  node     Default seeding policy set to 'block (all)'
+2026-11-05T04:59:18.853Z INFO  node     Initializing service (Main)..
+2026-11-05T04:59:18.980Z INFO  node     Opening node database..
+2026-11-05T04:59:19.021Z INFO  reactor  Entering reactor event loop
+2026-11-05T04:59:19.022Z WARN  wire     Unable to set TCP_NODELAY on socket TcpStream { fd: 14 }: Not supported (os error 95)
+2026-11-05T04:59:19.022Z INFO  node     Binding control socket /tmp/radhome/node/control.sock..
+2026-11-05T04:59:19.022Z WARN  wire     Failed to set TCP_KEEPALIVE on socket SockRef { raw: 14, local_addr: Some(SockAddr { ss_family: 1, len: 2 }), peer_addr: Some(SockAddr { ss_family: 1, len: 2 }) }: Not supported (os error 95)
+2026-11-05T04:59:19.022Z INFO  node     Running node z6Mko2EP9VVBFB558bAL4AzcCAxtQWK8ipLHepnjff3dJnWx in /tmp/radhome..
+2026-11-05T04:59:19.024Z WARN  wire     Unable to set TCP_NODELAY on socket TcpStream { fd: 21 }: Not supported (os error 95)
+2026-11-05T04:59:19.024Z WARN  wire     Failed to set TCP_KEEPALIVE on socket SockRef { raw: 21, local_addr: Some(SockAddr { ss_family: 1, len: 2 }), peer_addr: Some(SockAddr { ss_family: 1, len: 2 }) }: Not supported (os error 95)
+2026-11-05T04:59:19.261Z WARN  wire     Unable to set TCP_NODELAY on socket TcpStream { fd: 22 }: Not supported (os error 95)
+2026-11-05T04:59:19.262Z WARN  wire     Failed to set TCP_KEEPALIVE on socket SockRef { raw: 22, local_addr: Some(SockAddr { ss_family: 1, len: 2 }), peer_addr: Some(SockAddr { ss_family: 1, len: 2 }) }: Not supported (os error 95)
+2026-11-05T04:59:19.263Z INFO  service  Received command QueryState(..)
+2026-11-05T04:59:24.666Z INFO  service  Received command QueryState(..)
+2026-11-05T04:59:24.666Z INFO  service  Received command Connect(z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7, iris.radicle.xyz:8776, ConnectOptions { persistent: true, timeout: 18446744073709551615.999999999s })
+2026-11-05T04:59:27.819Z INFO  node     Termination signal received; shutting down..
+2026-11-05T04:59:27.820Z INFO  reactor::controller Initiating reactor shutdown…
+2026-11-05T04:59:27.820Z INFO  reactor  Shutdown
+2026-11-05T03:32:50.314Z INFO  service  Disconnected from z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7 (connection reset)
+2026-11-05T03:32:50.314Z INFO  service  Disconnected from z6MkwfrBy9mKTfcVELcV4wc6zfN379FPMnAqsxnwt4j2TdQ2 (connection reset)
+2026-11-05T03:32:54.320Z INFO  service  Disconnected from z6MkwfrBy9mKTfcVELcV4wc6zfN379FPMnAqsxnwt4j2TdQ2 (connection reset)
+2026-11-05T03:32:54.321Z INFO  service  Disconnected from z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7 (connection reset)
+2026-11-05T03:32:55.994Z INFO  service  Received command Connect(z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7, iris.radicle.network:8776, ConnectOptions { persistent: false, timeout: 9s })
+2026-11-05T03:33:02.323Z INFO  service  Disconnected from z6MkwfrBy9mKTfcVELcV4wc6zfN379FPMnAqsxnwt4j2TdQ2 (connection reset)
+2026-11-05T03:33:02.324Z INFO  service  Disconnected from z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7 (connection reset)
+2026-11-05T03:33:18.328Z INFO  service  Disconnected from z6MkwfrBy9mKTfcVELcV4wc6zfN379FPMnAqsxnwt4j2TdQ2 (connection reset)
+cfrs: cfrs warp up is not running (no answer on /state/kage/cfrs/run/warp.sock); start it with: cfrs warp up
+---
+state-dir mismatch message (verbatim, when CFRS_STATE_DIR differs from warp up's):
+cfrs: cfrs warp up is not running (no answer on /state/kage/cfrs/run/warp.sock); start it with: cfrs warp up
+---
+cfrs warp up ready line (verbatim):
+{"command":"warp proxy","listen":"tcp://127.0.0.1:40000","listens":["tcp://127.0.0.1:40000","unix:/tmp/cfrs-state/run/warp.sock"],...}
