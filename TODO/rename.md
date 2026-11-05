@@ -545,7 +545,7 @@ The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 20
 **Milestone:** M1
 **Priority:** P2
 **Effort:** S
-**Status:** blocked
+**Status:** open
 
 ## Problem
 
@@ -563,7 +563,8 @@ token of a workflow cannot change the visibility of a package.
 ## Approach
 
 1. After T-023, pull `ghcr.io/podutils/podnet:beta` with no login.
-2. When the pull fails, the owner sets the package to public (the settings of the package).
+2. The package takes the visibility of the public repository (the ruling "ghcr package" of
+   2026-11-05). When the pull fails, ask the owner.
 3. Optional: the owner writes "moved to ghcr.io/podutils/podnet" in the description of the
    package `cfrs`.
 
@@ -573,11 +574,6 @@ token of a workflow cannot change the visibility of a package.
 docker logout ghcr.io
 docker pull ghcr.io/podutils/podnet:beta
 ```
-
-## Blocker
-
-The owner sets the visibility of the package `podnet` on ghcr to public, after the first podnet
-release (T-023). Only the owner can change it.
 
 ## Start condition
 

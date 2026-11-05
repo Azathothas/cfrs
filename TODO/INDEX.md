@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**137 entries: 118 open, 1 partial, 8 blocked, 10 done.**
+**137 entries: 119 open, 1 partial, 7 blocked, 10 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 9 | 1 | 0 | 6 | 16 |
-| P2 | 81 | 0 | 6 | 4 | 91 |
+| P2 | 82 | 0 | 5 | 4 | 91 |
 | P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 118 | 1 | 8 | 10 | 137 |
+| **All** | 119 | 1 | 7 | 10 | 137 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -70,7 +70,7 @@ M8 Overlays, M9 Later.
 | [T-022](rename.md) | P1 | S | M1 | release | open | The version `0.4.0-beta.1`, and its release note with each breaking change |
 | [T-023](rename.md) | P1 | S | M1 | release | open | Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs |
 | [T-024](rename.md) | P2 | S | M1 | chore | open | The update checks pass against a podnet release again |
-| [T-025](rename.md) | P2 | S | M1 | chore | blocked | The image `ghcr.io/podutils/podnet` is public |
+| [T-025](rename.md) | P2 | S | M1 | chore | open | The image `ghcr.io/podutils/podnet` is public |
 | [T-026](split.md) | P2 | M | M2 | chore | open | Move the unit tests of nine files into their own files |
 | [T-027](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options |
 | [T-028](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands |

@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 137 entries: 118 open, 1 partial, 8 blocked, 10 done.
+`TODO/INDEX.md` holds 137 entries: 119 open, 1 partial, 7 blocked, 10 done.
 
 ## State
 
@@ -15,7 +15,7 @@
 ## Work order
 
 1. **Now:** T-137: take each crate of `PodUtils/podcrates` from its release, with the patch of
-   the podcrates session. T-025 waits for the first release.
+   the podcrates session. T-025 waits for the first release (T-023).
 2. **Hold:** each other entry waits until podnet takes the shared crates (T-137). Then write the
    new order here (T-137, step 4). The order below is the order before the hold; T-137 changes
    it.
@@ -27,7 +27,7 @@ one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes firs
 not wait for a larger one.
 
 1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
-2. **M1, the rename:** T-022, T-023 and T-024. T-025 waits for the owner.
+2. **M1, the rename:** T-022, T-023 and T-024, then T-025.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,
    T-079, T-080. A fix in a pod backend lands before T-040 starts, or after it ends.
@@ -76,15 +76,10 @@ Each call is in its entry, and the work goes on with it until the owner rules ot
 | Entry | Action |
 | --- | --- |
 | T-007 | Reserve the crate names `podnet-core`, `podnet-netns`, `podnet-vnet` and `podnet-serve` (0.0.0 placeholders, as `podnet`) |
-| T-025 | Set the ghcr package `podnet` to public, after T-023 |
 
 ## Questions for the owner
 
-- **Q1.** A crate with a git dependency cannot go to crates.io. When podnet takes `pod-tls` by a
-  git tag (T-137), `cargo publish --workspace --dry-run` of `publish.yml` fails for the package
-  `podnet`. Blocks: a green `publish.yml` run on a tag; no tag is planned now. Recommendation:
-  give each `pod-*` dependency `version` beside `git` and `tag` when podcrates publishes its
-  crates to crates.io; until then, the dry run on a tag fails, and the switch stays false.
+None now.
 
 Write each question as `- **Qn.** QUESTION`, with the entries
 that it blocks and a recommendation. Number the questions in sequence
