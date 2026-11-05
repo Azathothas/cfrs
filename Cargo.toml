@@ -40,6 +40,12 @@ default-members = [".", "crates/podnet-netns"]
 [workspace.package]
 version = "0.3.0-beta.12"
 
+# The switch of the publish to crates.io (.github/workflows/publish.yml).
+# false: each run is a dry run. It stays false while the ruling "Publish no
+# real version yet" is in force (docs/decisions.md).
+[workspace.metadata.podnet]
+crates-io = false
+
 [lib]
 name = "podnet"
 path = "src/lib.rs"

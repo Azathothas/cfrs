@@ -8,8 +8,8 @@ name: release
 # Run by hand (workflow_dispatch) with `publish` empty, it builds and checks
 # the same binaries and keeps them as artifacts: a dry run that publishes
 # nothing. Run by hand with `publish` set to v<version of Cargo.toml>, it
-# makes that tag at its commit and starts itself on the tag. A session whose
-# git cannot push a tag releases this way.
+# makes that tag at its commit and starts itself and publish.yml on the tag.
+# A session whose git cannot push a tag releases this way.
 #
 # The Linux binaries are static musl. x86-64 and ARM64 are built in the
 # pinned image of images/build on a native runner; ARMv7 with Alpine's rust
@@ -60,12 +60,25 @@ jobs:
           for try in 1 2 3 4 5 6; do
             if gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$PUBLISH"; then
               echo "the tag $PUBLISH is at $GITHUB_SHA; the release runs on it"
-              exit 0
+              break
+            fi
+            if [ "$try" = 6 ]; then
+              echo "the tag $PUBLISH exists, and no run started on it: start one by hand on the tag"
+              exit 1
             fi
             echo "the dispatch on $PUBLISH failed (try $try); again in 10 s"
             sleep 10
           done
-          echo "the tag $PUBLISH exists, and no run started on it: start one by hand on the tag"
+          # The publish to crates.io (publish.yml) on the same tag.
+          for try in 1 2 3 4 5 6; do
+            if gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$PUBLISH"; then
+              echo "publish.yml runs on $PUBLISH"
+              exit 0
+            fi
+            echo "the dispatch of publish.yml on $PUBLISH failed (try $try); again in 10 s"
+            sleep 10
+          done
+          echo "no publish.yml run started on $PUBLISH: start one by hand on the tag"
           exit 1
 
   linux:

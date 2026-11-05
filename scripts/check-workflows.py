@@ -9,7 +9,7 @@ DIR is .github/workflows when it is not given. The rules:
   in a comment. A local action (`./...`) and a `docker://` image with a
   digest are accepted.
 * The top level of each workflow has `permissions:` with `contents: read`
-  and no other right.
+  and no other right, or with no right (`{}`).
 * Each job has `timeout-minutes`.
 * A job named in READ_ONLY has no right to write.
 
@@ -54,8 +54,8 @@ def check(path: Path) -> list[str]:
             faults.append(f"{path}:{n}: {ref} has no version comment")
     doc = yaml.safe_load(text)
     top = doc.get("permissions")
-    if not isinstance(top, dict) or top != {"contents": "read"}:
-        faults.append(f"{path}: the top-level permissions are not exactly contents: read")
+    if not isinstance(top, dict) or top not in ({"contents": "read"}, {}):
+        faults.append(f"{path}: the top-level permissions are not exactly contents: read, or {{}}")
     for name, job in (doc.get("jobs") or {}).items():
         if "uses" in job:
             continue

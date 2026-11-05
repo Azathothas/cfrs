@@ -1,0 +1,104 @@
+name: publish
+
+# The publish of the crates of the workspace to crates.io, apart from
+# release.yml (docs/decisions.md, publish.yml). crates.io trusts this file
+# name, the repository PodUtils/podnet and the environment crates-io, which
+# only a tag v* can deploy to (trusted publishing). No token is stored: the
+# job gets a token for 30 minutes.
+#
+# * dry-run: `cargo publish --workspace --dry-run` packs each crate and
+#   builds its package. It reads the switch `crates-io` of
+#   [workspace.metadata.podnet] in Cargo.toml.
+# * publish: only on a tag vX.Y.Z[-pre] of the workspace version, with the
+#   switch true at the tag and the ci run of the tag green.
+#
+# The switch stays false while the ruling "Publish no real version yet" is
+# in force. Before the switch goes to true, the owner reserves the name of
+# each crate to publish (podnet-netns waits in the queue of the owner).
+#
+# A tag that a person pushes starts this workflow. The job `tag` of
+# release.yml pushes its tag with GITHUB_TOKEN, which starts no workflow, so
+# it dispatches this file on the tag:  gh workflow run publish.yml --ref vX
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: never
+  # The toolchain of ci.yml.
+  RUST_TOOLCHAIN: "1.97.0"
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      publish: ${{ steps.switch.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The switch and the conditions of a publish
+        id: switch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          on=$(python3 -I -c 'import tomllib
+          doc = tomllib.load(open("Cargo.toml", "rb"))
+          print(str(doc["workspace"]["metadata"]["podnet"]["crates-io"]).lower())')
+          publish=false
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            have=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+            [ "$GITHUB_REF_NAME" = "v$have" ] || { echo "the tag $GITHUB_REF_NAME is not v$have"; exit 1; }
+            if [ "$on" = true ]; then
+              sha=$(git rev-parse HEAD)
+              state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha" \
+                --jq '[.workflow_runs[] | select(.status == "completed")][0].conclusion // "none"')
+              echo "ci at $sha: $state"
+              [ "$state" = success ] || { echo "ci is not green at $sha"; exit 1; }
+              publish=true
+            fi
+          fi
+          echo "the switch crates-io: $on; the ref: $GITHUB_REF_TYPE $GITHUB_REF_NAME; publish: $publish"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Pack and build each crate
+        run: cargo publish --workspace --locked --dry-run
+
+  publish:
+    needs: dry-run
+    if: needs.dry-run.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sh scripts/retry.sh rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+      # The dry run built each package of this commit: no second build, so
+      # that the publish ends inside the 30 minutes of the token. The order
+      # of --workspace is the order of the dependencies.
+      - name: Publish
+        run: cargo publish --workspace --locked --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
