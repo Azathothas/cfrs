@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**138 entries: 119 open, 1 partial, 7 blocked, 11 done.**
+**138 entries: 118 open, 1 partial, 7 blocked, 12 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 9 | 1 | 0 | 6 | 16 |
 | P2 | 82 | 0 | 5 | 5 | 92 |
-| P3 | 28 | 0 | 2 | 0 | 30 |
-| **All** | 119 | 1 | 7 | 11 | 138 |
+| P3 | 27 | 0 | 2 | 1 | 30 |
+| **All** | 118 | 1 | 7 | 12 | 138 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -178,7 +178,7 @@ M8 Overlays, M9 Later.
 | [T-130](later.md) | P3 | M | M9 | research | open | Research: the iroh road, and a relay and mailbox of podnet's own |
 | [T-131](later.md) | P3 | L | M9 | chore | open | A crate that podnet and podssh share for the layer, the channel and the identity |
 | [T-132](later.md) | P3 | S | M9 | chore | open | `try_update` in place of the macro `update_atomic!` |
-| [T-133](later.md) | P3 | S | M9 | chore | open | Zig from the community mirrors in the release workflow |
+| [T-133](later.md) | P3 | S | M9 | chore | done | Zig from the community mirrors in the release workflow |
 | [T-134](later.md) | P3 | M | M9 | chore | open | A weekly watch of the relay contract |
 | [T-135](fixes.md) | P3 | S | M5 | defect | open | `podnet pod` prints its own program name in each message and in `--version` |
 | [T-136](rename.md) | P1 | S | M1 | defect | done | live: two runs in a row failed before the transfer of the repository (GitHub #311) |

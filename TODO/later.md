@@ -630,7 +630,7 @@ The `rust-version` of `Cargo.toml` is at or above the release in which `try_upda
 **Milestone:** M9
 **Priority:** P3
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -652,7 +652,7 @@ a release.
 ## Prove
 
 ```sh
-sh scripts/fetch-zig.sh
+ZIG_SOURCE=podnet sh .podcrates/scripts/fetch-zig.sh 0.16.0 SHA256 zig.tar.xz
 gh workflow run release.yml --ref main
 ```
 
@@ -663,6 +663,15 @@ mirrors and the weekly check of the list live in `PodUtils/podcrates`, not as a 
 podnet's part: when podcrates has the script, `release.yml` calls it from podcrates (pinned to a
 tag or a commit). When podcrates does not have it, open an issue there. Steps 1 and 3 are void in
 podnet.
+
+## Done
+
+2026-11-05, 7ac7681 and 5535ffb. The job `linux-zig` of `release.yml` checks out the scripts of
+`PodUtils/podcrates` at 9c9c1e345112b13f340e8502a69b807501f34f42 and runs
+`ZIG_SOURCE=podnet sh .podcrates/scripts/fetch-zig.sh` (the mirrors, then ziglang.org, with the
+pinned SHA-256). podcrates checks the mirror list each day (its `upstream.yml`, job `mirrors`).
+The release dry run 42074286318 (5535ffb) passed each job: the nine static targets (armv7 now
+with cargo-zigbuild), the image and the publish steps of a dry run.
 
 # T-134: A weekly watch of the relay contract
 

@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 138 entries: 119 open, 1 partial, 7 blocked, 11 done.
+`TODO/INDEX.md` holds 138 entries: 118 open, 1 partial, 7 blocked, 12 done.
 
 ## State
 
@@ -45,7 +45,7 @@ not wait for a larger one.
    T-098, T-099, T-100, T-101; the transfer T-102 and T-103 (takes of `pod-wormhole` and `pod-transit`), T-104, T-105, T-106.
 8. **M7, the pods:** T-107, T-108, T-111, T-109, T-110, T-113, T-112.
 9. **M8, the overlays:** T-114, T-115, T-116, T-117, T-118.
-10. **M9, later:** T-119 to T-130, T-132, T-133 and T-134, each when its start condition holds.
+10. **M9, later:** T-119 to T-130, T-132 and T-134, each when its start condition holds.
     T-123, T-124, T-126, T-127, T-128 and T-129 take `pod-ts`, `pod-egress`, `pod-derp` and
     `pod-acme` (wave 4). T-131 closes with the take of `pod-session`, `pod-e2e` and `pod-identity`.
 
