@@ -32,8 +32,8 @@ this file when each step below is done.
 3. `pod-services` (`docs/decisions.md`, Services crate): the lists of
    services of other parties, their measurements and the watch workflows
    move to podcrates. Add no new hardcoded service. The inventory for the
-   podcrates session is in the session of 2026-11-05; podcrates imports from
-   `main` and sends a patch.
+   podcrates session is `docs/reports/services-inventory-2026-11-05.md`;
+   podcrates imports from `main` and sends a patch.
 4. The pin `smoltcp = "=0.12.0"` of `Cargo.toml` names Rust 1.91 as its
    reason. That reason is gone at Rust 1.99; the move to smoltcp 0.14 is
    wave 2 of T-137 (`pod-netstack`).
