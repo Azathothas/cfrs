@@ -1,8 +1,8 @@
-//! `--base REV` against a real repository (T-277): a commit made without a
-//! remap leaves citations that the check against `HEAD` cannot see, as the
-//! tree has no change then; against the commit's parent the check finds
-//! them, and `remap --base` moves them. With no git on PATH (the build
-//! image), the tests say so and pass: the Windows job of CI runs them.
+//! `--base REV` against a real repository (podssh T-277): a commit made
+//! without a remap leaves citations that the check against `HEAD` cannot
+//! see, as the tree has no change then; against the commit's parent the
+//! check finds them, and `remap --base` moves them. With no git on PATH, the
+//! tests say so and pass.
 
 mod common;
 
@@ -22,9 +22,9 @@ fn git(root: &Path, args: &[&str]) {
         .args(args)
         .env("GIT_CONFIG_GLOBAL", root.join("no-such-config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "podssh-todo test")
+        .env("GIT_AUTHOR_NAME", "podnet-todo test")
         .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-        .env("GIT_COMMITTER_NAME", "podssh-todo test")
+        .env("GIT_COMMITTER_NAME", "podnet-todo test")
         .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -57,7 +57,7 @@ fn committed(name: &str) -> Tree {
 fn run(args: &[&str]) -> (i32, String, String) {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = podssh_todo::run(&args, &mut out, &mut err);
+    let code = podnet_todo::run(&args, &mut out, &mut err);
     (
         code,
         String::from_utf8(out).unwrap(),

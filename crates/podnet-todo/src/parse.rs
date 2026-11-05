@@ -293,9 +293,9 @@ mod tests {
 
     #[test]
     fn a_field_can_wrap() {
-        let text = "# T-001: One\n\n**Source:** the operator,\nin two lines.\n**Status:** open\n";
+        let text = "# T-001: One\n\n**Source:** the owner,\nin two lines.\n**Status:** open\n";
         let (e, _) = entries("a.md", text);
-        assert_eq!(e[0].field("Source"), Some("the operator, in two lines."));
+        assert_eq!(e[0].field("Source"), Some("the owner, in two lines."));
         assert_eq!(e[0].field("Status"), Some("open"));
     }
 }

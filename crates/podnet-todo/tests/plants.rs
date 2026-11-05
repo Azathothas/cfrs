@@ -186,7 +186,7 @@ fn a_blocked_entry_needs_its_blocker() {
     let t = Tree::new("blocker");
     t.plant(
         "TODO/area.md",
-        "## Blocker\n\nThe operator's ruling on question Q1 in `TODO/PROGRESS.md`.\n",
+        "## Blocker\n\nThe owner's ruling on question Q1 in `TODO/PROGRESS.md`.\n",
         "",
     );
     assert_found(&t, "T-002: blocked, with no `## Blocker`");
@@ -279,15 +279,15 @@ fn a_cited_path_must_have_its_exact_case() {
 #[test]
 fn the_roadmap_keeps_no_open_items() {
     let t = Tree::new("roadmap-open");
-    t.plant("docs/ROADMAP.md", "- T-002.", "- [ ] Something to do.");
-    assert_found(&t, "docs/ROADMAP.md:10: an open item");
+    t.plant("TODO/ROADMAP.md", "- T-002.", "- [ ] Something to do.");
+    assert_found(&t, "TODO/ROADMAP.md:10: an open item");
 }
 
 #[test]
 fn the_roadmap_agrees_with_the_milestones() {
     let t = Tree::new("roadmap-milestone");
     t.plant(
-        "docs/ROADMAP.md",
+        "TODO/ROADMAP.md",
         "- T-001: the first entry.",
         "- T-002: in the wrong milestone.",
     );
@@ -316,7 +316,7 @@ fn an_unknown_field_is_found() {
     assert_found(&t, "`Owner` is not a field of an entry");
 }
 
-// A reader that finds nothing to check must fail, not pass (GitHub #33).
+// A reader that finds nothing to check must fail, not pass (podssh GitHub #33).
 #[test]
 fn an_index_with_no_rows_is_found() {
     let t = Tree::new("no-rows");
@@ -329,8 +329,8 @@ fn an_index_with_no_rows_is_found() {
 #[test]
 fn a_missing_roadmap_is_found() {
     let t = Tree::new("no-roadmap");
-    std::fs::remove_file(t.path().join("docs/ROADMAP.md")).unwrap();
-    assert_found(&t, "docs/ROADMAP.md: the roadmap is missing");
+    std::fs::remove_file(t.path().join("TODO/ROADMAP.md")).unwrap();
+    assert_found(&t, "TODO/ROADMAP.md: the roadmap is missing");
 }
 
 #[test]
@@ -352,7 +352,8 @@ fn a_blocker_on_an_open_entry_is_found() {
 
 #[test]
 fn a_range_that_ends_before_it_starts_is_found() {
-    // A remap that moved only the start of a range left `155-154` once (T-254).
+    // A remap that moved only the start of a range left `155-154` once
+    // (podssh T-254).
     let t = Tree::new("range-backwards");
     t.plant(
         "TODO/area.md",
@@ -381,7 +382,7 @@ fn a_line_0_is_found() {
 
 #[test]
 fn a_plain_line_number_after_a_citation_is_found() {
-    // remap moves neither "line 5" nor its file's other numbers (T-258).
+    // remap moves neither "line 5" nor its file's other numbers (podssh T-258).
     let t = Tree::new("plain-number");
     t.plant(
         "TODO/area.md",

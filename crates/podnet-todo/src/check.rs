@@ -130,9 +130,9 @@ pub fn check_with(
     }
     check_counts(&record, &mut problems);
     crate::refs::check(root, &record, &mut problems);
-    // GitHub's numbers in the map (T-360).
+    // GitHub's numbers in the map (podssh T-360).
     crate::github::check(root, &mut problems);
-    // The claims of "yet", and a status beside an id (T-362).
+    // The claims of "yet", and a status beside an id (podssh T-362).
     let status: std::collections::HashMap<&str, &str> = record
         .rows
         .iter()
@@ -333,8 +333,9 @@ fn check_agreement(rows: &[Row], entries: &[Entry], p: &mut Vec<Problem>) {
     }
 }
 
-/// The targets of each done Prove (T-361): what it names must exist, but a
-/// target that its Correction names, which moved since the entry closed.
+/// The targets of each done Prove (podssh T-361): what it names must exist,
+/// but a target that its Correction names, which moved since the entry
+/// closed.
 fn check_proves(root: &Path, entries: &[Entry], p: &mut Vec<Problem>) {
     let packages = crate::prove::Packages::of(root);
     for e in entries.iter().filter(|e| e.field("Status") == Some("done")) {

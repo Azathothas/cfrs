@@ -1,7 +1,7 @@
-//! The targets of a done Prove (T-361): a test target or a script that the
-//! tree does not hold is named, with the entry and the line, unless the
-//! entry's Correction names it; and `set` refuses to close an entry whose
-//! Prove names one.
+//! The targets of a done Prove (podssh T-361): a test target or a script
+//! that the tree does not hold is named, with the entry and the line, unless
+//! the entry's Correction names it; and `set` refuses to close an entry
+//! whose Prove names one.
 
 mod common;
 
@@ -21,6 +21,48 @@ fn the_control_and_a_test_target_that_exists_pass() {
         "`cargo test -p x --test third`\n\n## Done",
     );
     assert!(t.problems().is_empty(), "{:#?}", t.problems());
+}
+
+/// The packages come from the workspace of the root `Cargo.toml`: the root
+/// package, and each member, also of a `DIR/*` member. No package name is
+/// written in the checker.
+#[test]
+fn the_root_package_and_the_members_of_a_glob_are_packages() {
+    let t = Tree::new("prove-workspace");
+    t.write(
+        "Cargo.toml",
+        "[package]\nname = \"top\"\n\n[workspace]\nmembers = [\".\", \"crates/*\"]\n",
+    );
+    t.write("tests/cli.rs", "#[test]\nfn cli() {}\n");
+    t.plant(
+        "TODO/area.md",
+        "`cargo test -p x -- third`\n\n## Done",
+        "`cargo test -p top --test cli && cargo test -p x --test third`\n\n## Done",
+    );
+    assert!(t.problems().is_empty(), "{:#?}", t.problems());
+    t.plant("TODO/area.md", "-p top --test cli", "-p top --test gone");
+    assert!(
+        names(&t, "T-003: its Prove names the test target gone"),
+        "{:#?}",
+        t.problems()
+    );
+    t.write("Cargo.toml", "[workspace]\nmembers = [\"crates/y\"]\n");
+    assert!(
+        names(
+            &t,
+            "T-003: its Prove names the package top, which the tree does not hold"
+        ),
+        "{:#?}",
+        t.problems()
+    );
+    assert!(
+        names(
+            &t,
+            "T-003: its Prove names the package x, which the tree does not hold"
+        ),
+        "{:#?}",
+        t.problems()
+    );
 }
 
 #[test]
@@ -84,7 +126,7 @@ fn set_refuses_to_close_an_entry_whose_prove_names_a_missing_target() {
         "```\n\n# T-002",
         "```\n\n## Done\n\n2026-10-31: planted.\n\n# T-002",
     );
-    let refused = podssh_todo::write::set_status(t.path(), "T-001", "done")
+    let refused = podnet_todo::write::set_status(t.path(), "T-001", "done")
         .expect_err("a Prove that names a missing target");
     assert!(
         refused.contains("T-001: its Prove names the test target gone"),
@@ -95,5 +137,5 @@ fn set_refuses_to_close_an_entry_whose_prove_names_a_missing_target() {
         "\ncargo test -p x --test gone\n",
         "\ncargo test -p x --test third\n",
     );
-    podssh_todo::write::set_status(t.path(), "T-001", "done").expect("a Prove whose targets exist");
+    podnet_todo::write::set_status(t.path(), "T-001", "done").expect("a Prove whose targets exist");
 }

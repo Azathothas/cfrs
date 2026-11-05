@@ -33,7 +33,7 @@ pub const PROGRESS: &str = "# Progress
 
 1. T-001.
 
-## Questions for the operator
+## Questions for the owner
 
 - **Q1.** May the client listen?
 ";
@@ -42,7 +42,7 @@ pub const AREA: &str = "The entries of one area.
 
 # T-001: The first entry
 
-**Source:** the operator,
+**Source:** the owner,
 on two lines.
 **Category:** defect
 **Milestone:** M3
@@ -60,7 +60,7 @@ Read: `crates/x/src/lib.rs:3`.
 
 ## Approach
 
-Change `crates/x/src/lib.rs:2-4` and `docs/ROADMAP.md`.
+Change `crates/x/src/lib.rs:2-4` and `TODO/ROADMAP.md`.
 
 ## Prove
 
@@ -96,7 +96,7 @@ Run `cargo test -p x -- second`.
 
 ## Blocker
 
-The operator's ruling on question Q1 in `TODO/PROGRESS.md`.
+The owner's ruling on question Q1 in `TODO/PROGRESS.md`.
 
 # T-003: The third entry
 
@@ -130,12 +130,12 @@ Bound the wait.
 
 pub const ROADMAP: &str = "# Roadmap
 
-## M3: Beta
+## M3: Crates
 
 - [x] Something that was done.
 - T-001: the first entry.
 
-## M4: Next
+## M4: Adapters
 
 - T-002.
 ";
@@ -149,20 +149,21 @@ pub struct Tree {
 
 impl Tree {
     /// Each call has a directory of its own: two tests that run at once
-    /// with one name must not remove each other's tree (T-286).
+    /// with one name must not remove each other's tree (podssh T-286).
     pub fn new(name: &str) -> Self {
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root =
-            std::env::temp_dir().join(format!("podssh-todo-{}-{name}-{call}", std::process::id()));
+            std::env::temp_dir().join(format!("podnet-todo-{}-{name}-{call}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let t = Self { root };
         t.write("TODO/INDEX.md", INDEX);
         t.write("TODO/PROGRESS.md", PROGRESS);
         t.write("TODO/area.md", AREA);
-        t.write("docs/ROADMAP.md", ROADMAP);
+        t.write("TODO/ROADMAP.md", ROADMAP);
         t.write("crates/x/src/lib.rs", SOURCE);
-        // The package that the Proves name, with a test target (T-361).
+        // The package that the Proves name, with a test target (podssh T-361).
+        t.write("Cargo.toml", "[workspace]\nmembers = [\"crates/x\"]\n");
         t.write("crates/x/Cargo.toml", "[package]\nname = \"x\"\n");
         t.write("crates/x/tests/third.rs", "#[test]\nfn third() {}\n");
         t.write(
@@ -193,7 +194,7 @@ impl Tree {
     }
 
     pub fn problems(&self) -> Vec<String> {
-        podssh_todo::check::check(&self.root, None)
+        podnet_todo::check::check(&self.root, None)
             .problems
             .iter()
             .map(|p| p.to_string())

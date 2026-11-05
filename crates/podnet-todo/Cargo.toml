@@ -1,0 +1,14 @@
+[package]
+name = "podnet-todo"
+description = "The checker of the work record in TODO/: a reader that CI runs, and a writer that moves a status, derives the counts and moves the citations of an edited file."
+# A tool of the repository: it ships in no release and is not published, so
+# its version does not follow the workspace version.
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.89"
+license = "0BSD"
+publish = false
+
+# No dependencies: the record is Markdown with fixed lines, and CI builds
+# this crate on each push.
+[dependencies]

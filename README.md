@@ -185,8 +185,8 @@ Each release has an image for each Linux architecture of the binaries:
 `ghcr.io/azathothas/cfrs:<tag>` (a manifest list), `:<tag>-<arch>` for one
 architecture (`amd64`, `arm64`, `armv7`, `armv6`, `386`, `riscv64`,
 `ppc64le`, `loong64`), and `:beta` for the newest prerelease. `:latest` is
-for the newest release that is not a prerelease; none exists yet, so
-`:latest` has no image. The image is `FROM scratch` with `cfrs`
+for the newest release that is not a prerelease. No such release exists
+now, so `:latest` has no image. The image is `FROM scratch` with `cfrs`
 and `pod-netns` in `/usr/local/bin`. It runs as user 65534. The state
 directory is the volume `/var/lib/cfrs` (`CFRS_STATE_DIR`). The entry point
 is `cfrs`. In the container, cfrs is PID 1 (no init): SIGTERM and SIGINT
@@ -1215,9 +1215,9 @@ the edge leg that carries the tunnel: `quic`, `http2`, `quic+warp` or
 `http2+relay`. The text `edge` line names it too. A line with
 `"event": "verified"` comes after the fetch of the public URL. Its `dns`
 field names the resolver step that resolves the public name at that time:
-`system`, `doh` (public DNS resolves it, the system resolver of this host
-not yet: a visitor whose resolver cached NXDOMAIN gets an error for some
-seconds more), `pin` (`--resolve`) or `none`. While the fetch fails, cfrs
+`system`, `doh` (public DNS resolves it, and the system resolver of this
+host does not: a visitor whose resolver cached NXDOMAIN gets an error for
+some seconds more), `pin` (`--resolve`) or `none`. While the fetch fails, cfrs
 logs the first try and each fifth try at INFO, and each try after the tenth
 at WARN.
 

@@ -1,10 +1,11 @@
-//! The targets of a done entry's Prove (T-361): each `-p CRATE` of a
-//! `cargo test` command is a package of the tree, of the workspace, of
-//! `fuzz/` or of `vendor/`, and each `--test NAME` a target of one of them,
-//! a file of its `tests/` or a `[[test]]` of its manifest; each `scripts/`
-//! path exists. A done Prove is what ran when its entry closed, so a target
-//! that moved since is named, with where it went, in the entry's
-//! `## Correction`, and a target that the Correction names is taken.
+//! The targets of a done entry's Prove (podssh T-361): each `-p CRATE` of a
+//! `cargo test` command is a package of the tree: a member of the workspace
+//! of the root `Cargo.toml`, the root package or the package of `fuzz/`.
+//! Each `--test NAME` is a target of one of them, a file of its `tests/` or
+//! a `[[test]]` of its manifest; each `scripts/` path exists. A done Prove
+//! is what ran when its entry closed, so a target that moved since is named,
+//! with where it went, in the entry's `## Correction`, and a target that the
+//! Correction names is taken.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,15 +18,21 @@ pub struct Packages {
 }
 
 impl Packages {
-    /// The manifests of `crates/*`, `fuzz/`, `vendor/*` and `vendor/*/*`.
+    /// The manifests of the root package, of each member of the workspace
+    /// that the root `Cargo.toml` names (a member `DIR/*` is each directory
+    /// of DIR), and of `fuzz/`. No package name is written here, so a
+    /// rename of a package needs no change of this code.
     pub fn of(root: &Path) -> Packages {
-        let mut manifests = vec![root.join("fuzz/Cargo.toml")];
-        for dir in ["crates", "vendor"] {
-            for first in children(&root.join(dir)) {
-                manifests.push(first.join("Cargo.toml"));
-                if dir == "vendor" {
-                    manifests.extend(children(&first).into_iter().map(|d| d.join("Cargo.toml")));
-                }
+        let top = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+        let mut manifests = vec![root.join("Cargo.toml"), root.join("fuzz/Cargo.toml")];
+        for member in workspace_members(&top) {
+            match member.strip_suffix("/*") {
+                Some(dir) => manifests.extend(
+                    children(&root.join(dir))
+                        .into_iter()
+                        .map(|d| d.join("Cargo.toml")),
+                ),
+                None => manifests.push(root.join(&member).join("Cargo.toml")),
             }
         }
         let mut packages = Packages::default();
@@ -39,6 +46,11 @@ impl Packages {
             }
         }
         packages
+    }
+
+    /// The names of the packages, sorted.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.by_name.keys().map(String::as_str)
     }
 
     fn has_test(&self, package: &str, test: &str) -> bool {
@@ -62,6 +74,45 @@ fn children(dir: &Path) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+/// The `members` of the `[workspace]` of a manifest, as written there.
+fn workspace_members(text: &str) -> Vec<String> {
+    let mut section = "";
+    let mut list: Option<String> = None;
+    for raw in text.lines() {
+        // A path of a member holds no `#`: the rest of the line is a comment.
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if let Some(acc) = list.as_mut() {
+            acc.push_str(line);
+            if line.contains(']') {
+                break;
+            }
+            continue;
+        }
+        if line.starts_with('[') {
+            section = line;
+            continue;
+        }
+        let value = line
+            .strip_prefix("members")
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix('='));
+        if let (Some(value), "[workspace]") = (value, section) {
+            let value = value.trim().to_string();
+            let closed = value.contains(']');
+            list = Some(value);
+            if closed {
+                break;
+            }
+        }
+    }
+    let list = list.unwrap_or_default().replace('\'', "\"");
+    list.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
 }
 
 /// The `name` of `[package]`, and the name of each `[[test]]`.
@@ -238,10 +289,22 @@ mod tests {
     }
 
     #[test]
+    fn the_workspace_gives_its_members() {
+        let one = "[package]\nname = \"r\"\n[workspace]\nmembers = [\".\", \"crates/a\"] # two\nexclude = [\"fuzz\"]\n";
+        assert_eq!(workspace_members(one), [".", "crates/a"]);
+        let many = "[workspace]\n# the members\nmembers = [\n  \"crates/*\", # each\n  'tools/b',\n]\n[dependencies]\n";
+        assert_eq!(workspace_members(many), ["crates/*", "tools/b"]);
+        assert!(
+            workspace_members("[package]\nname = \"r\"\n[dependencies]\nmembers = \"no\"\n")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn a_manifest_gives_its_name_and_its_test_targets() {
         let (name, tests) =
-            read_manifest("[package]\nname = \"podssh-x\"\n[dependencies]\nname = \"no\"\n[[test]]\nname = \"t1\"\n");
-        assert_eq!(name.as_deref(), Some("podssh-x"));
+            read_manifest("[package]\nname = \"podnet-x\"\n[dependencies]\nname = \"no\"\n[[test]]\nname = \"t1\"\n");
+        assert_eq!(name.as_deref(), Some("podnet-x"));
         assert_eq!(tests, ["t1"]);
     }
 }

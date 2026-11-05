@@ -1,8 +1,8 @@
-//! The claims of the documents (T-362), on the checker's own tree: a "yet"
-//! with no entry that is not done and no date, a "yet" beside a done entry,
-//! and a status beside an id that the index does not give, are each named
-//! with their line; each passes once its entry, its date or its status is
-//! right.
+//! The claims of the documents (podssh T-362), on the checker's own tree: a
+//! "yet" with no entry that is not done and no date, a "yet" beside a done
+//! entry, and a status beside an id that the index does not give, are each
+//! named with their line; each passes once its entry, its date or its status
+//! is right.
 
 mod common;
 

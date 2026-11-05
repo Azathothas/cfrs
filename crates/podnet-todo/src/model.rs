@@ -8,9 +8,10 @@ pub const STATUSES: [&str; 4] = ["open", "partial", "blocked", "done"];
 pub const PRIORITIES: [&str; 4] = ["P0", "P1", "P2", "P3"];
 /// No `XL`: an entry that big is two entries.
 pub const EFFORTS: [&str; 3] = ["S", "M", "L"];
-pub const MILESTONES: [&str; 10] = [
-    "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "backlog", "none",
-];
+/// The milestones of `TODO/ROADMAP.md`: M0 Record, M1 Rename, M2 Split,
+/// M3 Crates, M4 Adapters, M5 Fixes, M6 Services, M7 Pods, M8 Overlays and
+/// M9 Later.
+pub const MILESTONES: [&str; 10] = ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"];
 pub const CATEGORIES: [&str; 7] = [
     "defect",
     "feature",
@@ -46,7 +47,13 @@ pub const SECTIONS: [&str; 9] = [
 pub const REQUIRED_SECTIONS: [&str; 4] = ["Problem", "Premise", "Approach", "Prove"];
 
 /// The files of `TODO/` that hold no entries.
-pub const RECORD_FILES: [&str; 4] = ["INDEX.md", "PROGRESS.md", "RULES.md", "issues.md"];
+pub const RECORD_FILES: [&str; 5] = [
+    "INDEX.md",
+    "PROGRESS.md",
+    "RULES.md",
+    "ROADMAP.md",
+    "issues.md",
+];
 
 /// One finding of the reader: where, and what is wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]

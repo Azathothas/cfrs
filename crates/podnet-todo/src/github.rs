@@ -1,12 +1,13 @@
-//! The map of GitHub's numbers (T-360): `TODO/github.txt` lists each number
-//! of the repository, an issue or a pull request, with its state, as GitHub
-//! gives them, and `TODO/issues.md` must agree with it. Each issue has one
-//! place in the map: the first cell of a row of a table, or the bold head of
-//! a paragraph (`**#18, ...**`); each pull request is in the map's line of
-//! them (`#37 to #50, #52 ... are pull requests`); and the State of a row
-//! begins with its issue's state. The list is held to GitHub each day by a
-//! job of CI (`.github/workflows/record-issues.yml`), as the gate has no
-//! network.
+//! The map of GitHub's numbers (podssh T-360): `TODO/github.txt` lists each
+//! number of the repository, an issue or a pull request, with its state, as
+//! GitHub gives them, and `TODO/issues.md` must agree with it. Each issue
+//! has one place in the map: the first cell of a row of a table, or the bold
+//! head of a paragraph (`**#18, ...**`); each pull request is in the map's
+//! line of them (`#37 to #50, #52 ... are pull requests`); and the State of
+//! a row begins with its issue's state. A job of CI holds the list to GitHub
+//! each day (`.github/workflows/record-issues.yml`), as this check reads no
+//! network. The list holds each number from a first number on, and each
+//! open issue before it (`FIRST` in `scripts/check-github-numbers.py`).
 
 use std::collections::BTreeMap;
 use std::path::Path;

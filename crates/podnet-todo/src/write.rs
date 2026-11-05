@@ -123,7 +123,8 @@ pub fn set_status(root: &Path, id: &str, status: &str) -> Result<(), String> {
                 "{id}: write the evidence first, in `## Done` with its date"
             ))
         }
-        // A Prove that names what the tree does not hold did not run (T-361).
+        // A Prove that names what the tree does not hold did not run
+        // (podssh T-361).
         "done" => {
             let packages = crate::prove::Packages::of(root);
             if let Some((_, what)) = crate::check::prove_gaps(root, &packages, entry)

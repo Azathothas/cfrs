@@ -1,7 +1,7 @@
 //! The references of the record: each `T-NNN` that a document names, each
 //! repository path and line that an entry cites, the work order, the
 //! questions that blocked entries wait for, and the milestones of
-//! `docs/ROADMAP.md`.
+//! `TODO/ROADMAP.md`.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -11,19 +11,39 @@ use crate::check::{read, Record, PROGRESS};
 use crate::model::{ids_in, Problem};
 use crate::parse::{code_spans, doc_section, lines_with_fences};
 
-pub const ROADMAP: &str = "docs/ROADMAP.md";
+pub const ROADMAP: &str = "TODO/ROADMAP.md";
 
 /// The top-level directories and the root files of this repository. A code
 /// span that starts with one of them is a citation that must exist; another
 /// project's file is written `owner/repo:path`, which never starts so.
-const TOP_DIRS: [&str; 6] = ["crates", "scripts", "docs", ".github", "TODO", "vendor"];
-const ROOT_FILES: [&str; 6] = [
+const TOP_DIRS: [&str; 13] = [
+    "src",
+    "tests",
+    "crates",
+    "scripts",
+    "docs",
+    "fuzz",
+    ".github",
+    "TODO",
+    "tools",
+    "shim",
+    "examples",
+    "images",
+    "notebooks",
+];
+const ROOT_FILES: [&str; 12] = [
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
-    "AGENTS.md",
+    "CLAUDE.md",
     "SECURITY.md",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "build.rs",
+    "deny.toml",
+    "about.toml",
+    "about.hbs",
+    "cliff.toml",
 ];
 
 pub fn check(root: &Path, r: &Record, p: &mut Vec<Problem>) {
@@ -56,16 +76,33 @@ pub fn check(root: &Path, r: &Record, p: &mut Vec<Problem>) {
 }
 
 /// The Markdown files whose `T-NNN` references must resolve, and whose
-/// citations `remap` moves.
+/// citations `remap` moves: the root documents, the README of each crate,
+/// `TODO/` and `docs/`. The release notes (`docs/releases/`) and the issue
+/// reports (`docs/reports/`) are readings at a time, with the paths of that
+/// time, and are not read.
 pub fn documents(root: &Path) -> Vec<String> {
-    let mut out: Vec<String> = ["README.md", "AGENTS.md", "SECURITY.md"]
+    let mut out: Vec<String> = ["README.md", "CLAUDE.md", "SECURITY.md"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     for dir in ["TODO", "docs"] {
         walk(root, dir, &mut out);
     }
-    out.retain(|rel| root.join(rel).is_file());
+    for krate in fs::read_dir(root.join("crates"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        out.push(format!(
+            "crates/{}/README.md",
+            krate.file_name().to_string_lossy()
+        ));
+    }
+    out.retain(|rel| {
+        root.join(rel).is_file()
+            && !rel.starts_with("docs/releases/")
+            && !rel.starts_with("docs/reports/")
+    });
     out.sort();
     out
 }
@@ -204,7 +241,7 @@ fn squash(s: &str) -> String {
 }
 
 /// True when each part of `rel` exists with exactly that name, so that a
-/// path with the wrong case fails on Windows as it fails on Linux.
+/// path with the wrong case fails also on a file system that ignores case.
 fn exists_exactly(root: &Path, rel: &str) -> bool {
     let mut at = root.to_path_buf();
     for part in rel.split('/') {
@@ -251,9 +288,9 @@ fn work_order(r: &Record, status: &HashMap<&str, &str>, p: &mut Vec<Problem>) {
 }
 
 /// Each question `Qn` that a `## Blocker` names is in the progress record's
-/// `## Questions for the operator`.
+/// `## Questions for the owner`.
 fn questions(r: &Record, p: &mut Vec<Problem>) {
-    let asked: HashSet<String> = doc_section(&r.progress, "Questions for the operator")
+    let asked: HashSet<String> = doc_section(&r.progress, "Questions for the owner")
         .map(|(_, body)| body.iter().flat_map(|(_, l)| q_tokens(l)).collect())
         .unwrap_or_default();
     for e in &r.entries {
@@ -266,7 +303,7 @@ fn questions(r: &Record, p: &mut Vec<Problem>) {
                     &format!("TODO/{}", e.file),
                     b.line,
                     format!(
-                        "{}: the blocker names {q}, which is not in {PROGRESS}, `## Questions for the operator`",
+                        "{}: the blocker names {q}, which is not in {PROGRESS}, `## Questions for the owner`",
                         e.id
                     ),
                 ));
@@ -308,8 +345,8 @@ fn roadmap(root: &Path, r: &Record, p: &mut Vec<Problem>) {
             continue;
         }
         if let Some(h) = line.strip_prefix("## ") {
-            // A done milestone (M0 to M2) may name the later entry that
-            // finished its exit criteria; only an open milestone is checked.
+            // A heading that is not a milestone ends the list of the
+            // milestone above it.
             let m = h.split([':', ' ']).next().unwrap_or("");
             current = crate::model::MILESTONES.contains(&m).then(|| m.to_string());
             continue;
@@ -343,26 +380,30 @@ mod tests {
     #[test]
     fn only_paths_of_this_repository_are_citations() {
         assert_eq!(
-            citation("crates/podssh-cli/src/tree.rs:52"),
-            Some(("crates/podssh-cli/src/tree.rs", Some(52)))
+            citation("crates/pod-netns/src/lib.rs:52"),
+            Some(("crates/pod-netns/src/lib.rs", Some(52)))
         );
         assert_eq!(
             citation("crates/x.rs:36-38"),
             Some(("crates/x.rs", Some(38)))
         );
         assert_eq!(
-            citation("docs/cli.md#the-manual"),
-            Some(("docs/cli.md", None))
+            citation("docs/protocol.md#the-edge"),
+            Some(("docs/protocol.md", None))
         );
         assert_eq!(citation("Cargo.toml"), Some(("Cargo.toml", None)));
+        assert_eq!(citation("src/main.rs:VERBS"), Some(("src/main.rs", None)));
         assert_eq!(
-            citation("crates/podssh-cli/src/flags.rs:VERBS"),
-            Some(("crates/podssh-cli/src/flags.rs", None))
+            citation("src/noise.rs:1-92"),
+            Some(("src/noise.rs", Some(92)))
         );
-        assert_eq!(citation("lablup/bssh:crates/bssh-russh-sftp/x.patch"), None);
-        assert_eq!(citation("src/noise.rs:1-92"), None);
-        assert_eq!(citation("podssh ssh -G"), None);
-        assert_eq!(citation("crates/podssh-ts/src/{pipe,node}.rs"), None);
+        assert_eq!(
+            citation("Azathothas/podssh:crates/podssh-todo/src/lib.rs"),
+            None
+        );
+        assert_eq!(citation("lib/noise.rs:1-92"), None);
+        assert_eq!(citation("cfrs warp proxy --l4"), None);
+        assert_eq!(citation("crates/pod-netns/src/{pipe,node}.rs"), None);
         assert_eq!(citation("crates"), None);
     }
 

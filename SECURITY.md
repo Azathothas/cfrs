@@ -137,8 +137,9 @@ Only an origin can turn off the check: `noTLSVerify` in a config file, or
 `--no-tls-verify`. A test (`trust::tests::no_other_code_sets_its_own_verifier`)
 fails when other code sets its own certificate verifier.
 
-When a certificate is expired or not valid yet, the error line also gives
-the clock of the host: a wrong clock is a frequent cause in a container.
+When a certificate is expired or its validity starts later, the error
+line also gives the clock of the host: a wrong clock is a frequent cause
+in a container.
 
 ## Text from the network
 

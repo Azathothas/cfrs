@@ -21,6 +21,7 @@ exclude = [
   "/fuzz",
   "/notebooks",
   "/scripts",
+  "/TODO",
   "/cliff.toml",
   "/deny.toml",
 ]
@@ -30,7 +31,9 @@ exclude = [
 targets = ["x86_64-unknown-linux-gnu"]
 
 [workspace]
-members = [".", "crates/pod-netns"]
+# crates/podnet-todo checks the work record in TODO/ (`cargo todo`). It is
+# not a default member: no release builds it.
+members = [".", "crates/pod-netns", "crates/podnet-todo"]
 exclude = ["fuzz"]
 default-members = [".", "crates/pod-netns"]
 

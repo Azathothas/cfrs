@@ -1,13 +1,14 @@
-//! The claims of the pages that a session reads first (T-362). A "yet" says
-//! that something is not built, and it goes stale on the day its work is
-//! done, in a file that the work did not touch; so does a status written
-//! beside an id. Each "yet" of the documents (`docs/`, `README.md`,
-//! `AGENTS.md`, `SECURITY.md`), outside fenced blocks, is in a unit that
-//! names an entry that is not done, or a date; a done entry beside it is
-//! named. Each status beside an id (`T-NNN, partial`) agrees with the index,
-//! unless its unit reads at a date or at a commit. A unit is a paragraph, a
-//! list item or a row of a table: an id in another item covers no claim.
-//! The release notes (`docs/releases/`) are readings at their tags.
+//! The claims of the pages that a session reads first (podssh T-362). A
+//! "yet" says that something is not built, and it goes stale on the day its
+//! work is done, in a file that the work did not touch; so does a status
+//! written beside an id. Each "yet" of the documents (`docs/`, `README.md`,
+//! `CLAUDE.md`, `SECURITY.md`, `crates/*/README.md`), outside fenced blocks,
+//! is in a unit that names an entry that is not done, or a date; a done
+//! entry beside it is named. Each status beside an id (`T-NNN, partial`)
+//! agrees with the index, unless its unit reads at a date or at a commit. A
+//! unit is a paragraph, a list item or a row of a table: an id in another
+//! item covers no claim. The release notes (`docs/releases/`) and the issue
+//! reports (`docs/reports/`) are not read: they are readings at a time.
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -1,3 +1,10 @@
+# `cargo todo check` reads the work record in TODO/; `cargo todo set T-NNN
+# STATUS` moves a status and derives the counts; `cargo todo next` gives the
+# next free id; `cargo todo remap FILE` moves the citations of an edited file
+# (TODO/RULES.md).
+[alias]
+todo = "run -q -p podnet-todo --"
+
 # cfrs's userspace stack owns the local address, the gateway (where the
 # virtual resolver listens), their IPv6 counterparts, and each address that
 # a virtual listener binds (a --forward to 10.66.0.3). smoltcp defaults

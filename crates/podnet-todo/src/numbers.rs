@@ -320,27 +320,27 @@ mod tests {
 
     #[test]
     fn a_plain_number_after_a_citation_is_found() {
-        let p = found("Read `crates/podssh-todo/src/lib.rs:3`, and lines 5 and 7-8.\n");
+        let p = found("Read `crates/podnet-todo/src/lib.rs:3`, and lines 5 and 7-8.\n");
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(
             p[0].contains("\"lines 5 and 7-8\" follows a citation"),
             "{p:?}"
         );
         // A character of more than one byte before it.
-        let p = found("Read `crates/podssh-todo/src/lib.rs:3` — and line 5.\n");
+        let p = found("Read `crates/podnet-todo/src/lib.rs:3` — and line 5.\n");
         assert_eq!(p.len(), 1, "{p:?}");
     }
 
     #[test]
     fn readings_quotes_and_other_numbers_pass() {
         for text in [
-            "Read `crates/podssh-todo/src/lib.rs:3`, line 5 at `0123abc`.\n",
-            "Read `crates/podssh-todo/src/lib.rs:3`, line 5\nat `0123abc`.\n",
-            "Read, at `0123abc`: `crates/podssh-todo/src/lib.rs:3`, and line 5.\n",
-            "Read `crates/podssh-todo/src/lib.rs:3`; it says \"line 5\".\n",
-            "Line 5 of the output, before any citation: `crates/podssh-todo/src/lib.rs:3`.\n",
-            "Read `crates/podssh-todo/src/lib.rs:3`.\n\nA new paragraph: line 5 of a log.\n",
-            "Read `crates/podssh-todo/src/lib.rs:3`, in 5 lines, with a pipeline 2.5 long.\n",
+            "Read `crates/podnet-todo/src/lib.rs:3`, line 5 at `0123abc`.\n",
+            "Read `crates/podnet-todo/src/lib.rs:3`, line 5\nat `0123abc`.\n",
+            "Read, at `0123abc`: `crates/podnet-todo/src/lib.rs:3`, and line 5.\n",
+            "Read `crates/podnet-todo/src/lib.rs:3`; it says \"line 5\".\n",
+            "Line 5 of the output, before any citation: `crates/podnet-todo/src/lib.rs:3`.\n",
+            "Read `crates/podnet-todo/src/lib.rs:3`.\n\nA new paragraph: line 5 of a log.\n",
+            "Read `crates/podnet-todo/src/lib.rs:3`, in 5 lines, with a pipeline 2.5 long.\n",
         ] {
             assert_eq!(found(text), Vec::<String>::new(), "{text:?}");
         }

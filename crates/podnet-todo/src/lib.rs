@@ -1,10 +1,10 @@
-//! The checker of podssh's work record (`TODO/`).
+//! The checker of the work record of this repository (`TODO/`).
 //!
 //! The record is the index (`TODO/INDEX.md`), the progress record with the
 //! work order (`TODO/PROGRESS.md`) and the entries (`TODO/<area>.md`).
 //! Closing one entry moves several numbers in two files, so no number is
 //! typed by hand: the writer moves a status and derives the counts, and the
-//! reader, which the gate runs, checks that the files agree. When a cited
+//! reader, which CI runs, checks that the files agree. When a cited
 //! file changes, `remap` moves its citations by a line diff against `HEAD`,
 //! or against the revision that `--base` names.
 
@@ -12,7 +12,6 @@ pub mod check;
 pub mod claims;
 pub mod diff;
 pub mod github;
-pub mod interop;
 pub mod model;
 pub mod numbers;
 pub mod parse;
@@ -23,13 +22,11 @@ pub mod write;
 
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "usage: podssh-todo check
-       podssh-todo set T-NNN open|partial|blocked|done
-       podssh-todo counts
-       podssh-todo next
-       podssh-todo remap [--dry-run] FILE...   (after an edit of FILE: move its citations by a diff against HEAD)
-       podssh-todo interop [--logs LOG...]     (the ids of the interop harnesses against scripts/interop-baseline.txt,
-                                                and with logs, each run's results; a log's file stem names its run)
+pub const USAGE: &str = "usage: podnet-todo check
+       podnet-todo set T-NNN open|partial|blocked|done
+       podnet-todo counts
+       podnet-todo next
+       podnet-todo remap [--dry-run] FILE...   (after an edit of FILE: move its citations by a diff against HEAD)
 Options: --root DIR (default: the nearest directory above the current one with TODO/INDEX.md)
          --base REV (default: HEAD): check and remap compare each file with its text in REV,
                     as HEAD~1 for a commit that was made without them";
@@ -76,14 +73,14 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write, err: &mut dyn std::io:
         ["set", id, status] => match write::set_status(&root, id, status) {
             Ok(()) => report(&root, base, out, err),
             Err(e) => {
-                let _ = writeln!(err, "podssh-todo: {e}");
+                let _ = writeln!(err, "podnet-todo: {e}");
                 1
             }
         },
         ["counts"] => match write::counts(&root) {
             Ok(()) => report(&root, base, out, err),
             Err(e) => {
-                let _ = writeln!(err, "podssh-todo: {e}");
+                let _ = writeln!(err, "podnet-todo: {e}");
                 1
             }
         },
@@ -93,7 +90,7 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write, err: &mut dyn std::io:
                 0
             }
             Err(e) => {
-                let _ = writeln!(err, "podssh-todo: {e}");
+                let _ = writeln!(err, "podnet-todo: {e}");
                 1
             }
         },
@@ -116,11 +113,6 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write, err: &mut dyn std::io:
             }
             remap_command(&root, &files, dry, base, out, err)
         }
-        ["interop"] => interop_command(&root, &[], out, err),
-        ["interop", "--logs", logs @ ..] if !logs.is_empty() => {
-            interop_command(&root, logs, out, err)
-        }
-        ["interop", ..] => usage(err, "interop takes only --logs LOG..."),
         _ => usage(err, "unknown command"),
     }
 }
@@ -140,7 +132,7 @@ fn remap_command(
     let r = match remap::remap(root, files, &head, !dry) {
         Ok(r) => r,
         Err(e) => {
-            let _ = writeln!(err, "podssh-todo: remap: {e}");
+            let _ = writeln!(err, "podnet-todo: remap: {e}");
             return 1;
         }
     };
@@ -159,7 +151,7 @@ fn remap_command(
     let verb = if dry { "would move" } else { "moved" };
     let _ = writeln!(
         out,
-        "podssh-todo: remap: {verb} {} citations; {} to review; {} on new lines kept",
+        "podnet-todo: remap: {verb} {} citations; {} to review; {} on new lines kept",
         r.moved.len(),
         r.review.len(),
         r.kept.len()
@@ -171,67 +163,8 @@ fn remap_command(
     }
 }
 
-/// Check the interop harnesses against their baseline, and score the logs
-/// named, each a run named by its file's stem (T-199).
-fn interop_command(
-    root: &Path,
-    logs: &[&str],
-    out: &mut dyn std::io::Write,
-    err: &mut dyn std::io::Write,
-) -> i32 {
-    let checked = interop::check(root);
-    let mut problems = checked.problems;
-    if !logs.is_empty() {
-        let mut runs = Vec::new();
-        for log in logs {
-            let path = Path::new(log);
-            let run = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-            match std::fs::read_to_string(path) {
-                Ok(text) => runs.push(interop::Log {
-                    shown: log.to_string(),
-                    run,
-                    text,
-                }),
-                Err(e) => {
-                    problems.push(model::Problem::new(log, 0, format!("cannot be read: {e}")))
-                }
-            }
-        }
-        let (rows, more) = interop::score(&checked.baseline, &runs);
-        let _ = writeln!(out, "score harness pass fail env skip missing floor");
-        for row in rows {
-            let _ = writeln!(out, "{row}");
-        }
-        problems.extend(more);
-    }
-    if problems.is_empty() {
-        let harnesses = checked.baseline.harnesses.len();
-        let _ = writeln!(
-            out,
-            "podssh-todo: interop: {} ids of {harnesses} harnesses meet {}",
-            checked.ids,
-            interop::BASELINE
-        );
-        0
-    } else {
-        for p in &problems {
-            let _ = writeln!(err, "{p}");
-        }
-        let _ = writeln!(
-            err,
-            "podssh-todo: {} problems in the interop checks",
-            problems.len()
-        );
-        1
-    }
-}
-
 fn usage(err: &mut dyn std::io::Write, why: &str) -> i32 {
-    let _ = writeln!(err, "podssh-todo: {why}\n{USAGE}");
+    let _ = writeln!(err, "podnet-todo: {why}\n{USAGE}");
     64
 }
 
@@ -244,7 +177,7 @@ fn report(
 ) -> i32 {
     let r = check::check(root, base);
     if r.problems.is_empty() {
-        let _ = writeln!(out, "podssh-todo: the record agrees: {}", r.counts.phrase());
+        let _ = writeln!(out, "podnet-todo: the record agrees: {}", r.counts.phrase());
         0
     } else {
         for p in &r.problems {
@@ -252,7 +185,7 @@ fn report(
         }
         let _ = writeln!(
             err,
-            "podssh-todo: {} problems in the record",
+            "podnet-todo: {} problems in the record",
             r.problems.len()
         );
         1
