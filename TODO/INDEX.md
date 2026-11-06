@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**140 entries: 108 open, 1 partial, 7 blocked, 24 done.**
+**140 entries: 107 open, 1 partial, 7 blocked, 25 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 13 | 16 |
-| P2 | 79 | 0 | 5 | 10 | 94 |
+| P2 | 78 | 0 | 5 | 11 | 94 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 108 | 1 | 7 | 24 | 140 |
+| **All** | 107 | 1 | 7 | 25 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -126,7 +126,7 @@ M8 Overlays, M9 Later.
 | [T-078](fixes.md) | P3 | S | M5 | defect | open | `pod doctor` uses the verdict words of `doctor` and has a `schema` key |
 | [T-079](fixes.md) | P3 | S | M5 | measurement | open | Read the numbers of #206 and #184 in a live run |
 | [T-080](fixes.md) | P3 | M | M5 | feature | open | The errors of a config file name the line |
-| [T-081](fixes.md) | P2 | S | M5 | feature | open | The tailnet front door warns when `tailscaled` is not logged in |
+| [T-081](fixes.md) | P2 | S | M5 | feature | done | The tailnet front door warns when `tailscaled` is not logged in |
 | [T-082](services.md) | P2 | S | M6 | feature | open | `connect --stdio` for an SSH `ProxyCommand` through `tunnel --forward` |
 | [T-083](services.md) | P2 | S | M6 | feature | open | A relay node serves a handler in the process, with no socket file |
 | [T-084](services.md) | P2 | M | M6 | feature | open | One HTTP authentication layer for the local listener, the tunnel and the relay |

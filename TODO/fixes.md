@@ -897,7 +897,7 @@ The fuzz target `config_yaml` still builds.
 **Milestone:** M5
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -923,6 +923,15 @@ cargo test --workspace -- tailscale_front_door_warns_when_logged_out
 
 A fake LocalAPI on a unix socket answers `NeedsLogin`. The headscale harness of T-114 runs the
 same check against a real `tailscaled`.
+
+## Done
+
+2026-11-06, commit 3807970 (`T-081: the tailnet front door warns when tailscaled is not logged
+in`). `Dialer::backend_state` reads `BackendState` of `/localapi/v0/status` (HTTP/1.0, 3 s, 4 MiB).
+The door reads it at its start and after each failed dial, and warns one time when it is not
+`Running`, with `tailscale up`. `tailscale_front_door_warns_when_logged_out` passes with a fake
+LocalAPI that answers `NeedsLogin`. Not done: step 3 (the state in a doctor of the door): the doctor
+of `podnet-netns` has no row for the door. The check against a real `tailscaled` waits for T-114.
 
 # T-135: `podnet pod` prints its own program name in each message and in `--version`
 
