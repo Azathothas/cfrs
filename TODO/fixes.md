@@ -746,7 +746,7 @@ The new job passes. Plant: remove `need_loopback!()` from one test. The job must
 **Milestone:** M5
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -774,6 +774,14 @@ cargo test --workspace -- a_path_rule_matches_the_decoded_path
 ```
 
 The test asserts that `/a%20b` matches the rule `^/a b$`.
+
+## Done
+
+2026-11-06, commit 7fe9a2c (`T-077: an ingress path: rule matches the decoded path, as cloudflared
+does`). Step 1: `FindMatchingRule` of cloudflared (`ingress/ingress.go`) gives `requestURL.Path`,
+the decoded path of Go: the premise holds. `PathPattern::is_match` decodes `%XX` (a `%` with no
+two hex digits stays; `+` stays) and keeps the match with no anchor. `README.md` says both.
+`a_path_rule_matches_the_decoded_path` passes; on the code before, `/a%20b` does not match.
 
 # T-078: `pod doctor` uses the verdict words of `doctor` and has a `schema` key
 
