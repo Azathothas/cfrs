@@ -19,7 +19,7 @@ shared crate). After the take, the fix goes to PodUtils/podcrates.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -62,6 +62,19 @@ The new C test connects through the SOCKS5 stand-in of the test. It asserts that
 AF_INET target and port, and `getsockname` gives an AF_INET address. Plant: remove the entry
 after the connect again. The test must fail. Then run radicle-node once under `warp exec`, and
 write the result in the Done section.
+
+## Done
+
+2026-11-06, commit 7614ddb (`T-063: seccomp: a TCP socket keeps its entry after its connect`). A
+connected TCP socket is the entry `Sock::Connected` (`crates/podnet-netns/src/sockopt.rs`) until
+the program closes it: its peer, a local address and its options. `setsockopt` keeps the value;
+`getsockopt` gives it. `getpeername` of a stream with no connect gives `ENOTCONN`. A second
+`connect` gives `EISCONN`, a `bind` after the connect `EINVAL`. The test is in a new file,
+`tests/pod_seccomp_tcp.rs` (`tests/pod_seccomp.rs` is in the size allowlist): it passes. Plant: no
+entry after the connect; the test fails with the values of the field report (`setsockopt` -1,
+`ss_family` 1). The words of `pod doctor` about these calls stay true (they name the case with no
+write to the memory of the program). The run of radicle-node under `warp exec` is not done: this
+host has no radicle-node and no WARP. `seccomp.rs`: 1,900 to 1,803 lines.
 
 # T-064: seccomp: one entry for each socket of each process, and copies of a descriptor are tracked
 

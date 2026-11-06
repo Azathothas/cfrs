@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**139 entries: 114 open, 1 partial, 7 blocked, 17 done.**
+**139 entries: 113 open, 1 partial, 7 blocked, 18 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 6 | 1 | 0 | 9 | 16 |
+| P1 | 5 | 1 | 0 | 10 | 16 |
 | P2 | 81 | 0 | 5 | 7 | 93 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 114 | 1 | 7 | 17 | 139 |
+| **All** | 113 | 1 | 7 | 18 | 139 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -108,7 +108,7 @@ M8 Overlays, M9 Later.
 | [T-060](adapters.md) | P2 | M | M4 | feature | open | `--via SPEC` on each command, with each old network flag as an alias |
 | [T-061](adapters.md) | P2 | M | M4 | feature | open | One front door over a dialer for `warp proxy`, `pod --serve`, `net proxy` and `net tailscale` |
 | [T-062](adapters.md) | P2 | M | M4 | feature | open | The service and ingress traits, with wrappers of the Cloudflare tunnel, the local listener, the relay node and the virtual network |
-| [T-063](fixes.md) | P1 | M | M5 | defect | open | seccomp: a TCP socket stays tracked after its connect, and its options and addresses come from its entry |
+| [T-063](fixes.md) | P1 | M | M5 | defect | done | seccomp: a TCP socket stays tracked after its connect, and its options and addresses come from its entry |
 | [T-064](fixes.md) | P1 | M | M5 | defect | open | seccomp: one entry for each socket of each process, and copies of a descriptor are tracked |
 | [T-065](fixes.md) | P3 | S | M5 | feature | open | seccomp: hand a plain upstream descriptor to the program after its handshake |
 | [T-066](fixes.md) | P2 | M | M5 | defect | open | seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes |
