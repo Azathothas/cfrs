@@ -287,7 +287,7 @@ echo answer; source family 0 and `msg_namelen` 0; the long name was sent).
 **Milestone:** M5
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -325,6 +325,18 @@ it returns in less than 100 ms.
   `O_NONBLOCK` also waits for the dial, before and after this change. The socket of the program is
   one end of an `AF_UNIX` socket pair, which is writable before the dial ends; thus `EINPROGRESS`
   and a later `SO_ERROR` cannot tell the program the result of the dial.
+
+## Done
+
+2026-11-06, commit 39ab845 (`T-067: seccomp: a slow connect dial does not stop the supervisor`).
+The dial of a TCP `connect` runs in its own task (`crates/podnet-netns/src/connect.rs`). The
+notification loop serves the other calls during the dial. At the end of the dial, the loop changes
+the entry of the socket and answers each waiting call that `SECCOMP_IOCTL_NOTIF_ID_VALID` finds
+pending; it drops the connection when no call waits. A second `connect` of the socket during the
+dial waits for the same dial; a `close` during the dial gives `ECONNABORTED`.
+`cargo test --test pod_seccomp_slow_dial`: 2 passed (`getsockname` during a 2 s dial returns in
+less than 100 ms). Control on the code before the fix: 2 failed (`getsockname` took 1701 ms; the
+`connect` gave 0 after the `close`). `sh scripts/agent/check.sh`: exit 0.
 
 # T-068: WARP: a probe of the TCP data path renews a session that carries no TCP
 

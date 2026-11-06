@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**140 entries: 102 open, 1 partial, 7 blocked, 30 done.**
+**140 entries: 101 open, 1 partial, 7 blocked, 31 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 13 | 16 |
-| P2 | 76 | 0 | 5 | 13 | 94 |
+| P2 | 75 | 0 | 5 | 14 | 94 |
 | P3 | 24 | 0 | 2 | 4 | 30 |
-| **All** | 102 | 1 | 7 | 30 | 140 |
+| **All** | 101 | 1 | 7 | 31 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ M8 Overlays, M9 Later.
 | [T-064](fixes.md) | P1 | M | M5 | defect | done | seccomp: one entry for each socket of each process, and copies of a descriptor are tracked |
 | [T-065](fixes.md) | P3 | S | M5 | feature | open | seccomp: hand a plain upstream descriptor to the program after its handshake |
 | [T-066](fixes.md) | P2 | M | M5 | defect | done | seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes |
-| [T-067](fixes.md) | P2 | M | M5 | defect | open | seccomp: a slow `connect` dial does not stop the supervisor for the other calls |
+| [T-067](fixes.md) | P2 | M | M5 | defect | done | seccomp: a slow `connect` dial does not stop the supervisor for the other calls |
 | [T-068](fixes.md) | P1 | M | M5 | defect | done | WARP: a probe of the TCP data path renews a session that carries no TCP |
 | [T-069](fixes.md) | P1 | L | M5 | defect | done | `warp tun`: a SYN probe of the session, and `--session-max-age` |
 | [T-070](fixes.md) | P1 | S | M5 | defect | done | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
