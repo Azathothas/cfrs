@@ -723,7 +723,7 @@ datagram of root. Control: with the shim before, the server gets the datagram of
 **Milestone:** M5
 **Priority:** P3
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -752,6 +752,14 @@ gh workflow run ci.yml
 ```
 
 The new job passes. Plant: remove `need_loopback!()` from one test. The job must fail.
+
+## Done
+
+2026-11-06, commit 2ddb0ed (`T-076: a CI job runs the tests with the loopback down`). The job
+`no-loopback` of `ci.yml` builds the tests, then runs them with `sudo unshare -n` and `setpriv` as
+the runner user, offline; its plant step removes `need_loopback!()` from one test and must see the
+test fail. `the_kernel_refuses_a_real_af_inet_bind` now skips on `EADDRNOTAVAIL`. CI run 42183709673
+(head 00ca0a5): the job `no-loopback` passed, with its plant step.
 
 # T-077: An ingress `path:` rule matches the decoded path, as cloudflared does
 

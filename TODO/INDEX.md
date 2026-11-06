@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**140 entries: 104 open, 1 partial, 7 blocked, 28 done.**
+**140 entries: 103 open, 1 partial, 7 blocked, 29 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 13 | 16 |
 | P2 | 77 | 0 | 5 | 12 | 94 |
-| P3 | 25 | 0 | 2 | 3 | 30 |
-| **All** | 104 | 1 | 7 | 28 | 140 |
+| P3 | 24 | 0 | 2 | 4 | 30 |
+| **All** | 103 | 1 | 7 | 29 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -121,7 +121,7 @@ M8 Overlays, M9 Later.
 | [T-073](fixes.md) | P2 | M | M5 | defect | open | `warp forward`: the pins of `--resolve`, and the list of forwards |
 | [T-074](fixes.md) | P2 | L | M5 | defect | open | `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg |
 | [T-075](fixes.md) | P2 | S | M5 | defect | done | The datagram socket of the vnet shim takes the same user only |
-| [T-076](fixes.md) | P3 | S | M5 | chore | open | A CI job runs the tests with the loopback down |
+| [T-076](fixes.md) | P3 | S | M5 | chore | done | A CI job runs the tests with the loopback down |
 | [T-077](fixes.md) | P2 | S | M5 | defect | done | An ingress `path:` rule matches the decoded path, as cloudflared does |
 | [T-078](fixes.md) | P3 | S | M5 | defect | done | `pod doctor` uses the verdict words of `doctor` and has a `schema` key |
 | [T-079](fixes.md) | P3 | S | M5 | measurement | open | Read the numbers of #206 and #184 in a live run |
