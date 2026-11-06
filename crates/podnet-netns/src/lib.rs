@@ -45,6 +45,7 @@ mod frontdoor;
 mod inbox;
 mod netns;
 mod seccomp;
+mod socket;
 mod sockopt;
 
 pub use cli::{set_program_name, usage, usage_for};
@@ -175,12 +176,19 @@ pub fn main_with_args(argv: &[String]) -> i32 {
             ));
         }
     };
+    let name_backend = args.name_backend;
+    let netns = |args: Args| {
+        name_the_backend(name_backend, BackendKind::Netns);
+        run(args)
+    };
+    let seccomp = |args: Args| {
+        name_the_backend(name_backend, BackendKind::Seccomp);
+        run_seccomp(args)
+    };
     let result = match args.backend {
-        BackendKind::Netns => run(args),
-        BackendKind::Seccomp => run_seccomp(args),
-        BackendKind::Auto if args.prefer_udp && doctor::probe_seccomp_notif().ok => {
-            run_seccomp(args)
-        }
+        BackendKind::Netns => netns(args),
+        BackendKind::Seccomp => seccomp(args),
+        BackendKind::Auto if args.prefer_udp && doctor::probe_seccomp_notif().ok => seccomp(args),
         BackendKind::Auto => {
             // The netns backend needs unshare and a TUN; without them the
             // seccomp backend is the only thing that can work.
@@ -188,9 +196,9 @@ pub fn main_with_args(argv: &[String]) -> i32 {
                 || probe_unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET).ok
             {
                 warn_inbound("netns");
-                run(args)
+                netns(args)
             } else {
-                run_seccomp(args)
+                seccomp(args)
             }
         }
     };
@@ -262,6 +270,21 @@ pub fn quiet() -> bool {
 pub(crate) fn warn(text: &str) {
     if !quiet() {
         eprintln!("podnet-netns: {text}");
+    }
+}
+
+/// The line that names the backend that runs and its limits (T-071).
+fn backend_line(kind: BackendKind) -> &'static str {
+    match kind {
+        BackendKind::Seccomp => "seccomp backend: socket options and addresses are emulated; use --backend netns when a program fails",
+        _ => "netns backend: UDP other than DNS does not go through, and a loopback listener of the program is not seen from outside; use --backend seccomp when a program needs them",
+    }
+}
+
+/// Print [`backend_line`] once on stderr when `on`, unless [`quiet`].
+fn name_the_backend(on: bool, kind: BackendKind) {
+    if on {
+        warn(backend_line(kind));
     }
 }
 

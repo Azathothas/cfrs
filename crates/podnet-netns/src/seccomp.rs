@@ -757,7 +757,7 @@ pub(crate) async fn supervise_seccomp(
         }
 
         let outcome = if nr == libc::SYS_socket as i32 {
-            handle_socket(lfd, id, a, &mut map)
+            crate::socket::handle_socket(lfd, id, a, &mut map, verbose)
         } else if nr == libc::SYS_connect as i32 {
             handle_connect(
                 lfd,
@@ -788,7 +788,7 @@ pub(crate) async fn supervise_seccomp(
             )
             .await
         } else if nr == libc::SYS_setsockopt as i32 {
-            crate::sockopt::handle_setsockopt(lfd, id, a, mem, (&mut map, key))
+            crate::sockopt::handle_setsockopt(lfd, id, a, mem, (&mut map, key), verbose)
         } else if nr == libc::SYS_getsockopt as i32 {
             crate::sockopt::handle_getsockopt(lfd, id, a, mem, mem_writable, (&mut map, key))
         } else if nr == libc::SYS_close as i32 {
@@ -946,76 +946,6 @@ pub(crate) async fn drain_relays(limit: Duration) {
 /// Above this many tracked descriptors the child is refused more, so a program
 /// that leaks sockets cannot grow the supervisor without bound.
 pub(crate) const MAX_TRACKED_FDS: usize = 4096;
-
-pub(crate) fn handle_socket(
-    lfd: RawFd,
-    id: u64,
-    a: [u64; 6],
-    map: &mut crate::fdtable::Table,
-) -> Result<()> {
-    if !map.has_room() {
-        return notif_respond(lfd, id, -1, libc::EMFILE);
-    }
-    let domain = a[0] as i32;
-    let ty = a[1] as i32;
-    let kind = ty & 0xf; // SOCK_STREAM=1, SOCK_DGRAM=2
-    let inet = domain == libc::AF_INET || domain == libc::AF_INET6;
-    if !inet || (kind != libc::SOCK_STREAM && kind != libc::SOCK_DGRAM) {
-        return notif_continue(lfd, id);
-    }
-    // ADDFD only accepts O_CLOEXEC in newfd_flags on older kernels, so
-    // SOCK_NONBLOCK is applied to the shared description instead: the child's
-    // fd is a dup of `theirs`, so the flag is inherited.
-    let mut newfd_flags = 0u32;
-    if ty & libc::SOCK_CLOEXEC != 0 {
-        newfd_flags |= libc::O_CLOEXEC as u32;
-    }
-    let nonblocking = ty & libc::SOCK_NONBLOCK != 0;
-    if kind == libc::SOCK_STREAM {
-        // A std pair is blocking on both ends; only the supervisor's end is
-        // made non-blocking, so the child gets a blocking socket unless it
-        // asked for SOCK_NONBLOCK.
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-        set_nonblocking(ours.as_raw_fd())?;
-        if nonblocking {
-            set_nonblocking(theirs.as_raw_fd())?;
-        }
-        let key = crate::fdtable::inode_of(theirs.as_raw_fd())?;
-        notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
-        drop(theirs);
-        map.insert(
-            key,
-            Sock::Stream {
-                pair: tokio::net::UnixStream::from_std(ours)?,
-                bound: None,
-                inbound: None,
-                error: 0,
-                options: Default::default(),
-            },
-        );
-    } else {
-        let (ours, theirs) = std::os::unix::net::UnixDatagram::pair()?;
-        set_nonblocking(ours.as_raw_fd())?;
-        if nonblocking {
-            set_nonblocking(theirs.as_raw_fd())?;
-        }
-        // A copy of the end of the program, for intercepted reads.
-        let copy = theirs.try_clone()?;
-        let key = crate::fdtable::inode_of(theirs.as_raw_fd())?;
-        notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
-        drop(theirs);
-        map.insert(
-            key,
-            Sock::Datagram {
-                pair: Arc::new(tokio::net::UnixDatagram::from_std(ours)?),
-                dest: None,
-                relay: None,
-                inbox: Arc::new(crate::inbox::Inbox::new(copy, domain == libc::AF_INET6)),
-            },
-        );
-    }
-    Ok(())
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_connect(

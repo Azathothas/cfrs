@@ -42,6 +42,7 @@ pub mod ip;
 pub mod l4;
 pub mod live;
 pub mod nc;
+pub mod pod;
 pub mod proxy;
 pub mod quic;
 pub mod register;
@@ -58,8 +59,7 @@ pub use identity::Identity;
 pub use ip::{check_cc, check_tcp_burst, StackConfig, TcpConn, UdpConn, WarpStack};
 pub use live::{Closable, Live};
 pub use register::Device;
-pub use session::Dial;
-pub use session::{MasqueRx, MasqueSession, MasqueTx};
+pub use session::{Dial, MasqueRx, MasqueSession, MasqueTx};
 
 use anyhow::{bail, Context, Result};
 

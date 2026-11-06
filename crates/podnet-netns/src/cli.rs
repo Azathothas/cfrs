@@ -28,6 +28,9 @@ pub(crate) struct Args {
     /// `--prefer-udp`: `auto` takes the seccomp backend first (it carries
     /// all UDP; the netns backend carries DNS only).
     pub(crate) prefer_udp: bool,
+    /// `--name-backend`: print one line that names the backend that runs
+    /// and its limits (T-071).
+    pub(crate) name_backend: bool,
 }
 
 /// The name in the help and the usage lines: `podnet-netns`, or `podnet pod`
@@ -87,6 +90,8 @@ Options:
                            outside; use a unix socket (connect -L unix:///PATH)
       --prefer-udp         With auto: seccomp first when it works (all UDP
                            goes through; netns carries DNS only)
+      --name-backend       Print one line on stderr that names the backend
+                           that runs and its limits (also after auto)
       --inbound-dir <DIR>  Where a bound port is exposed as a unix socket
                            (seccomp backend only). The directory must be of
                            this user and not writable by the group or by
@@ -96,7 +101,8 @@ Options:
       --serve <LISTEN>     Serve SOCKS5, HTTP CONNECT and UDP ASSOCIATE on
                            unix:/path or tcp://host:port, forwarding through
                            the -x chain
-  -v, --verbose            Log each flow
+  -v, --verbose            Log each flow; with seccomp, also each socket and
+                           each setsockopt that the pod emulates
   -V, --version            Print the version
   -h, --help               Print help
 
@@ -117,6 +123,7 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
     let mut maps: Vec<(String, IpAddr)> = Vec::new();
     let mut backend = BackendKind::Auto;
     let mut prefer_udp = false;
+    let mut name_backend = false;
     let mut inbound_dir = crate::listen::default_inbound_dir();
     let mut inbound_dir_given = false;
     let mut keep_proxy_env = false;
@@ -150,6 +157,10 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
             }
             "--prefer-udp" => {
                 prefer_udp = true;
+                i += 1;
+            }
+            "--name-backend" => {
+                name_backend = true;
                 i += 1;
             }
             "--map" => {
@@ -254,5 +265,6 @@ pub(crate) fn parse_args(argv: &[String]) -> Result<Args> {
         serve,
         backend,
         prefer_udp,
+        name_backend,
     })
 }

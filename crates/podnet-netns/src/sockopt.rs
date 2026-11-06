@@ -77,11 +77,18 @@ pub(crate) fn handle_setsockopt(
     a: [u64; 6],
     mem: RawFd,
     (map, key): (&mut HashMap<Key, Sock>, Key),
+    verbose: bool,
 ) -> Result<()> {
     let Some(entry) = map.get_mut(&key) else {
         return notif_continue(lfd, id);
     };
     let (level, name, optval, len) = (a[1] as i32, a[2] as i32, a[3], a[4] as usize);
+    if verbose {
+        eprintln!(
+            "podnet-netns: setsockopt answered by the pod (fd {}, level {level}, option {name})",
+            a[0] as i32
+        );
+    }
     if let Some(options) = options_of(entry) {
         if optval != 0 && len > 0 && len <= MAX_OPTION {
             if let Ok(value) = read_mem(mem, optval, len) {

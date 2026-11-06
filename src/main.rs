@@ -4404,7 +4404,7 @@ enum WarpCommand {
         #[arg(short = 'r', long = "rule", value_name = "SPEC")]
         rules: Vec<String>,
         #[command(flatten)]
-        at: podnet::warp::find::At,
+        at: podnet::warp::pod::PodOptions,
         /// The program and its arguments.
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         program: Vec<String>,
@@ -4412,7 +4412,7 @@ enum WarpCommand {
     /// Run $SHELL under the pod of the running podnet warp up. When it does
     /// not run, the shell starts as it is (with the proxy variables when
     /// the env file is there).
-    Shell(podnet::warp::find::At),
+    Shell(podnet::warp::pod::PodOptions),
     /// A byte pipe from stdin and stdout to HOST:PORT through WARP, for
     /// `ssh -o ProxyCommand='podnet warp nc %h %p'` and git over SSH.
     /// It uses the running podnet warp up, else a WARP session of its
@@ -4726,9 +4726,9 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             return Ok(());
         }
         WarpCommand::Exec { rules, program, at } => {
-            return Err(podnet::warp::up::exec_in_pod(at, rules, program));
+            return Err(podnet::warp::pod::exec_in_pod(at, rules, program));
         }
-        WarpCommand::Shell(at) => return Err(podnet::warp::up::shell(at)),
+        WarpCommand::Shell(at) => return Err(podnet::warp::pod::shell(at)),
         WarpCommand::SshConfig {
             host,
             write,

@@ -631,102 +631,6 @@ pub fn down() -> Result<()> {
     Ok(())
 }
 
-/// The arguments of `podnet pod` for the socket of `podnet warp up`.
-pub fn pod_args(socket: &Path, rules: &[String], program: &[String]) -> Vec<String> {
-    let mut argv = vec![
-        "pod".to_string(),
-        "--prefer-udp".to_string(),
-        "-x".to_string(),
-        format!("socks5://unix:{}", socket.display()),
-    ];
-    for rule in rules {
-        argv.push("-r".into());
-        argv.push(rule.clone());
-    }
-    argv.push("--".into());
-    argv.extend(program.iter().cloned());
-    argv
-}
-
-/// The CA variables of the env file (the fix of issue 86), for a command
-/// that runs under the pod and does not read the env file.
-fn ca_exports() -> Vec<(String, String)> {
-    let Ok(text) = env_path().and_then(|p| Ok(std::fs::read_to_string(p)?)) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| line.strip_prefix("export ")?.split_once('='))
-        .filter(|(k, _)| CA_VARIABLES.contains(k))
-        .map(|(k, v)| (k.to_string(), v.trim_matches('\'').to_string()))
-        .collect()
-}
-
-/// `podnet warp exec -- CMD`: run CMD under the pod (this process becomes
-/// it). Gives the error when it cannot.
-pub fn exec_in_pod(at: &super::find::At, rules: &[String], program: &[String]) -> anyhow::Error {
-    use std::os::unix::process::CommandExt as _;
-    let socket = match super::find::running(at) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return e.into(),
-    };
-    let err = pod_command(exe, &socket, rules, program).exec();
-    anyhow::Error::new(err).context("running podnet pod")
-}
-
-/// The command of `warp exec` (issue 116): the program gets
-/// PODNET_WARP_SOCKET, also when the shell did not read the env file.
-fn pod_command(
-    exe: std::path::PathBuf,
-    socket: &Path,
-    rules: &[String],
-    program: &[String],
-) -> std::process::Command {
-    let mut command = std::process::Command::new(exe);
-    command
-        .args(pod_args(socket, rules, program))
-        .env("PODNET_WARP_SOCKET", socket)
-        .envs(ca_exports());
-    command
-}
-
-/// `podnet warp shell`: `$SHELL` under the pod; when the proxy does not
-/// answer, `$SHELL` as it is, with the proxy variables of the env file.
-pub fn shell(at: &super::find::At) -> anyhow::Error {
-    use std::os::unix::process::CommandExt as _;
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/bin/sh".into());
-    match (super::find::running(at), std::env::current_exe()) {
-        (Ok(socket), Ok(exe)) => {
-            let err = pod_command(exe, &socket, &[], std::slice::from_ref(&shell))
-                .env(SHELL_VARIABLE, "1")
-                .exec();
-            eprintln!("podnet: warp shell: {err}; the shell starts with no pod");
-        }
-        (Err(err), _) => eprintln!("podnet: warp shell: {err}; the shell starts with no pod"),
-        (_, Err(err)) => eprintln!("podnet: warp shell: {err}; the shell starts with no pod"),
-    }
-    let mut cmd = std::process::Command::new(&shell);
-    cmd.env(SHELL_VARIABLE, "1");
-    if let Ok(text) = env_path().and_then(|p| Ok(std::fs::read_to_string(p)?)) {
-        for line in text.lines() {
-            if let Some((k, v)) = line.strip_prefix("export ").and_then(|l| l.split_once('=')) {
-                cmd.env(k, v.trim_matches('\''));
-            }
-        }
-    }
-    let err = cmd.exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return anyhow::anyhow!("no shell at {shell}");
-    }
-    anyhow::Error::new(err).context(format!("running {shell}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,20 +712,6 @@ mod tests {
             "{fish}"
         );
         assert!(fish.contains("exec '/b/podnet' warp shell; end"), "{fish}");
-    }
-
-    // Issue 116: the program of warp exec gets PODNET_WARP_SOCKET.
-    #[test]
-    fn warp_exec_gives_the_socket() {
-        let command = pod_command(
-            "/b/podnet".into(),
-            Path::new("/r/warp.sock"),
-            &[],
-            &["sh".to_string()],
-        );
-        assert!(command
-            .get_envs()
-            .any(|(k, v)| k == "PODNET_WARP_SOCKET" && v == Some("/r/warp.sock".as_ref())));
     }
 
     // Issue 116: warp up does not send its own session through the proxy
@@ -925,29 +815,6 @@ mod tests {
         // No system bundle: no fix (a warning).
         assert!(ca_fix(&env, None).is_none());
         assert!(ca_fix(&|_| None, Some(&system)).is_none());
-    }
-
-    #[test]
-    fn pod_arguments() {
-        let argv = pod_args(
-            Path::new("/r/warp.sock"),
-            &["cidr:10.0.0.0/8=direct".into()],
-            &["git".into(), "fetch".into()],
-        );
-        assert_eq!(
-            argv,
-            [
-                "pod",
-                "--prefer-udp",
-                "-x",
-                "socks5://unix:/r/warp.sock",
-                "-r",
-                "cidr:10.0.0.0/8=direct",
-                "--",
-                "git",
-                "fetch"
-            ]
-        );
     }
 
     const TUN_LABEL: &str = "podnet warp tun --default-route --detach";
