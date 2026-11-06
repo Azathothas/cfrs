@@ -2064,7 +2064,7 @@ fn warp_up(
     // Issue 97: the TCP listener or the socket can be refused by the host;
     // the env file and the advice follow what came up.
     let (tcp, socket_up) = podnet::warp::up::listeners_of(&doc);
-    for line in up_summary(tcp.is_some(), port, socket_up, &socket) {
+    for line in podnet::warp::find::up_summary(tcp.is_some(), port, socket_up, &socket) {
         eprintln!("{line}");
     }
     let env = podnet::warp::up::write_env(tcp, &socket)?;
@@ -2103,26 +2103,6 @@ fn warp_up(
     doc["tcp"] = tcp.is_some().into();
     println!("{doc}");
     Ok(())
-}
-
-/// The lines of `warp up` on stderr when a listener did not start (issue
-/// 115: the working listener comes first, then the one that failed).
-fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -> Vec<String> {
-    let mut out = Vec::new();
-    if !tcp && socket_up {
-        out.push(format!(
-            "podnet: warp up: the WARP proxy runs on unix:{}; use: podnet warp exec -- CMD (or podnet warp shell). The host refused the TCP listener 127.0.0.1:{port}, so there are no proxy variables",
-            socket.display()
-        ));
-    } else if !tcp {
-        out.push(format!(
-            "podnet: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables"
-        ));
-    }
-    if !socket_up {
-        out.push("podnet: warp up: the unix socket did not start; podnet warp exec and podnet warp shell do not work. Use the proxy variables: eval \"$(podnet warp env)\"".into());
-    }
-    out
 }
 
 /// The default `--idle` of `podnet warp nc -u`, in seconds.
@@ -4496,6 +4476,9 @@ enum WarpCommand {
         /// session is down; each change is put back at the end.
         #[arg(long)]
         default_route: bool,
+        /// Keep the rp_filter of the interface. Without it, podnet writes 0.
+        #[arg(long)]
+        keep_rp_filter: bool,
         #[command(flatten)]
         detach: DetachArgs,
     },
@@ -5476,8 +5459,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         WarpCommand::Tun {
             interface: name,
             default_route,
+            keep_rp_filter,
             ..
         } => {
+            podnet::warp::tun::rp_filter::set_keep(keep_rp_filter);
             let address = client
                 .device()
                 .ipv4()
@@ -5584,6 +5569,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 "tun": tun.name,
                 "address": address.to_string(),
                 "default_route": default_route,
+                "rp_filter": podnet::warp::tun::rp_filter::apply(&tun.name),
             }));
             // The TUN stays; a session that ends is opened again (issue 75).
             let tun_ref = &tun;
@@ -6854,22 +6840,6 @@ mod tests {
         assert!(tcp[0].starts_with("eval"), "{tcp:?}");
         let direct = agent_commands(false, true);
         assert_eq!(direct, ["podnet agent status", "podnet agent down"]);
-    }
-
-    // Issue 115: with the TCP listener refused, the first line names the
-    // unix socket that works.
-    #[test]
-    fn the_warp_up_summary_starts_with_what_works() {
-        let socket = std::path::Path::new("/run/podnet/warp.sock");
-        let lines = up_summary(false, 40000, true, socket);
-        assert_eq!(lines.len(), 1);
-        assert!(
-            lines[0].contains("runs on unix:/run/podnet/warp.sock"),
-            "{lines:?}"
-        );
-        assert!(lines[0].contains("podnet warp exec"), "{lines:?}");
-        assert!(up_summary(true, 40000, true, socket).is_empty());
-        assert_eq!(up_summary(true, 40000, false, socket).len(), 1);
     }
 
     /// Issue 101: once the stop is armed (at the ready line), a SIGTERM

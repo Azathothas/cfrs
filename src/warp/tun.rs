@@ -29,6 +29,7 @@ const IFF_NO_PI: libc::c_short = 0x1000;
 const KEEPALIVE: Duration = Duration::from_secs(15);
 
 pub mod probe;
+pub mod rp_filter;
 
 /// An open TUN interface.
 pub struct Tun {
@@ -290,6 +291,14 @@ pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
     let (mut tx, mut rx) = session.split();
     let keepalive = tx.keepalive(&rx);
     info!(interface = %tun.name, "the TUN interface is connected to WARP");
+    // T-072: rp_filter 0 at each session, and again 2 s later (udev).
+    rp_filter::apply(&tun.name);
+    let name = tun.name.clone();
+    let recheck = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        rp_filter::apply(&name);
+    });
+    let _recheck = scopeguard(recheck);
     let settings = super::live::probe();
     let state = match (tun.address, settings.map(|p| p.target)) {
         (Some(source), Some(std::net::SocketAddr::V4(target))) => Some(std::sync::Mutex::new(
@@ -377,6 +386,17 @@ pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
             }
         } => bail!("the session ends on purpose (--session-max-age)"),
     }
+}
+
+/// Abort the task when the guard drops.
+fn scopeguard(task: tokio::task::JoinHandle<()>) -> impl Drop {
+    struct Abort(tokio::task::JoinHandle<()>);
+    impl Drop for Abort {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    Abort(task)
 }
 
 #[cfg(test)]

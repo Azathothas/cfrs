@@ -175,6 +175,26 @@ fn not_running(tried: &[(&'static str, PathBuf)], pointer: Option<&Pointer>) -> 
     text
 }
 
+/// The lines of `warp up` on stderr when a listener did not start (issue
+/// 115: the working listener comes first, then the one that failed).
+pub fn up_summary(tcp: bool, port: u16, socket_up: bool, socket: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if !tcp && socket_up {
+        out.push(format!(
+            "podnet: warp up: the WARP proxy runs on unix:{}; use: podnet warp exec -- CMD (or podnet warp shell). The host refused the TCP listener 127.0.0.1:{port}, so there are no proxy variables",
+            socket.display()
+        ));
+    } else if !tcp {
+        out.push(format!(
+            "podnet: warp up: the TCP listener 127.0.0.1:{port} did not start; there are no proxy variables"
+        ));
+    }
+    if !socket_up {
+        out.push("podnet: warp up: the unix socket did not start; podnet warp exec and podnet warp shell do not work. Use the proxy variables: eval \"$(podnet warp env)\"".into());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +304,20 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("other (PODNET_STATE_DIR)"), "{text}");
+    }
+    // Issue 115: with the TCP listener refused, the first line names the
+    // unix socket that works.
+    #[test]
+    fn the_warp_up_summary_starts_with_what_works() {
+        let socket = std::path::Path::new("/run/podnet/warp.sock");
+        let lines = up_summary(false, 40000, true, socket);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("runs on unix:/run/podnet/warp.sock"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("podnet warp exec"), "{lines:?}");
+        assert!(up_summary(true, 40000, true, socket).is_empty());
+        assert_eq!(up_summary(true, 40000, false, socket).len(), 1);
     }
 }
