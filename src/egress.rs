@@ -52,6 +52,7 @@ pub const HTTP_PORT: u16 = 8080;
 pub fn rules() -> Rules {
     Rules {
         proxy_vars: &pod_proxy::PROXY_VARS_UPPER_FIRST,
+        http_proxy_vars: &pod_proxy::HTTP_PROXY_VARS_UPPER_FIRST,
         no_proxy_vars: &pod_proxy::NO_PROXY_VARS_UPPER_FIRST,
         skip_unusable: true,
         http_port: HTTP_PORT,

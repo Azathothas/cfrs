@@ -58,22 +58,22 @@ path = "src/main.rs"
 podnet-netns = { path = "crates/podnet-netns", version = "0.3.0-beta.12" }
 # TLS of PodUtils/podcrates: the roots, the client configurations and the
 # split of the ClientHello, with podnet's settings (src/trust.rs), on ring.
-pod-tls = { git = "https://github.com/PodUtils/podcrates", tag = "v0.5.0", version = "0.5.0" }
+pod-tls = { git = "https://github.com/PodUtils/podcrates", tag = "v0.6.0", version = "0.6.0" }
 # The HTTP date of a time (the log of detach, the tests of the clock); the
 # dial, the resolver and the failures of pod-proxy.
-pod-core = { git = "https://github.com/PodUtils/podcrates", tag = "v0.5.0", version = "0.5.0" }
+pod-core = { git = "https://github.com/PodUtils/podcrates", tag = "v0.6.0", version = "0.6.0" }
 # The way out of each TCP connection (src/egress.rs: the proxies, Digest, the
 # race of addresses, the proxy of a tool's file), the HTTP client
 # (src/fetch.rs) and the credentials of a served proxy, of PodUtils/podcrates,
 # with podnet's settings.
-pod-proxy = { git = "https://github.com/PodUtils/podcrates", tag = "v0.5.0", version = "0.5.0" }
+pod-proxy = { git = "https://github.com/PodUtils/podcrates", tag = "v0.6.0", version = "0.6.0" }
 # The resolver of each direct dial (src/resolve.rs): an IP address, the pins
 # of --resolve, the system and DNS over HTTPS, with podnet's settings.
-pod-dns = { git = "https://github.com/PodUtils/podcrates", tag = "v0.5.0", version = "0.5.0" }
+pod-dns = { git = "https://github.com/PodUtils/podcrates", tag = "v0.6.0", version = "0.6.0" }
 # The services of other parties: the relay, the edge of Cloudflare's tunnels
 # and its roots, the quick tunnels, WARP, 1.1.1.1 and Pinggy, as data with
 # their sources.
-pod-services = { git = "https://github.com/PodUtils/podcrates", tag = "v0.5.0", version = "0.5.0" }
+pod-services = { git = "https://github.com/PodUtils/podcrates", tag = "v0.6.0", version = "0.6.0" }
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.23"
