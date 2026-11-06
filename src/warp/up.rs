@@ -168,47 +168,8 @@ pub fn failure_text(label: &str, code: i32, stderr: &str, root: bool) -> String 
     text
 }
 
-/// The state of the instance of `podnet warp up` (issue 116): for `warp
-/// status`.
-pub fn instance_state() -> serde_json::Value {
-    // Issue 178: a read makes no directory.
-    let Some(dir) = crate::instances::existing_run_dir() else {
-        return serde_json::json!({"running": false});
-    };
-    match crate::instances::read(&dir, INSTANCE) {
-        Some(record) if crate::instances::is_alive(&dir, INSTANCE) => serde_json::json!({
-            "running": true,
-            "pid": record.pid,
-            "state": record.state,
-            "started": record.started,
-            "restarts": record.restarts,
-            "listens": record.ready.as_ref().and_then(|d| d.get("listens")).cloned(),
-        }),
-        _ => serde_json::json!({"running": false}),
-    }
-}
-
-/// The line of [`instance_state`] for `warp status`.
-pub fn instance_line(state: &serde_json::Value) -> String {
-    if state["running"] != true {
-        return "not running (podnet warp up starts it)".into();
-    }
-    let listens: Vec<&str> = state["listens"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-    format!(
-        "{}, pid {}, restarts {}, listens {}",
-        state["state"].as_str().unwrap_or("?"),
-        state["pid"],
-        state["restarts"],
-        if listens.is_empty() {
-            "-".into()
-        } else {
-            listens.join(" ")
-        }
-    )
-}
+// Issue 116 and T-140: the instance of warp up in `warp status`.
+pub use super::live::instance::{instance_line, instance_state};
 
 /// The variables of `vars` whose value is a listener of `argv` (a
 /// `--listen tcp://ADDR` or `unix:PATH`): the env file of warp up wrote
@@ -677,20 +638,6 @@ mod tests {
         assert_eq!(listeners_of(&doc), (None, true));
         let doc = serde_json::json!({"listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"]});
         assert_eq!(listeners_of(&doc), (Some(40000), true));
-    }
-
-    // Issue 116: warp status shows the instance of warp up.
-    #[test]
-    fn the_instance_line() {
-        assert!(instance_line(&serde_json::json!({"running": false})).starts_with("not running"));
-        let state = serde_json::json!({
-            "running": true, "pid": 42, "state": "ready", "restarts": 0,
-            "listens": ["tcp://127.0.0.1:40000", "unix:/r/warp.sock"],
-        });
-        assert_eq!(
-            instance_line(&state),
-            "ready, pid 42, restarts 0, listens tcp://127.0.0.1:40000 unix:/r/warp.sock"
-        );
     }
 
     // Issue 115: zsh gets the block too; fish gets a file of its own.

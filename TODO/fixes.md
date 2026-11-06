@@ -1230,6 +1230,16 @@ data path or the time of the last probe.
 3. Give them to `warp status` and `podnet status` through the record of the instance (or a
    status file in the run directory).
 
+## Decision
+
+2026-11-06: the record of the instance, not a status file. `warp status`, `podnet status`,
+`podnet ps` and `warp up` read the record already, and a renewal changes no path. The first
+`Live` of the process (the session of `warp proxy`) writes `data_path` and `last_probe` (Unix
+seconds) in the ready document of its record after each probe and when a new session opens
+(`src/warp/live/instance.rs`). The write reads the record from the disk first
+(`detach::update_record`), as `planned_end` and `retry_after` do. A process that is not an
+instance writes nothing.
+
 ## Prove
 
 ```sh

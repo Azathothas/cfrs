@@ -123,7 +123,7 @@ pub fn is_child() -> bool {
 
 /// Change the record of this child (a no-op for another process). The
 /// record on disk goes first: the supervisor writes it too.
-fn update_record(change: impl FnOnce(&mut Record)) {
+pub fn update_record(change: impl FnOnce(&mut Record)) {
     if !is_child() && !REGISTERED.load(Ordering::SeqCst) {
         return;
     }

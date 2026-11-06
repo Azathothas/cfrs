@@ -19,6 +19,8 @@ use pod_tls::fragment::{Part, Split};
 use tokio::sync::{watch, Mutex};
 use tracing::{info, warn};
 
+pub mod instance;
+
 /// How long a caller waits for a new session while the session is down.
 pub const WAIT_FOR_NEW: Duration = Duration::from_secs(20);
 /// How often the watcher looks at the session.
@@ -190,6 +192,15 @@ pub fn split() -> Option<Split> {
 pub type Connect<T> =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<T>> + Send>> + Send + Sync>;
 
+/// What `warp status` shows of a [`Live`] (T-140).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Report {
+    /// [`Live::data_path`]: `ok` or `tcp-dead`.
+    pub data_path: &'static str,
+    /// The Unix time of the last TCP probe, when one ran.
+    pub last_probe: Option<u64>,
+}
+
 /// The current session, and a watcher that replaces it when it closes.
 pub struct Live<T: Closable> {
     current: Mutex<Arc<T>>,
@@ -197,20 +208,23 @@ pub struct Live<T: Closable> {
     reconnects: AtomicU32,
     /// The TCP probe found no data path (T-068): renew the session.
     tcp_dead: AtomicBool,
+    report: watch::Sender<Report>,
     watcher: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl<T: Closable> Live<T> {
     /// Start with `first`; `connect` opens each new session.
     pub fn start(first: T, connect: Connect<T>) -> Arc<Self> {
-        Self::start_aged(
+        let live = Self::start_aged(
             first,
             connect,
             Duration::from_secs(1),
             Duration::from_secs(30),
             max_age(),
         )
-        .probed(probe())
+        .probed(probe());
+        instance::publish_own(&live);
+        live
     }
 
     /// [`Live::start`] with the first and the largest delay of the backoff.
@@ -232,6 +246,10 @@ impl<T: Closable> Live<T> {
             generation,
             reconnects: AtomicU32::new(0),
             tcp_dead: AtomicBool::new(false),
+            report: watch::Sender::new(Report {
+                data_path: "ok",
+                last_probe: None,
+            }),
             watcher: std::sync::Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&live);
@@ -265,7 +283,7 @@ impl<T: Closable> Live<T> {
                     match connect().await {
                         Ok(next) => {
                             *live.current.lock().await = Arc::new(next);
-                            live.tcp_dead.store(false, Ordering::SeqCst);
+                            live.tell(false, false);
                             opened = tokio::time::Instant::now();
                             let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
                             live.generation.send_modify(|g| *g += 1);
@@ -322,7 +340,7 @@ impl<T: Closable> Live<T> {
                     Ok(next) => {
                         *live.current.lock().await = Arc::new(next);
                         opened = tokio::time::Instant::now();
-                        live.tcp_dead.store(false, Ordering::SeqCst);
+                        live.tell(false, false);
                         let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
                         live.generation.send_modify(|g| *g += 1);
                         info!(reconnects = n, "a new WARP session is open");
@@ -373,17 +391,20 @@ impl<T: Closable> Live<T> {
                 let ok = current.probe_tcp(probe.target, probe.limit).await;
                 let Some(live) = weak.upgrade() else { return };
                 if ok || *live.generation.borrow() != generation {
+                    if ok {
+                        live.tell(false, true);
+                    }
                     missed = 0;
                     continue;
                 }
                 missed += 1;
+                live.tell(missed >= probe.misses, true);
                 warn!(target = %probe.target, missed, "the TCP probe of the WARP session failed");
                 if missed >= probe.misses {
                     warn!(
                         reason = "tcp-probe",
                         "the WARP session carries no TCP; a new session takes the new flows"
                     );
-                    live.tcp_dead.store(true, Ordering::SeqCst);
                     missed = 0;
                 }
             }
@@ -403,6 +424,22 @@ impl<T: Closable> Live<T> {
         } else {
             "ok"
         }
+    }
+
+    /// The data path and the time of the last probe, on each change
+    /// (T-140).
+    pub fn report(&self) -> watch::Receiver<Report> {
+        self.report.subscribe()
+    }
+
+    /// Set the state of the data path; `probed`: a probe ended now.
+    fn tell(&self, tcp_dead: bool, probed: bool) {
+        self.tcp_dead.store(tcp_dead, Ordering::SeqCst);
+        let now = probed.then(crate::instances::now);
+        self.report.send_modify(|r| {
+            r.data_path = self.data_path();
+            r.last_probe = now.or(r.last_probe);
+        });
     }
 
     /// The current session. While it is closed, wait for the new one (at

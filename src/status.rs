@@ -151,34 +151,67 @@ pub fn document() -> Value {
     })
 }
 
-/// The detached instances (`--detach`): name, state, pid, and the URL or
-/// the listen address.
+/// The detached instances (`--detach`): name, state, pid, the URL or the
+/// listen address, and the data path of a WARP session (T-140).
 fn instances() -> Value {
     let dir = crate::instances::lookup_dir();
     Value::Array(
         crate::instances::list(&dir)
             .into_iter()
-            .map(|e| {
-                let at = e.record.ready.as_ref().and_then(|d| {
-                    d.get("url")
-                        .filter(|u| !u.is_null())
-                        .or_else(|| d.get("listen"))
-                        .cloned()
-                });
-                json!({
-                    "name": e.record.name,
-                    "state": e.record.state,
-                    "pid": e.record.pid,
-                    "at": at,
-                })
-            })
+            .map(|e| instance(&e.record))
             .collect(),
     )
+}
+
+/// One instance of [`instances`].
+fn instance(record: &crate::instances::Record) -> Value {
+    let ready = |key: &str| record.ready.as_ref().and_then(|d| d.get(key));
+    let at = ready("url")
+        .filter(|u| !u.is_null())
+        .or_else(|| ready("listen"))
+        .cloned();
+    let mut doc = json!({
+        "name": record.name,
+        "state": record.state,
+        "pid": record.pid,
+        "at": at,
+    });
+    // T-140: `warp proxy` writes them; other commands have none.
+    for key in ["data_path", "last_probe"] {
+        if let Some(value) = ready(key) {
+            doc[key] = value.clone();
+        }
+    }
+    doc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-140: `podnet status` names the data path of a WARP instance.
+    #[test]
+    fn status_names_the_data_path_of_an_instance() {
+        let mut record = crate::instances::Record {
+            name: "warp".into(),
+            state: "ready".into(),
+            ready: Some(json!({"listen": "unix:/r/warp.sock"})),
+            ..Default::default()
+        };
+        let doc = instance(&record);
+        assert_eq!(doc["at"], "unix:/r/warp.sock");
+        assert!(doc.get("data_path").is_none(), "{doc}");
+        crate::warp::live::instance::amend(
+            &mut record,
+            crate::warp::live::Report {
+                data_path: "tcp-dead",
+                last_probe: Some(1000),
+            },
+        );
+        let doc = instance(&record);
+        assert_eq!(doc["data_path"], "tcp-dead", "{doc}");
+        assert_eq!(doc["last_probe"], 1000, "{doc}");
+    }
 
     #[test]
     fn the_status_has_its_fields_and_no_credentials() {

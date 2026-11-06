@@ -5255,7 +5255,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 .collect::<Vec<_>>()
                 .into();
             doc["identities"] = identities.into();
-            podnet::detach::ready(doc);
+            podnet::detach::ready(podnet::warp::live::instance::with_data_path(doc));
             sleep_or_signal(run_for).await;
             for proxy in &proxies {
                 proxy.abort();

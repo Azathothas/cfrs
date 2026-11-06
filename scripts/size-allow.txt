@@ -27,7 +27,7 @@
 1902 src/warp/proxy.rs
 908 src/warp/register.rs
 1211 src/warp/session.rs
-900 src/warp/up.rs
+847 src/warp/up.rs
 972 src/warp/wg.rs
 994 src/ws_relay.rs
 2314 tests/cli.rs
