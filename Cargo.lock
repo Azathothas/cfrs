@@ -2087,8 +2087,8 @@ dependencies = [
 
 [[package]]
 name = "pod-core"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 dependencies = [
  "libc",
  "rand",
@@ -2098,8 +2098,8 @@ dependencies = [
 
 [[package]]
 name = "pod-dns"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 dependencies = [
  "base64",
  "bytes",
@@ -2119,8 +2119,8 @@ dependencies = [
 
 [[package]]
 name = "pod-proxy"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 dependencies = [
  "base64",
  "libc",
@@ -2135,8 +2135,8 @@ dependencies = [
 
 [[package]]
 name = "pod-services"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 dependencies = [
  "pod-core",
  "toml",
@@ -2144,8 +2144,8 @@ dependencies = [
 
 [[package]]
 name = "pod-tls"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 dependencies = [
  "base64",
  "p256",
@@ -2162,8 +2162,8 @@ dependencies = [
 
 [[package]]
 name = "pod-todo"
-version = "0.4.0"
-source = "git+https://github.com/PodUtils/podcrates?tag=v0.4.0#ad0f265eb384cc1c92cee219c0514d7ae0ec5a91"
+version = "0.5.0"
+source = "git+https://github.com/PodUtils/podcrates?tag=v0.5.0#7e73344db67734a31fdb5db177bc0af420f0da00"
 
 [[package]]
 name = "podnet"
@@ -3229,7 +3229,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
