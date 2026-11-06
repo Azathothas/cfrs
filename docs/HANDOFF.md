@@ -27,9 +27,12 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
 1. At the start: `sh scripts/agent/podcrates.sh`. A new release of
    podcrates with a file `adoption/podnet/CRATE.patch` at its tag is a take:
    do it first (`docs/maintenance.md`, Shared crates), then write a COORD
-   issue in `PodUtils/podnet` with the commit of the take. The next takes:
-   `pod-dns` (`src/resolve.rs`), `pod-ws` (`src/ws.rs`), `pod-services`
-   (the services of other parties: `docs/reports/services-inventory-2026-11-05.md`).
+   issue in `PodUtils/podnet` with the commit of the take. The next take:
+   podcrates v0.4.0 brings `pod-dns` (`src/resolve.rs`) and `pod-services`
+   (the services of other parties:
+   `docs/reports/services-inventory-2026-11-05.md`) in one patch,
+   `adoption/podnet/pod-dns.patch`, made on a0e1ffb. Then `pod-ws`
+   (`src/ws.rs`).
 2. Then podnet's own work, in the work order of `TODO/PROGRESS.md`
    (the ruling "Order" of 2026-11-06). Frozen code (the script lists it)
    takes fixes only; write each fix in a COORD issue for podcrates.
