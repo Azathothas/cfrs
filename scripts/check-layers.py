@@ -52,6 +52,7 @@ LAYER = {
     "status": "podnet", "bug_report": "podnet", "manual": "podnet",
     "update": "podnet", "fuzzing": "podnet", "lib": "podnet",
     "test_host": "podnet", "services": "core", "main": "podnet",
+    "cli": "podnet",
 }
 
 USES = {
