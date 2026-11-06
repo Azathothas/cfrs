@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**140 entries: 111 open, 1 partial, 7 blocked, 21 done.**
+**140 entries: 110 open, 1 partial, 7 blocked, 22 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 3 | 1 | 0 | 12 | 16 |
-| P2 | 81 | 0 | 5 | 8 | 94 |
+| P2 | 80 | 0 | 5 | 9 | 94 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 111 | 1 | 7 | 21 | 140 |
+| **All** | 110 | 1 | 7 | 22 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -120,7 +120,7 @@ M8 Overlays, M9 Later.
 | [T-072](fixes.md) | P2 | S | M5 | defect | done | `warp tun` sets `rp_filter` to 0 on its interface |
 | [T-073](fixes.md) | P2 | M | M5 | defect | open | `warp forward`: the pins of `--resolve`, and the list of forwards |
 | [T-074](fixes.md) | P2 | L | M5 | defect | open | `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg |
-| [T-075](fixes.md) | P2 | S | M5 | defect | open | The datagram socket of the vnet shim takes the same user only |
+| [T-075](fixes.md) | P2 | S | M5 | defect | done | The datagram socket of the vnet shim takes the same user only |
 | [T-076](fixes.md) | P3 | S | M5 | chore | open | A CI job runs the tests with the loopback down |
 | [T-077](fixes.md) | P2 | S | M5 | defect | open | An ingress `path:` rule matches the decoded path, as cloudflared does |
 | [T-078](fixes.md) | P3 | S | M5 | defect | open | `pod doctor` uses the verdict words of `doctor` and has a `schema` key |

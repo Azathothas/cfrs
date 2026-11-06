@@ -612,7 +612,7 @@ T-068 is done.
 **Milestone:** M5
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -643,6 +643,15 @@ cargo test --workspace -- shim_datagram_of_another_user_is_dropped
 
 The test runs as root and sends from a child with another uid. It is skipped, with one line, when
 it does not run as root.
+
+## Done
+
+2026-11-06, commit 55e8570 (`T-075: the datagram socket of the vnet shim takes the same user
+only`). The shim sets `SO_PASSCRED` on each datagram socket, and before `recvfrom` and `recvmsg` it
+drops each datagram of another user (`MSG_PEEK` of `SCM_CREDENTIALS`), with one line on stderr.
+`recv` and `read` are not interposed (written in `docs/virtual-network.md`). The test is
+`tests/shim_datagram_user.rs`: as root, uid 65534 sends first, then root; the server gets the
+datagram of root. Control: with the shim before, the server gets the datagram of uid 65534.
 
 # T-076: A CI job runs the tests with the loopback down
 
