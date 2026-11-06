@@ -38,18 +38,29 @@ fn build_program(dir: &std::path::Path, name: &str, source: &str) -> std::path::
     output
 }
 
-/// Accept one `ts-dial` request and echo the bytes that follow it.
+/// Accept one `ts-dial` request and echo the bytes that follow it. A read
+/// of the status gets `Running`.
 async fn fake_tailscaled(listener: tokio::net::UnixListener) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (mut stream, _) = listener.accept().await.unwrap();
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while stream.read(&mut byte).await.unwrap_or(0) == 1 {
-        head.push(byte[0]);
-        if head.ends_with(b"\r\n\r\n") {
-            break;
+    // T-081: the door reads the status first; answer Running.
+    let (mut stream, head) = loop {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while stream.read(&mut byte).await.unwrap_or(0) == 1 {
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
         }
-    }
+        if head.starts_with(b"GET /localapi/v0/status") {
+            let _ = stream
+                .write_all(b"HTTP/1.0 200 OK\r\n\r\n{\"BackendState\":\"Running\"}")
+                .await;
+            continue;
+        }
+        break (stream, head);
+    };
     assert!(
         String::from_utf8_lossy(&head).contains("Upgrade: ts-dial"),
         "not a ts-dial request"

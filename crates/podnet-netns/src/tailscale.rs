@@ -120,6 +120,77 @@ impl Dialer {
     }
 }
 
+impl Dialer {
+    /// The `BackendState` of `tailscaled` (`Running`, `NeedsLogin`,
+    /// `Stopped`, ...), from `/localapi/v0/status` (T-081).
+    pub async fn backend_state(&self) -> io::Result<String> {
+        use tokio::io::AsyncReadExt as _;
+        let read = async {
+            let mut stream = UnixStream::connect(&self.socket).await?;
+            // HTTP/1.0: the answer has no chunks, and the daemon closes.
+            stream
+                .write_all(b"GET /localapi/v0/status?peers=false HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n")
+                .await?;
+            let mut answer = Vec::new();
+            (&mut stream)
+                .take(STATUS_LIMIT)
+                .read_to_end(&mut answer)
+                .await?;
+            Ok::<_, io::Error>(answer)
+        };
+        let answer = tokio::time::timeout(STATUS_TIMEOUT, read)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no status in 3 s"))??;
+        backend_state_of(&answer)
+    }
+}
+
+/// The time limit and the size limit of a read of the status.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const STATUS_LIMIT: u64 = 4 << 20;
+
+/// `BackendState` of an HTTP answer of `/localapi/v0/status`.
+fn backend_state_of(answer: &[u8]) -> io::Result<String> {
+    let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
+    let split = answer
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| bad("the status has no end of head"))?;
+    let head = String::from_utf8_lossy(&answer[..split]);
+    let (status, _) = parse_http_head(&format!("{head}\r\n\r\n"))?;
+    if status != 200 {
+        return Err(bad(&format!("the status answered {status}")));
+    }
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer[split + 4..]).map_err(|e| bad(&e.to_string()))?;
+    body["BackendState"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| bad("the status has no BackendState"))
+}
+
+/// One warning for the life of the process when `tailscaled` does not run
+/// a tailnet (T-081): each dial fails until `tailscale up`.
+static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the state of `tailscaled`, and give the warning (one time) when it
+/// is not `Running`.
+async fn state_warning(dialer: &Dialer) -> Option<String> {
+    let state = dialer.backend_state().await.ok()?;
+    if state == "Running" || WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    Some(format!(
+        "tailscale: tailscaled is {state}, not Running: each dial fails until it is logged in (tailscale up; tailscale status)"
+    ))
+}
+
+async fn check_state(dialer: Dialer) {
+    if let Some(text) = state_warning(&dialer).await {
+        crate::warn(&text);
+    }
+}
+
 /// A connection established by [`Dialer::dial`].
 pub enum Conn {
     /// The connection is carried by `tailscaled` over the tailnet.
@@ -243,6 +314,8 @@ pub async fn serve(
     default_port: u16,
 ) -> Result<TailscaleProxy> {
     let mut listen = listen;
+    // T-081: a tailscaled that is not logged in fails each dial.
+    tokio::spawn(check_state(dialer.clone()));
     let accepts = match listen.clone() {
         ProxyListen::Tcp(bind) => {
             let listener = tokio::net::TcpListener::bind(bind)
@@ -350,6 +423,7 @@ async fn handle_client_within<S>(
             .await;
         }
         Err(err) => {
+            tokio::spawn(check_state(dialer.clone()));
             let message = err.to_string();
             crate::warn(&format!(
                 "podnet-netns: tailscale: {host}:{port} failed: {message}"
@@ -411,8 +485,15 @@ mod tests {
         listener: tokio::net::UnixListener,
         seen: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
     ) {
-        if let Ok((mut stream, _)) = listener.accept().await {
+        while let Ok((mut stream, _)) = listener.accept().await {
             let head = read_head(&mut stream).await;
+            // T-081: the status read of the door.
+            if head.starts_with("GET /localapi/v0/status") {
+                let _ = stream
+                    .write_all(b"HTTP/1.0 200 OK\r\n\r\n{\"BackendState\":\"Running\"}")
+                    .await;
+                continue;
+            }
             if let Some(host) = header_value(&head, "dial-host") {
                 seen.lock().await.push(host);
             }
@@ -431,6 +512,7 @@ mod tests {
                     }
                 }
             }
+            return;
         }
     }
 
@@ -552,5 +634,37 @@ mod tests {
         assert_eq!(&echoed, b"ping");
         assert_eq!(seen.lock().await.as_slice(), &["100.82.22.3".to_string()]);
         proxy.abort();
+    }
+
+    /// T-081: a fake LocalAPI answers NeedsLogin; the door warns one time.
+    #[tokio::test]
+    async fn tailscale_front_door_warns_when_logged_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("tailscaled.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let head = read_head(&mut stream).await;
+                assert!(head.starts_with("GET /localapi/v0/status"), "{head}");
+                let body = br#"{"BackendState":"NeedsLogin","Self":{}}"#;
+                let _ = stream
+                    .write_all(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
+                    .await;
+                let _ = stream.write_all(body).await;
+            }
+        });
+        let dialer = Dialer::new(&sock);
+        assert_eq!(dialer.backend_state().await.unwrap(), "NeedsLogin");
+        let text = state_warning(&dialer).await.unwrap();
+        assert!(
+            text.contains("NeedsLogin") && text.contains("tailscale up"),
+            "{text}"
+        );
+        assert!(state_warning(&dialer).await.is_none(), "one warning only");
+        assert_eq!(
+            backend_state_of(b"HTTP/1.0 200 OK\r\n\r\n{\"BackendState\":\"Running\"}").unwrap(),
+            "Running"
+        );
+        assert!(backend_state_of(b"HTTP/1.0 403 Forbidden\r\n\r\n{}").is_err());
     }
 }
