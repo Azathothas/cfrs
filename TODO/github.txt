@@ -44,4 +44,4 @@
 339 issue closed
 340 issue closed
 341 issue closed
-342 issue open
+342 issue closed

@@ -200,6 +200,8 @@ there. The dispatch in `src/cli/mod.rs` calls the new functions. `src/main.rs` h
 tests before and after. One commit holds all the files: the net files and the host files change
 the same `use` lines of `src/main.rs` and `src/cli/mod.rs`.
 
+CI run 42290515084 at b385489: success.
+
 # T-029: `src/main.rs` to a CLI module, part 3: the server commands
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.1.
