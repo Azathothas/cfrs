@@ -654,8 +654,15 @@ podnet warp tun --interface podnet0        # TUN interface (needs CAP_NET_ADMIN)
   flow.
 * `--session-max-age SECS` (or `PODNET_WARP_SESSION_MAX_AGE`) closes each
   session at that age and opens a new one, with a new egress address, for
-  `warp proxy`, `forward`, `run` and `up`. The TCP flows of the old session
-  end. Default: off. The log gives the cause of each close of a session.
+  `warp proxy`, `forward`, `run`, `up` and `tun`. The TCP flows of the old
+  session end. Default: off. The log gives the cause of each close of a
+  session.
+* `--probe IP:PORT` (default `1.1.1.1:443`) is the TCP probe of the data
+  path. A session can carry ICMP and UDP but no TCP. Each 30 s podnet
+  connects to the target through the session (`warp tun`: one SYN from the
+  tunnel address and port 61999; the answer does not go to the TUN). After
+  3 failures in a row, a new session takes the new flows (the log names
+  `reason=tcp-probe`). `--probe off` stops it.
 * New devices: the WARP service limits the registrations of each address.
   Observed: HTTP 429 (error 1015) after about 10 new devices in 90 minutes,
   cleared after about 30 minutes. podnet then says so. A saved identity,

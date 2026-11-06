@@ -4060,7 +4060,7 @@ struct WarpArgs {
     cc: Option<String>,
     /// Close each MASQUE session on purpose at this age, and open a new one
     /// (a new egress address). The TCP flows of the old session end.
-    /// Default: off. Not for warp tun.
+    /// Default: off.
     #[arg(
         long,
         value_name = "SECS",
@@ -4070,7 +4070,7 @@ struct WarpArgs {
     )]
     session_max_age: Option<u64>,
     /// The TCP probe of the data path: IP:PORT or off (default 1.1.1.1:443). After 3
-    /// failed connects (one each 30 s), a new session takes the new flows. Not for warp tun.
+    /// failed connects (one each 30 s), a new session takes the new flows (warp tun: a SYN).
     #[arg(long, value_name = "IP:PORT|off", global = true, value_parser = podnet::warp::live::parse_probe)]
     probe: Option<Option<podnet::warp::live::Probe>>,
     /// Do not try the WebSocket relay (--relay, PODNET_RELAY) when the direct
@@ -4670,12 +4670,6 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
     }
     // Issue 185: the renewal of the session.
     if let Some(secs) = args.session_max_age {
-        if matches!(args.command, WarpCommand::Tun { .. }) {
-            return Err(podnet::exit::fault(
-                Fault::Usage,
-                anyhow::anyhow!("--session-max-age works with warp proxy, forward, run and up, not with warp tun"),
-            ));
-        }
         podnet::warp::live::set_max_age(Some(Duration::from_secs(secs)));
     }
     if let Some(probe) = args.probe {

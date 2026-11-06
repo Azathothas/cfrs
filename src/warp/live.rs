@@ -101,7 +101,8 @@ pub fn probe_arg(probe: Option<Probe>) -> String {
     )
 }
 
-fn probe() -> Option<Probe> {
+/// The probe of this process (None: no probe).
+pub fn probe() -> Option<Probe> {
     *PROBE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -141,7 +142,8 @@ pub fn set_max_age(age: Option<Duration>) {
     MAX_AGE.store(age.map_or(0, |a| a.as_secs().max(1)), Ordering::SeqCst);
 }
 
-fn max_age() -> Option<Duration> {
+/// The age at which a session is renewed (None: never).
+pub fn max_age() -> Option<Duration> {
     match MAX_AGE.load(Ordering::SeqCst) {
         0 => None,
         secs => Some(Duration::from_secs(secs)),

@@ -28,11 +28,16 @@ const IFF_NO_PI: libc::c_short = 0x1000;
 /// The interval of the HTTP/2 PING on an idle session.
 const KEEPALIVE: Duration = Duration::from_secs(15);
 
+pub mod probe;
+
 /// An open TUN interface.
 pub struct Tun {
     fd: AsyncFd<OwnedFd>,
     /// The interface name that the kernel gave.
     pub name: String,
+    /// The IPv4 address of the interface, when this process gave it: the
+    /// source of the TCP probe (T-069).
+    pub address: Option<Ipv4Addr>,
 }
 
 fn ifreq(name: &str) -> Result<libc::ifreq> {
@@ -65,6 +70,7 @@ impl Tun {
                 .map_err(std::io::Error::from)
                 .context("registering the TUN")?,
             name: name.to_string(),
+            address: None,
         })
     }
 }
@@ -232,7 +238,11 @@ impl Tun {
         // SAFETY: `fd` is an OwnedFd: it holds the TUN descriptor open and
         // returns it from as_raw_fd until the AsyncFd drops it.
         let fd = unsafe { AsyncFd::register(fd) }.map_err(std::io::Error::from)?;
-        Ok(Self { fd, name })
+        Ok(Self {
+            fd,
+            name,
+            address: Some(address),
+        })
     }
 
     /// Read one packet.
@@ -273,32 +283,67 @@ impl Tun {
     }
 }
 
-/// Move packets between `tun` and `session` until one of them ends.
+/// Move packets between `tun` and `session` until one of them ends: the
+/// session closes, the TCP probe gets no answer (T-069), or the session
+/// reaches `--session-max-age`.
 pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
     let (mut tx, mut rx) = session.split();
     let keepalive = tx.keepalive(&rx);
     info!(interface = %tun.name, "the TUN interface is connected to WARP");
+    let settings = super::live::probe();
+    let state = match (tun.address, settings.map(|p| p.target)) {
+        (Some(source), Some(std::net::SocketAddr::V4(target))) => Some(std::sync::Mutex::new(
+            probe::TunProbe::new(source, target, settings.map_or(3, |p| p.misses)),
+        )),
+        _ => None,
+    };
+    let every = settings.map_or(Duration::from_secs(30), |p| p.every);
+    let (rst_tx, mut rst_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
     let outbound = async {
         let mut buf = vec![0u8; 65_536];
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         loop {
-            let n = tun
-                .read(&mut buf)
-                .await
-                .context("reading the TUN interface")?;
-            if n == 0 {
-                continue;
+            tokio::select! {
+                n = tun.read(&mut buf) => {
+                    let n = n.context("reading the TUN interface")?;
+                    if n == 0 {
+                        continue;
+                    }
+                    if n > TUNNEL_MTU {
+                        debug!(n, "dropped a packet larger than the tunnel MTU");
+                        continue;
+                    }
+                    tx.send_packet(&buf[..n]).await?;
+                }
+                _ = ticks.tick(), if state.is_some() => {
+                    let tick = state.as_ref().map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).tick());
+                    match tick {
+                        Some(Ok(syn)) => tx.send_packet(&syn).await?,
+                        Some(Err(misses)) => bail!("the TCP probe got no answer {misses} times: the session carries no TCP (reason=tcp-probe)"),
+                        None => {}
+                    }
+                }
+                Some(rst) = rst_rx.recv() => tx.send_packet(&rst).await?,
             }
-            if n > TUNNEL_MTU {
-                debug!(n, "dropped a packet larger than the tunnel MTU");
-                continue;
-            }
-            tx.send_packet(&buf[..n]).await?;
         }
         #[allow(unreachable_code)]
         Ok::<(), anyhow::Error>(())
     };
     let inbound = async {
         while let Some(packet) = rx.recv_packet().await? {
+            // T-069: the answer to the probe does not go to the TUN.
+            if let Some(state) = &state {
+                let taken = state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take(&packet);
+                if let Some(rst) = taken {
+                    if let Some(rst) = rst {
+                        let _ = rst_tx.try_send(rst);
+                    }
+                    continue;
+                }
+            }
             if let Err(err) = tun.write(&packet).await {
                 debug!(error = %err, "writing to the TUN interface failed");
             }
@@ -324,6 +369,13 @@ pub async fn run(tun: &Tun, session: MasqueSession) -> Result<()> {
             result?;
             bail!("the MASQUE session ended")
         }
+        // T-069: --session-max-age on warp tun.
+        _ = async {
+            match super::live::max_age() {
+                Some(age) => tokio::time::sleep(age).await,
+                None => std::future::pending().await,
+            }
+        } => bail!("the session ends on purpose (--session-max-age)"),
     }
 }
 

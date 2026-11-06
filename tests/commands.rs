@@ -297,3 +297,23 @@ fn warp_exec_names_each_socket_tried() {
     assert!(err.contains("/nonexistent/s.sock (--socket)"), "{err}");
     assert!(!err.contains("run directory"), "{err}");
 }
+
+/// T-069: `warp tun` takes `--session-max-age` (it was a usage error).
+#[test]
+fn warp_tun_takes_session_max_age() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let env = Env::new();
+    // An identity with no device: the command ends there, with no network.
+    let identity = env.path("id.json");
+    std::fs::write(&identity, "{}").unwrap();
+    std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let out = env
+        .cmd(&["warp", "tun", "--session-max-age", "60", "--identity"])
+        .arg(&identity)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(64), "{err}");
+    assert!(!err.contains("--session-max-age works with"), "{err}");
+    assert!(err.contains("parsing the WARP identity"), "{err}");
+}
