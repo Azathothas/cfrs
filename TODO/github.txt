@@ -25,5 +25,5 @@
 320 issue open
 321 issue open
 322 issue open
-323 issue open
+323 issue closed
 324 issue open
