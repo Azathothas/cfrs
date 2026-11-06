@@ -15,7 +15,6 @@ use clap::{Parser, Subcommand};
 
 use podnet::exit::Fault;
 
-use crate::{warp, WarpArgs};
 use cmd::agent::{agent, AgentCommand};
 use cmd::autostart::{autostart, AutostartArgs};
 use cmd::connect::{connect, ConnectArgs};
@@ -25,6 +24,7 @@ use cmd::net::{net, NetArgs};
 use cmd::relay::{relay, RelayArgs};
 use cmd::share::{demo, serve, share, DemoArgs, ServeArgs, ShareArgs};
 use cmd::tunnel::{tunnel, TunnelArgs};
+use cmd::warp::{warp, WarpArgs};
 
 #[derive(Parser, Debug)]
 #[command(

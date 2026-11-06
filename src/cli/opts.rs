@@ -13,8 +13,8 @@ use podnet::{Protocol, Transport};
 
 use crate::cli::cmd::net::NetCommand;
 use crate::cli::cmd::relay::RelayCommand;
+use crate::cli::cmd::warp::WarpCommand;
 use crate::cli::{Cli, Command};
-use crate::WarpCommand;
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct TunnelOpts {
