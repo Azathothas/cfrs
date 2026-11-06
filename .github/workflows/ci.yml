@@ -20,6 +20,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A run by hand, when a push starts no workflow.
+  workflow_dispatch:
 
 permissions:
   contents: read
