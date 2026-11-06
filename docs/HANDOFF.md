@@ -29,8 +29,8 @@ this file when each step below is done.
    toolchain of `release.yml`: run a release dry run.
 2. Until podnet takes a crate, its source files in podnet change only for
    fixes; tell the podcrates session of each fix (`docs/decisions.md`,
-   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs`; each
-   place of
+   Who edits a shared crate). Frozen now: `tests/test_host/mod.rs`;
+   `src/resolve.rs` with its tests (`pod-dns`, from 380d9a4); each place of
    `docs/reports/services-inventory-2026-11-05.md` (`pod-services`).
 3. `pod-services` (`docs/decisions.md`, Services crate): the lists of
    services of other parties, their measurements and the watch workflows
