@@ -11,7 +11,7 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
   (T-021). Nobody may create a new `Azathothas/cfrs`: that ends the
   redirects.
 * podnet takes `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` of
-  `PodUtils/podcrates` by the git tag `v0.4.0`, with `pod-dns` and
+  `PodUtils/podcrates` by the git tag `v0.5.0` (COORD #321), with `pod-dns` and
   `pod-services` since bf0c7ca (T-137, partial; COORD issue #320). The
   toolchain is Rust 1.99.1. `release.yml` builds each target but x86-64 and
   ARM64 with cargo-zigbuild, and gets zig through `fetch-zig.sh` of

@@ -569,6 +569,8 @@ Done so far:
   is a read of `pod-services` through `src/services.rs`; `report::log_filter` gives `-v` the debug
   lines of the pod crates. Each `pod-*` dependency names `tag = "v0.4.0"`. The COORD issue is
   PodUtils/podnet#320.
+- v0.5.0 (dfd8bd8): each `pod-*` dependency names `tag = "v0.5.0"`; no API change for podnet.
+  The COORD issue is PodUtils/podnet#321.
 - Next: `pod-ws` (`src/ws.rs`).
 - The owner, 2026-11-05 (`docs/decisions.md`, Services crate): the lists of services of other
   parties, their measurements and the watch workflows move to `pod-services`. podnet takes it
