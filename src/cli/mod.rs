@@ -4,4 +4,5 @@
 
 pub(crate) mod argv;
 pub(crate) mod help;
+pub(crate) mod opts;
 pub(crate) mod signals;
