@@ -24,11 +24,10 @@ pub fn target(host: &str, port: u16) -> String {
 }
 
 /// Through the running `podnet warp up`, if its socket answers.
-pub async fn via_running(host: &str, port: u16) -> Result<Option<BoxedIo>> {
-    let socket = super::up::socket_path()?;
-    if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+pub async fn via_running(at: &super::find::At, host: &str, port: u16) -> Result<Option<BoxedIo>> {
+    let Ok(socket) = super::find::running(at) else {
         return Ok(None);
-    }
+    };
     let proxy = podnet_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
     let upstream = podnet_netns::upstream::connect_upstream_async(&[proxy], &target(host, port))
         .await
@@ -201,6 +200,7 @@ fn udp_payload(datagram: &[u8]) -> Option<&[u8]> {
 /// association in the stream, 0x83, on its unix socket), or `None` when it
 /// does not run.
 pub async fn udp_via_running(
+    at: &super::find::At,
     host: &str,
     port: u16,
 ) -> Result<
@@ -210,10 +210,9 @@ pub async fn udp_via_running(
     )>,
 > {
     use podnet_netns::upstream::{read_udp_frame, wrap_udp, wrap_udp_name, write_udp_frame};
-    let socket = super::up::socket_path()?;
-    if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+    let Ok(socket) = super::find::running(at) else {
         return Ok(None);
-    }
+    };
     let proxy = podnet_netns::Proxy::parse(&format!("socks5://unix:{}", socket.display()))?;
     let stream = podnet_netns::upstream::dial_proxy(&proxy).await?;
     let stream = podnet_netns::upstream::socks5_udp_in_stream(stream, &proxy)

@@ -172,3 +172,128 @@ fn agent_status_with_no_agent_names_each_task() {
     }
     assert!(out.contains("This host, direct (no WARP):"), "{out}");
 }
+
+/// A SOCKS5 server on a unix socket that stands in for the socket of a
+/// running `podnet warp up`: it takes one CONNECT and joins it to the
+/// target on the loopback.
+fn socks_stand_in(path: &std::path::Path) -> std::thread::JoinHandle<()> {
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        // The first connections can be probes that send nothing.
+        for c in listener.incoming() {
+            if serve(c.unwrap()).is_ok() {
+                return;
+            }
+        }
+    })
+}
+
+fn serve(mut c: std::os::unix::net::UnixStream) -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let mut b = [0u8; 2];
+    c.read_exact(&mut b)?;
+    let mut m = vec![0u8; b[1] as usize];
+    c.read_exact(&mut m)?;
+    c.write_all(&[5, 0])?;
+    let mut h = [0u8; 4];
+    c.read_exact(&mut h)?;
+    let host = match h[3] {
+        1 => {
+            let mut a = [0u8; 4];
+            c.read_exact(&mut a)?;
+            std::net::Ipv4Addr::from(a).to_string()
+        }
+        3 => {
+            let mut n = [0u8; 1];
+            c.read_exact(&mut n)?;
+            let mut a = vec![0u8; n[0] as usize];
+            c.read_exact(&mut a)?;
+            String::from_utf8(a).unwrap()
+        }
+        t => panic!("address type {t}"),
+    };
+    let mut p = [0u8; 2];
+    c.read_exact(&mut p)?;
+    let t = std::net::TcpStream::connect((host.as_str(), u16::from_be_bytes(p)))?;
+    c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])?;
+    let (mut c2, mut t2) = (c.try_clone()?, t.try_clone()?);
+    let up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut c2, &mut t2);
+        let _ = t2.shutdown(std::net::Shutdown::Write);
+    });
+    let (mut t3, mut c3) = (t, c);
+    let _ = std::io::copy(&mut t3, &mut c3);
+    let _ = c3.shutdown(std::net::Shutdown::Write);
+    up.join().unwrap();
+    Ok(())
+}
+
+#[test]
+fn warp_nc_finds_warp_up_of_another_state_directory() {
+    use std::io::{Read as _, Write as _};
+    test_host::need_loopback!();
+    let env = Env::new();
+    // An echo server, the target of warp nc.
+    let echo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = echo.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut s, _) = echo.accept().unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).unwrap();
+        s.write_all(&buf).unwrap();
+    });
+    // The socket of a warp up with another state directory. Only the
+    // pointer file in the runtime directory names it.
+    let other = env.path("other-run");
+    std::fs::create_dir_all(&other).unwrap();
+    let socket = other.join("warp.sock");
+    let stand_in = socks_stand_in(&socket);
+    let pointer_dir = env.path("runtime").join("podnet");
+    std::fs::create_dir_all(&pointer_dir).unwrap();
+    let pointer = serde_json::json!({"socket": socket, "state_dir": env.path("other")});
+    let file = pointer_dir.join("warp-up.json");
+    std::fs::write(&file, pointer.to_string()).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut child = env
+        .cmd(&["warp", "nc", "-N", "127.0.0.1", &port.to_string()])
+        .env_remove("PODNET_WARP_SOCKET")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(text(&out), "hello\n");
+    stand_in.join().unwrap();
+}
+
+#[test]
+fn warp_exec_names_each_socket_tried() {
+    let env = Env::new();
+    let out = env
+        .cmd(&["warp", "exec", "--", "true"])
+        .env("PODNET_WARP_SOCKET", env.path("nothing.sock"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(69));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("nothing.sock (PODNET_WARP_SOCKET)"), "{err}");
+    assert!(err.contains("warp.sock (the run directory)"), "{err}");
+    // --socket: only that socket.
+    let out = env
+        .cmd(&[
+            "warp",
+            "exec",
+            "--socket",
+            "/nonexistent/s.sock",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("/nonexistent/s.sock (--socket)"), "{err}");
+    assert!(!err.contains("run directory"), "{err}");
+}

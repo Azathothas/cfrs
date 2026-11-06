@@ -1806,7 +1806,7 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 ));
             }
             // Issue 173: an expose that failed is not a success.
-            let failed = exposes_failed(&doc["exposed"]);
+            let failed = podnet::agent::exposes_failed(&doc["exposed"]);
             if failed > 0 {
                 return Err(podnet::exit::fault(
                     Fault::Unavailable,
@@ -1836,25 +1836,6 @@ async fn agent(command: AgentCommand) -> Result<()> {
             Ok(())
         }
     }
-}
-
-/// The class of a failed `warp license` (issue 173): the API refused the
-/// key (HTTP 4xx, other than 401, 403 and 429) is a usage error; else the
-/// service is not available.
-fn license_fault(err: &anyhow::Error) -> Fault {
-    match podnet::warp::register::api_status(err) {
-        Some(401 | 403 | 429) => Fault::Unavailable,
-        Some(400..=499) => Fault::Usage,
-        _ => Fault::Unavailable,
-    }
-}
-
-/// The number of exposes of `agent up` that are not ready.
-fn exposes_failed(exposed: &serde_json::Value) -> usize {
-    exposed
-        .as_array()
-        .map(|a| a.iter().filter(|e| e["state"] != "ready").count())
-        .unwrap_or(0)
 }
 
 /// `podnet ps`: the instances of the run directory.
@@ -4451,6 +4432,8 @@ enum WarpCommand {
         /// A podnet-netns rule, repeatable (see podnet pod --help).
         #[arg(short = 'r', long = "rule", value_name = "SPEC")]
         rules: Vec<String>,
+        #[command(flatten)]
+        at: podnet::warp::find::At,
         /// The program and its arguments.
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         program: Vec<String>,
@@ -4458,7 +4441,7 @@ enum WarpCommand {
     /// Run $SHELL under the pod of the running podnet warp up. When it does
     /// not run, the shell starts as it is (with the proxy variables when
     /// the env file is there).
-    Shell,
+    Shell(podnet::warp::find::At),
     /// A byte pipe from stdin and stdout to HOST:PORT through WARP, for
     /// `ssh -o ProxyCommand='podnet warp nc %h %p'` and git over SSH.
     /// It uses the running podnet warp up, else a WARP session of its
@@ -4466,6 +4449,8 @@ enum WarpCommand {
     Nc {
         host: String,
         port: u16,
+        #[command(flatten)]
+        at: podnet::warp::find::At,
         /// Go through the WebSocket relay (--relay) to HOST:PORT, with no
         /// WARP (TCP, IPv4).
         #[arg(long, conflicts_with = "udp")]
@@ -4769,10 +4754,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             print!("{text}");
             return Ok(());
         }
-        WarpCommand::Exec { rules, program } => {
-            return Err(podnet::warp::up::exec_in_pod(rules, program));
+        WarpCommand::Exec { rules, program, at } => {
+            return Err(podnet::warp::up::exec_in_pod(at, rules, program));
         }
-        WarpCommand::Shell => return Err(podnet::warp::up::shell()),
+        WarpCommand::Shell(at) => return Err(podnet::warp::up::shell(at)),
         WarpCommand::SshConfig {
             host,
             write,
@@ -4815,9 +4800,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             port,
             udp: true,
             idle,
+            at,
             ..
         } => {
-            if let Some((out, back)) = podnet::warp::nc::udp_via_running(host, *port).await? {
+            if let Some((out, back)) = podnet::warp::nc::udp_via_running(at, host, *port).await? {
                 return udp_nc(out, back, idle.unwrap_or(UDP_NC_IDLE)).await;
             }
         }
@@ -4826,9 +4812,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             port,
             idle,
             shutdown,
+            at,
             ..
         } => {
-            if let Some(io) = podnet::warp::nc::via_running(host, *port).await? {
+            if let Some(io) = podnet::warp::nc::via_running(at, host, *port).await? {
                 return podnet::warp::nc::pipe(io, nc_end(*idle, *shutdown))
                     .await
                     .fault(Fault::Unavailable);
@@ -5042,10 +5029,9 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
                 key
             };
             podnet::report::hide(&key);
-            let account = client
-                .set_license(&key)
-                .await
-                .map_err(|err| podnet::exit::fault(license_fault(&err), err))?;
+            let account = client.set_license(&key).await.map_err(|err| {
+                podnet::exit::fault(podnet::warp::identity::license_fault(&err), err)
+            })?;
             save(&client)?;
             let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("license     set");
@@ -5664,7 +5650,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         | WarpCommand::Export { .. }
         | WarpCommand::Env
         | WarpCommand::Exec { .. }
-        | WarpCommand::Shell
+        | WarpCommand::Shell(_)
         | WarpCommand::SshConfig { .. } => unreachable!("handled before the client is made"),
         WarpCommand::Nc {
             host,
@@ -7073,32 +7059,6 @@ mod tests {
         ] {
             assert_eq!(command_name(&argv(line)).as_deref(), Some(want), "{line}");
         }
-    }
-
-    // Issue 173: the classes of warp license and agent up.
-    #[test]
-    fn license_and_expose_classes() {
-        let api = |status| {
-            anyhow::Error::new(podnet::warp::register::ApiError {
-                status,
-                body: String::new(),
-            })
-            .context("PUT /reg/{id}/account")
-        };
-        assert!(matches!(license_fault(&api(400)), Fault::Usage));
-        assert!(matches!(license_fault(&api(403)), Fault::Unavailable));
-        assert!(matches!(license_fault(&api(500)), Fault::Unavailable));
-        assert!(matches!(
-            license_fault(&anyhow::anyhow!("no route")),
-            Fault::Unavailable
-        ));
-        let exposed = serde_json::json!([
-            {"state": "ready"},
-            {"state": "failed"},
-            {"state": "origin-unreachable"}
-        ]);
-        assert_eq!(exposes_failed(&exposed), 2);
-        assert_eq!(exposes_failed(&serde_json::json!([])), 0);
     }
 
     // Issue 178: an empty license key is a usage error; a text field has no

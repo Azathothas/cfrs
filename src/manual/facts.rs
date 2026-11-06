@@ -55,7 +55,12 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     EnvVar {
         names: &["PODNET_STATE_DIR"],
         used_by: "warp, tunnel --transport warp",
-        meaning: "The state directory (the WARP identity). The value none keeps no file. Without it, podnet takes the first directory that it can write of $XDG_STATE_HOME/podnet, $HOME/.local/state/podnet, $XDG_RUNTIME_DIR/podnet and podnet-<uid> in the temporary directory.",
+        meaning: "The state directory (the WARP identity). The value none keeps no file. Without it, podnet takes the first directory that it can write of $XDG_STATE_HOME/podnet, $HOME/.local/state/podnet, $XDG_RUNTIME_DIR/podnet and podnet-<uid> in the temporary directory. On a host whose home is on a shared disk, set it to a directory of this host, so that two hosts do not share one WARP device.",
+    },
+    EnvVar {
+        names: &["PODNET_WARP_SOCKET"],
+        used_by: "warp exec, warp shell, warp nc, agent",
+        meaning: "The socket of the running podnet warp up; podnet warp up sets it in its env file and for the program of warp exec. These commands try --socket, else this variable, then warp.sock in the run directory, then the socket of the pointer file that podnet warp up writes ($XDG_RUNTIME_DIR/podnet/warp-up.json, else podnet-<uid>/warp-up.json in the temporary directory; mode 0600). So they find a podnet warp up that has another state directory.",
     },
     EnvVar {
         names: &["XDG_STATE_HOME", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"],
@@ -321,6 +326,10 @@ pub const FILES: &[FileEntry] = &[
     FileEntry {
         path: "<state directory>/warp.json",
         meaning: "The WARP device, its token and its MASQUE key (mode 0600, directory mode 0700). The state directory is the first that podnet can write of PODNET_STATE_DIR, $XDG_STATE_HOME/podnet, $HOME/.local/state/podnet, $XDG_RUNTIME_DIR/podnet and podnet-<uid> in the temporary directory; never the current directory. podnet warp writes it; podnet warp delete removes it. --identity names another file.",
+    },
+    FileEntry {
+        path: "$XDG_RUNTIME_DIR/podnet/warp-up.json, else $TMPDIR/podnet-<uid>/warp-up.json",
+        meaning: "The pointer file of podnet warp up (mode 0600, directory mode 0700): its socket and its state directory. warp exec, warp shell, warp nc and agent read it last, so that they find a podnet warp up with another state directory. podnet reads it only when this user owns it and no other user can read it. podnet warp down removes it.",
     },
     FileEntry {
         path: "podnet-ca.pem (beside the binary)",

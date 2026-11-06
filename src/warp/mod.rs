@@ -1,8 +1,7 @@
 //! Cloudflare WARP, spoken directly: anonymous registration, MASQUE CONNECT-IP
 //! over HTTP/2 on TCP 443, and a userspace IP stack on top of it.
 //!
-//! Two things this buys you that `cloudflared` cannot do from a locked-down
-//! host:
+//! Two things that `cloudflared` cannot do from a locked-down host:
 //!
 //! * **A tunnel whose only egress is TCP 443.** The registration API and the
 //!   MASQUE front door are both reachable on 443, so a host that permits
@@ -35,6 +34,7 @@
 pub mod capsule;
 pub mod exit;
 pub mod export;
+pub mod find;
 pub mod forward;
 pub mod h3;
 pub mod identity;

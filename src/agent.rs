@@ -198,10 +198,13 @@ async fn dial(path: Path, host: &str, port: u16, timeout: Duration) -> Result<Bo
             crate::egress::dial(host, port, Some(&proxy), timeout).await
         }
         Path::Warp => {
-            let io = tokio::time::timeout(timeout, crate::warp::nc::via_running(host, port))
-                .await
-                .context("no answer in time")??
-                .context("podnet warp up does not run")?;
+            let io = tokio::time::timeout(
+                timeout,
+                crate::warp::nc::via_running(&Default::default(), host, port),
+            )
+            .await
+            .context("no answer in time")??
+            .context("podnet warp up does not run")?;
             Ok(io)
         }
     }
@@ -358,9 +361,7 @@ async fn localhost() -> Outcome {
 /// Run each check, at the same time.
 pub async fn run(timeout: Duration) -> Report {
     let proxy = crate::egress::proxy_for("github.com", 443).map(|p| p.label());
-    let warp_up = crate::warp::up::socket_path()
-        .map(|s| std::os::unix::net::UnixStream::connect(s).is_ok())
-        .unwrap_or(false);
+    let warp_up = crate::warp::find::running(&Default::default()).is_ok();
     // Issue 110: with no TCP listener, the env file has no ALL_PROXY.
     let warp_tcp = warp_up
         && crate::warp::up::env_text()
@@ -519,6 +520,14 @@ pub fn text(report: &Report) -> String {
         out.push_str(&format!("* {line}\n"));
     }
     out
+}
+
+/// The number of exposes of `agent up` that are not ready (issue 173).
+pub fn exposes_failed(exposed: &serde_json::Value) -> usize {
+    exposed
+        .as_array()
+        .map(|a| a.iter().filter(|e| e["state"] != "ready").count())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -688,5 +697,17 @@ mod tests {
         // The JSON names do not change.
         let json = serde_json::to_value(report(vec![], true, failed())).unwrap();
         assert!(json.get("udp_dns").is_some() && json.get("ipv6").is_some());
+    }
+
+    // Issue 173: an expose that is not ready is a failed one.
+    #[test]
+    fn the_failed_exposes_of_agent_up() {
+        let exposed = serde_json::json!([
+            {"state": "ready"},
+            {"state": "failed"},
+            {"state": "origin-unreachable"}
+        ]);
+        assert_eq!(exposes_failed(&exposed), 2);
+        assert_eq!(exposes_failed(&serde_json::json!([])), 0);
     }
 }

@@ -388,6 +388,7 @@ pub fn write_env(port: Option<u16>, socket: &Path) -> Result<PathBuf> {
     }
     crate::warp::write_private(&path, text.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
+    super::find::write_pointer(socket).context("writing the pointer file of warp up")?;
     Ok(path)
 }
 
@@ -588,6 +589,7 @@ pub fn down() -> Result<()> {
             println!("podnet: warp down: stopped the instance {name}");
         }
     }
+    super::find::remove_pointer(&socket_path()?);
     for path in [env_path()?, socket_path()?, ca_path()?] {
         if std::fs::remove_file(&path).is_ok() {
             println!("podnet: warp down: removed {}", path.display());
@@ -659,27 +661,14 @@ fn ca_exports() -> Vec<(String, String)> {
         .collect()
 }
 
-fn socket_answers(socket: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
-}
-
 /// `podnet warp exec -- CMD`: run CMD under the pod (this process becomes
 /// it). Gives the error when it cannot.
-pub fn exec_in_pod(rules: &[String], program: &[String]) -> anyhow::Error {
+pub fn exec_in_pod(at: &super::find::At, rules: &[String], program: &[String]) -> anyhow::Error {
     use std::os::unix::process::CommandExt as _;
-    let socket = match socket_path() {
+    let socket = match super::find::running(at) {
         Ok(s) => s,
         Err(e) => return e,
     };
-    if !socket_answers(&socket) {
-        return crate::exit::fault(
-            crate::exit::Fault::Unavailable,
-            anyhow::anyhow!(
-                "podnet warp up is not running (no answer on {}); start it with: podnet warp up",
-                socket.display()
-            ),
-        );
-    }
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => return e.into(),
@@ -706,25 +695,21 @@ fn pod_command(
 
 /// `podnet warp shell`: `$SHELL` under the pod; when the proxy does not
 /// answer, `$SHELL` as it is, with the proxy variables of the env file.
-pub fn shell() -> anyhow::Error {
+pub fn shell(at: &super::find::At) -> anyhow::Error {
     use std::os::unix::process::CommandExt as _;
     let shell = std::env::var("SHELL")
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
-    let socket = socket_path().ok();
-    let exe = std::env::current_exe().ok();
-    if let (Some(socket), Some(exe)) = (socket.as_ref(), exe) {
-        if socket_answers(socket) {
-            let err = pod_command(exe, socket, &[], std::slice::from_ref(&shell))
+    match (super::find::running(at), std::env::current_exe()) {
+        (Ok(socket), Ok(exe)) => {
+            let err = pod_command(exe, &socket, &[], std::slice::from_ref(&shell))
                 .env(SHELL_VARIABLE, "1")
                 .exec();
             eprintln!("podnet: warp shell: {err}; the shell starts with no pod");
-        } else {
-            eprintln!(
-                "podnet: warp shell: podnet warp up is not running; the shell starts with no pod"
-            );
         }
+        (Err(err), _) => eprintln!("podnet: warp shell: {err}; the shell starts with no pod"),
+        (_, Err(err)) => eprintln!("podnet: warp shell: {err}; the shell starts with no pod"),
     }
     let mut cmd = std::process::Command::new(&shell);
     cmd.env(SHELL_VARIABLE, "1");

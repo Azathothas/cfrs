@@ -152,6 +152,18 @@ pub fn spki_from_cert(cert_der: &[u8]) -> Result<Vec<u8>> {
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
+/// The class of a failed `warp license` (issue 173): the API refused the
+/// key (HTTP 4xx, other than 401, 403 and 429) is a usage error; else the
+/// service is not available.
+pub fn license_fault(err: &anyhow::Error) -> crate::exit::Fault {
+    use crate::exit::Fault;
+    match super::register::api_status(err) {
+        Some(401 | 403 | 429) => Fault::Unavailable,
+        Some(400..=499) => Fault::Usage,
+        _ => Fault::Unavailable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +215,25 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(id.spki_der());
         let pem = format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----\n");
         assert_eq!(spki_from_pem(&pem).unwrap(), id.spki_der());
+    }
+
+    // Issue 173: the classes of a failed warp license.
+    #[test]
+    fn the_classes_of_warp_license() {
+        use crate::exit::Fault;
+        let api = |status| {
+            anyhow::Error::new(crate::warp::register::ApiError {
+                status,
+                body: String::new(),
+            })
+            .context("PUT /reg/{id}/account")
+        };
+        assert!(matches!(license_fault(&api(400)), Fault::Usage));
+        assert!(matches!(license_fault(&api(403)), Fault::Unavailable));
+        assert!(matches!(license_fault(&api(500)), Fault::Unavailable));
+        assert!(matches!(
+            license_fault(&anyhow::anyhow!("no route")),
+            Fault::Unavailable
+        ));
     }
 }
