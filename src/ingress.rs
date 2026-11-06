@@ -171,13 +171,39 @@ pub struct OriginOptions {
 /// expression that can match any part of the request path: `/api` also
 /// matches `/x/api`, and `^/api/` matches only paths that start with
 /// `/api/`. The syntax is that of the `regex` crate, which is close to Go
-/// RE2. The query (from `?`) is not part of the path; `%XX` is not decoded.
+/// RE2. The query (from `?`) is not part of the path. The match reads the
+/// decoded path (`%XX` gives its byte, `+` stays), as cloudflared reads
+/// `URL.Path` of Go (T-077).
 #[derive(Clone, Debug)]
 pub struct PathPattern {
     text: String,
     regex: regex::Regex,
     /// True for [`PathPattern::prefix`]: `text` is literal text.
     prefix: bool,
+}
+
+/// The path with each `%XX` decoded (T-077). A `%` with no two hex digits
+/// after it stays. Bytes that are not UTF-8 become U+FFFD.
+fn decode_path(path: &str) -> std::borrow::Cow<'_, str> {
+    if !path.contains('%') {
+        return path.into();
+    }
+    let b = path.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned().into()
 }
 
 impl PathPattern {
@@ -223,7 +249,7 @@ impl PathPattern {
     /// query is not part of it).
     pub fn is_match(&self, path: &str) -> bool {
         let path = path.split_once('?').map_or(path, |(p, _)| p);
-        self.regex.is_match(path)
+        self.regex.is_match(&decode_path(path))
     }
 
     /// The one path that the pattern names, for a URL: a prefix, or a
@@ -583,5 +609,22 @@ mod tests {
         assert_eq!(humantime("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(humantime("2m").unwrap(), Duration::from_secs(120));
         assert!(humantime("x").is_err());
+    }
+
+    // T-077: the match reads the decoded path, as cloudflared does.
+    #[test]
+    fn a_path_rule_matches_the_decoded_path() {
+        let rule = PathPattern::regex("^/a b$").unwrap();
+        assert!(rule.is_match("/a%20b"));
+        assert!(rule.is_match("/a%20b?q=%20"));
+        assert!(!rule.is_match("/a+b"), "a + stays a +");
+        let slash = PathPattern::regex("^/x/y$").unwrap();
+        assert!(slash.is_match("/x%2Fy"));
+        // A % with no two hex digits stays.
+        assert_eq!(decode_path("/50%"), "/50%");
+        assert_eq!(decode_path("/%zz%4"), "/%zz%4");
+        assert_eq!(decode_path("/%41%62"), "/Ab");
+        // No anchor: a part of the path matches.
+        assert!(PathPattern::regex("b c").unwrap().is_match("/a/b%20c/d"));
     }
 }

@@ -330,8 +330,9 @@ ingress:
   matches a part of the request path: `path: /api` also matches `/x/api`
   and `/apix`. Write `path: ^/api/` for the paths that start with `/api/`,
   and `path: ^/api$` for one path. A `.` matches each character: write
-  `\.` for a dot. The query (from `?`) is not part of the path, and podnet
-  does not decode `%XX`. A `path:` that is not a valid regular expression
+  `\.` for a dot. The query (from `?`) is not part of the path. The match
+  reads the decoded path, as cloudflared does: `/a%20b` matches `^/a b$`
+  (a `+` stays a `+`). A `path:` that is not a valid regular expression
   is an error at load (exit 78), with the file and the rule number.
 * With no `ingress:`, `url:` gives one rule for each request (the same
   services as `service:`), and `hello-world: true` gives the hello-world
