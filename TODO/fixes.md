@@ -884,3 +884,49 @@ curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podnet/actions/
 2026-11-05, the commit of this Done section. Two failures of services in the live job, not of
 the code: the live run 42064698302 of 66c9512 passed with the same code. The podcrates session
 noted the "Tunnel not found" for the watches of `pod-services`.
+
+# T-139: The start of a session changes the global git identity and can drop commits of main
+
+**Source:** the podcrates session, 2026-11-06 (a fact that the owner found in the same script of
+`PodUtils/podcrates`).
+**Category:** defect
+**Milestone:** M5
+**Priority:** P2
+**Effort:** S
+**Status:** done
+
+## Problem
+
+`.claude/session-start.sh` ran `git config --global user.name` and `user.email`: it changed the
+global git identity of a local machine. On a branch other than `main`, it ran
+`git checkout -q -B main origin/main`: it reset an existing local `main` to `origin/main` and
+dropped its commits that were not pushed.
+
+## Premise
+
+- `.claude/settings.json` gives the identity to each git command (`GIT_AUTHOR_*`,
+  `GIT_COMMITTER_*`); the identity of the repository is enough for the rest.
+- `PodUtils/podcrates` fixed its copy of the script (`.claude/session-start.sh` on its `main`).
+
+## Approach
+
+1. Take the script of podcrates: the identity of the repository only; an existing `main` is
+   checked out as it is and only fast-forwarded (`git merge --ff-only origin/main`); a new `main`
+   tracks `origin/main`; a tree with changes stays on its branch.
+2. Test the three cases in clones of a scratch repository.
+
+## Prove
+
+```sh
+sh -n .claude/session-start.sh
+```
+
+In a clone: a `main` with a commit that is not pushed keeps it; a tree with changes on a branch
+stays there; a `main` behind `origin/main` moves forward; `git config --global user.email` does
+not change.
+
+## Done
+
+2026-11-06, the commit of this Done section. The three cases passed in scratch clones: the
+local commit of `main` stayed; the tree with changes stayed on its branch `work`; `main` moved
+forward to the new commit of the origin. The global identity did not change.

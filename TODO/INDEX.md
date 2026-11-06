@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**138 entries: 118 open, 1 partial, 7 blocked, 12 done.**
+**139 entries: 118 open, 1 partial, 7 blocked, 13 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 9 | 1 | 0 | 6 | 16 |
-| P2 | 82 | 0 | 5 | 5 | 92 |
+| P2 | 82 | 0 | 5 | 6 | 93 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 118 | 1 | 7 | 12 | 138 |
+| **All** | 118 | 1 | 7 | 13 | 139 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -184,3 +184,4 @@ M8 Overlays, M9 Later.
 | [T-136](rename.md) | P1 | S | M1 | defect | done | live: two runs in a row failed before the transfer of the repository (GitHub #311) |
 | [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |
 | [T-138](fixes.md) | P2 | S | M5 | defect | done | live: two runs in a row failed on the edge and WARP services (GitHub #316) |
+| [T-139](fixes.md) | P2 | S | M5 | defect | done | The start of a session changes the global git identity and can drop commits of main |
