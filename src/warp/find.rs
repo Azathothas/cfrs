@@ -29,7 +29,7 @@ pub const SOCKET_VARIABLE: &str = "PODNET_WARP_SOCKET";
 pub struct At {
     /// The socket of the running podnet warp up. Without it: PODNET_WARP_SOCKET,
     /// warp.sock in the run directory, then the pointer file that podnet warp up
-    /// writes ($XDG_RUNTIME_DIR/podnet/warp-up.json, else podnet-<uid> in the
+    /// writes ($XDG_RUNTIME_DIR/podnet/warp-up.json, else podnet-UID in the
     /// temporary directory)
     #[arg(long, value_name = "PATH")]
     pub socket: Option<PathBuf>,
