@@ -317,3 +317,33 @@ fn warp_tun_takes_session_max_age() {
     assert!(!err.contains("--session-max-age works with"), "{err}");
     assert!(err.contains("parsing the WARP identity"), "{err}");
 }
+
+/// T-078: `pod doctor --json` has the schema and the verdict words of
+/// `podnet doctor`.
+#[test]
+fn pod_doctor_json_has_the_schema_and_the_verdicts() {
+    let env = Env::new();
+    let out = env.run(&["pod", "doctor", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["schema"], 1, "{doc}");
+    let words = ["ok", "fail"];
+    for (name, cap) in doc["capabilities"].as_object().unwrap() {
+        let v = cap["verdict"].as_str().unwrap_or_default();
+        assert!(words.contains(&v), "{name}: {cap}");
+        assert_eq!(cap["ok"].as_bool(), Some(v == "ok"), "{name}: {cap}");
+    }
+    for key in ["netns", "seccomp", "any"] {
+        let v = doc["verdicts"][key].as_str().unwrap_or_default();
+        assert!(words.contains(&v), "{key}: {doc}");
+    }
+    let any = doc["verdicts"]["any"] == "ok";
+    assert_eq!(out.status.code(), Some(if any { 0 } else { 3 }));
+    // The text form uses the same words.
+    let text = String::from_utf8(env.run(&["pod", "doctor"]).stdout).unwrap();
+    assert!(!text.contains("available"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("podnet-netns: backend netns:")),
+        "{text}"
+    );
+}

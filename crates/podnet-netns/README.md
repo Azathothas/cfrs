@@ -143,7 +143,7 @@ see it. Use a unix socket for it (`-L unix:///path`).
   the caller gives, and it sets the length to the full size of the address. When the host refuses both, the calls fail with
   `EOPNOTSUPP` (not the `AF_UNIX` address of the socketpair), the pod prints
   a warning once, and `pod doctor` shows the row `write program memory` as
-  `no`. A QUIC client (`curl --http3`) then fails; `curl --http3` falls back
+  `fail`. A QUIC client (`curl --http3`) then fails; `curl --http3` falls back
   to HTTP/2. A program that reads its own address can crash: for example a
   Go program with a type assertion on `LocalAddr()`. Use `--backend netns`
   where the host permits it. No other way gives the address to the program

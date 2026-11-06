@@ -289,11 +289,21 @@ pub(crate) fn doctor(json: bool) -> i32 {
             .map(|p| {
                 (
                     p.name.to_string(),
-                    serde_json::json!({ "ok": p.ok, "detail": p.detail }),
+                    serde_json::json!({ "ok": p.ok, "verdict": verdict(p.ok), "detail": p.detail }),
                 )
             })
             .collect();
+        // T-078: the schema and the verdict words of podnet doctor.
+        root.insert("schema".into(), SCHEMA.into());
         root.insert("capabilities".into(), capabilities.into());
+        root.insert(
+            "verdicts".into(),
+            serde_json::json!({
+                "netns": verdict(netns_available),
+                "seccomp": verdict(seccomp_available),
+                "any": verdict(any),
+            }),
+        );
         root.insert("backend_netns".into(), netns_available.into());
         root.insert("backend_seccomp".into(), seccomp_available.into());
         root.insert("backend_available".into(), any.into());
@@ -307,29 +317,20 @@ pub(crate) fn doctor(json: bool) -> i32 {
 
     println!("podnet-netns: capability report");
     for p in &probes {
-        println!(
-            "  {:<34} {:<5} {}",
-            p.name,
-            if p.ok { "ok" } else { "no" },
-            p.detail
-        );
+        println!("  {:<34} {:<5} {}", p.name, verdict(p.ok), p.detail);
     }
     println!(
         "podnet-netns: backend netns:   {}",
-        if netns_available {
-            "available"
-        } else {
-            "unavailable"
-        }
+        verdict(netns_available)
     );
     println!(
         "podnet-netns: backend seccomp: {}",
         if !seccomp_available {
-            "unavailable"
+            "fail"
         } else if probes[5].ok {
-            "available"
+            "ok"
         } else {
-            "available (getsockname/getpeername: unavailable)"
+            "ok (getsockname/getpeername: fail)"
         }
     );
     println!("podnet-netns: the host conditions that podnet handles: https://github.com/PodUtils/podnet/blob/main/docs/target-environment.md");
@@ -337,6 +338,18 @@ pub(crate) fn doctor(json: bool) -> i32 {
         0
     } else {
         EXIT_NO_BACKEND
+    }
+}
+
+/// The version of the JSON form of `pod doctor` (T-078).
+pub const SCHEMA: u32 = 1;
+
+/// The verdict word of `podnet doctor` for a probe that passed or failed.
+pub fn verdict(ok: bool) -> &'static str {
+    if ok {
+        "ok"
+    } else {
+        "fail"
     }
 }
 
