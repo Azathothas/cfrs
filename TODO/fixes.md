@@ -252,7 +252,7 @@ it returns in less than 100 ms.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -286,6 +286,17 @@ cargo test --workspace -- warp_probe_renews_a_session_with_no_tcp
 
 The test uses the "silenced" edge of T-012, or a fake session that drops each TCP SYN. The probe
 renews the session after three misses.
+
+## Done
+
+2026-11-06, commit 86050ee (`T-068: WARP: a TCP probe of the data path renews a session that
+carries no TCP`). Steps 1 to 3: `Live::probed` in `src/warp/live.rs` (each 30 s, 5 s limit, 3
+misses; then the path of `renew_due`, the log names `reason=tcp-probe`); `--probe IP:PORT` and
+`--probe off` (a name is refused: the probe needs no DNS); `warp up` gives it to its child. The
+probe runs each 30 s also when other TCP flows succeed: one connect each 30 s. The test
+`warp_probe_renews_a_session_with_no_tcp` uses a fake session whose probe fails: it passes. Plant:
+no probe task; the test fails. Step 4 (`data_path` in `status`, the ready document and `warp
+status`) is T-140: `Live::data_path` gives the value.
 
 # T-069: `warp tun`: a SYN probe of the session, and `--session-max-age`
 
@@ -958,3 +969,41 @@ not change.
 2026-11-06, the commit of this Done section. The three cases passed in scratch clones: the
 local commit of `main` stayed; the tree with changes stayed on its branch `work`; `main` moved
 forward to the new commit of the origin. The global identity did not change.
+
+# T-140: `data_path` and the time of the last TCP probe in `status`, the ready document and `warp status`
+
+**Source:** T-068, step 4 of its Approach.
+**Category:** feature
+**Milestone:** M5
+**Priority:** P2
+**Effort:** S
+**Status:** open
+
+## Problem
+
+The TCP probe of T-068 marks a session `tcp-dead` and renews it. Only the log shows it. A user of
+`warp status`, `podnet status` or the ready document of `warp proxy` cannot see the state of the
+data path or the time of the last probe.
+
+## Premise
+
+- Read: `Live::data_path` gives `ok` or `tcp-dead` (`src/warp/live.rs`).
+- Read: `warp status` runs in another process than `warp proxy`; it reads files and the socket of
+  the instance, not the memory of the proxy.
+- `src/warp/proxy.rs` and `src/main.rs` are in `scripts/size-allow.txt` and cannot grow.
+
+## Approach
+
+1. Keep the time of the last probe and its result in `Live`.
+2. Put `data_path` and `last_probe` in the ready document of `warp proxy` and `warp up`.
+3. Give them to `warp status` and `podnet status` through the record of the instance (or a
+   status file in the run directory).
+
+## Prove
+
+```sh
+cargo test --workspace -- warp_status_names_the_data_path
+```
+
+The test starts a fake session whose probe fails and reads `tcp-dead`, then `ok` after the new
+session.

@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**139 entries: 113 open, 1 partial, 7 blocked, 18 done.**
+**140 entries: 113 open, 1 partial, 7 blocked, 19 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 5 | 1 | 0 | 10 | 16 |
-| P2 | 81 | 0 | 5 | 7 | 93 |
+| P1 | 4 | 1 | 0 | 11 | 16 |
+| P2 | 82 | 0 | 5 | 7 | 94 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 113 | 1 | 7 | 18 | 139 |
+| **All** | 113 | 1 | 7 | 19 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -113,7 +113,7 @@ M8 Overlays, M9 Later.
 | [T-065](fixes.md) | P3 | S | M5 | feature | open | seccomp: hand a plain upstream descriptor to the program after its handshake |
 | [T-066](fixes.md) | P2 | M | M5 | defect | open | seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes |
 | [T-067](fixes.md) | P2 | M | M5 | defect | open | seccomp: a slow `connect` dial does not stop the supervisor for the other calls |
-| [T-068](fixes.md) | P1 | M | M5 | defect | open | WARP: a probe of the TCP data path renews a session that carries no TCP |
+| [T-068](fixes.md) | P1 | M | M5 | defect | done | WARP: a probe of the TCP data path renews a session that carries no TCP |
 | [T-069](fixes.md) | P1 | L | M5 | defect | open | `warp tun`: a SYN probe of the session, and `--session-max-age` |
 | [T-070](fixes.md) | P1 | S | M5 | defect | done | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
 | [T-071](fixes.md) | P2 | M | M5 | feature | open | `warp exec` and `warp shell` take `--backend`, name the backend in one line, and log the seccomp emulation |
@@ -185,3 +185,4 @@ M8 Overlays, M9 Later.
 | [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |
 | [T-138](fixes.md) | P2 | S | M5 | defect | done | live: two runs in a row failed on the edge and WARP services (GitHub #316) |
 | [T-139](fixes.md) | P2 | S | M5 | defect | done | The start of a session changes the global git identity and can drop commits of main |
+| [T-140](fixes.md) | P2 | S | M5 | feature | open | `data_path` and the time of the last TCP probe in `status`, the ready document and `warp status` |

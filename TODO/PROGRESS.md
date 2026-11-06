@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 139 entries: 113 open, 1 partial, 7 blocked, 18 done.
+`TODO/INDEX.md` holds 140 entries: 113 open, 1 partial, 7 blocked, 19 done.
 
 ## State
 
@@ -32,9 +32,9 @@ not wait for a larger one.
 1. **M0, the record and the guards:** T-012.
 2. **M1, the rename:** T-022, T-023 and T-024, then T-025, when the owner allows releases
    again.
-3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-068, T-064, T-069;
+3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,
-   T-079, T-080. A fix in a pod backend lands before T-040 starts, or after it ends.
+   T-079, T-080, T-140. A fix in a pod backend lands before T-040 starts, or after it ends.
 4. **M2, the splits:** T-026; T-027, then T-028 to T-031, then T-032; T-033 to T-041; T-042,
    T-043, T-044; T-045; then T-015.
 5. **M3, the crates:** T-046, T-047, T-048, T-051, T-053, then the prerelease T-054. T-049, T-050
