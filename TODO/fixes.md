@@ -237,6 +237,10 @@ test passed. `cargo test -p podnet-netns handoff`: 2 passed. The tests `pod_secc
 `pod_seccomp_slow_dial`, `pod_seccomp_fds` and `pod_seccomp_dgram` pass.
 `sh scripts/agent/check.sh` exits 0.
 
+Live run 42275332991 at 68098d1: success. CI run 42272728934 at 68098d1 failed in the jobs
+`restricted-host` and `no-loopback` (the TCP test had no `need_loopback!()`); dfded5b adds it. CI run
+42278745845 at dfded5b: success.
+
 # T-066: seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes
 
 **Source:** `docs/research/podnet/vn.md`, section 3.1 (P4); `docs/maintenance.md`, section "Open
