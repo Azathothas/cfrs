@@ -31,8 +31,9 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #329 | [gh action] requested: a run of live.yml | closed (run 42253174816 at 3bf268a: success) | none |
 | #330 | [gh action] requested: a run of ci.yml | closed (not the form of the rule of 2026-11-06; #332 in its place) | none |
 | #331 | [gh action] requested: a run of live.yml | closed (not the form of the rule of 2026-11-06; #332 in its place) | none |
-| #332 | [gh action] requested: a run of ci.yml and live.yml | open (a request of a run) | none |
+| #332 | [gh action] requested: a run of ci.yml and live.yml | closed (ci 42259197563 and live 42259203680 at 0c4ff75: success) | none |
 | #333 | COORD-005: podnet moved each podcrates tag to v0.6.0 | open (a COORD issue between sessions) | T-137 |
-| #334 | [gh action] requested: a run of ci.yml and live.yml | open (a request of a run) | none |
+| #334 | [gh action] requested: a run of ci.yml and live.yml | open (ci 42263403147 at 872a276 started; live did not start) | none |
+| #335 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
 
 #312 to #315 and #318 are pull requests.

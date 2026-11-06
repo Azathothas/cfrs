@@ -1261,6 +1261,8 @@ up`, `warp status` (text and `--json`) and `podnet status` show the two keys.
 with the report and the record writes disabled, the three tests fail (no `data_path`).
 `sh scripts/agent/check.sh`: each check 0.
 
+CI run 42259197563 and live run 42259203680 at 0c4ff75: success.
+
 # T-141: live: two runs in a row failed after the take of pod-dns and pod-services (GitHub #325)
 
 **Source:** GitHub #325 (the job report of `live`).
