@@ -27,7 +27,9 @@ state of the open work.
 5. Read the state of `PodUtils/podcrates`: `sh scripts/agent/podcrates.sh`
    (a new release to take; the frozen files; the COORD issues; see
    "Shared crates").
-6. Start the issue watcher (see "The issue loop").
+6. Start the watcher of the organization (`CLAUDE.md`, "Talk with the
+   other sessions of PodUtils"), and the issue watcher (see "The issue
+   loop").
 7. Read `TODO/PROGRESS.md`, "Open work" below, and the open issues on GitHub.
 
 ## Tools
@@ -120,16 +122,14 @@ toolchain of a release must build it. When the patch does not apply,
 apply it at the commit of `adoption/podnet/commit` in a worktree, then
 merge; a conflict in podnet's own code is podnet's to solve.
 
-**Talk with podcrates.** One mailbox for each writer: a session writes
-only to issues of its own repository, titled `COORD-NNN: SUBJECT`, and
-reads the others' through `forge.web.pkgforge.dev`. podnet writes to
-`PodUtils/podnet` ("COORD-NNN: ... (to podcrates)"): the commit of each
-take, each fix of frozen code, a fault of a patch. podcrates writes to
-`PodUtils/podcrates` ("COORD-NNN: ... (to podnet)"). A COORD issue is not
-a defect: it gets no record entry. Its number goes into
-`TODO/github.txt`, and its row in `TODO/issues.md` has the entries
-`none`. When a session can send messages to the podcrates session
-(`send_message`), it can use them as well.
+**Talk with the other sessions.** `CLAUDE.md`, "Talk with the other
+sessions of PodUtils": the watcher of the organization
+(`.work/podcrates-agent/watch-org.sh`) under the Monitor tool; podnet
+writes `COORD-NNN: subject (to OTHER)` issues in `PodUtils/podnet` only:
+the commit of each take, each fix of frozen code, a fault of a patch. A
+COORD issue is not a defect: it gets no record entry. Its number goes
+into `TODO/github.txt`, and its row in `TODO/issues.md` has the entries
+`none`.
 
 ## The issue loop
 

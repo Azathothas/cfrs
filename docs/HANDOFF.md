@@ -24,7 +24,9 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
 
 ## Next steps
 
-1. At the start: `sh scripts/agent/podcrates.sh`. A new release of
+1. At the start: start the watcher of the organization (`CLAUDE.md`,
+   "Talk with the other sessions of PodUtils"), then
+   `sh scripts/agent/podcrates.sh`. A new release of
    podcrates with a file `adoption/podnet/CRATE.patch` at its tag is a take:
    do it first (`docs/maintenance.md`, Shared crates), then write a COORD
    issue in `PodUtils/podnet` with the commit of the take. The next take:

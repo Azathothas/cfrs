@@ -1,3 +1,6 @@
 /target
 __pycache__/
 *.sock
+
+# The state of the agent watchers (CLAUDE.md, Talk with the other sessions).
+.work/
