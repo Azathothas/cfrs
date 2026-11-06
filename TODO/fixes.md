@@ -1195,7 +1195,7 @@ session.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -1229,4 +1229,12 @@ cargo test --workspace -- the_nameservers_of_the_service_are_1_1_1_1_and_1_0_0_1
 ```
 
 The live run of #326 passes each step.
+
+## Done
+
+2026-11-06, commits c970da1 (the DNS step reads `pod_dns`) and 3db91c7 (`services::ips_of`: the
+nameservers of `cloudflare-dns` are not empty). `the_nameservers_of_the_service_are_1_1_1_1_and_1_0_0_1`
+passes; the control gives `[]`. Live run 42226303514 at 3db91c7: success, each step. CI run
+42222918056 at 61c70aa: success. The check of the DoH server comes back with the next podcrates
+tag (#322). GitHub #325 is closed with this evidence.
 
