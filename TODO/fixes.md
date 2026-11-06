@@ -173,7 +173,7 @@ Control with no sweep: it fails at socket 4096 (`EMFILE`).
 **Milestone:** M5
 **Priority:** P3
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -227,6 +227,15 @@ T-064 is done.
 - The test proves "no relay stays" with the exit time of the pod: the echo proxy keeps its end
   open for 10 s after the program closes, so a relay keeps the pod for its drain limit (3 s).
   The test asserts an exit in less than 2.5 s, and the new socket inode at the descriptor.
+
+## Done
+
+2026-11-06, commit 075b83a. `cargo test --test pod_seccomp_handoff`: 2 passed
+(`seccomp_handoff_of_a_unix_upstream_leaves_no_relay`, `seccomp_tcp_upstream_keeps_the_relay`).
+The control on the code before the change: the handoff test failed (`same_socket 1`), the TCP
+test passed. `cargo test -p podnet-netns handoff`: 2 passed. The tests `pod_seccomp_tcp`,
+`pod_seccomp_slow_dial`, `pod_seccomp_fds` and `pod_seccomp_dgram` pass.
+`sh scripts/agent/check.sh` exits 0.
 
 # T-066: seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes
 
