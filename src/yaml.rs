@@ -73,6 +73,44 @@ pub fn parse(text: &str) -> Result<Value> {
     Ok(value)
 }
 
+/// The line (from 1) of each item of the top-level list `key` (T-080):
+/// the errors of a config file name the line of an ingress rule. Empty
+/// when there is no such list.
+pub fn item_lines(text: &str, key: &str) -> Vec<usize> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let head = format!("{key}:");
+    let mut inside = false;
+    let mut item_indent = None;
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let body = strip_comment(raw, i + 1).unwrap_or(raw).trim_end();
+        let trimmed = body.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = body.len() - trimmed.len();
+        // A list can be at the indent of its key.
+        if indent == 0 && !(inside && is_item(trimmed) && item_indent.is_none_or(|n| n == 0)) {
+            inside = trimmed == head || trimmed.starts_with(&format!("{head} "));
+            item_indent = None;
+            continue;
+        }
+        if inside && is_item(trimmed) && item_indent.is_none_or(|n| n == indent) {
+            item_indent = Some(indent);
+            out.push(i + 1);
+        }
+    }
+    out
+}
+
+/// `what N`, and `(line L)` when `lines` has the line of item `index`.
+pub fn numbered(what: &str, index: usize, lines: &[usize]) -> String {
+    match lines.get(index) {
+        Some(line) => format!("{what} {} (line {line})", index + 1),
+        None => format!("{what} {}", index + 1),
+    }
+}
+
 /// Remove a comment: `#` at the start, or after a space, outside quotes.
 fn strip_comment(line: &str, number: usize) -> Result<&str> {
     let mut quote: Option<char> = None;
@@ -526,5 +564,26 @@ ingress:
             let err = parse(text).unwrap_err().to_string();
             assert!(err.starts_with(want), "{text:?}: {err}");
         }
+    }
+
+    #[test]
+    fn the_line_of_each_ingress_rule() {
+        let text = "tunnel: x\n# a comment\ningress:\n  - hostname: a\n    service: http://a\n\n  - service: http_status:404\nwarp-routing: {}\n";
+        assert_eq!(item_lines(text, "ingress"), [4, 7]);
+        let flat = "ingress:\n- service: a\n- service: b\n";
+        assert_eq!(item_lines(flat, "ingress"), [2, 3]);
+        assert!(item_lines(text, "none").is_empty());
+    }
+
+    /// T-080: an error of a config file names the line of its rule.
+    #[test]
+    fn a_config_error_names_its_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.yml");
+        let text = "tunnel: t\ningress:\n  - hostname: a.example\n    service: http://127.0.0.1:1\n  # the second rule\n  - hostnam: b.example\n    service: http://127.0.0.1:2\n  - service: http_status:404\n";
+        std::fs::write(&file, text).unwrap();
+        let err = format!("{:#}", crate::config::load_file(&file).unwrap_err());
+        assert!(err.contains("ingress rule 2 (line 6)"), "{err}");
+        assert_eq!(numbered("ingress rule", 4, &[1, 2]), "ingress rule 5");
     }
 }

@@ -1,6 +1,6 @@
 //! Configuration: credentials, transport, ingress and reconnect policy.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -428,7 +428,7 @@ fn check_keys(
 /// Check the keys of each ingress rule and of each `originRequest`
 /// (issue 170: `hostnam:` made a catch-all rule). The top-level
 /// `originRequest` is the default of each rule; the key of a rule wins.
-fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) -> Result<()> {
+fn check_and_merge_rules(file: &Path, value: &mut serde_json::Value, at: &[usize]) -> Result<()> {
     let Some(map) = value.as_object_mut() else {
         return Ok(());
     };
@@ -454,7 +454,7 @@ fn check_and_merge_rules(file: &std::path::Path, value: &mut serde_json::Value) 
         );
     };
     for (i, rule) in rules.iter_mut().enumerate() {
-        let place = format!("ingress rule {}", i + 1);
+        let place = crate::yaml::numbered("ingress rule", i, at);
         let Some(rule) = rule.as_object_mut() else {
             bail!("{}: {place}: give a map of keys", file.display());
         };
@@ -629,7 +629,7 @@ pub fn load_file(path: &std::path::Path) -> Result<Config> {
     if let Some(map) = value.as_object() {
         check_keys(path, map, CLOUDFLARED_KEYS, "a cloudflared config")?;
     }
-    check_and_merge_rules(path, &mut value)?;
+    check_and_merge_rules(path, &mut value, &crate::yaml::item_lines(&text, "ingress"))?;
     let raw: RawConfig =
         serde_json::from_value(value).with_context(|| format!("parsing {}", path.display()))?;
 
@@ -994,7 +994,7 @@ mod tests {
         // An unclosed group is an error with the file and the rule.
         let err = load("^/api/(").unwrap_err();
         assert!(err.contains(&path.display().to_string()), "{err}");
-        assert!(err.contains("ingress rule 1: path:"), "{err}");
+        assert!(err.contains("ingress rule 1 (line 2): path:"), "{err}");
         assert!(err.contains("not a valid regular expression"), "{err}");
         assert!(err.contains("unclosed group"), "{err}");
         assert!(!err.contains('\n'), "{err}");
@@ -1091,7 +1091,7 @@ mod tests {
             "ingress:\n  - service: http://127.0.0.1:1\n    originRequest:\n      noTLSVerfy: true\n",
         )
         .unwrap_err();
-        assert!(err.contains("ingress rule 1, originRequest"), "{err}");
+        assert!(err.contains("rule 1 (line 2), originRequest"), "{err}");
         assert!(err.contains("did you mean noTLSVerify?"), "{err}");
 
         let err = load("originRequest:\n  bogusKey: 1\ningress:\n  - service: http_status:404\n")
@@ -1144,7 +1144,7 @@ mod tests {
         assert!(err.contains("connectTimeout: 5 needs a unit"), "{err}");
         let err = load("ingress:\n  - hostname: a.example.com\n  - service: http_status:404\n")
             .unwrap_err();
-        assert!(err.contains("ingress rule 1: service: is missing"), "{err}");
+        assert!(err.contains("(line 2): service: is missing"), "{err}");
         let err = load("a: 1\n").unwrap_err();
         assert!(!err.contains("did you mean"), "{err}");
         let err = load("tunel: x\n").unwrap_err();
