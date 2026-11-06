@@ -251,7 +251,7 @@ static void fd_mark(int fd, int family, int type) {
     if (table_ensure(fd) == 0) {
         fd_table[fd].is_virtual = 1;
         fd_table[fd].family = (unsigned char)family;
-        fd_table[fd].is_dgram = (type == SOCK_DGRAM);
+        fd_table[fd].is_dgram = ((type & 0xf) == SOCK_DGRAM);
     }
     pthread_mutex_unlock(&fd_lock);
 }
@@ -525,6 +525,11 @@ int socket(int domain, int type, int protocol) {
         int fd = r_socket(AF_UNIX, type, 0);
         if (fd >= 0) {
             fd_mark(fd, domain, type);
+            /* T-075: each datagram carries the user of its sender. */
+            if ((type & 0xf) == SOCK_DGRAM) {
+                int one = 1;
+                r_setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &one, sizeof one);
+            }
             logf_("socket(%s) -> AF_UNIX fd=%d\n",
                   domain == AF_INET ? "AF_INET" : "AF_INET6", fd);
         }
@@ -948,9 +953,53 @@ ssize_t sendto(int fd, const void *buf, size_t n, int flags,
     return r_sendto(fd, buf, n, flags, (struct sockaddr *)&un, un_len);
 }
 
+/* T-075: a datagram socket of the shim takes the same user only, as the
+   stream sockets (issue 308) and the switch do. Before the real receive,
+   look at the next datagram (MSG_PEEK) and drop it while its sender
+   (SCM_CREDENTIALS of SO_PASSCRED) is another user. Two threads that
+   receive on one socket at the same time can make this drop a datagram of
+   the same user. */
+static int fd_is_dgram(int fd) {
+    int result = 0;
+    pthread_mutex_lock(&fd_lock);
+    if (fd >= 0 && (size_t)fd < fd_table_len) result = fd_table[fd].is_virtual && fd_table[fd].is_dgram;
+    pthread_mutex_unlock(&fd_lock);
+    return result;
+}
+
+static void drop_other_users(int fd, int flags) {
+    if (!fd_is_dgram(fd)) return;
+    for (;;) {
+        union {
+            char buf[CMSG_SPACE(sizeof(struct ucred))];
+            struct cmsghdr align;
+        } control;
+        struct msghdr m;
+        memset(&m, 0, sizeof m);
+        m.msg_control = control.buf;
+        m.msg_controllen = sizeof control.buf;
+        int saved = errno;
+        ssize_t rc = r_recvmsg(fd, &m, MSG_PEEK | (flags & MSG_DONTWAIT));
+        errno = saved;
+        if (rc < 0) return; /* the real call gives the error */
+        struct cmsghdr *c = CMSG_FIRSTHDR(&m);
+        if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_CREDENTIALS) return;
+        struct ucred cred;
+        memcpy(&cred, CMSG_DATA(c), sizeof cred);
+        if (cred.uid == geteuid()) return;
+        struct msghdr drop;
+        memset(&drop, 0, sizeof drop);
+        r_recvmsg(fd, &drop, flags & MSG_DONTWAIT);
+        errno = saved;
+        fprintf(stderr, "podnet-vnet: dropped a datagram of user %u (the shim takes the same user only)\n",
+                (unsigned)cred.uid);
+    }
+}
+
 ssize_t recvfrom(int fd, void *buf, size_t n, int flags,
                  struct sockaddr *sa, socklen_t *len) {
     ensure_init();
+    drop_other_users(fd, flags);
     if (!fd_is_virtual(fd) || !sa || !len) {
         return r_recvfrom(fd, buf, n, flags, sa, len);
     }
@@ -1000,6 +1049,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
 
 ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
     ensure_init();
+    drop_other_users(fd, flags);
     if (!fd_is_virtual(fd) || !msg || !msg->msg_name) {
         return r_recvmsg(fd, msg, flags);
     }

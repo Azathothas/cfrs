@@ -81,7 +81,10 @@ on the real `AF_UNIX` descriptor.
   or connect to it. Thus the shim takes the same user only (`SO_PEERCRED`):
   `accept` closes a client of another user and takes the next client, and
   `connect` to a listener of another user fails with `ECONNREFUSED`. A
-  datagram socket of the shim has no such check.
+  datagram socket of the shim has `SO_PASSCRED`: before `recvfrom` and
+  `recvmsg`, the shim drops each datagram of another user, with one line on
+  stderr (T-075). `recv` and `read` are not interposed: a program that
+  reads a datagram socket with them gets each datagram.
 
 ## 4. Stack
 
