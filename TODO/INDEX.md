@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**141 entries: 99 open, 1 partial, 7 blocked, 34 done.**
+**141 entries: 98 open, 1 partial, 7 blocked, 35 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 14 | 17 |
-| P2 | 73 | 0 | 5 | 16 | 94 |
+| P2 | 72 | 0 | 5 | 17 | 94 |
 | P3 | 24 | 0 | 2 | 4 | 30 |
-| **All** | 99 | 1 | 7 | 34 | 141 |
+| **All** | 98 | 1 | 7 | 35 | 141 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -185,5 +185,5 @@ M8 Overlays, M9 Later.
 | [T-137](crates.md) | P1 | M | M3 | chore | partial | podnet uses the shared crates of `PodUtils/podcrates` |
 | [T-138](fixes.md) | P2 | S | M5 | defect | done | live: two runs in a row failed on the edge and WARP services (GitHub #316) |
 | [T-139](fixes.md) | P2 | S | M5 | defect | done | The start of a session changes the global git identity and can drop commits of main |
-| [T-140](fixes.md) | P2 | S | M5 | feature | open | `data_path` and the time of the last TCP probe in `status`, the ready document and `warp status` |
+| [T-140](fixes.md) | P2 | S | M5 | feature | done | `data_path` and the time of the last TCP probe in `status`, the ready document and `warp status` |
 | [T-141](fixes.md) | P1 | S | M5 | defect | done | live: two runs in a row failed after the take of pod-dns and pod-services (GitHub #325) |

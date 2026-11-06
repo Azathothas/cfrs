@@ -1208,7 +1208,7 @@ forward to the new commit of the origin. The global identity did not change.
 **Milestone:** M5
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -1248,6 +1248,18 @@ cargo test --workspace -- warp_status_names_the_data_path
 
 The test starts a fake session whose probe fails and reads `tcp-dead`, then `ok` after the new
 session.
+
+## Done
+
+2026-11-06, commit da611f5 (`warp: data_path and last_probe in the record, warp status and podnet
+status (T-140)`). `Live` keeps a `Report` (`data_path`, `last_probe` in Unix seconds). The first
+`Live` of a process writes it in the ready document of its instance record after each probe and
+at each new session (`src/warp/live/instance.rs`). The ready document of `warp proxy` and `warp
+up`, `warp status` (text and `--json`) and `podnet status` show the two keys.
+`cargo test --workspace -- warp_status_names_the_data_path` passes; with
+`the_ready_document_names_the_data_path` and `status_names_the_data_path_of_an_instance`. Control:
+with the report and the record writes disabled, the three tests fail (no `data_path`).
+`sh scripts/agent/check.sh`: each check 0.
 
 # T-141: live: two runs in a row failed after the take of pod-dns and pod-services (GitHub #325)
 
