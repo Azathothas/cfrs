@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+pub mod text;
+
 /// The run directory in place of the default (tests, and hosts with no
 /// `XDG_RUNTIME_DIR` and no state directory).
 pub const RUN_DIR_VARIABLE: &str = "PODNET_RUN_DIR";

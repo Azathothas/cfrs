@@ -21,8 +21,10 @@ use tracing::{debug, info, warn};
 
 use super::ip::{TcpConn, WarpStack};
 
+pub mod names;
 use crate::services::check_name;
 pub use crate::services::tunnel_resolver;
+pub use names::{order, resolve, resolve_all};
 /// The longest time for a DNS answer through the tunnel.
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest time for a TCP connect through the tunnel.
@@ -1060,22 +1062,6 @@ async fn dial_ips(stack: &WarpStack, addresses: Vec<IpAddr>, port: u16) -> Resul
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no address to connect to")))
 }
 
-/// The order of the dial: IPv4 addresses, then IPv6, each in the order of
-/// the answer, with no copy.
-pub fn order(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
-    let mut out: Vec<IpAddr> = Vec::new();
-    for ip in addresses
-        .iter()
-        .filter(|a| a.is_ipv4())
-        .chain(addresses.iter().filter(|a| a.is_ipv6()))
-    {
-        if !out.contains(ip) {
-            out.push(*ip);
-        }
-    }
-    out
-}
-
 /// The addresses of the names of one UDP association, so that only the
 /// first datagram to a name waits for DNS (issue 114).
 #[derive(Default)]
@@ -1196,51 +1182,6 @@ async fn query_at(
     }
 }
 
-/// The A and the AAAA addresses of `name`, with DNS queries through the
-/// tunnel (issue 81).
-pub async fn resolve_all(stack: &WarpStack, name: &str) -> Result<Vec<IpAddr>> {
-    if let Ok(ip) = name
-        .trim_matches(|c| c == '[' || c == ']')
-        .parse::<IpAddr>()
-    {
-        return Ok(vec![ip]);
-    }
-    let (a, aaaa) = tokio::join!(
-        query(stack, name, podnet_netns::dns::TYPE_A),
-        query(stack, name, podnet_netns::dns::TYPE_AAAA)
-    );
-    let mut all: Vec<IpAddr> = a.unwrap_or_default();
-    all.extend(aaaa.unwrap_or_default());
-    if all.is_empty() {
-        bail!("no address for {name} through WARP");
-    }
-    Ok(order(all))
-}
-
-/// The first address of `name` (IPv4 first), with DNS through the tunnel.
-/// The AAAA query is sent only when there is no A record (issue 114:
-/// before, a lost AAAA answer delayed each name by the time limit).
-pub async fn resolve(stack: &WarpStack, name: &str) -> Result<IpAddr> {
-    if let Ok(ip) = name
-        .trim_matches(|c| c == '[' || c == ']')
-        .parse::<IpAddr>()
-    {
-        return Ok(ip);
-    }
-    let a = query(stack, name, podnet_netns::dns::TYPE_A).await;
-    if let Some(ip) = a.as_ref().ok().and_then(|a| a.first()) {
-        return Ok(*ip);
-    }
-    let aaaa = query(stack, name, podnet_netns::dns::TYPE_AAAA).await;
-    match (a, aaaa) {
-        (_, Ok(aaaa)) if !aaaa.is_empty() => Ok(aaaa[0]),
-        (Err(err), _) | (_, Err(err)) => {
-            Err(err.context(format!("no address for {name} through WARP")))
-        }
-        _ => bail!("no address for {name} through WARP"),
-    }
-}
-
 /// Copy bytes between a tunnel connection and a local pipe end.
 async fn bridge(conn: TcpConn, pipe: DuplexStream) {
     let (mut pipe_read, mut pipe_write) = tokio::io::split(pipe);
@@ -1336,35 +1277,6 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-#[cfg(test)]
-mod order_tests {
-    use super::*;
-
-    /// Issue 81: IPv4 first, then IPv6, no copy; an IPv6-only answer
-    /// stays.
-    #[test]
-    fn the_dial_order() {
-        let a: IpAddr = "1.2.3.4".parse().unwrap();
-        let b: IpAddr = "2606:4700::1".parse().unwrap();
-        let c: IpAddr = "5.6.7.8".parse().unwrap();
-        assert_eq!(order(vec![b, a, c, a]), vec![a, c, b]);
-        assert_eq!(order(vec![b]), vec![b]);
-    }
-
-    #[test]
-    fn the_stack_takes_the_ipv6_address_of_an_ipv4_tunnel() {
-        let v6: std::net::Ipv6Addr = "2606:4700:110:8a1::2".parse().unwrap();
-        let config =
-            super::super::StackConfig::new("172.16.0.2".parse().unwrap()).with_ipv6(Some(v6));
-        assert_eq!(config.local_v6, Some(v6));
-        let only_v6 = super::super::StackConfig::new(IpAddr::V6(v6)).with_ipv6(Some(v6));
-        assert_eq!(
-            only_v6.local_v6, None,
-            "no second address for an IPv6 tunnel"
-        );
     }
 }
 

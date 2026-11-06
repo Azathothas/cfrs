@@ -106,6 +106,13 @@ fn read_settings() -> pod_dns::Settings {
     }
 }
 
+/// The pins of `host` (`--resolve`, `PODNET_RESOLVE`), in the order given.
+/// The list is empty when `host` has no pin. A resolver of its own (the
+/// DNS through the WARP tunnel) uses this before its first query (T-073).
+pub fn pinned(host: &str) -> Vec<IpAddr> {
+    settings().pinned(host)
+}
+
 /// The chain with no DoH: for the host of a proxy and for each dial of a DoH
 /// query.
 pub fn plain() -> Arc<pod_dns::Resolver> {

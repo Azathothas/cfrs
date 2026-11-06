@@ -665,6 +665,13 @@ The first test asserts that a pinned name gives the pin and sends no DNS packet 
 2026-11-05, `src/resolve.rs` moves to `pod-dns` (T-137). Until podnet takes `pod-dns`, this fix of `src/resolve.rs`
 lands in podnet and the podcrates session ports it. After the take, the fix goes to PodUtils/podcrates.
 
+2026-11-06, podnet took `pod-dns` and `pod-services` (bf0c7ca, podcrates v0.5.0). The freeze of
+`src/resolve.rs` ended. `src/resolve.rs` is now glue over the resolver of `pod-dns`, and the pins
+are in its settings (`pod_dns::Settings::pinned`). The fix lands in podnet and needs no change of
+`pod-dns`: `src/resolve.rs` gets `pinned(host)`, and the DNS of the WARP commands moves from
+`src/warp/proxy.rs` to `src/warp/proxy/names.rs`. The text of `ps` moves from `src/main.rs` to
+`src/instances/text.rs`. The test of `--list` is `warp_forward_list_prints_the_forwards_of_ps`.
+
 # T-074: `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg
 
 **Source:** the lab kit's report warp-export-kernel-wg-data-path-degrades.md, in

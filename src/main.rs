@@ -1872,40 +1872,8 @@ fn instances_ps(json: bool) -> Result<()> {
         );
         return Ok(());
     }
-    if list.is_empty() {
-        println!("podnet: no detached instance");
-        return Ok(());
-    }
-    println!("NAME                     STATE          PID RST     AGE  URL/LISTEN");
     let now = podnet::instances::now();
-    for e in &list {
-        let r = &e.record;
-        let at = r
-            .ready
-            .as_ref()
-            .and_then(|d| d.get("url").or_else(|| d.get("listen")))
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
-        let age = now.saturating_sub(r.started);
-        let age = if age >= 3600 {
-            format!("{}h{:02}m", age / 3600, age % 3600 / 60)
-        } else {
-            format!("{}m{:02}s", age / 60, age % 60)
-        };
-        println!(
-            "{:<24} {:<9} {:>8} {:>3} {:>7}  {}",
-            r.name, r.state, r.pid, r.restarts, age, at
-        );
-        // Issue 203: the endpoint for podnet connect, on its own line.
-        if let Some(forward) = r
-            .ready
-            .as_ref()
-            .and_then(|d| d.get("forward"))
-            .and_then(|v| v.as_str())
-        {
-            println!("{:<24} forward {forward}", "");
-        }
-    }
+    print!("{}", podnet::instances::text::table(&list, now));
     Ok(())
 }
 
@@ -4222,12 +4190,15 @@ enum WarpCommand {
             short = 'L',
             long = "local",
             value_name = "LISTEN=HOST:PORT",
-            required = true,
+            required_unless_present = "list",
             env = "PODNET_WARP_FORWARD",
             hide_env_values = true,
             value_delimiter = ','
         )]
         local: Vec<String>,
+        /// Print the forwards of the detached instances (podnet ps) and exit.
+        #[arg(long)]
+        list: bool,
         /// Exit 69 when any listener does not start.
         #[arg(long)]
         strict: bool,
@@ -4709,6 +4680,11 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             return warp_up(&args, *port, files, *ready_timeout, *replace, *dns, auth);
         }
         WarpCommand::Down => return podnet::warp::up::down(),
+        WarpCommand::Forward { list: true, .. } => {
+            let list = podnet::instances::list(&podnet::instances::lookup_dir());
+            print!("{}", podnet::instances::text::forward_list(&list));
+            return Ok(());
+        }
         WarpCommand::Env => {
             let text = podnet::warp::up::env_text()?;
             // Issue 255: no proxy variables is not a success: a script

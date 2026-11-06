@@ -13,7 +13,7 @@
 1305 src/doctor.rs
 1734 src/edge_h2.rs
 2142 src/feature/mod.rs
-7057 src/main.rs
+7033 src/main.rs
 2034 src/proxy.rs
 890 src/quicktunnel.rs
 1139 src/relay_reverse.rs
@@ -24,7 +24,7 @@
 1072 src/vnet/switch.rs
 1680 src/warp/ip.rs
 1105 src/warp/mod.rs
-1990 src/warp/proxy.rs
+1902 src/warp/proxy.rs
 908 src/warp/register.rs
 1211 src/warp/session.rs
 900 src/warp/up.rs

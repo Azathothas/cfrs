@@ -626,6 +626,7 @@ podnet warp scan --candidate 162.159.198.1   # measure front doors (TCP and TLS)
 podnet warp export --out warp.conf  # a WireGuard device for other clients (UDP)
 podnet warp proxy                   # local SOCKS5 and HTTP CONNECT proxy
 podnet warp forward -L 5432=db.internal:5432   # as ssh -L, through WARP
+podnet warp forward --list          # the forwards of the detached instances
 podnet warp run -- curl https://cloudflare.com/cdn-cgi/trace
 podnet warp tun --interface podnet0        # TUN interface (needs CAP_NET_ADMIN)
 ```
@@ -674,7 +675,9 @@ podnet warp tun --interface podnet0        # TUN interface (needs CAP_NET_ADMIN)
   `--listen` is bound on its own: a listener that the host refuses is
   reported, and the proxy starts with the others (`--strict` exits 69
   instead). With no listener, the exit code is 69. Names are resolved
-  through the tunnel. SOCKS5 UDP ASSOCIATE is supported.
+  through the tunnel. A pin of `--resolve HOST=IP` or `PODNET_RESOLVE`
+  comes first and sends no query. This applies also to `warp forward` and
+  `warp nc`. SOCKS5 UDP ASSOCIATE is supported.
 * `--proxy-user USER --proxy-password-file FILE` (also on `warp up`): each
   client must give the user and the password of the first line of FILE
   (mode 0600), with SOCKS5 (RFC 1929) or HTTP `Proxy-Authorization: Basic`.

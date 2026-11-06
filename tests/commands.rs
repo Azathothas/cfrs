@@ -347,3 +347,68 @@ fn pod_doctor_json_has_the_schema_and_the_verdicts() {
         "{text}"
     );
 }
+
+/// A live instance `fw1` of `warp forward` in the run directory of `env`,
+/// with two forwards in its ready document. It is alive while the result
+/// is held.
+fn forward_instance(env: &Env) -> podnet::instances::Held {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let run = env.path("run");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&run)
+        .unwrap();
+    let record = podnet::instances::Record {
+        name: "fw1".into(),
+        pid: std::process::id(),
+        started: podnet::instances::now(),
+        command: "warp forward".into(),
+        state: "ready".into(),
+        ready: Some(serde_json::json!({
+            "listen": "tcp://127.0.0.1:2201",
+            "forward": [
+                { "listen": "tcp://127.0.0.1:2201", "to": "db.example:22" },
+                { "listen": "unix:/tmp/t073.sock", "to": "10.0.0.9:5432" },
+            ],
+        })),
+        ..Default::default()
+    };
+    podnet::instances::write(&run, &record).unwrap();
+    podnet::instances::lock(&podnet::instances::paths(&run, "fw1").unwrap().lock).unwrap()
+}
+
+/// T-073: `ps` prints each forward of an array `forward` as `LISTEN -> TO`.
+/// Before, it printed the first listen address only, and no target.
+#[test]
+fn ps_prints_each_forward() {
+    let env = Env::new();
+    let _alive = forward_instance(&env);
+    let out = text(&env.run(&["ps"]));
+    for row in [
+        "forward tcp://127.0.0.1:2201 -> db.example:22",
+        "forward unix:/tmp/t073.sock -> 10.0.0.9:5432",
+    ] {
+        assert!(out.contains(row), "{out}");
+    }
+}
+
+/// T-073: `warp forward --list` prints the forwards of `ps`, one line for
+/// each, with no `-L` and no WARP session.
+#[test]
+fn warp_forward_list_prints_the_forwards_of_ps() {
+    let env = Env::new();
+    let none = text(&env.run(&["warp", "forward", "--list"]));
+    assert!(none.contains("no forward"), "{none}");
+    let _alive = forward_instance(&env);
+    let out = text(&env.run(&["warp", "forward", "--list"]));
+    let rows: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        rows,
+        [
+            "fw1  tcp://127.0.0.1:2201 -> db.example:22",
+            "fw1  unix:/tmp/t073.sock -> 10.0.0.9:5432",
+        ],
+        "{out}"
+    );
+}
