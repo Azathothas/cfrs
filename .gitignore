@@ -4,3 +4,5 @@ __pycache__/
 
 # The state of the agent watchers (CLAUDE.md, Talk with the other sessions).
 .work/
+# The git worktrees of the agents of a session (CLAUDE.md, Git).
+.claude/worktrees/
