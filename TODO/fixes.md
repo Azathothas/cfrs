@@ -84,7 +84,7 @@ host has no radicle-node and no WARP. `seccomp.rs`: 1,900 to 1,803 lines.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -152,6 +152,19 @@ cargo test --test pod_seccomp_fds -- seccomp_close_in_a_child_keeps_the_parent_e
 ## Start condition
 
 T-063 is done.
+
+## Done
+
+2026-11-06, commit 7c3d1d8 (`T-064: seccomp: key the socket table by the socket inode`). The key
+of the table is the inode of the socket of the program end (`crates/podnet-netns/src/fdtable.rs`).
+The tests are in a new file, `tests/pod_seccomp_fds.rs` (`tests/pod_seccomp.rs` is in the size
+allowlist). `seccomp_close_in_a_child_keeps_the_parent_entry`: the parent connects through the
+proxy after a child closes its copy; it passes. `seccomp_dup_keeps_the_udp_destination`: a copy by
+`dup`, `dup2`, `dup3`, `F_DUPFD` and `F_DUPFD_CLOEXEC` keeps the destination of a connected UDP
+socket after the close of the first descriptor; it passes for each. Control on the old code: the
+first test fails (`connect: Invalid argument`), the second fails (`send failed` for each copy).
+`seccomp_closed_sockets_free_their_entries`: 5000 sockets closed with `close_range`; it passes.
+Control with no sweep: it fails at socket 4096 (`EMFILE`).
 
 # T-065: seccomp: hand a plain upstream descriptor to the program after its handshake
 
