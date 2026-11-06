@@ -181,7 +181,7 @@ and gives the crates that each crate may use. `scripts/layers-allow.txt` has 17 
 **Milestone:** M0
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -212,6 +212,16 @@ cargo test --test cli -- bug_report_names_the_version_and_no_secret qr_prints_th
 ```
 
 Plant: return at the start of the arm of each command. Each new test must fail.
+
+## Done
+
+2026-11-06, commit b5aa31b (`T-011: tests of bug-report, qr, net demo, autostart run and agent
+status`). The tests are in a new file `tests/commands.rs`: `tests/cli.rs` is in
+`scripts/size-allow.txt` and cannot grow. `agent status` prints a text report and has no JSON
+form, so its test is `agent_status_with_no_agent_names_each_task` (the instances line, the WARP
+line, the table head and each task row). `autostart run` runs an entry of `bug-report` with a
+variable of the env file, and the report names the variable. `cargo test --test commands`: 5
+passed. Plant: `return Ok(())` at the start of each of the five arms in `src/main.rs`: 5 failed.
 
 # T-012: WARP stand-ins on the loopback: the registration API and a MASQUE edge, with tests of the WARP commands
 

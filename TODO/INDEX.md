@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**139 entries: 116 open, 1 partial, 7 blocked, 15 done.**
+**139 entries: 115 open, 1 partial, 7 blocked, 16 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 7 | 1 | 0 | 8 | 16 |
-| P2 | 82 | 0 | 5 | 6 | 93 |
+| P2 | 81 | 0 | 5 | 7 | 93 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 116 | 1 | 7 | 15 | 139 |
+| **All** | 115 | 1 | 7 | 16 | 139 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ M8 Overlays, M9 Later.
 | [T-008](record.md) | P1 | S | M0 | chore | done | A parity snapshot: the command tree, the public items and the test list, with a diff of two runs |
 | [T-009](record.md) | P1 | S | M0 | chore | done | A size check: at most 800 lines in each source file, with an allowlist that can only shrink |
 | [T-010](record.md) | P1 | M | M0 | chore | done | A layer check: no module refers to a module of a higher layer, with an allowlist of 18 references that can only shrink |
-| [T-011](record.md) | P2 | M | M0 | chore | open | Loopback tests for the commands that have no behaviour test, before the splits |
+| [T-011](record.md) | P2 | M | M0 | chore | done | Loopback tests for the commands that have no behaviour test, before the splits |
 | [T-012](record.md) | P2 | L | M0 | chore | open | WARP stand-ins on the loopback: the registration API and a MASQUE edge, with tests of the WARP commands |
 | [T-013](record.md) | P2 | S | M0 | chore | done | A daily check that the record's list of GitHub numbers agrees with GitHub |
 | [T-014](record.md) | P2 | S | M0 | docs | done | The milestones M0 to M9 in a roadmap, and the open work of the maintenance page in the record |
