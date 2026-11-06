@@ -118,7 +118,7 @@ shrinks`). `scripts/check-size.py` and `scripts/size-allow.txt` (32 files over 8
 **Milestone:** M0
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -162,6 +162,16 @@ Plant: add `use crate::tunnel;` to `src/egress.rs`. The check must fail and name
 PodUtils/podcrates (`pod-proxy`, `pod-dns`, `pod-ws`, `pod-warp`, `pod-cloudflare`, `pod-relay`). A
 reference that a moved module owns leaves the list when podnet takes the crate. Read the 18 rows again at
 the start of this entry and write the allowlist for the tree of that day.
+
+## Done
+
+2026-11-06, commit 72fd502 (`T-010: check-layers.py fails on a reference to a crate that the crate
+of the module may not use`). The table maps each top module of `src/` to a crate of section 4.1
+and gives the crates that each crate may use. `scripts/layers-allow.txt` has 17 rows: edge 3
+(`fetch -> proxy`) left with the take of `pod-proxy`. `--self-test`: ok (8 plants). Plant:
+`use crate::tunnel;` in `src/egress.rs` gives `egress (core) -> tunnel (cloudflare)`, exit 1;
+`--plant-empty` exits 1. CI runs it (job `workflows`, and two plants in the job `plant`);
+`sh scripts/agent/check.sh` runs it.
 
 # T-011: Loopback tests for the commands that have no behaviour test, before the splits
 
