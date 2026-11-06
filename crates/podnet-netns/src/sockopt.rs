@@ -20,7 +20,8 @@ pub(crate) type Options = HashMap<(i32, i32), Vec<u8>>;
 const MAX_OPTION: usize = 256;
 
 /// A connected TCP socket of the program. Its data goes through a relay
-/// task; the entry keeps the facts that the program can ask for.
+/// task, or the program holds the upstream socket (T-065). The entry keeps
+/// the facts that the program can ask for.
 pub(crate) struct Connected {
     /// The address that the program connected to (a fake address of a
     /// name stays the fake address, as the program knows it).

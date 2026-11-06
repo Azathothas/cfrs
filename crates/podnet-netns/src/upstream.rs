@@ -514,7 +514,7 @@ where
     }
 }
 
-async fn socks5_connect<S>(stream: S, proxy: &Proxy, target: &str) -> Result<S>
+pub(crate) async fn socks5_connect<S>(stream: S, proxy: &Proxy, target: &str) -> Result<S>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -654,7 +654,7 @@ where
     Ok(Some(datagram))
 }
 
-async fn http_connect<S>(mut stream: S, proxy: &Proxy, target: &str) -> Result<S>
+pub(crate) async fn http_connect<S>(mut stream: S, proxy: &Proxy, target: &str) -> Result<S>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

@@ -199,7 +199,7 @@ an AF_UNIX socket pair, not the upstream socket.
 ## Prove
 
 ```sh
-cargo test --test pod_seccomp -- seccomp_handoff_of_a_unix_upstream_leaves_no_relay
+cargo test --test pod_seccomp_handoff -- seccomp_handoff_of_a_unix_upstream_leaves_no_relay
 ```
 
 The test asserts that `setsockopt(TCP_NODELAY)` on the handed descriptor gives 0 from the kernel,
@@ -208,6 +208,25 @@ and that no relay task stays.
 ## Start condition
 
 T-064 is done.
+
+## Correction
+
+2026-11-06:
+
+- The test is in `tests/pod_seccomp_handoff.rs`, not in `tests/pod_seccomp.rs`.
+  `tests/pod_seccomp.rs` is in `scripts/size-allow.txt` and cannot get larger. The Prove names
+  the new test target.
+- `setsockopt(TCP_NODELAY)` on the handed descriptor cannot give 0 from the kernel. The handed
+  socket is the `AF_UNIX` socket to the proxy, and the kernel gives `EOPNOTSUPP` for an
+  `IPPROTO_TCP` option on it. The entry of the socket stays under the inode of the handed
+  socket (`Sock::Connected`, T-063), so the supervisor gives 0. The test asserts 0 from the pod.
+- The handoff occurs for one SOCKS5 or HTTP hop on a Unix socket. A chain of hops, a loopback
+  connect, a tailnet dial and a TCP upstream keep the relay. The handoff also needs one waiting
+  call, no other descriptor of the socket in the pod, and no unread byte of the program; else the
+  relay starts (`crates/podnet-netns/src/handoff.rs`).
+- The test proves "no relay stays" with the exit time of the pod: the echo proxy keeps its end
+  open for 10 s after the program closes, so a relay keeps the pod for its drain limit (3 s).
+  The test asserts an exit in less than 2.5 s, and the new socket inode at the descriptor.
 
 # T-066: seccomp: ICMP datagram sockets, `recvmmsg`, and UDP names over 255 bytes
 

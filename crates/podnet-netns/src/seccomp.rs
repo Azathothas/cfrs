@@ -570,7 +570,7 @@ pub(crate) enum Sock {
         error: i32,
         options: crate::sockopt::Options,
     },
-    /// A connected TCP socket (T-063): the relay task has its socketpair.
+    /// A connected TCP socket (T-063): a relay, or the program (T-065), has it.
     Connected(crate::sockopt::Connected),
     Datagram {
         pair: Arc<tokio::net::UnixDatagram>,
@@ -777,7 +777,7 @@ pub(crate) async fn supervise_seccomp(
         } else if nr == libc::SYS_socket as i32 {
             crate::socket::handle_socket(lfd, id, a, &mut map, verbose)
         } else if nr == libc::SYS_connect as i32 {
-            let entry = (&mut *map, key);
+            let entry = (&mut *map, key, req.pid);
             crate::connect::handle_connect(lfd, id, a, mem, entry, &mut dns, &mut dials, &route)
         } else if nr == libc::SYS_sendto as i32 {
             handle_sendto(lfd, id, a, mem, (&mut map, key), &mut dns, &proxies).await

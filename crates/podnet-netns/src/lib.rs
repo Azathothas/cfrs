@@ -44,6 +44,7 @@ mod doctor;
 mod fakedns;
 mod fdtable;
 mod frontdoor;
+mod handoff;
 mod icmp;
 mod inbox;
 mod netns;

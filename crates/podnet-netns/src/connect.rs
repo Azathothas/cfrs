@@ -13,7 +13,11 @@
 //! on a socket in the state `SYN_SENT`. When no waiting call is pending at
 //! the end of the dial (the caller exited, or a signal stopped the call),
 //! the loop drops the connection. A later `connect` dials again.
+//!
+//! A plain upstream on a Unix socket goes to the program itself at the end
+//! of the dial (T-065, [`crate::handoff`]). Another upstream gets a relay.
 
+use crate::handoff::{dial_plain, Caller, Link};
 use crate::prelude::*;
 use crate::seccomp::{
     notif_continue, notif_id_valid, notif_respond, parse_sockaddr, read_mem, spawn_relay, Sock,
@@ -22,11 +26,11 @@ use crate::seccomp::{
 /// The end of the dial of one socket.
 pub(crate) struct Dialed {
     key: Key,
-    /// The descriptor number of the first call (for the ephemeral port).
-    fd: i32,
+    /// The first call: its descriptor number gives the ephemeral port.
+    caller: Caller,
     peer: (IpAddr, u16),
     target: String,
-    result: Result<Upstream>,
+    result: Result<Link>,
 }
 
 /// The dials in progress.
@@ -69,7 +73,7 @@ pub(crate) fn handle_connect(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    (map, key): (&mut HashMap<Key, Sock>, Key),
+    (map, key, pid): (&mut HashMap<Key, Sock>, Key, u32),
     dns: &mut FakeDns,
     dials: &mut Dials,
     route: &Route<'_>,
@@ -105,7 +109,7 @@ pub(crate) fn handle_connect(
     let tx = dials.tx.clone();
     let mut done = Dialed {
         key,
-        fd,
+        caller: Caller { id, pid, fd },
         peer: (ip, port),
         target: target.clone(),
         result: Err(anyhow::anyhow!("no dial")),
@@ -119,7 +123,9 @@ pub(crate) fn handle_connect(
         let inbound_dir = route.inbound_dir.to_path_buf();
         tokio::spawn(async move {
             let dial = connect_loopback(&inbound_dir, ip, port);
-            done.result = within_timeout("loopback connect", dial).await;
+            done.result = within_timeout("loopback connect", dial)
+                .await
+                .map(Link::Relay);
             let _ = tx.send(done);
         });
     } else {
@@ -128,8 +134,15 @@ pub(crate) fn handle_connect(
             eprintln!("podnet-netns: connect {target} via {}", chain[0].endpoint());
         }
         tokio::spawn(async move {
-            let dial = connect_upstream_async(&chain, &target);
-            done.result = within_timeout("upstream connect", dial).await;
+            done.result = match crate::handoff::plain_hop(&chain) {
+                Some(hop) => within_timeout("upstream connect", dial_plain(hop, &target)).await,
+                None => {
+                    let dial = connect_upstream_async(&chain, &target);
+                    within_timeout("upstream connect", dial)
+                        .await
+                        .map(Link::Relay)
+                }
+            };
             let _ = tx.send(done);
         });
     }
@@ -141,13 +154,13 @@ pub(crate) fn handle_connect(
 pub(crate) fn finish(
     lfd: RawFd,
     done: Dialed,
-    map: &mut HashMap<Key, Sock>,
+    map: &mut crate::fdtable::Table,
     dials: &mut Dials,
     verbose: bool,
 ) {
     let Dialed {
         key,
-        fd,
+        caller,
         peer,
         target,
         result,
@@ -167,7 +180,7 @@ pub(crate) fn finish(
         }
     };
     match result {
-        Ok(mut upstream) => match map.remove(&key) {
+        Ok(link) => match map.remove(&key) {
             Some(Sock::Stream {
                 mut pair,
                 bound,
@@ -175,7 +188,27 @@ pub(crate) fn finish(
                 ..
             }) => {
                 // T-063: the entry stays, for the options and the addresses.
-                let entry = crate::sockopt::Connected::new(fd, peer, bound, options);
+                let entry = crate::sockopt::Connected::new(caller.fd, peer, bound, options);
+                let handed = match &link {
+                    Link::Plain(up) => {
+                        let ends = (up, &pair);
+                        crate::handoff::hand_off(lfd, caller, &waiting, ends, (map, key))
+                    }
+                    Link::Relay(_) => None,
+                };
+                if let Some(new_key) = handed {
+                    // T-065: the program holds the upstream; no relay.
+                    if verbose {
+                        let what = "the program holds the upstream socket (no relay)";
+                        eprintln!("podnet-netns: connect {target}: {what}");
+                    }
+                    map.insert(new_key, Sock::Connected(entry));
+                    answer(0);
+                    return;
+                }
+                let Ok(mut upstream) = link.into_relay() else {
+                    return answer(libc::ECONNABORTED);
+                };
                 map.insert(key, Sock::Connected(entry));
                 spawn_relay(async move {
                     let _ = tokio::io::copy_bidirectional(&mut pair, &mut upstream).await;

@@ -126,7 +126,7 @@ impl Table {
 
     /// Whether a descriptor of the pod other than `fd` of the task `pid`
     /// refers to the socket `key`.
-    fn other_copy(&self, pid: u32, fd: i32, key: Key) -> bool {
+    pub(crate) fn other_copy(&self, pid: u32, fd: i32, key: Key) -> bool {
         let own = sockets_of(pid as i32).unwrap_or_default();
         if own.iter().any(|&(n, k)| k == key && n != fd) {
             return true;
