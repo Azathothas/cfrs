@@ -146,7 +146,7 @@ items of argv (the commit order of architecture.md, section 2.1).
 **Milestone:** M2
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -182,6 +182,22 @@ sh scripts/agent/parity-snapshot.sh /tmp/after /tmp/before
 ## Start condition
 
 T-027 is done.
+
+## Done
+
+2026-11-06, commit db1e2a3 (`T-028: move the host commands and the net commands of src/main.rs
+to src/cli/cmd/`). `src/cli/cmd/mod.rs` declares the files below. `instances.rs` (163 lines:
+`instances_ps`, `instances_stop`, `instances_logs`, and the arm `wait` as `instances_wait`),
+`autostart.rs` (144), `agent.rs` (232: `AgentCommand`, `run_self_json`, `agent`,
+`agent_commands`), `host.rs` (280: the argument structs, `parse_release_tag`, and one function for
+each arm of `update`, `completions`, `ports`, `qr`, `man`, `doctor`, `status` and `bug-report`),
+`net/mod.rs` (330), `net/proxy.rs` (182) and `net/shim.rs` (157). `license_fault` and
+`exposes_failed` were already in the library (`src/warp/identity.rs`, `src/agent.rs`); they stay
+there. The dispatch in `src/cli/mod.rs` calls the new functions. `src/main.rs` has 4,441 lines
+(5,645 before). The tests stay in `src/main.rs` with their names (T-032 moves them).
+`scripts/agent/parity-snapshot.sh`: exit 0, no map; 1,285 commands, 1,278 public items and 1,020
+tests before and after. One commit holds all the files: the net files and the host files change
+the same `use` lines of `src/main.rs` and `src/cli/mod.rs`.
 
 # T-029: `src/main.rs` to a CLI module, part 3: the server commands
 

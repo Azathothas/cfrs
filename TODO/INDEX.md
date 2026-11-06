@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**141 entries: 94 open, 1 partial, 7 blocked, 39 done.**
+**141 entries: 93 open, 1 partial, 7 blocked, 40 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 14 | 17 |
-| P2 | 70 | 0 | 5 | 19 | 94 |
+| P2 | 69 | 0 | 5 | 20 | 94 |
 | P3 | 22 | 0 | 2 | 6 | 30 |
-| **All** | 94 | 1 | 7 | 39 | 141 |
+| **All** | 93 | 1 | 7 | 40 | 141 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -73,7 +73,7 @@ M8 Overlays, M9 Later.
 | [T-025](rename.md) | P2 | S | M1 | chore | open | The image `ghcr.io/podutils/podnet` is public |
 | [T-026](split.md) | P2 | M | M2 | chore | done | Move the unit tests of nine files into their own files |
 | [T-027](split.md) | P2 | M | M2 | chore | done | `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options |
-| [T-028](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands |
+| [T-028](split.md) | P2 | M | M2 | chore | done | `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands |
 | [T-029](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 3: the server commands |
 | [T-030](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 4: the WARP arguments, the client and `warp up` |
 | [T-031](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 5: the other WARP subcommands |
