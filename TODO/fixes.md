@@ -1187,3 +1187,46 @@ cargo test --workspace -- warp_status_names_the_data_path
 
 The test starts a fake session whose probe fails and reads `tcp-dead`, then `ok` after the new
 session.
+
+# T-141: live: two runs in a row failed after the take of pod-dns and pod-services (GitHub #325)
+
+**Source:** GitHub #325 (the job report of `live`).
+**Category:** defect
+**Milestone:** M5
+**Priority:** P1
+**Effort:** S
+**Status:** open
+
+## Problem
+
+The issue: "The workflow live failed in two runs in a row." The failed runs:
+
+- 42210655807 (1301fb6, schedule), the step "Quick tunnel with no system DNS, then with 1.1.1.1
+  blocked": the step read the lines `podnet::resolve` with `step=` and `server=`, which the take
+  of `pod-dns` (bf0c7ca) removed.
+- 42222905277 (61c70aa, a run by hand), the step "WARP run with the netns-raw backend": `warp run
+  --backend netns-raw` panicked at `src/main.rs` (index 0 of an empty list): the nameservers of
+  `cloudflare-dns` were empty after the take of `pod-services`.
+
+## Premise
+
+- The DNS step passed in run 42222905277 after c970da1 (it reads `source="doh"` of `pod_dns`).
+- The endpoints `udp-1` and `udp-2` of `cloudflare-dns` give the address as the host, with no list
+  of addresses; `Endpoint::ip_addrs` of `pod-services` reads the list only.
+
+## Approach
+
+1. Read the debug line of `pod_dns` in the DNS step (c970da1). Ask podcrates to name the DoH server
+   (COORD-004, #322), and restore the check of the server with its release.
+2. Read the addresses of an endpoint with `socket_addrs` (`services::ips_of`, 3db91c7), with a
+   test.
+3. Run `live.yml` at the head of `main` (#326).
+
+## Prove
+
+```sh
+cargo test --workspace -- the_nameservers_of_the_service_are_1_1_1_1_and_1_0_0_1
+```
+
+The live run of #326 passes each step.
+

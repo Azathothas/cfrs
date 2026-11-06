@@ -23,6 +23,8 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #321 | COORD-003: podnet moved each podcrates tag to v0.5.0 | open (a COORD issue between sessions) | T-137 |
 | #322 | COORD-004: pod-dns: name the DoH server in the debug line | open (a COORD issue between sessions) | T-137 |
 | #323 | [gh action] requested: a run of ci.yml | closed (run 42222918056 at 61c70aa: success) | none |
-| #324 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
+| #324 | [gh action] requested: a run of live.yml | closed (run 42222905277 at 61c70aa: failure, T-141) | none |
+| #325 | live: two runs in a row failed | open | T-141 |
+| #326 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
 
 #312 to #315 and #318 are pull requests.
