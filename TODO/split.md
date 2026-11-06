@@ -267,6 +267,8 @@ their names (T-032 moves them). `scripts/agent/parity-snapshot.sh`: exit 0, no m
 commands, 1,278 public items and 1,020 tests before and after. `gh workflow run live.yml` is not
 done here: the commit is not on `main` yet. Run it after the merge.
 
+CI run 42292498940 and live run 42292490990 at 416574b: success.
+
 # T-030: `src/main.rs` to a CLI module, part 4: the WARP arguments, the client and `warp up`
 
 **Source:** `docs/research/podnet/architecture.md`, section 2.1.

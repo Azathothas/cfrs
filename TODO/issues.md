@@ -42,7 +42,7 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #340 | [gh action] requested: a run of ci.yml | closed (ci 42283721494 at 093938f: success) | none |
 | #341 | [gh action] requested: a run of ci.yml | closed (ci 42286291297 at 8a3ec2c: success) | none |
 | #342 | [gh action] requested: a run of ci.yml | closed (ci 42290515084 at b385489: success) | none |
-| #343 | [gh action] requested: a run of ci.yml | open (a request of a run) | none |
-| #344 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
+| #343 | [gh action] requested: a run of ci.yml | closed (ci 42292498940 at 416574b: success) | none |
+| #344 | [gh action] requested: a run of live.yml | closed (live 42292490990 at 416574b: success) | none |
 
 #312 to #315 and #318 are pull requests.
