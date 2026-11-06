@@ -9,8 +9,8 @@ use podnet::exit::{Fault, ResultExt};
 use podnet::vnet::VirtAddr;
 
 use super::ProxyArgs;
+use crate::cli::cmd::run::listen_doc;
 use crate::cli::signals::sleep_or_signal;
-use crate::listen_doc;
 
 /// A probability from 0.0 to 1.0 (issue 196).
 pub(crate) fn probability(value: &str) -> std::result::Result<f64, String> {

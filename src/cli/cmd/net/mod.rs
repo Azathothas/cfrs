@@ -12,9 +12,9 @@ use clap::{Args, Subcommand};
 use podnet::exit::{Fault, ResultExt};
 use podnet::vnet::{VirtAddr, VirtualSubnet};
 
+use crate::cli::cmd::run::listen_doc;
 use crate::cli::opts::DetachArgs;
 use crate::cli::signals::sleep_or_signal;
-use crate::listen_doc;
 use proxy::{net_proxy, probability};
 use shim::{net_shim, net_socksify, net_tailscale, net_ts_shims};
 

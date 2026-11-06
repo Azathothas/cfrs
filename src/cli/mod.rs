@@ -15,15 +15,16 @@ use clap::{Parser, Subcommand};
 
 use podnet::exit::Fault;
 
-use crate::{
-    connect, demo, relay, serve, share, tunnel, warp, ConnectArgs, DemoArgs, RelayArgs, ServeArgs,
-    ShareArgs, TunnelArgs, WarpArgs,
-};
+use crate::{warp, WarpArgs};
 use cmd::agent::{agent, AgentCommand};
 use cmd::autostart::{autostart, AutostartArgs};
+use cmd::connect::{connect, ConnectArgs};
 use cmd::host::{DoctorArgs, ManArgs, PortsArgs, QrArgs, UpdateArgs};
 use cmd::instances::{instances_logs, instances_ps, instances_stop, instances_wait};
 use cmd::net::{net, NetArgs};
+use cmd::relay::{relay, RelayArgs};
+use cmd::share::{demo, serve, share, DemoArgs, ServeArgs, ShareArgs};
+use cmd::tunnel::{tunnel, TunnelArgs};
 
 #[derive(Parser, Debug)]
 #[command(

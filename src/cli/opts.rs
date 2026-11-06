@@ -12,8 +12,9 @@ use podnet::ingress::Service;
 use podnet::{Protocol, Transport};
 
 use crate::cli::cmd::net::NetCommand;
+use crate::cli::cmd::relay::RelayCommand;
 use crate::cli::{Cli, Command};
-use crate::{RelayCommand, WarpCommand};
+use crate::WarpCommand;
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct TunnelOpts {
