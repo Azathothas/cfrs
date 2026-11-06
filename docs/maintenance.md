@@ -42,6 +42,14 @@ state of the open work.
 * **Writes to GitHub** (a comment, the close of an issue, the dispatch of a
   workflow): the MCP tools of GitHub (`add_issue_comment`, `issue_write`,
   `actions_run_trigger`). No comment has an attribution line (`CLAUDE.md`).
+* **A run when a push starts no workflow**: open a NEW issue in
+  `PodUtils/podnet` titled exactly `[gh action] requested`, with one line
+  of why, one line `workflow: FILE.yml`, and one sh block with the exact
+  `gh workflow run FILE.yml -R PodUtils/podnet --ref main`. One workflow for
+  each issue. The local agent of the owner acts on a new issue only: an
+  amended body or a comment starts nothing. It writes the run id back as a
+  comment. Watch the run to its end (`scripts/agent/watch-runs.sh`), and
+  open a new issue for each new run.
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
 * **Helper scripts of the agent** (in `scripts/agent/`):
