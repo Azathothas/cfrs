@@ -3,24 +3,27 @@
 //! it has no public path.
 
 pub(crate) mod argv;
+pub(crate) mod cmd;
 pub(crate) mod help;
 pub(crate) mod opts;
 pub(crate) mod signals;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use podnet::exit::{Fault, ResultExt};
+use podnet::exit::Fault;
 
 use crate::{
-    agent, autostart, connect, demo, instances_logs, instances_ps, instances_stop, net, relay,
-    serve, share, tunnel, warp, AgentCommand, AutostartArgs, ConnectArgs, DemoArgs, DoctorArgs,
-    ManArgs, NetArgs, PortsArgs, QrArgs, RelayArgs, ServeArgs, ShareArgs, TunnelArgs, UpdateArgs,
-    WarpArgs,
+    connect, demo, relay, serve, share, tunnel, warp, ConnectArgs, DemoArgs, RelayArgs, ServeArgs,
+    ShareArgs, TunnelArgs, WarpArgs,
 };
+use cmd::agent::{agent, AgentCommand};
+use cmd::autostart::{autostart, AutostartArgs};
+use cmd::host::{DoctorArgs, ManArgs, PortsArgs, QrArgs, UpdateArgs};
+use cmd::instances::{instances_logs, instances_ps, instances_stop, instances_wait};
+use cmd::net::{net, NetArgs};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -208,53 +211,7 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         Command::Serve(args) => serve(args).await,
         Command::Share(args) => share(args).await,
         Command::Connect(args) => connect(args).await,
-        Command::Update(args) if args.rollback => {
-            let path = std::env::current_exe()
-                .and_then(|p| p.canonicalize())
-                .context("finding this binary")?;
-            let now = podnet::update::rollback(&path).fault(Fault::Unavailable)?;
-            println!(
-                "{}: {now} (put back from {})",
-                path.display(),
-                podnet::update::previous_of(&path).display()
-            );
-            Ok(())
-        }
-        Command::Update(args) => {
-            use podnet::update::Outcome;
-            // Issue 249: an empty tag asked the network, then exit 69.
-            if let Some(tag) = args.version.as_deref() {
-                let good = !tag.is_empty()
-                    && tag
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b));
-                if !good {
-                    return Err(podnet::exit::fault(
-                        Fault::Usage,
-                        anyhow::anyhow!("--version {tag:?}: give a tag like v0.3.0-beta.11"),
-                    ));
-                }
-            }
-            match podnet::update::run(args.version.as_deref(), args.check, args.force)
-                .await
-                .fault(Fault::Unavailable)?
-            {
-                Outcome::UpToDate(tag) => println!("podnet {tag} is the newest release"),
-                Outcome::Same(tag) => {
-                    println!("podnet {tag} is installed; nothing to do (--force installs it again)")
-                }
-                Outcome::Available { current, tag } => {
-                    println!("podnet {current}; release {tag} is available (podnet update)")
-                }
-                Outcome::Updated { from, to, path } => {
-                    println!(
-                        "podnet {from} -> {to}: {} (signature and SHA-256 checked)",
-                        path.display()
-                    )
-                }
-            }
-            Ok(())
-        }
+        Command::Update(args) => cmd::host::update(args).await,
         Command::Agent { command } => agent(command).await,
         Command::Ps { json } => instances_ps(json),
         Command::Stop { name, all, timeout } => instances_stop(name, all, timeout),
@@ -263,81 +220,10 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
             follow,
             lines,
         } => instances_logs(&name, follow, lines).await,
-        Command::Wait { name, timeout } => {
-            podnet::instances::check_name(&name)
-                .map_err(|e| podnet::exit::fault(Fault::Usage, e))?;
-            let dir = podnet::instances::lookup_dir();
-            let doc = podnet::detach::wait_ready_record(
-                &dir,
-                &name,
-                std::time::Duration::from_secs(timeout),
-            )?;
-            println!("{doc}");
-            Ok(())
-        }
-        Command::Completions { shell } => {
-            use clap::CommandFactory;
-            let mut cmd = Cli::command();
-            let mut script = Vec::new();
-            clap_complete::generate(shell, &mut cmd, "podnet", &mut script);
-            match std::io::Write::write_all(&mut std::io::stdout(), &script) {
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-                other => other.context("writing the completion script"),
-            }
-        }
-        Command::Ports(args) => {
-            let mut ports = podnet::ports::listening_ports();
-            if args.probe {
-                // Issue 119: a port in the LISTEN table can refuse each
-                // connection.
-                let (open, unreachable) = podnet::ports::probe(&ports).await;
-                ports = open;
-                if args.json {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "ports": ports, "probed": true, "unreachable": unreachable })
-                    );
-                    return Ok(());
-                }
-                for port in &unreachable {
-                    eprintln!("podnet: ports: {port} listens, and refuses a connection");
-                }
-            }
-            if args.json {
-                println!(
-                    "{}",
-                    podnet::status::stamped(serde_json::json!({ "ports": ports }))
-                );
-            } else {
-                for port in ports {
-                    println!("{port}");
-                }
-            }
-            Ok(())
-        }
-        Command::Qr(args) => {
-            // Issue 95: a text over the limit is a usage mistake; a text
-            // that is not a URL gets a warning (a QR code of any text is
-            // valid).
-            if args.url.len() > podnet::qr::MAX_BYTES {
-                return Err(podnet::exit::fault(
-                    Fault::Usage,
-                    anyhow::anyhow!(
-                        "the text is {} bytes; a QR code holds at most {} bytes",
-                        args.url.len(),
-                        podnet::qr::MAX_BYTES
-                    ),
-                ));
-            }
-            if !podnet::qr::looks_like_url(&args.url) {
-                eprintln!(
-                    "podnet: warning: {:?} is not a URL (scheme://...); the QR code holds the text as it is",
-                    args.url
-                );
-            }
-            print!("{}", podnet::qr::render_terminal(&args.url)?);
-            Ok(())
-        }
+        Command::Wait { name, timeout } => instances_wait(&name, timeout),
+        Command::Completions { shell } => cmd::host::completions(shell),
+        Command::Ports(args) => cmd::host::ports(args).await,
+        Command::Qr(args) => cmd::host::qr(args),
         Command::Demo(args) => demo(args).await,
         Command::Net(args) => net(args).await,
         Command::Warp(args) => warp(*args).await,
@@ -346,69 +232,10 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
             Fault::Usage,
             anyhow::anyhow!("podnet pod runs before the runtime"),
         )),
-        Command::Man(args) => {
-            use clap::CommandFactory;
-            let manual = podnet::manual::model::build(Cli::command());
-            let request = podnet::manual::Request {
-                section: (!args.section.is_empty()).then(|| args.section.join(" ")),
-                no_pager: args.no_pager,
-                roff: args.roff,
-                json: args.json,
-            };
-            let text = podnet::manual::body(&manual, &request)
-                .map_err(|e| podnet::exit::fault(podnet::exit::Fault::Usage, anyhow::anyhow!(e)))?;
-            let paged = !request.roff && !request.json;
-            podnet::manual::pager::show(&text, request.no_pager || !paged)?;
-            Ok(())
-        }
-        Command::Doctor(args) if args.agent => {
-            let report = podnet::agent::run(Duration::from_secs(args.timeout.max(3))).await;
-            if args.json {
-                println!(
-                    "{}",
-                    podnet::status::stamped(serde_json::to_value(&report)?)
-                );
-            } else {
-                print!("{}", podnet::agent::text(&report));
-            }
-            Ok(())
-        }
-        Command::Doctor(args) => {
-            podnet::udp::check_edge_env()?;
-            podnet::udp::Choice::from_env()?;
-            let report = podnet::doctor::run(podnet::doctor::Options {
-                samples: args.samples as usize,
-                timeout: Duration::from_secs(args.timeout),
-                ..podnet::doctor::Options::default()
-            })
-            .await;
-            if args.json {
-                println!("{}", report.to_json());
-            } else {
-                print!("{}", report.text());
-            }
-            if !report.ok() {
-                bail!("no leg can work on this host; the doctor gives the reason for each");
-            }
-            Ok(())
-        }
+        Command::Man(args) => cmd::host::man(args),
+        Command::Doctor(args) => cmd::host::doctor(args).await,
         Command::Autostart(args) => autostart(args.command),
-        Command::Status { .. } => {
-            println!("{}", podnet::status::document());
-            Ok(())
-        }
-        Command::BugReport { doctor } => {
-            let report = if doctor {
-                let options = podnet::doctor::Options {
-                    samples: 3,
-                    ..Default::default()
-                };
-                Some(podnet::doctor::run(options).await.to_json())
-            } else {
-                None
-            };
-            print!("{}", podnet::bug_report::text(report.as_ref()));
-            Ok(())
-        }
+        Command::Status { .. } => cmd::host::status(),
+        Command::BugReport { doctor } => cmd::host::bug_report(doctor).await,
     }
 }
