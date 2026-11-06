@@ -6,6 +6,12 @@
 //! writes. Its data plane is WireGuard on UDP (port 2408 of the front door
 //! by default), not MASQUE on TCP 443: on a network that permits only TCP
 //! 443, the exported config does not work, and podnet itself does.
+//!
+//! The reserved bytes (T-074): WARP reads bytes 1 to 3 of each WireGuard
+//! message, the `client_id` of the device. Kernel WireGuard and wg-quick send
+//! zeros there; `podnet warp --transport wireguard` sends the bytes. A device
+//! that needs them has fresh handshakes and no data path in kernel WireGuard.
+//! `warp export --check` ([`check`]) tells which.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use super::register::{self, Device};
 use crate::egress::Proxy;
+
+pub mod check;
+pub mod command;
 
 /// The file name of the exported device in the state directory.
 pub const FILE_NAME: &str = "warp-wg.json";
@@ -134,6 +143,13 @@ fn tighten_fd(fd: i32, st: &libc::stat) -> bool {
     false
 }
 
+/// The head of the config under `Reserved` (T-074).
+pub const RESERVED_NOTE: &str = "\
+# The reserved bytes go in bytes 1 to 3 of each WireGuard message (the client_id of the device).
+# Kernel WireGuard and wg-quick send zeros there. podnet warp --transport wireguard sends them.
+# A device that needs them has handshakes and no data in kernel WireGuard: podnet warp export --check tells.
+";
+
 /// The values of a config.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Config {
@@ -189,7 +205,7 @@ impl Config {
         );
         if let Some([a, b, c]) = self.reserved {
             out.push_str(&format!(
-                "# Reserved = {a},{b},{c} (for the clients that send it)\n"
+                "# Reserved = {a},{b},{c} (for the clients that send it)\n{RESERVED_NOTE}"
             ));
         }
         out.push_str(&format!(
@@ -337,6 +353,7 @@ mod tests {
         assert!(text.contains("Endpoint = engage.cloudflareclient.com:2408\n"));
         assert!(text.contains("PersistentKeepalive = 25\n"));
         assert!(text.contains("# Reserved = 1,2,3"));
+        assert!(text.contains("# Kernel WireGuard and wg-quick send zeros there."));
         let json = config.json("dev");
         assert_eq!(json["reserved"], serde_json::json!([1, 2, 3]));
         assert!(json.get("token").is_none());

@@ -318,6 +318,25 @@ fn warp_tun_takes_session_max_age() {
     assert!(err.contains("parsing the WARP identity"), "{err}");
 }
 
+/// T-074: `warp export --check` writes no config, so it refuses `--out`
+/// and `--delete`; the help names the reserved bytes.
+#[test]
+fn warp_export_check_is_a_flag() {
+    let env = Env::new();
+    for extra in ["--out=w.conf", "--delete"] {
+        let out = env
+            .cmd(&["warp", "export", "--check", extra])
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(64), "{extra}: {err}");
+        assert!(err.contains("cannot be used with"), "{extra}: {err}");
+    }
+    let help = text(&env.run(&["warp", "export", "--help"]));
+    assert!(help.contains("--check"), "{help}");
+    assert!(help.contains("needs reserved bytes"), "{help}");
+}
+
 /// T-078: `pod doctor --json` has the schema and the verdict words of
 /// `podnet doctor`.
 #[test]

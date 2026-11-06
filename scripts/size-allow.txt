@@ -13,7 +13,7 @@
 1305 src/doctor.rs
 1734 src/edge_h2.rs
 2142 src/feature/mod.rs
-7033 src/main.rs
+6939 src/main.rs
 2034 src/proxy.rs
 890 src/quicktunnel.rs
 1139 src/relay_reverse.rs
@@ -28,7 +28,7 @@
 908 src/warp/register.rs
 1211 src/warp/session.rs
 900 src/warp/up.rs
-1078 src/warp/wg.rs
+972 src/warp/wg.rs
 994 src/ws_relay.rs
 2314 tests/cli.rs
 812 tests/detach.rs

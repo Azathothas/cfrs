@@ -732,6 +732,17 @@ A live step runs `warp export --check` on the device of the run.
 
 T-068 is done.
 
+## Correction
+
+2026-11-06: step 3 needs no probe in `WgKeepalive`. The leg of `--transport wireguard` is a
+`MasqueSession` under the `WarpStack` of `Live`, and `Live::probed` (T-068) probes each such
+stack; `warp tun` on the leg has the SYN probe of T-069. Measured: the test
+`wireguard_probe_renews_a_dead_leg` (a stand-in front door that answers each handshake and drops
+each data message) passes on the code before this change (`f88aacf`), and fails with no probe
+(`probed(None)`: "no renewal" after 10 s). A probe in `WgKeepalive` would be a second probe of the
+same path. The test stays as the proof of step 3. The flag of the entry, `warp tun --leg
+wireguard`, is `--transport wireguard` in podnet.
+
 # T-075: The datagram socket of the vnet shim takes the same user only
 
 **Source:** `docs/maintenance.md`, section "Open work" (the bullet of the vnet shim UDP);

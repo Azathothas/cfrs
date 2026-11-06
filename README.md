@@ -705,6 +705,17 @@ podnet warp tun --interface podnet0        # TUN interface (needs CAP_NET_ADMIN)
   (`warp-wg.json` in the state directory); podnet registers it when the file
   has none. The stack, the proxy and the commands are the same. There is no
   relay and no proxy: WireGuard is UDP.
+* The reserved bytes: WARP reads bytes 1 to 3 of each WireGuard message,
+  the `client_id` of the device (`# Reserved = a,b,c` in the output of
+  `warp export`, `reserved` in the JSON form). Kernel WireGuard and
+  wg-quick send zeros there. `--transport wireguard` sends the bytes. A
+  device that needs them has fresh handshakes and no data path in kernel
+  WireGuard. `podnet warp export --check` runs the WireGuard leg of podnet
+  with the bytes and with zeros, with a TCP connect to the target of
+  `--probe` through each. It prints `device ok` (exit 0), `needs reserved
+  bytes` (exit 1) or `device data path dead, use --new` (exit 69). The
+  TCP probe of `--probe` also runs on the stack of `--transport
+  wireguard`: a leg with fresh handshakes and no TCP gets a new session.
 * `--masque-transport h3` (a flag of `podnet warp`, before or after the subcommand; `PODNET_WARP_MASQUE_TRANSPORT`): the MASQUE
   session over HTTP/3 on UDP 443 in place of HTTP/2 on TCP 443. Each IP
   packet is an HTTP datagram (RFC 9297), so a lost packet does not stop the

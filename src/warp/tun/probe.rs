@@ -126,7 +126,7 @@ fn parse(p: &[u8]) -> Option<Tcp> {
 }
 
 /// An IPv4 packet with a TCP header of 20 bytes and no data.
-fn tcp_packet(
+pub(crate) fn tcp_packet(
     src: Ipv4Addr,
     dst: Ipv4Addr,
     sport: u16,

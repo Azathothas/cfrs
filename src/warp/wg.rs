@@ -810,6 +810,9 @@ impl WgKeepalive {
 }
 
 #[cfg(test)]
+pub(crate) mod standin;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -879,55 +882,6 @@ mod tests {
         );
     }
 
-    /// The responder of the handshake, for the test: it checks the
-    /// initiation and answers as a WireGuard peer does.
-    fn respond(
-        peer_private: &[u8; 32],
-        initiator_public: &[u8; 32],
-        init: &[u8],
-    ) -> (Vec<u8>, [u8; 32], [u8; 32], u32) {
-        let peer_public = x25519_base(peer_private);
-        assert_eq!(init.len(), INITIATION_LEN);
-        assert_eq!(mac1(&peer_public, &init[..116]), init[116..132]);
-        let mut c = hash(&[CONSTRUCTION]);
-        let mut h = hash(&[&c, IDENTIFIER]);
-        h = hash(&[&h, &peer_public]);
-        let e_pub: [u8; 32] = init[8..40].try_into().unwrap();
-        [c] = kdf::<1>(&c, &e_pub);
-        h = hash(&[&h, &e_pub]);
-        let [c2, k] = kdf::<2>(&c, &x25519(peer_private, &e_pub));
-        c = c2;
-        let s_pub = open(&k, 0, &init[40..88], &h).unwrap();
-        assert_eq!(s_pub, initiator_public);
-        h = hash(&[&h, &init[40..88]]);
-        let [c3, k] = kdf::<2>(&c, &x25519(peer_private, initiator_public));
-        c = c3;
-        let time = open(&k, 0, &init[88..116], &h).unwrap();
-        assert_eq!(time.len(), 12);
-        h = hash(&[&h, &init[88..116]]);
-        let e_priv = random::<32>();
-        let e_r = x25519_base(&e_priv);
-        [c] = kdf::<1>(&c, &e_r);
-        h = hash(&[&h, &e_r]);
-        [c] = kdf::<1>(&c, &x25519(&e_priv, &e_pub));
-        [c] = kdf::<1>(&c, &x25519(&e_priv, initiator_public));
-        let [c4, tau, k] = kdf::<3>(&c, &[0u8; 32]);
-        c = c4;
-        h = hash(&[&h, &tau]);
-        let empty = seal(&k, 0, &[], &h);
-        let sender = 77u32;
-        let mut m = vec![MSG_RESPONSE, 0, 0, 0];
-        m.extend_from_slice(&sender.to_le_bytes());
-        m.extend_from_slice(&init[4..8]);
-        m.extend_from_slice(&e_r);
-        m.extend_from_slice(&empty);
-        let mac = mac1(initiator_public, &m);
-        m.extend_from_slice(&mac);
-        m.extend_from_slice(&[0; 16]);
-        let [recv_key, send_key] = kdf::<2>(&c, &[]);
-        (m, send_key, recv_key, sender)
-    }
-
     #[test]
     fn a_handshake_and_transport_messages() {
         let peer_private = random::<32>();
@@ -946,7 +900,7 @@ mod tests {
         let key = hash(&[LABEL_MAC1, &keys.peer_public]);
         assert_eq!(blake2s(16, &key, &[&plain]), init.message[116..132]);
         let (response, peer_send, peer_recv, peer_index) =
-            respond(&peer_private, &keys.public(), &init.message);
+            standin::respond(&peer_private, &keys.public(), &init.message);
         assert_eq!(response.len(), RESPONSE_LEN);
         let mut session = init.finish(&keys, &response).unwrap();
         assert_eq!(session.remote, peer_index);
@@ -978,66 +932,6 @@ mod tests {
             ..keys.clone()
         };
         assert!(init.finish(&other, &response).is_err());
-    }
-
-    /// A WireGuard peer on the loopback: it answers the handshake and sends
-    /// each packet back.
-    #[tokio::test]
-    async fn a_tunnel_over_udp_carries_packets_both_ways() {
-        crate::test_host::need_loopback!();
-        let peer_private = random::<32>();
-        let keys = Keys {
-            private: random::<32>(),
-            peer_public: x25519_base(&peer_private),
-            reserved: [7, 8, 9],
-        };
-        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = sock.local_addr().unwrap();
-        let client_public = keys.public();
-        let server = tokio::spawn(async move {
-            let mut buf = vec![0u8; 2048];
-            let (n, from) = sock.recv_from(&mut buf).await.unwrap();
-            assert_eq!(&buf[..4], &[MSG_INITIATION, 7, 8, 9]);
-            let (response, send_key, recv_key, _) =
-                respond(&peer_private, &client_public, &buf[..n]);
-            let receiver: [u8; 4] = buf[4..8].try_into().unwrap();
-            sock.send_to(&response, from).await.unwrap();
-            let mut counter = 0u64;
-            loop {
-                let (n, from) = sock.recv_from(&mut buf).await.unwrap();
-                if buf[0] != MSG_DATA {
-                    continue;
-                }
-                let c = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-                let plain = open(&recv_key, c, &buf[16..n], &[]).unwrap();
-                if plain.is_empty() {
-                    continue;
-                }
-                let mut m = vec![MSG_DATA, 0, 0, 0];
-                m.extend_from_slice(&receiver);
-                m.extend_from_slice(&counter.to_le_bytes());
-                m.extend_from_slice(&seal(&send_key, counter, &plain, &[]));
-                counter += 1;
-                sock.send_to(&m, from).await.unwrap();
-            }
-        });
-        let peer = Peer {
-            keys,
-            endpoint,
-            v4: Some("172.16.0.2".parse().unwrap()),
-            v6: None,
-        };
-        let (mut tx, mut rx, _keepalive) = connect(&peer).await.unwrap();
-        let mut packet = vec![0x45, 0, 0, 40];
-        packet.resize(40, 3);
-        tx.send_packets(&[packet.clone()]).await.unwrap();
-        let back = tokio::time::timeout(Duration::from_secs(5), rx.recv_packet())
-            .await
-            .expect("a packet back")
-            .unwrap()
-            .unwrap();
-        assert_eq!(back.to_vec(), packet);
-        server.abort();
     }
 
     #[tokio::test]

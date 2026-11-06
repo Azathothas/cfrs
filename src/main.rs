@@ -4137,32 +4137,10 @@ enum WarpCommand {
     /// warp-wg.json of the state directory, not in warp.json. Its data
     /// path is WireGuard on UDP (port 2408), not MASQUE on TCP 443. The
     /// output holds the private key: a terminal is refused with no --out
-    /// (--out - prints it), and a redirected file becomes mode 0600.
-    Export {
-        /// wg-quick or json.
-        #[arg(long, default_value = "wg-quick", value_parser = ["wg-quick", "json"])]
-        format: String,
-        /// Write the config to this file (mode 0600) in place of stdout.
-        #[arg(long, value_name = "FILE")]
-        out: Option<PathBuf>,
-        /// The file of the exported device (default: warp-wg.json in the
-        /// state directory).
-        #[arg(long, value_name = "FILE")]
-        export_identity: Option<PathBuf>,
-        /// The Endpoint of the config, HOST:PORT (default: the endpoint of
-        /// the device record, port 2408).
-        #[arg(long, value_name = "HOST:PORT")]
-        endpoint: Option<String>,
-        /// PersistentKeepalive in seconds; 0 writes no line.
-        #[arg(long, value_name = "SECS", default_value_t = 25)]
-        keepalive: u16,
-        /// Register a new device even when the file has one.
-        #[arg(long, conflicts_with = "delete")]
-        new: bool,
-        /// Remove the exported device from the service and delete its file.
-        #[arg(long)]
-        delete: bool,
-    },
+    /// (--out - prints it), and a redirected file becomes mode 0600. WARP
+    /// reads 3 reserved bytes in each message; kernel WireGuard and
+    /// wg-quick send zeros. --check tells if the device needs the bytes.
+    Export(podnet::warp::export::command::Args),
     /// Measure front doors of WARP: the TCP connect and the TLS handshake
     /// with the pinned key, for each --candidate and the front doors of the
     /// device record. The fastest goes first. Exit 69 when none answers.
@@ -4769,79 +4747,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             }
         }
         // Issue 148: a WireGuard device of its own; warp.json is not used.
-        WarpCommand::Export {
-            format,
-            out,
-            export_identity,
-            endpoint,
-            keepalive,
-            new,
-            delete,
-        } => {
-            let path = match export_identity.clone() {
-                Some(path) => path,
-                None => podnet::warp::export::default_path()
-                    .fault(Fault::Config)?
-                    .context("PODNET_STATE_DIR=none keeps no file; give --export-identity PATH")
-                    .fault(Fault::Config)?,
-            };
-            if *delete {
-                // Issue 178: a second --delete names the missing file.
-                if !podnet::state::exists(&path).fault(Fault::Config)? {
-                    return Err(podnet::exit::fault(
-                        Fault::Config,
-                        anyhow::anyhow!("no exported device at {}", path.display()),
-                    ));
-                }
-                let id = podnet::warp::export::delete(&path, None)
-                    .await
-                    .fault(Fault::Unavailable)?;
-                eprintln!(
-                    "podnet: warp export: the device {id} is deleted, and {}",
-                    path.display()
-                );
-                return Ok(());
-            }
-            // Issue 177: no private key on a terminal, before a device is
-            // registered.
-            let to_stdout = out
-                .as_deref()
-                .is_none_or(|p| p == std::path::Path::new("-"));
-            {
-                use std::io::IsTerminal as _;
-                podnet::warp::export::check_sink(out.as_deref(), std::io::stdout().is_terminal())
-                    .fault(Fault::Usage)?;
-            }
-            let exported = podnet::warp::export::load_or_register(&path, *new, None)
-                .await
-                .fault(Fault::Unavailable)?;
-            let config =
-                podnet::warp::export::Config::of(&exported, endpoint.as_deref(), *keepalive)
-                    .fault(Fault::Unavailable)?;
-            let text = match format.as_str() {
-                "json" => format!("{:#}\n", config.json(&exported.device.id)),
-                _ => config.wg_quick(),
-            };
-            match out {
-                Some(file) if !to_stdout => {
-                    podnet::warp::write_private_file(file, text.as_bytes())
-                        .with_context(|| format!("writing {}", file.display()))?;
-                    eprintln!("podnet: warp export: wrote {}", file.display());
-                }
-                _ => {
-                    if podnet::warp::export::tighten_stdout() {
-                        eprintln!("podnet: warp export: the file of stdout is mode 0600 now (it holds the private key)");
-                    }
-                    print!("{text}");
-                }
-            }
-            eprintln!(
-                "podnet: warp export: the device {} is in {} (podnet warp export --delete removes it)",
-                exported.device.id,
-                path.display()
-            );
-            return Ok(());
-        }
+        WarpCommand::Export(args) => return podnet::warp::export::command::run(args).await,
         // Issues 132 and 136: check the rules with no device and no session.
         WarpCommand::Proxy {
             rules,
@@ -5603,7 +5509,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         WarpCommand::Tun { .. } => bail!("podnet warp tun is available on Linux only"),
         WarpCommand::Up { .. }
         | WarpCommand::Down
-        | WarpCommand::Export { .. }
+        | WarpCommand::Export(_)
         | WarpCommand::Env
         | WarpCommand::Exec { .. }
         | WarpCommand::Shell(_)

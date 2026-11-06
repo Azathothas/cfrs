@@ -134,6 +134,15 @@ assert len(d["private_key"]) == 44 and len(d["peer_public_key"]) == 44
 assert d["endpoint"].endswith(":2408"), d["endpoint"]
 print("export: keys ok, endpoint port 2408, reserved", "yes" if d["reserved"] else "no")
 ' "$dir/wg-out.json"
+# T-074: the data path of the device, with the reserved bytes and with
+# zeros. Exit 0, 1 or 69 is a verdict; each other code is a fault.
+rc=0
+"$podnet" warp export --export-identity "$dir/wg.json" --check > "$dir/check.out" 2> /dev/null || rc=$?
+cat "$dir/check.out"
+case $rc in 0 | 1 | 69) ;; *) echo "export --check: exit $rc"; exit 1 ;; esac
+tail -1 "$dir/check.out" | grep -Eqx 'device ok|needs reserved bytes|device data path dead, use --new' ||
+    { echo "export --check: no verdict"; exit 1; }
+echo "export --check: exit $rc"
 "$podnet" warp export --export-identity "$dir/wg.json" --delete > /dev/null 2>&1
 [ ! -e "$dir/wg.json" ]
 echo "export: the device is deleted"
