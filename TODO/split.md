@@ -274,7 +274,7 @@ done here: the commit is not on `main` yet. Run it after the merge.
 **Milestone:** M2
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -307,6 +307,31 @@ gh workflow run live.yml
 ## Start condition
 
 T-027 is done.
+
+## Correction
+
+Approach step 2 moves the dispatch to `src/cli/cmd/warp/mod.rs`. The arms of T-031 (`Register`
+to `Run`, about 790 lines) cannot go into that file with the prologue: the file then has more
+than 800 lines. They stay in `src/main.rs` in the function `warp_other`, and `warp()` of
+`mod.rs` calls `crate::warp_other` after it makes the client. T-031 moves these arms to their
+files and removes `warp_other`.
+
+## Done
+
+2026-11-06, commit 23759ba (`T-030: move the WARP arguments, the client and warp up to
+src/cli/cmd/warp/`). `src/cli/cmd/warp/args.rs` (554 lines: `WarpArgs`, `WarpCommand`,
+`non_empty_key`), `client.rs` (147: `warp_client`, `carry_peer`, `wireguard_peer`,
+`masque_options`, `identity_pairs`, `warp_client_inner`), `up.rs` (438: the arms `Up`, `Down`,
+`Env`, `Exec`, `Shell`, `SshConfig` and `Nc` as `before_client` and `nc_session`, `UpFiles`,
+`warp_up`, `UDP_NC_IDLE`, `nc_end`, `udp_nc`, `ssh_config_file`, `warp_global_args`,
+`warp_up_tun_args`, `warp_up_args`) and `mod.rs` (153: the prologue of `warp()`, the dispatch,
+the check of the saved identity). `up_summary` was already in the library
+(`src/warp/find.rs`); it stays there. The arms `Forward --list`, `Export` and the checks of
+`Proxy` before the client stay in the dispatch of `mod.rs` (T-031 moves them). `src/main.rs`
+has 1,810 lines (3,018 before). The tests stay in `src/main.rs` with their names (T-032 moves
+them). `sh scripts/agent/check.sh`: exit 0. `scripts/agent/parity-snapshot.sh`: exit 0, no
+map; 1,285 commands, 1,278 public items and 1,020 tests before and after. `gh workflow run
+live.yml` is not done here: the commit is not on `main` yet. Run it after the merge.
 
 # T-031: `src/main.rs` to a CLI module, part 5: the other WARP subcommands
 

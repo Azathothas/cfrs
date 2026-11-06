@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 141 entries: 92 open, 1 partial, 7 blocked, 41 done.
+`TODO/INDEX.md` holds 141 entries: 91 open, 1 partial, 7 blocked, 42 done.
 
 ## State
 
@@ -34,7 +34,7 @@ not wait for a larger one.
    again.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** each
    entry of this list is done. A fix in a pod backend lands before T-040 starts, or after it ends.
-4. **M2, the splits:** T-030 and T-031, then T-032; T-033 to T-041; T-042,
+4. **M2, the splits:** T-031, then T-032; T-033 to T-041; T-042,
    T-043, T-044; T-045; then T-015.
 5. **M3, the crates:** T-046, T-047, T-048, T-051, T-053, then the prerelease T-054. T-049, T-050
    and T-052 are the takes of `pod-relay`, `pod-warp` and `pod-cloudflare` of `PodUtils/podcrates`
