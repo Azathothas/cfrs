@@ -45,7 +45,8 @@ state of the open work.
 * **A run when a push starts no workflow** (the rule of the owner,
   2026-11-06): the local agent of the owner runs the commands, and it is a
   smaller model. For each run, open a NEW issue in `PodUtils/podnet` titled
-  exactly `[gh action] requested`, with:
+  exactly `[gh action] requested`, with ONE workflow in each request (the
+  agent starts only the first `gh workflow run` of a block), and:
   * one line of why;
   * ONE `sh` block: `set -e` first, each `gh` command in full (`-R
     PodUtils/podnet` and every flag), nothing that needs judgement, and a
