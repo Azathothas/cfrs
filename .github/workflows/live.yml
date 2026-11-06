@@ -285,7 +285,8 @@ jobs:
             { tail -40 dns2.err; exit 1; }
           grep 'pod_dns' dns2.err | head -10 || true
           grep -q 'source="doh"' dns2.err
-          grep -q 'server="https://8\.8\.' dns2.err
+          # pod-dns writes the server with no quotes (server=https://8.8.8.8/...).
+          grep -qE 'server="?https://8\.8\.' dns2.err
       - name: A wrong --resolve pin fails at the TLS name check
         timeout-minutes: 2
         run: |
