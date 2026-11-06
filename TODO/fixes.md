@@ -693,7 +693,7 @@ the fix, the three pass, and `sh scripts/agent/check.sh` exits 0.
 **Milestone:** M5
 **Priority:** P2
 **Effort:** L
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -742,6 +742,22 @@ each data message) passes on the code before this change (`f88aacf`), and fails 
 (`probed(None)`: "no renewal" after 10 s). A probe in `WgKeepalive` would be a second probe of the
 same path. The test stays as the proof of step 3. The flag of the entry, `warp tun --leg
 wireguard`, is `--transport wireguard` in podnet.
+
+## Done
+
+2026-11-06, commit 3e57e0a (`T-074: warp export: the reserved bytes, --check, and the probe of
+the WireGuard leg`). Step 1: the head of the wg-quick output (`RESERVED_NOTE` in
+`src/warp/export.rs`), the help of `warp export` and `README.md`. Step 2: `warp export --check`
+(`src/warp/export/check.rs`): the leg with the reserved bytes and the leg with zeros, each with a
+TCP connect to the target of `--probe` in 5 s; exit 0 (`device ok`), 1 (`needs reserved bytes`)
+or 69 (`device data path dead, use --new`); `--out` and `--delete` are refused. Step 3: see the
+Correction. `cargo test --workspace -- a_seal_with_zero_reserved_differs_in_three_bytes
+wireguard_probe_renews_a_dead_leg` passes; `export_check_tells_the_three_states` (a stand-in front
+door for each verdict) and `warp_export_check_is_a_flag` (`tests/commands.rs`) pass;
+`sh scripts/agent/check.sh` exits 0 (1012 tests passed). Control before the change: the two unit
+tests of `check.rs` do not compile, `warp_export_check_is_a_flag` fails (unexpected argument
+`--check`). Not run: `gh workflow run live.yml` (no network to WARP here); the step is in
+`scripts/live-batch2.sh`.
 
 # T-075: The datagram socket of the vnet shim takes the same user only
 
