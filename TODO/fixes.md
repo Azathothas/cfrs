@@ -468,7 +468,7 @@ cargo test --workspace -- warp_exec_names_its_backend_once warp_exec_passes_the_
 **Milestone:** M5
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -500,6 +500,16 @@ gh workflow run live.yml
 ```
 
 The live step of `warp tun` reads 0 for the interface.
+
+## Done
+
+2026-11-06, commit fb151ca (`T-072: warp tun sets rp_filter to 0 on its interface`).
+`src/warp/tun/rp_filter.rs`: 0 for the interface after the create, at each session (`tun::run`) and
+2 s later; a warning when the larger of `conf.all` and `conf.IF` is not 0; `--keep-rp-filter`; the
+ready document has `rp_filter`. `the_effective_rp_filter_is_the_larger_value` and
+`warp_tun_writes_0_unless_it_keeps_the_value` (a fake `conf` tree) pass. Not done: the row in
+`doctor` (`src/doctor.rs` is frozen until the take of `pod-services`), and the live step: this
+session starts no workflow, and this host has no TUN device.
 
 # T-073: `warp forward`: the pins of `--resolve`, and the list of forwards
 

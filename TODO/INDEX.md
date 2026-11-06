@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**140 entries: 112 open, 1 partial, 7 blocked, 20 done.**
+**140 entries: 111 open, 1 partial, 7 blocked, 21 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 3 | 1 | 0 | 12 | 16 |
-| P2 | 82 | 0 | 5 | 7 | 94 |
+| P2 | 81 | 0 | 5 | 8 | 94 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 112 | 1 | 7 | 20 | 140 |
+| **All** | 111 | 1 | 7 | 21 | 140 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -117,7 +117,7 @@ M8 Overlays, M9 Later.
 | [T-069](fixes.md) | P1 | L | M5 | defect | done | `warp tun`: a SYN probe of the session, and `--session-max-age` |
 | [T-070](fixes.md) | P1 | S | M5 | defect | done | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
 | [T-071](fixes.md) | P2 | M | M5 | feature | open | `warp exec` and `warp shell` take `--backend`, name the backend in one line, and log the seccomp emulation |
-| [T-072](fixes.md) | P2 | S | M5 | defect | open | `warp tun` sets `rp_filter` to 0 on its interface |
+| [T-072](fixes.md) | P2 | S | M5 | defect | done | `warp tun` sets `rp_filter` to 0 on its interface |
 | [T-073](fixes.md) | P2 | M | M5 | defect | open | `warp forward`: the pins of `--resolve`, and the list of forwards |
 | [T-074](fixes.md) | P2 | L | M5 | defect | open | `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg |
 | [T-075](fixes.md) | P2 | S | M5 | defect | open | The datagram socket of the vnet shim takes the same user only |
