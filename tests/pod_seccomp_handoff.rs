@@ -2,6 +2,8 @@
 //! plain Unix-socket upstream after the handshake, and no relay task
 //! stays. A TCP upstream keeps the relay.
 
+mod test_host;
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -181,6 +183,9 @@ fn seccomp_handoff_of_a_unix_upstream_leaves_no_relay() {
 
 #[test]
 fn seccomp_tcp_upstream_keeps_the_relay() {
+    // The proxy listens on the loopback (the jobs restricted-host and
+    // no-loopback of ci.yml have none).
+    test_host::need_loopback!();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {

@@ -340,6 +340,10 @@ fn the_control_bind_would_fail_without_the_shim() {
     let cc = shim::compiler().expect("compiler");
     match afinet_audit::raw_bind_errno(&cc) {
         Ok(0) => eprintln!("{test}: skipping, this host allows bind(AF_INET)"),
+        // T-076: with the loopback down, the bind fails for another reason.
+        Ok(errno) if errno == libc::EADDRNOTAVAIL => {
+            eprintln!("{test}: skipping, this host has no loopback address")
+        }
         Ok(errno) => assert_eq!(errno, afinet_audit::EACCES),
         Err(afinet_audit::HelperError::NoCompiler) => {
             eprintln!("{test}: skipping, no C compiler")
