@@ -791,7 +791,7 @@ two hex digits stays; `+` stays) and keeps the match with no anchor. `README.md`
 **Milestone:** M5
 **Priority:** P3
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -819,6 +819,14 @@ The owner, 2026-11-04 (`docs/decisions.md`, Doctor): one verdict vocabulary for 
 ```sh
 cargo test --test cli -- pod_doctor_json_has_the_schema_and_the_verdicts
 ```
+
+## Done
+
+2026-11-06, commit 43b3559 (`T-078: pod doctor uses the verdict words of doctor and has a schema
+key`). `crates/podnet-netns/src/doctor.rs`: `ok` or `fail` for each probe and backend; the JSON
+form has `schema` 1, `verdict` for each capability and `verdicts`; the old keys stay; exit 3 stays.
+The test is in `tests/commands.rs` (`tests/cli.rs` cannot grow) and passes. The `## Breaking` list
+is in the draft note `docs/releases/v0.4.0-beta.1.md`.
 
 # T-079: Read the numbers of #206 and #184 in a live run
 
