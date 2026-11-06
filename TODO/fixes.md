@@ -627,7 +627,7 @@ session starts no workflow, and this host has no TUN device.
 **Milestone:** M5
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -671,6 +671,19 @@ are in its settings (`pod_dns::Settings::pinned`). The fix lands in podnet and n
 `pod-dns`: `src/resolve.rs` gets `pinned(host)`, and the DNS of the WARP commands moves from
 `src/warp/proxy.rs` to `src/warp/proxy/names.rs`. The text of `ps` moves from `src/main.rs` to
 `src/instances/text.rs`. The test of `--list` is `warp_forward_list_prints_the_forwards_of_ps`.
+
+## Done
+
+2026-11-06, commit bbfe527 (`warp: the pins of --resolve come first, ps prints each forward, warp
+forward --list (T-073)`). `pinned(host)` in `src/resolve.rs` gives the pins of `--resolve` and
+`PODNET_RESOLVE`. `resolve_all` and `resolve` (`src/warp/proxy/names.rs`) return the pins before
+a DNS query through the tunnel: `warp forward`, `warp proxy` and `warp nc`. `ps` prints each
+forward of an array `forward` as `LISTEN -> TO` (`src/instances/text.rs`). `warp forward --list`
+prints the forwards of the detached instances. Control on the code before the fix:
+`warp_resolve_takes_the_pin_first` fails (6 DNS packets go into the stack),
+`ps_prints_each_forward` fails (no row `LISTEN -> TO`),
+`warp_forward_list_prints_the_forwards_of_ps` fails (exit 64, unexpected argument `--list`). After
+the fix, the three pass, and `sh scripts/agent/check.sh` exits 0.
 
 # T-074: `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg
 

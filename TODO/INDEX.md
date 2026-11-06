@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**141 entries: 101 open, 1 partial, 7 blocked, 32 done.**
+**141 entries: 100 open, 1 partial, 7 blocked, 33 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 14 | 17 |
-| P2 | 75 | 0 | 5 | 14 | 94 |
+| P2 | 74 | 0 | 5 | 15 | 94 |
 | P3 | 24 | 0 | 2 | 4 | 30 |
-| **All** | 101 | 1 | 7 | 32 | 141 |
+| **All** | 100 | 1 | 7 | 33 | 141 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -118,7 +118,7 @@ M8 Overlays, M9 Later.
 | [T-070](fixes.md) | P1 | S | M5 | defect | done | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
 | [T-071](fixes.md) | P2 | M | M5 | feature | done | `warp exec` and `warp shell` take `--backend`, name the backend in one line, and log the seccomp emulation |
 | [T-072](fixes.md) | P2 | S | M5 | defect | done | `warp tun` sets `rp_filter` to 0 on its interface |
-| [T-073](fixes.md) | P2 | M | M5 | defect | open | `warp forward`: the pins of `--resolve`, and the list of forwards |
+| [T-073](fixes.md) | P2 | M | M5 | defect | done | `warp forward`: the pins of `--resolve`, and the list of forwards |
 | [T-074](fixes.md) | P2 | L | M5 | defect | open | `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg |
 | [T-075](fixes.md) | P2 | S | M5 | defect | done | The datagram socket of the vnet shim takes the same user only |
 | [T-076](fixes.md) | P3 | S | M5 | chore | done | A CI job runs the tests with the loopback down |
