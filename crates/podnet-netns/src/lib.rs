@@ -44,6 +44,7 @@ mod frontdoor;
 mod inbox;
 mod netns;
 mod seccomp;
+mod sockopt;
 
 pub use cli::{set_program_name, usage, usage_for};
 pub use listen::ProxyListen;

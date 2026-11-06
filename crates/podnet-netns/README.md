@@ -124,6 +124,13 @@ see it. Use a unix socket for it (`-L unix:///path`).
   proxy that answers `0x07`, or closes, gets UDP ASSOCIATE.
 * `io_uring` is refused with `EPERM`, because its operations do not go through
   the filter.
+* A TCP socket keeps its entry in the supervisor after its `connect`
+  (`src/sockopt.rs`). `setsockopt` gives 0 and the supervisor keeps the
+  value; `getsockopt` gives the value that the program set (for example
+  `TCP_NODELAY` and `TCP_KEEPIDLE`). `getpeername` gives the address and
+  the port of the `connect` (a name keeps its fake address); a stream with
+  no `connect` gives `ENOTCONN`. `getsockname` gives the bound address,
+  else the unspecified address of the family with an ephemeral port.
 * `getsockname` and `getpeername` give the logical address. The supervisor
   writes it into the child memory through `/proc/<pid>/mem`, else with
   `process_vm_writev`. As the kernel does, it writes at most the length that
