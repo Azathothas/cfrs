@@ -42,15 +42,22 @@ state of the open work.
 * **Writes to GitHub** (a comment, the close of an issue, the dispatch of a
   workflow): the MCP tools of GitHub (`add_issue_comment`, `issue_write`,
   `actions_run_trigger`). No comment has an attribution line (`CLAUDE.md`).
-* **A run when a push starts no workflow**: open a NEW issue in
-  `PodUtils/podnet` titled exactly `[gh action] requested`, with one line
-  of why, one line `workflow: FILE.yml`, and one sh block with the exact
-  `gh workflow run FILE.yml -R PodUtils/podnet --ref main`. One workflow for
-  each issue. The local agent of the owner acts on a new issue only: an
-  amended body or a comment starts nothing. It writes the run id back as a
-  comment. Watch the run to its end (`scripts/agent/watch-runs.sh`), and
-  open a new issue for each new run. Map each new issue (a request of a
-  run, a COORD issue) in `TODO/issues.md` and `TODO/github.txt` in the next
+* **A run when a push starts no workflow** (the rule of the owner,
+  2026-11-06): the local agent of the owner runs the commands, and it is a
+  smaller model. For each run, open a NEW issue in `PodUtils/podnet` titled
+  exactly `[gh action] requested`, with:
+  * one line of why;
+  * ONE `sh` block: `set -e` first, each `gh` command in full (`-R
+    PodUtils/podnet` and every flag), nothing that needs judgement, and a
+    last line that echoes the run ids;
+  * at the end: "Run the block as it is, once. Then write here: the output
+    of the last line, or the line where it stopped and its error."
+
+  Never amend the block of an open request, and never add a second block in
+  a comment: close it and open a new issue. When the block checks the head
+  of `main`, push nothing to `main` until it ran. Watch each run to its end
+  (`scripts/agent/watch-runs.sh`). Map each new issue (a request of a run,
+  a COORD issue) in `TODO/issues.md` and `TODO/github.txt` in the next
   commit: `record-issues.yml` fails each day on a number with no line.
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
