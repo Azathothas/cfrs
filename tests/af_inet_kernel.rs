@@ -76,6 +76,11 @@ fn sealed_or_skip(test: &str, cc: &str) -> Option<i32> {
             );
             None
         }
+        // T-076: with the loopback down, the bind fails for another reason.
+        Ok(errno) if errno == libc::EADDRNOTAVAIL => {
+            eprintln!("{test}: skipping, this host has no loopback address");
+            None
+        }
         Ok(errno) => Some(errno),
         Err(HelperError::NoCompiler) => {
             eprintln!("{test}: skipping, no C compiler");
