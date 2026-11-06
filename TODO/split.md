@@ -207,7 +207,7 @@ the same `use` lines of `src/main.rs` and `src/cli/mod.rs`.
 **Milestone:** M2
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -243,6 +243,27 @@ gh workflow run live.yml
 ## Start condition
 
 T-027 is done.
+
+## Correction
+
+Approach step 5 moves `non_empty_key` to the relay file. `non_empty_key` is the value parser of
+the license key of `warp` (`WarpCommand`); `relay` does not use it. It stays in `src/main.rs`, and
+it moves with the WARP arguments (T-030).
+
+## Done
+
+2026-11-06, commit 77782e3 (`T-029: move the server commands of src/main.rs to src/cli/cmd/`).
+`src/cli/cmd/tunnel.rs` (259 lines: `TunnelArgs`, `tunnel`, `preflight`, `split_host_port`,
+`pick_optional_service`), `run.rs` (352: the run loop, `listen_doc`, `verified`, `announce`,
+`announce_text`, the waits, `idle_watch` and `_mode`), `share.rs` (393: `ServeArgs`, `ModeArg`,
+`ShareArgs`, `DemoArgs`, `serve`, `serve_local`, `share_mode`, `share`, `demo`,
+`default_upload_dir`), `connect.rs` (264: `ConnectArgs`, `connect`, the accept loops,
+`SocketFile`, `file_id`, `unix_listener`) and `relay.rs` (237: `RelayArgs`, `RelayCommand`,
+`relay`, `RelayIo`). The dispatch in `src/cli/mod.rs` and `detach_of` in `src/cli/opts.rs` use
+the new paths. `src/main.rs` has 3,018 lines (4,441 before). The tests stay in `src/main.rs` with
+their names (T-032 moves them). `scripts/agent/parity-snapshot.sh`: exit 0, no map; 1,285
+commands, 1,278 public items and 1,020 tests before and after. `gh workflow run live.yml` is not
+done here: the commit is not on `main` yet. Run it after the merge.
 
 # T-030: `src/main.rs` to a CLI module, part 4: the WARP arguments, the client and `warp up`
 
