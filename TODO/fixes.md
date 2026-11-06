@@ -326,7 +326,7 @@ T-068 is done.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -363,6 +363,21 @@ cargo test --workspace -- warp_exec_finds_warp_up_of_another_state_directory the
 
 The first test starts `warp up` with a state directory A (with the stand-in of T-012), then runs
 `warp exec -- true` with no state directory variable. It exits 0.
+
+## Done
+
+2026-11-06, commit 0293f91 (`T-070: warp exec, warp shell and warp nc find a running warp up with
+another state directory`). `src/warp/find.rs`: the order `--socket`, `PODNET_WARP_SOCKET`, the run
+directory, the pointer file (`$XDG_RUNTIME_DIR/podnet/warp-up.json`, else
+`podnet-<uid>/warp-up.json` in the temporary directory; mode 0600, owner check). `warp up` writes it
+with the env file; `warp down` removes it. The error names each socket tried and the state
+directory of the pointer file. The agent uses the same lookup. The stand-in of T-012 is not there,
+so the test of the binary is `warp_nc_finds_warp_up_of_another_state_directory`
+(`tests/commands.rs`): a SOCKS5 stand-in on a unix socket that only the pointer file names; `warp
+nc -N` reaches a loopback echo through it. `warp_exec_finds_warp_up_of_another_state_directory` and
+`the_lookup_order_of_the_warp_socket` are unit tests of `warp::find`. Control: without the pointer in
+the candidates, these three tests fail. The variable and the pointer file are in
+`src/manual/facts.rs`. A test of `warp exec` with a real `warp up` waits for the stand-in (T-012).
 
 # T-071: `warp exec` and `warp shell` take `--backend`, name the backend in one line, and log the seccomp emulation
 

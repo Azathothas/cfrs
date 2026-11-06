@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**139 entries: 115 open, 1 partial, 7 blocked, 16 done.**
+**139 entries: 114 open, 1 partial, 7 blocked, 17 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 7 | 1 | 0 | 8 | 16 |
+| P1 | 6 | 1 | 0 | 9 | 16 |
 | P2 | 81 | 0 | 5 | 7 | 93 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 115 | 1 | 7 | 16 | 139 |
+| **All** | 114 | 1 | 7 | 17 | 139 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -115,7 +115,7 @@ M8 Overlays, M9 Later.
 | [T-067](fixes.md) | P2 | M | M5 | defect | open | seccomp: a slow `connect` dial does not stop the supervisor for the other calls |
 | [T-068](fixes.md) | P1 | M | M5 | defect | open | WARP: a probe of the TCP data path renews a session that carries no TCP |
 | [T-069](fixes.md) | P1 | L | M5 | defect | open | `warp tun`: a SYN probe of the session, and `--session-max-age` |
-| [T-070](fixes.md) | P1 | S | M5 | defect | open | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
+| [T-070](fixes.md) | P1 | S | M5 | defect | done | `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory |
 | [T-071](fixes.md) | P2 | M | M5 | feature | open | `warp exec` and `warp shell` take `--backend`, name the backend in one line, and log the seccomp emulation |
 | [T-072](fixes.md) | P2 | S | M5 | defect | open | `warp tun` sets `rp_filter` to 0 on its interface |
 | [T-073](fixes.md) | P2 | M | M5 | defect | open | `warp forward`: the pins of `--resolve`, and the list of forwards |
