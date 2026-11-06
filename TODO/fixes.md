@@ -685,6 +685,8 @@ prints the forwards of the detached instances. Control on the code before the fi
 `warp_forward_list_prints_the_forwards_of_ps` fails (exit 64, unexpected argument `--list`). After
 the fix, the three pass, and `sh scripts/agent/check.sh` exits 0.
 
+CI run 42253187093 and live run 42253174816 at 3bf268a: success.
+
 # T-074: `warp export`: the reserved bytes in the file, `--check`, and a TCP probe on the WireGuard leg
 
 **Source:** the lab kit's report warp-export-kernel-wg-data-path-degrades.md, in
@@ -758,6 +760,8 @@ door for each verdict) and `warp_export_check_is_a_flag` (`tests/commands.rs`) p
 tests of `check.rs` do not compile, `warp_export_check_is_a_flag` fails (unexpected argument
 `--check`). Not run: `gh workflow run live.yml` (no network to WARP here); the step is in
 `scripts/live-batch2.sh`.
+
+CI run 42253187093 and live run 42253174816 at 3bf268a: success (the live step of `warp export --check` ran).
 
 # T-075: The datagram socket of the vnet shim takes the same user only
 

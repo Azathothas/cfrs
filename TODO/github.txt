@@ -31,4 +31,4 @@
 326 issue closed
 327 issue closed
 328 issue closed
-329 issue open
+329 issue closed
