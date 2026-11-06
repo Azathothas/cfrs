@@ -138,6 +138,7 @@ move with T-028 to T-032). `scripts/agent/parity-snapshot.sh`: exit 0, no map; 1
 1,278 public items and 1,020 tests before and after. Help and argv are in one commit: help uses the
 items of argv (the commit order of architecture.md, section 2.1).
 
+CI run 42286291297 at 8a3ec2c: success.
 
 # T-028: `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands
 
