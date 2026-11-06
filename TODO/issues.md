@@ -26,6 +26,6 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #324 | [gh action] requested: a run of live.yml | closed (run 42222905277 at 61c70aa: failure, T-141) | none |
 | #325 | live: two runs in a row failed | closed (live run 42226303514 at 3db91c7) | T-141 |
 | #326 | [gh action] requested: a run of live.yml | closed (run 42226303514 at 3db91c7: success) | none |
-| #327 | [gh action] requested: a run of ci.yml | open (a request of a run) | none |
+| #327 | [gh action] requested: a run of ci.yml | closed (run 42245546264 at 581e4a5: success) | none |
 
 #312 to #315 and #318 are pull requests.
