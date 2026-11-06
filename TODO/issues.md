@@ -19,4 +19,4 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #316 | live: two runs in a row failed | closed | T-138 |
 | #317 | COORD-001: a test of the fallback channel | closed (a COORD issue between sessions; no work) | none |
 
-#312 to #315 are pull requests.
+#312 to #315 and #318 are pull requests.

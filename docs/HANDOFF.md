@@ -18,9 +18,15 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
 * `.github/workflows/publish.yml` publishes to crates.io by trusted
   publishing. The switch `[workspace.metadata.podnet] crates-io` is false.
 * The newest release is `v0.3.0-beta.12` of cfrs. No podnet release now.
-* This session has no messages from the podcrates session. The state of
-  podcrates comes from `sh scripts/agent/podcrates.sh`; the talk goes
-  through COORD issues (`docs/maintenance.md`, Shared crates).
+* The checkpoint: `main` at ef55f3a (2026-11-06). Each run of it is green:
+  `ci` 42147830867, `live` 42147831117, `deny` 42147830889, `secrets`
+  42147830858. `cargo todo check`: 139 entries, 13 done.
+* `.claude/session-start.sh` sets the identity of the repository only and
+  drops no commit of `main` (T-139).
+* A session has no messages from the other sessions. The talk goes through
+  COORD issues and the watcher of the organization (`CLAUDE.md`, "Talk
+  with the other sessions of PodUtils"); the state of podcrates comes from
+  `sh scripts/agent/podcrates.sh`. No COORD issue is open now.
 
 ## Next steps
 
@@ -44,7 +50,9 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
 4. The pin `smoltcp = "=0.12.0"` of `Cargo.toml` names Rust 1.91 as its
    reason. That reason is gone at Rust 1.99; the move to smoltcp 0.14 comes
    with the take of `pod-netstack`.
-5. The Dependabot pull requests #312 to #315 (russh, getrandom, tower-http,
-   taiki-e/install-action) are open. Apply each judged update as an own
-   commit (`CLAUDE.md`, Decisions). An update of a dependency that a taken
-   crate also uses must agree with podcrates.
+5. The Dependabot pull requests #312 to #315 and #318 (taiki-e/install-action,
+   tower-http, getrandom, russh, smoltcp 0.14) are open. Apply each judged
+   update as an own commit (`CLAUDE.md`, Decisions). An update of a
+   dependency that a taken crate also uses must agree with podcrates.
+   smoltcp 0.14 (#318) belongs to the take of `pod-netstack` (step 4):
+   judge it with that take.
