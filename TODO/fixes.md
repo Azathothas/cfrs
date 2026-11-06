@@ -473,7 +473,7 @@ the candidates, these three tests fail. The variable and the pointer file are in
 **Milestone:** M5
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -508,6 +508,20 @@ The owner, 2026-11-05 (`docs/decisions.md`, Pod backend): `warp exec` and `warp 
 ```sh
 cargo test --workspace -- warp_exec_names_its_backend_once warp_exec_passes_the_backend_to_the_pod seccomp_logs_its_emulation_at_info
 ```
+
+## Done
+
+2026-11-06, commit ee9b44c (`T-071: warp exec and warp shell take --backend and name the
+backend`). `warp exec` and `warp shell` take `--backend auto|netns|seccomp` (default `auto`) and
+give it to the pod (`src/warp/pod.rs`). `warp nc` does not take it; `--socket` stays. The new pod
+option `--name-backend` writes one line on stderr that names the backend that runs (also after
+`auto`) and its limits; `podnet -q` (`PODNET_NETNS_QUIET`) removes it. `podnet -v warp exec`
+gives `-v` to the pod. With `-v`, the seccomp backend logs each socket that it makes as a socket
+pair (`crates/podnet-netns/src/socket.rs`) and each `setsockopt` that it answers
+(`crates/podnet-netns/src/sockopt.rs`). The order of `auto` does not change (T-113). The three
+tests of Prove pass (`tests/pod_backend_line.rs` and a unit test in `src/warp/pod.rs`). Eleven
+plants (no line, two lines, no quiet, no `--name-backend`, no backend, no `-v`, each log removed
+or given with no `-v`) each made a test fail.
 
 # T-072: `warp tun` sets `rp_filter` to 0 on its interface
 
