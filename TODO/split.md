@@ -29,7 +29,7 @@ cargo test --workspace -- --list 2>/dev/null | grep -c ': test$'
 **Milestone:** M2
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -68,6 +68,15 @@ T-008 and T-009 are done.
 ## Correction
 
 2026-11-05, The named modules `src/config.rs`, `src/cloudflare/http2.rs`, `src/cloudflare/capnp.rs`, `src/quicktunnel.rs`, `src/warp/up.rs`, `src/warp/register.rs` and `src/ws_relay.rs` move to PodUtils/podcrates (`pod-cloudflare`, `pod-warp` and `pod-relay`, T-137). podnet does not split them: a split of a moved file is work of podcrates, under its checks. Split only the files that stay in podnet: `src/vnet/switch.rs` and `crates/podnet-netns/src/upstream.rs`. Remove the row of a moved file from `scripts/size-allow.txt` when podnet takes its crate.
+
+## Done
+
+2026-11-06, commit 1a724fc (`T-026: the tests of src/vnet/switch.rs and podnet-netns upstream.rs in
+child files`). The test modules of `src/vnet/switch.rs` and `crates/podnet-netns/src/upstream.rs`
+are in `switch/tests.rs` and `upstream/tests.rs`; both files left `scripts/size-allow.txt` (711 and
+773 lines). `scripts/agent/parity-snapshot.sh`: 1,020 tests before and after, none lost. The other
+seven files move to podcrates (the Correction).
+
 
 # T-027: `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options
 

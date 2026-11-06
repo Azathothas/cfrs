@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**141 entries: 96 open, 1 partial, 7 blocked, 37 done.**
+**141 entries: 95 open, 1 partial, 7 blocked, 38 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 14 | 17 |
-| P2 | 72 | 0 | 5 | 17 | 94 |
+| P2 | 71 | 0 | 5 | 18 | 94 |
 | P3 | 22 | 0 | 2 | 6 | 30 |
-| **All** | 96 | 1 | 7 | 37 | 141 |
+| **All** | 95 | 1 | 7 | 38 | 141 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -71,7 +71,7 @@ M8 Overlays, M9 Later.
 | [T-023](rename.md) | P1 | S | M1 | release | open | Publish `v0.4.0-beta.1`: the dry run, the publish and the release proofs |
 | [T-024](rename.md) | P2 | S | M1 | chore | open | The update checks pass against a podnet release again |
 | [T-025](rename.md) | P2 | S | M1 | chore | open | The image `ghcr.io/podutils/podnet` is public |
-| [T-026](split.md) | P2 | M | M2 | chore | open | Move the unit tests of nine files into their own files |
+| [T-026](split.md) | P2 | M | M2 | chore | done | Move the unit tests of nine files into their own files |
 | [T-027](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options |
 | [T-028](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands |
 | [T-029](split.md) | P2 | M | M2 | chore | open | `src/main.rs` to a CLI module, part 3: the server commands |
