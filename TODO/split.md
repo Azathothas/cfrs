@@ -85,7 +85,7 @@ seven files move to podcrates (the Correction). CI run 42283721494 at 093938f: s
 **Milestone:** M2
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -125,6 +125,19 @@ The parity diff is empty. The count of tests does not change.
 ## Start condition
 
 T-008, T-009 and T-011 are done.
+
+## Done
+
+2026-11-06, commits 968d130 (signals), 0cb193a (help and argv), 4493510 (opts) and e3bf47a
+(`T-027: move Cli, Command and the dispatch of src/main.rs to src/cli/mod.rs`). The binary
+declares `mod cli;`; the library does not. `src/cli/signals.rs` (131 lines), `help.rs` (246),
+`argv.rs` (293), `opts.rs` (284) and `mod.rs` (414: `Cli`, `Command`, `async_main`) hold the
+items of the Approach. `src/main.rs` has 5,645 lines (6,939 before). `scripts/check-layers.py`
+gives the module `cli` the layer podnet. The tests stay in `src/main.rs` with their names (they
+move with T-028 to T-032). `scripts/agent/parity-snapshot.sh`: exit 0, no map; 1,285 commands,
+1,278 public items and 1,020 tests before and after. Help and argv are in one commit: help uses the
+items of argv (the commit order of architecture.md, section 2.1).
+
 
 # T-028: `src/main.rs` to a CLI module, part 2: the host commands and the `net` commands
 
