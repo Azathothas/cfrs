@@ -18,5 +18,11 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #311 | live: two runs in a row failed | closed | T-136 |
 | #316 | live: two runs in a row failed | closed | T-138 |
 | #317 | COORD-001: a test of the fallback channel | closed (a COORD issue between sessions; no work) | none |
+| #319 | [gh action] requested: a run of ci.yml | closed (a request of a run; run 42183709673) | none |
+| #320 | COORD-002: podnet took pod-dns and pod-services of v0.4.0 | open (a COORD issue between sessions) | T-137 |
+| #321 | COORD-003: podnet moved each podcrates tag to v0.5.0 | open (a COORD issue between sessions) | T-137 |
+| #322 | COORD-004: pod-dns: name the DoH server in the debug line | open (a COORD issue between sessions) | T-137 |
+| #323 | [gh action] requested: a run of ci.yml | open (a request of a run) | none |
+| #324 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
 
 #312 to #315 and #318 are pull requests.
