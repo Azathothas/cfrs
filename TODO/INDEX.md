@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**141 entries: 97 open, 1 partial, 7 blocked, 36 done.**
+**141 entries: 96 open, 1 partial, 7 blocked, 37 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 2 | 1 | 0 | 14 | 17 |
 | P2 | 72 | 0 | 5 | 17 | 94 |
-| P3 | 23 | 0 | 2 | 5 | 30 |
-| **All** | 97 | 1 | 7 | 36 | 141 |
+| P3 | 22 | 0 | 2 | 6 | 30 |
+| **All** | 96 | 1 | 7 | 37 | 141 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ M8 Overlays, M9 Later.
 | [T-076](fixes.md) | P3 | S | M5 | chore | done | A CI job runs the tests with the loopback down |
 | [T-077](fixes.md) | P2 | S | M5 | defect | done | An ingress `path:` rule matches the decoded path, as cloudflared does |
 | [T-078](fixes.md) | P3 | S | M5 | defect | done | `pod doctor` uses the verdict words of `doctor` and has a `schema` key |
-| [T-079](fixes.md) | P3 | S | M5 | measurement | open | Read the numbers of #206 and #184 in a live run |
+| [T-079](fixes.md) | P3 | S | M5 | measurement | done | Read the numbers of #206 and #184 in a live run |
 | [T-080](fixes.md) | P3 | M | M5 | feature | done | The errors of a config file name the line |
 | [T-081](fixes.md) | P2 | S | M5 | feature | done | The tailnet front door warns when `tailscaled` is not logged in |
 | [T-082](services.md) | P2 | S | M6 | feature | open | `connect --stdio` for an SSH `ProxyCommand` through `tunnel --forward` |

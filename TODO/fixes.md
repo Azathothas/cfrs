@@ -985,7 +985,7 @@ is in the draft note `docs/releases/v0.4.0-beta.1.md`.
 **Milestone:** M5
 **Priority:** P3
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -1013,6 +1013,15 @@ the URL. #184: `warp exit` can miss the IPv6 egress address.
 gh workflow run live.yml
 gh run view RUN --log | grep -e median -e ipv6
 ```
+
+## Done
+
+2026-11-06, live run 42275332991 at 68098d1 (job 128090104282). #206: the median (p50) of 20 small
+requests over the URL and through `connect`: quic+direct 88 ms and 131 ms (1.49 times), http2+direct
+92 ms and 120 ms (1.30 times), quic+warp 101 ms and 127 ms (1.26 times). Each is under 1.5 times: no
+defect entry. quic+direct is near the limit; read it again in a later run. #184: `warp exit` found
+the IPv6 egress address (`ipv6 2606:4700:110:8d09:...` and `2606:4700:110:8b0b:...`), and the
+batch reads `exit ipv6: yes, prefix 2a09::/16`: no defect entry.
 
 # T-080: The errors of a config file name the line
 
