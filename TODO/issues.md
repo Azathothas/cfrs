@@ -40,5 +40,6 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #338 | [gh action] requested: a run of live.yml | closed (live 42275332991 at 68098d1: success) | none |
 | #339 | [gh action] requested: a run of ci.yml | closed (ci 42278745845 at dfded5b: success) | none |
 | #340 | [gh action] requested: a run of ci.yml | closed (ci 42283721494 at 093938f: success) | none |
+| #341 | [gh action] requested: a run of ci.yml | open (a request of a run) | none |
 
 #312 to #315 and #318 are pull requests.
