@@ -8,7 +8,8 @@ each session; `docs/maintenance.md` has the procedures.
 Run `sh scripts/agent/check.sh`. It runs `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace`, `cargo todo check` (the work record in
-`TODO/`, `TODO/RULES.md`) and `python3 -I scripts/check-size.py`. Push
+`TODO/`, `TODO/RULES.md`), `python3 -I scripts/check-size.py` and
+`python3 -I scripts/check-layers.py`. Push
 only when each exits 0. CI (`.github/workflows/ci.yml`) runs the same.
 
 ## File size
@@ -18,6 +19,18 @@ longer file, except the files of `scripts/size-allow.txt`. An allowlisted
 file can only become smaller: when it becomes smaller, lower its count
 (`python3 -I scripts/check-size.py --update`). Do not add a file to the
 list: split the file.
+
+## Layers
+
+Each top module of `src/` belongs to one crate of the split
+(`docs/research/podnet/architecture.md`, section 4.1): core, vnet, relay,
+warp, serve, cloudflare or podnet. `scripts/check-layers.py` has the table
+of module to crate and the crates that each crate may use. A `crate::X`
+reference (outside `#[cfg(test)]`) to a crate that the crate of the module
+may not use is a fault, except the rows of `scripts/layers-allow.txt`.
+The list can only shrink: remove a row when its reference is cut. Do not
+add a row: move the item to a lower crate. A new top module needs a row
+in `LAYER` of the script. `--list` prints each reference between crates.
 
 ## Rules for tests
 

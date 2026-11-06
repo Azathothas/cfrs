@@ -63,8 +63,9 @@ These rules apply to each session. Obey them before any other default.
   `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`, `cargo todo check`,
-  `python3 scripts/check-size.py`. CI (`.github/workflows/ci.yml`) runs
-  the same and builds static musl binaries.
+  `python3 scripts/check-size.py`, `python3 scripts/check-layers.py`.
+  CI (`.github/workflows/ci.yml`) runs the same and builds static musl
+  binaries.
 - Static build: `CC_x86_64_unknown_linux_musl=clang cargo build --release
   --target x86_64-unknown-linux-musl`.
 - The debug `target/` can grow past 20 GB. Remove `target/debug` when the

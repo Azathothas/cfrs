@@ -191,6 +191,12 @@ jobs:
         run: |
           python3 -I scripts/check-size.py --self-test
           python3 -I scripts/check-size.py
+      # T-010: no module refers to a crate that its crate may not use, but the
+      # rows of scripts/layers-allow.txt, which can only shrink.
+      - name: The layers of the modules
+        run: |
+          python3 -I scripts/check-layers.py --self-test
+          python3 -I scripts/check-layers.py
       # #246: the shell scripts have no shellcheck warning.
       - name: shellcheck
         run: |
@@ -311,6 +317,12 @@ jobs:
           seq 801 | sed 's|^|// |' > src/planted_size.rs
           must_fail "check-size.py, a new file over 800 lines" python3 -I scripts/check-size.py
           rm src/planted_size.rs
+
+          # A core module that uses an adapter, and a scan of nothing.
+          echo 'use crate::tunnel;' >> src/udp.rs
+          must_fail "check-layers.py, a reference from core to cloudflare" python3 -I scripts/check-layers.py
+          git checkout -- src/udp.rs
+          must_fail "check-layers.py, a scan of nothing" python3 -I scripts/check-layers.py --plant-empty
 
           exit "$fail"
 

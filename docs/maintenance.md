@@ -48,7 +48,8 @@ state of the open work.
   * `podcrates.sh`: the state of `PodUtils/podcrates` for podnet (see
     "Shared crates").
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push,
-    `cargo todo check` and `scripts/check-size.py`.
+    `cargo todo check`, `scripts/check-size.py` and
+    `scripts/check-layers.py`.
   * `parity-snapshot.sh DIR [BEFORE [MAP]]`: the parity facts in three
     sorted files of `DIR`: `commands.txt` (each command and flag of
     `podnet man --json`), `items.txt` (the public items of `cargo doc`) and

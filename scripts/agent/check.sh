@@ -1,8 +1,9 @@
 #!/bin/sh
 # The checks of CLAUDE.md before each push: fmt, clippy and the tests, the
-# check of the work record (cargo todo check) and the size of the Rust files
-# (scripts/check-size.py). Print each exit code, and the first faults; exit 1
-# on a fault. With the argument notest, the tests are skipped.
+# check of the work record (cargo todo check), the size of the Rust files
+# (scripts/check-size.py) and the layers of the modules
+# (scripts/check-layers.py). Print each exit code, and the first faults;
+# exit 1 on a fault. With the argument notest, the tests are skipped.
 #
 #   sh scripts/agent/check.sh [notest]
 set -u
@@ -18,6 +19,8 @@ cargo run -q -p podnet-todo -- check > "$log/record.log" 2>&1; r=$?
 echo "record $r"; [ "$r" -eq 0 ] || { rc=1; head -20 "$log/record.log"; }
 python3 -I scripts/check-size.py > "$log/size.log" 2>&1; s=$?
 echo "size $s"; [ "$s" -eq 0 ] || { rc=1; grep -v "^check-size:" "$log/size.log" | head -20; }
+python3 -I scripts/check-layers.py > "$log/layers.log" 2>&1; l=$?
+echo "layers $l"; [ "$l" -eq 0 ] || { rc=1; grep -v "^check-layers:" "$log/layers.log" | head -20; }
 if [ "${1:-}" != notest ]; then
     timeout 1500 cargo test --workspace > "$log/test.log" 2>&1; t=$?
     echo "test $t"; [ "$t" -eq 0 ] || { rc=1; grep -E "FAILED|panicked|failed" "$log/test.log" | head -30; }

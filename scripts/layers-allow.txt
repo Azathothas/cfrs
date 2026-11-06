@@ -1,0 +1,19 @@
+# The references from a module to a crate that its crate may not use (scripts/check-layers.py).
+# The list can only shrink. The edges are docs/research/podnet/architecture.md, section 3.3.
+detach -> update
+feature -> quicktunnel
+hop -> cloudflare
+ingress -> config
+net -> ingress
+relay -> proxy
+relay_reverse -> warp
+report -> quicktunnel
+transport -> proxy
+util -> feature
+warp -> cloudflare
+warp -> quicktunnel
+ws -> cloudflare
+ws -> proxy
+ws -> relay_reverse
+ws_relay -> edge_h2
+ws_relay -> ws
