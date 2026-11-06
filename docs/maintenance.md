@@ -49,7 +49,9 @@ state of the open work.
   each issue. The local agent of the owner acts on a new issue only: an
   amended body or a comment starts nothing. It writes the run id back as a
   comment. Watch the run to its end (`scripts/agent/watch-runs.sh`), and
-  open a new issue for each new run.
+  open a new issue for each new run. Map each new issue (a request of a
+  run, a COORD issue) in `TODO/issues.md` and `TODO/github.txt` in the next
+  commit: `record-issues.yml` fails each day on a number with no line.
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
 * **Helper scripts of the agent** (in `scripts/agent/`):
