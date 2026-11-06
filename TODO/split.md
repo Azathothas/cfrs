@@ -75,7 +75,7 @@ T-008 and T-009 are done.
 child files`). The test modules of `src/vnet/switch.rs` and `crates/podnet-netns/src/upstream.rs`
 are in `switch/tests.rs` and `upstream/tests.rs`; both files left `scripts/size-allow.txt` (711 and
 773 lines). `scripts/agent/parity-snapshot.sh`: 1,020 tests before and after, none lost. The other
-seven files move to podcrates (the Correction).
+seven files move to podcrates (the Correction). CI run 42283721494 at 093938f: success.
 
 
 # T-027: `src/main.rs` to a CLI module, part 1: the signals, the help, the argument rewrites and the shared options
