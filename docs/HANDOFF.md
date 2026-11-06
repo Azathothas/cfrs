@@ -18,9 +18,13 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
 * `.github/workflows/publish.yml` publishes to crates.io by trusted
   publishing. The switch `[workspace.metadata.podnet] crates-io` is false.
 * The newest release is `v0.3.0-beta.12` of cfrs. No podnet release now.
-* The checkpoint: `main` at ef55f3a (2026-11-06). Each run of it is green:
-  `ci` 42147830867, `live` 42147831117, `deny` 42147830889, `secrets`
-  42147830858. `cargo todo check`: 139 entries, 13 done.
+* The checkpoint: `main` at ef55f3a (2026-11-06) is green: `ci`
+  42147830867, `live` 42147831117, `deny` 42147830889, `secrets`
+  42147830858. The session of 2026-11-06 pushed T-008, T-010, T-011,
+  T-063, T-064, T-068, T-069, T-070, T-072, T-075, T-077 and T-081 after
+  it. Its pushes started no workflow: GitHub issue #319 asks the owner for
+  a run of `ci.yml` (the form: one `workflow:` line and one sh block).
+  `ci.yml` has `workflow_dispatch` for this.
 * `.claude/session-start.sh` sets the identity of the repository only and
   drops no commit of `main` (T-139).
 * A session has no messages from the other sessions. The talk goes through
@@ -39,7 +43,11 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
    podcrates v0.4.0 brings `pod-dns` (`src/resolve.rs`) and `pod-services`
    (the services of other parties:
    `docs/reports/services-inventory-2026-11-05.md`) in one patch,
-   `adoption/podnet/pod-dns.patch`, made on a0e1ffb. Then `pod-ws`
+   `adoption/podnet/pod-dns.patch`, made at podnet 57cfc0b. On
+   2026-11-06 the tag did not exist yet (PodUtils/podcrates#5 waits for
+   the owner). Apply it with `git apply --3way` at the head, run each line
+   of `pod-dns.run` (`cargo update -w` in `fuzz/` too), then
+   `cargo todo remap Cargo.lock` and `sh scripts/agent/check.sh`. Then `pod-ws`
    (`src/ws.rs`).
 2. Then podnet's own work, in the work order of `TODO/PROGRESS.md`
    (the ruling "Order" of 2026-11-06). Frozen code (the script lists it)
