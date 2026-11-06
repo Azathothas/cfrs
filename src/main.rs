@@ -395,7 +395,7 @@ struct TunnelOpts {
     /// The WebSocket-to-TCP relay of --transport relay: a URL, or a comma
     /// list of hosts of one deployment. The variable PODNET_RELAY_TOKEN (not
     /// PODNET_RELAY) gives a token; without it, podnet mints one.
-    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::DEFAULT_RELAY)]
+    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::default_relay())]
     relay: String,
     /// Keep the WARP device and MASQUE key here and resume them next run.
     /// Without it, every run registers a new anonymous device.
@@ -721,7 +721,7 @@ struct ShareArgs {
 #[command(subcommand_required = true, arg_required_else_help = false)]
 struct RelayArgs {
     /// The relay for a new pair. A pair keeps the relay that made it.
-    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::DEFAULT_RELAY)]
+    #[arg(long, value_name = "URL", global = true, env = "PODNET_RELAY", hide_env_values = true, default_value = podnet::ws_relay::default_relay())]
     relay: String,
     #[command(subcommand)]
     command: RelayCommand,
@@ -1014,21 +1014,21 @@ fn main() {
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     }
     let level = if cli.quiet {
-        "podnet=warn"
+        podnet::report::log_filter("warn")
     } else {
         match cli.verbose {
-            0 => "podnet=info",
-            1 => "podnet=debug",
-            _ => "podnet=trace",
+            0 => podnet::report::log_filter("info"),
+            1 => podnet::report::log_filter("debug"),
+            _ => podnet::report::log_filter("trace"),
         }
     };
     let filter = match std::env::var("RUST_LOG") {
         Ok(value) if !value.is_empty() => EnvFilter::try_new(&value).unwrap_or_else(|e| {
             // Before, a bad RUST_LOG gave the default level with no word.
             eprintln!("podnet: RUST_LOG={value:?} does not parse ({e}); the log level is {level}");
-            EnvFilter::new(level)
+            EnvFilter::new(&level)
         }),
-        _ => EnvFilter::new(level),
+        _ => EnvFilter::new(&level),
     };
     // Colours only on a terminal: a log file or a pipe gets plain text.
     let ansi = match cli.color.as_str() {
@@ -2339,6 +2339,15 @@ fn detach_of(command: &Command) -> Option<&DetachArgs> {
 /// Apply --proxy, --no-proxy and --resolve.
 fn network_options(cli: &Cli) -> Result<()> {
     use podnet::egress::Proxy;
+    // The pins first: the first dialer, of --proxy or --no-proxy, takes them.
+    if let Some(list) = &cli.resolve {
+        podnet::resolve::set_pins(list).context("--resolve")?;
+    } else if let Ok(list) = std::env::var(podnet::resolve::PINS_VARIABLE) {
+        // Issue 252: a bad PODNET_RESOLVE is an error here, not a warning at the first dial.
+        podnet::resolve::parse_pins(&list)
+            .context(podnet::resolve::PINS_VARIABLE)
+            .fault(Fault::Config)?;
+    }
     if let Some(spec) = &cli.proxy {
         // Issue 95: a value with no scheme (PODNET_PROXY=notaurl) became
         // http://notaurl:8080, and each leg then failed on a name. The
@@ -2358,15 +2367,6 @@ fn network_options(cli: &Cli) -> Result<()> {
         podnet::egress::set_proxy(spec).context("--proxy")?;
     } else if cli.no_proxy {
         podnet::egress::set_direct();
-    }
-    if let Some(list) = &cli.resolve {
-        podnet::resolve::set_pins(list).context("--resolve")?;
-    } else if let Ok(list) = std::env::var(podnet::resolve::PINS_VARIABLE) {
-        // Issue 252: a bad PODNET_RESOLVE was a warning at the first dial
-        // (and none for a command with no dial).
-        podnet::resolve::parse_pins(&list)
-            .context(podnet::resolve::PINS_VARIABLE)
-            .fault(Fault::Config)?;
     }
     Ok(())
 }
@@ -4302,7 +4302,7 @@ enum WarpCommand {
         #[arg(long, env = "PODNET_WARP_L4", hide_env_values = true, conflicts_with_all = ["dns", "listen_identity"])]
         l4: bool,
         /// The TLS name of the L4 door.
-        #[arg(long, value_name = "NAME", default_value = podnet::warp::l4::L4_SNI, requires = "l4")]
+        #[arg(long, value_name = "NAME", default_value = podnet::warp::l4::l4_sni(), requires = "l4")]
         l4_sni: String,
         /// LISTEN=PATH: a listener whose clients use the WARP device of the
         /// identity file PATH (made when it does not exist: that registers
@@ -5119,7 +5119,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         }
         WarpCommand::Probe { target } => {
             let targets = if target.is_empty() {
-                vec!["1.1.1.1:443".to_string(), "198.41.192.27:7844".to_string()]
+                podnet::services::probe_targets()
             } else {
                 target
             };
@@ -5761,7 +5761,7 @@ async fn warp_run_raw(
         v4,
         v6: client.device().ipv6(),
         mtu: podnet::warp::ip::TUNNEL_MTU,
-        nameserver: std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+        nameserver: podnet::warp::route::nameservers_of_service()[0],
     })?;
     let pid = pod.pid;
     let tun = podnet::warp::tun::Tun::from_fd(pod.tun, "eth0")?;

@@ -24,8 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Default provisioning endpoint, matching cloudflared's `quick-service` flag.
-pub const DEFAULT_QUICK_SERVICE: &str = "https://api.trycloudflare.com";
+pub use crate::services::default_quick_service;
 
 /// The anonymous provisioning response. Only the fields podnet uses are modelled;
 /// cloudflared's `QuickTunnel` also carries `name`, which is unused here.

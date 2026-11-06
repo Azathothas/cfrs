@@ -293,7 +293,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            service_url: crate::quicktunnel::DEFAULT_QUICK_SERVICE.to_string(),
+            service_url: crate::quicktunnel::default_quick_service(),
             user_agent: format!("podnet/{}", env!("CARGO_PKG_VERSION")),
             credentials: Credentials::Quick,
             protocol: Protocol::Auto,

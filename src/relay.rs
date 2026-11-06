@@ -37,8 +37,11 @@ use tokio::net::UnixStream;
 
 use crate::proxy;
 
-/// Default relay, reachable on port 443 through the CONNECT proxy.
-pub const DEFAULT_RELAY: &str = "free.pinggy.io:443";
+/// Default relay, reachable on port 443 through the CONNECT proxy: the
+/// endpoint `ssh` of `pinggy` (`pod-services`).
+pub fn default_relay() -> String {
+    crate::services::endpoint("pinggy", "ssh").authority()
+}
 
 /// Where the remote forward is requested, and where the origin lives.
 #[derive(Debug, Clone)]
@@ -58,7 +61,7 @@ pub struct RelayConfig {
 impl Default for RelayConfig {
     fn default() -> Self {
         Self {
-            address: DEFAULT_RELAY.to_string(),
+            address: default_relay(),
             proxy: None,
             username: "podnet".to_string(),
             unix_socket: default_origin_socket(),
@@ -401,7 +404,7 @@ fn pick_tunnel_url(text: &str) -> Option<String> {
         .collect();
 
     for url in &candidates {
-        if !url.contains("dashboard.pinggy.io") {
+        if !url.contains(crate::services::text("pinggy", "dashboard-host")) {
             return Some((*url).to_string());
         }
     }

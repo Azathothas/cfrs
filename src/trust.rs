@@ -12,7 +12,8 @@
 //!    bundle of [`pod_tls::SYSTEM_BUNDLES`], and the Mozilla roots compiled
 //!    into podnet (webpki-roots [`pod_tls::ROOTS_VERSION`]).
 //!
-//! The edge also trusts the Cloudflare roots of `cf-edge-roots.pem`. podnet has
+//! The edge also trusts the Cloudflare roots of the edge of `pod-services`
+//! (`edge_roots_pem` of the Cloudflare adapter). podnet has
 //! no option that accepts each certificate for these connections; only an
 //! origin can turn off the check (`noTLSVerify`, `--no-tls-verify`).
 //!
@@ -29,8 +30,14 @@ use pod_tls::{CaFile, Context, Settings, Words};
 pub const CA_FILE_VARIABLE: &str = "SSL_CERT_FILE";
 /// The name of the file of roots beside the binary.
 pub const BESIDE_BINARY: &str = "podnet-ca.pem";
-/// The first date when a root of `cf-edge-roots.pem` stops being valid.
-pub const EDGE_ROOTS_FIRST_END: &str = "2029-08-15";
+/// The first date when a root of the edge stops being valid: the fact
+/// `roots-first-end` of the edge (`pod-services`).
+pub fn edge_roots_first_end() -> String {
+    let edge = crate::services::get(crate::services::EDGE);
+    edge.date("roots-first-end")
+        .map(|d| d.to_string())
+        .unwrap_or_default()
+}
 
 static CA_FILE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -76,8 +83,6 @@ pub fn unix_secs(time: std::time::SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// The roots of pod-tls are the version of webpki-roots in Cargo.lock.
     #[test]
     fn the_roots_version_is_the_one_of_cargo_lock() {
@@ -98,20 +103,6 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(*newest, pod_tls::ROOTS_VERSION);
-    }
-
-    /// The constant is the first notAfter of the edge roots, and it is
-    /// in the future.
-    #[test]
-    fn the_first_end_of_the_edge_roots() {
-        let mut dates = pod_tls::not_after_dates(crate::cloudflare::CF_EDGE_ROOTS_PEM).unwrap();
-        assert!(dates.len() >= 3, "{dates:?}");
-        dates.sort();
-        assert_eq!(dates[0], EDGE_ROOTS_FIRST_END, "{dates:?}");
-        let today = pod_core::clock::http_date(unix_secs(std::time::SystemTime::now()));
-        let year: i32 = today[12..16].parse().unwrap();
-        let end: i32 = EDGE_ROOTS_FIRST_END[..4].parse().unwrap();
-        assert!(end >= year, "an edge root ends on {EDGE_ROOTS_FIRST_END}");
     }
 
     /// Only these files may set a certificate verifier of their own: the

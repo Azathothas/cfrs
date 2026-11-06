@@ -29,8 +29,15 @@ pub const DOCTOR_DEADLINE: Duration = Duration::from_secs(3);
 pub const START_DEADLINE: Duration = Duration::from_millis(150);
 
 /// The edge address of the probe when `PODNET_EDGE` is not set: an anycast
-/// address of the edge, so the probe needs no DNS.
-pub const PROBE_TARGET: &str = "198.41.192.167:7844";
+/// address of the edge, so the probe needs no DNS (the fact `probe-address`
+/// of the edge of `pod-services`, on the port of the role `h2`).
+pub fn default_probe_target() -> SocketAddr {
+    let address = crate::services::text(crate::services::EDGE, "probe-address");
+    let ip: std::net::IpAddr = address
+        .parse()
+        .expect("the probe address of pod-services is an address");
+    SocketAddr::new(ip, crate::services::edge_port())
+}
 
 /// The result of a probe.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,7 +113,7 @@ pub fn check_edge_env() -> Result<()> {
 }
 
 /// The target of the probe: the first address of `PODNET_EDGE`, else
-/// [`PROBE_TARGET`].
+/// [`default_probe_target`].
 pub fn probe_target() -> SocketAddr {
     std::env::var("PODNET_EDGE")
         .ok()
@@ -115,7 +122,7 @@ pub fn probe_target() -> SocketAddr {
                 .map(str::trim)
                 .find_map(|item| item.parse().ok())
         })
-        .unwrap_or_else(|| PROBE_TARGET.parse().expect("a valid address"))
+        .unwrap_or_else(default_probe_target)
 }
 
 /// One QUIC long-header packet with the reserved version 0x?a?a?a?a and a

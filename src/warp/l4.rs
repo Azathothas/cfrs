@@ -13,7 +13,9 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 use super::h3;
 
 /// The TLS name of the L4 door.
-pub const L4_SNI: &str = "consumer-masque-proxy.cloudflareclient.com";
+pub fn l4_sni() -> &'static str {
+    crate::services::endpoint(crate::services::WARP, "masque-l4").host()
+}
 
 /// The variable of the form of the CONNECT of the L4 door (a test of the
 /// form that the door takes, issue 140): `plain` (RFC 9114, the default),
@@ -236,7 +238,7 @@ mod tests {
             h3::ALPN,
         )
         .unwrap();
-        let door = L4::new(addr, tls, L4_SNI);
+        let door = L4::new(addr, tls, l4_sni());
         let mut pipe = door.dial("example.com", 443).await.unwrap();
         pipe.write_all(b"ping through L4").await.unwrap();
         let mut back = [0u8; 15];

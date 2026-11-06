@@ -130,9 +130,11 @@ the host name. `src/trust.rs` gives the roots:
    can read, and the Mozilla roots compiled into podnet (webpki-roots, version
    in `trust::ROOTS_CRATE_VERSION`; a test compares it with `Cargo.lock`).
 
-The edge also trusts the Cloudflare roots of `src/cloudflare/cf-edge-roots.pem`.
-The first of them ends on 2029-08-15 (`trust::EDGE_ROOTS_FIRST_END`; a test
-reads it from the certificates). The MASQUE connection of WARP checks the
+The edge also trusts the Cloudflare roots of the fact `roots` of the edge of
+`pod-services` (PodUtils/podcrates), the certificates of
+`src/cloudflare/cf-edge-roots.pem`. The first of them ends on 2029-08-15
+(`trust::edge_roots_first_end`; a test of `pod-services` reads it from the
+certificates). The MASQUE connection of WARP checks the
 key of the server against the key that the WARP API gave, and does not
 connect without one.
 

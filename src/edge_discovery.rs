@@ -10,7 +10,7 @@
 //!
 //! Order of attempts:
 //!
-//! 1. DoH by IP address (`crate::resolve::DOH_SERVERS`), through the proxy
+//! 1. DoH by IP address ([`crate::resolve::settings`]), through the proxy
 //!    when one is configured.
 //! 2. The system resolver.
 //! 3. A short list of anycast addresses, for a host where DNS is entirely
@@ -19,36 +19,44 @@
 //! The port comes from the SRV record, not from a constant, so a future change
 //! at Cloudflare is followed rather than guessed. An SRV answer of another
 //! shape (more than two targets, a target outside `argotunnel.com`, two
-//! ports) is not used: podnet takes [`FIXED_TARGETS`] and says why.
+//! ports) is not used: podnet takes [`fixed_targets`] and says why.
+//!
+//! The record, the zone of its targets, the fixed targets and the static
+//! addresses are data of the edge of `pod-services`.
 
 use std::net::IpAddr;
 
 use crate::cloudflare::{EdgeAddr, EdgeIpVersion, IpVersionFilter};
+use crate::services::{self, EDGE};
 use anyhow::{bail, Context, Result};
 
-/// The SRV record cloudflared resolves.
-pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
+/// The SRV record cloudflared resolves: the fact `srv-name`.
+pub fn edge_srv() -> &'static str {
+    services::text(EDGE, "srv-name")
+}
 
-/// Last-resort anycast addresses, used only when both resolvers fail.
+/// Last-resort anycast addresses, used only when both resolvers fail: the
+/// fact `static-addresses`.
 ///
 /// These are Cloudflare's published edge anycast addresses. They are not a
 /// substitute for discovery: the SRV record is the authority, and this list is
 /// here so a host with no DNS at all can still reach the service.
-const STATIC_EDGE_IPS: &[&str] = &[
-    "198.41.192.167",
-    "198.41.192.227",
-    "198.41.200.13",
-    "198.41.200.53",
-];
+fn static_edge_ips() -> Vec<&'static str> {
+    let ips = services::get(EDGE)
+        .texts("static-addresses")
+        .unwrap_or_default();
+    ips.iter().map(|ip| ip.as_ref()).collect()
+}
 
-/// The SRV targets when the SRV answer has an unexpected shape.
-pub const FIXED_TARGETS: &[(&str, u16)] = &[
-    ("region1.v2.argotunnel.com", 7844),
-    ("region2.v2.argotunnel.com", 7844),
-];
+/// The SRV targets when the SRV answer has an unexpected shape: the
+/// endpoints of the role `h2`.
+pub fn fixed_targets() -> Vec<(&'static str, u16)> {
+    let endpoints = services::endpoints_of(EDGE, "h2");
+    endpoints.iter().map(|e| (e.host(), e.port())).collect()
+}
 
 /// The SRV targets to use: `targets` when they have the known shape, else
-/// [`FIXED_TARGETS`], with one line that gives the reason.
+/// [`fixed_targets`], with one line that gives the reason.
 pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
     let mut ports: Vec<u16> = targets.iter().map(|(_, p)| *p).collect();
     ports.sort();
@@ -59,9 +67,9 @@ pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
         Some(format!("it has {} targets, not 1 or 2", targets.len()))
     } else if let Some((name, _)) = targets
         .iter()
-        .find(|(name, _)| !name.to_ascii_lowercase().ends_with(".argotunnel.com"))
+        .find(|(name, _)| !name.to_ascii_lowercase().ends_with(&format!(".{}", zone())))
     {
-        Some(format!("the target {name} is not under argotunnel.com"))
+        Some(format!("the target {name} is not under {}", zone()))
     } else if ports.len() > 1 {
         Some(format!("it has the ports {ports:?}, not one port"))
     } else {
@@ -75,19 +83,23 @@ pub fn checked_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
             targets
         }
         Some(reason) => {
+            let fixed = fixed_targets();
+            let names: Vec<&str> = fixed.iter().map(|(n, _)| *n).collect();
             tracing::warn!(
-                "the SRV answer of {EDGE_SRV} has an unexpected shape: {reason}; podnet uses region1 and region2.v2.argotunnel.com on port 7844"
+                "the SRV answer of {} has an unexpected shape: {reason}; podnet uses {} on port {}",
+                edge_srv(),
+                names.join(" and "),
+                services::edge_port()
             );
-            FIXED_TARGETS
-                .iter()
-                .map(|(n, p)| (n.to_string(), *p))
-                .collect()
+            fixed.into_iter().map(|(n, p)| (n.to_string(), p)).collect()
         }
     }
 }
 
-/// The port the SRV record names when the static list is used.
-const STATIC_EDGE_PORT: u16 = 7844;
+/// The zone of the targets of the SRV record: the fact `srv-target-zone`.
+fn zone() -> &'static str {
+    services::text(EDGE, "srv-target-zone")
+}
 
 /// Resolve the edge, preferring DoH, then the system resolver, then the
 /// static list. Returns at least one address or an error naming every attempt.
@@ -125,9 +137,9 @@ pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
         .build()
         .context("starting the system resolver")?;
     let srv = resolver
-        .srv_lookup(EDGE_SRV)
+        .srv_lookup(edge_srv())
         .await
-        .with_context(|| format!("SRV lookup of {EDGE_SRV}"))?;
+        .with_context(|| format!("SRV lookup of {}", edge_srv()))?;
     let targets: Vec<(String, u16)> = srv
         .answers()
         .iter()
@@ -157,10 +169,10 @@ pub async fn discover_system(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 
 /// Resolve through Cloudflare's DNS-over-HTTPS JSON API.
 pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
-    let srv = query(EDGE_SRV, "SRV").await?;
+    let srv = query(edge_srv(), "SRV").await?;
     let mut targets: Vec<(String, u16)> = Vec::new();
-    for answer in &srv.answer {
-        if answer.rtype != 33 {
+    for answer in &srv.records {
+        if answer.kind != 33 {
             continue;
         }
         if let Some((target, port)) = parse_srv(&answer.data) {
@@ -171,7 +183,7 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 
     let mut edges = Vec::new();
     for (region, (target, port)) in (0u8..).zip(targets) {
-        let records: &[(&str, u16)] = match filter {
+        let records: &[(&str, u64)] = match filter {
             IpVersionFilter::V4Only => &[("A", 1)],
             IpVersionFilter::V6Only => &[("AAAA", 28)],
             IpVersionFilter::Auto => &[("A", 1), ("AAAA", 28)],
@@ -184,8 +196,8 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
                     continue;
                 }
             };
-            for entry in &answer.answer {
-                if entry.rtype != *wanted {
+            for entry in &answer.records {
+                if entry.kind != *wanted {
                     continue;
                 }
                 let Ok(ip) = entry.data.trim().parse::<IpAddr>() else {
@@ -209,8 +221,9 @@ pub async fn discover_doh(filter: IpVersionFilter) -> Result<Vec<EdgeAddr>> {
 
 async fn query(name: &str, rtype: &str) -> Result<crate::resolve::DohAnswer> {
     let answer = crate::resolve::doh_query(name, rtype).await?;
-    if answer.status != 0 {
-        bail!("DoH status {} for {name} {rtype}", answer.status);
+    if answer.status != Some(0) {
+        let status = answer.status.map_or("missing".into(), |s| s.to_string());
+        bail!("DoH status {status} for {name} {rtype}");
     }
     Ok(answer)
 }
@@ -230,7 +243,7 @@ pub(crate) fn parse_srv(data: &str) -> Option<(String, u16)> {
 
 fn static_edges(filter: IpVersionFilter) -> Vec<EdgeAddr> {
     let mut out = Vec::new();
-    for text in STATIC_EDGE_IPS {
+    for text in static_edge_ips() {
         let Ok(ip) = text.parse::<IpAddr>() else {
             continue;
         };
@@ -247,7 +260,7 @@ fn static_edges(filter: IpVersionFilter) -> Vec<EdgeAddr> {
         if keep {
             out.push(EdgeAddr {
                 ip,
-                port: STATIC_EDGE_PORT,
+                port: services::edge_port(),
                 version,
                 // The first two are in region1, the others in region2.
                 region: u8::from(!text.starts_with("198.41.192.")),
@@ -273,10 +286,10 @@ mod tests {
     #[test]
     fn decodes_a_cloudflare_doh_answer() {
         let body = r#"{"Status":0,"Answer":[{"name":"_v2-origintunneld._tcp.argotunnel.com","type":33,"TTL":300,"data":"2 1 7844 region2.v2.argotunnel.com"}]}"#;
-        let parsed: crate::resolve::DohAnswer = serde_json::from_str(body).unwrap();
-        assert_eq!(parsed.status, 0);
-        assert_eq!(parsed.answer.len(), 1);
-        assert_eq!(parsed.answer[0].rtype, 33);
+        let parsed = pod_dns::json::parse(body.as_bytes()).unwrap();
+        assert_eq!(parsed.status, Some(0));
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].kind, 33);
     }
 
     #[test]
@@ -284,7 +297,7 @@ mod tests {
         let t = |list: &[(&str, u16)]| -> Vec<(String, u16)> {
             list.iter().map(|(n, p)| (n.to_string(), *p)).collect()
         };
-        let fixed = t(FIXED_TARGETS);
+        let fixed = t(&fixed_targets());
         let good = t(&[
             ("region1.v2.argotunnel.com", 7844),
             ("region2.v2.argotunnel.com", 7844),

@@ -95,13 +95,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "doh_json"
-path = "fuzz_targets/doh_json.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "acl_rule"
 path = "fuzz_targets/acl_rule.rs"
 test = false

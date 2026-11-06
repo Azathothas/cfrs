@@ -258,8 +258,8 @@ pub async fn endpoint(stack: &WarpStack) -> Result<quinn::Endpoint> {
 
 /// The TLS and transport configuration the edge expects.
 fn client_config() -> Result<quinn::ClientConfig> {
-    use crate::cloudflare::{CF_EDGE_ROOTS_PEM, QUIC_ALPN as ALPN};
-    let tls = crate::trust::context().client_config_with(&[CF_EDGE_ROOTS_PEM], &[ALPN])?;
+    use crate::cloudflare::{edge_roots_pem, quic_alpn};
+    let tls = crate::trust::context().client_config_with(&[edge_roots_pem()], &[quic_alpn()])?;
 
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|err| anyhow::anyhow!("rustls to quinn: {err}"))?;

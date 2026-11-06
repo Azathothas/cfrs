@@ -105,31 +105,29 @@ impl Target {
     }
 }
 
-/// The address of the MASQUE front door.
-pub const MASQUE_ADDRESS: &str = "162.159.198.2";
-/// The IPv6 address of the MASQUE front door (the IPv6-only kit: the doctor
-/// gave "0 of 3 legs" on a host where the tunnel worked over IPv6).
-pub const MASQUE_ADDRESS_V6: &str = "2606:4700:103::2";
+pub use crate::services::{masque_address, masque_address_v6};
 
 /// The targets: the APIs, the edge by name and by address, and MASQUE.
 pub fn targets() -> Vec<Target> {
     let edge = crate::udp::probe_target();
+    let quick_api = crate::services::endpoint(crate::services::QUICK, "api");
+    let warp_api = crate::services::endpoint(crate::services::WARP, "api");
     vec![
         Target {
             id: "api",
-            host: "api.trycloudflare.com".into(),
-            port: 443,
+            host: quick_api.host().into(),
+            port: quick_api.port(),
             tls: Tls::Web,
         },
         Target {
             id: "warp-api",
-            host: "api.cloudflareclient.com".into(),
-            port: 443,
+            host: warp_api.host().into(),
+            port: warp_api.port(),
             tls: Tls::Web,
         },
         Target {
             id: "edge-name",
-            host: crate::tunnel::EDGE_REGION_NAME.into(),
+            host: crate::tunnel::edge_region_name().into(),
             port: 7844,
             tls: Tls::Edge,
         },
@@ -141,20 +139,20 @@ pub fn targets() -> Vec<Target> {
         },
         Target {
             id: "masque",
-            host: MASQUE_ADDRESS.into(),
-            port: crate::warp::register::MASQUE_PORT,
+            host: masque_address().into(),
+            port: crate::warp::register::masque_port(),
             tls: Tls::Masque,
         },
     ]
     .into_iter()
     .chain(
         (crate::resolve::has_default_route(true)
-            || crate::egress::proxy_for(MASQUE_ADDRESS_V6, crate::warp::register::MASQUE_PORT)
+            || crate::egress::proxy_for(masque_address_v6(), crate::warp::register::masque_port())
                 .is_some())
         .then(|| Target {
             id: "masque-v6",
-            host: MASQUE_ADDRESS_V6.into(),
-            port: crate::warp::register::MASQUE_PORT,
+            host: masque_address_v6().into(),
+            port: crate::warp::register::masque_port(),
             tls: Tls::Masque,
         }),
     )
@@ -900,7 +898,7 @@ fn issuer_of(der: &[u8]) -> Option<String> {
 fn verifier(tls: Tls) -> Result<Option<Arc<dyn ServerCertVerifier>>, String> {
     let extra: &[&[u8]] = match tls {
         Tls::Web => &[],
-        Tls::Edge => &[crate::cloudflare::CF_EDGE_ROOTS_PEM],
+        Tls::Edge => &[crate::cloudflare::edge_roots_pem()],
         Tls::Masque => return Ok(None),
     };
     let context = crate::trust::context();
@@ -937,10 +935,10 @@ async fn tls(target: &Target, timeout: Duration) -> TlsResult {
         .with_no_client_auth();
     let sni = match target.tls {
         Tls::Web => target.host.clone(),
-        Tls::Edge => crate::cloudflare::H2_SNI.to_string(),
+        Tls::Edge => crate::cloudflare::h2_sni().to_string(),
         Tls::Masque => {
             config.alpn_protocols = vec![b"h2".to_vec()];
-            crate::warp::register::MASQUE_SNI.to_string()
+            crate::warp::register::masque_sni().to_string()
         }
     };
     let Ok(name) = ServerName::try_from(sni.clone()) else {
@@ -1044,7 +1042,7 @@ fn names(paths: &[Path]) -> Option<String> {
 
 fn legs(paths: &[Path], udp: &Egress) -> Vec<Leg> {
     let find = |id: &str| paths.iter().find(|p| p.target.id == id);
-    let via_proxy = crate::egress::proxy_for(crate::tunnel::EDGE_REGION_NAME, 7844).is_some();
+    let via_proxy = crate::egress::proxy_for(crate::tunnel::edge_region_name(), 7844).is_some();
     let udp_off = crate::udp::Choice::from_env().ok() == Some(crate::udp::Choice::Off);
     let quic = if udp_off {
         Leg {
@@ -1204,8 +1202,8 @@ mod tests {
     fn the_ipv6_front_door_makes_quic_warp_work() {
         let udp = Egress::Unknown("x".into());
         let paths = vec![
-            path("masque", MASQUE_ADDRESS, 443, false),
-            path("masque-v6", MASQUE_ADDRESS_V6, 443, true),
+            path("masque", masque_address(), 443, false),
+            path("masque-v6", masque_address_v6(), 443, true),
             path("warp-api", "api.cloudflareclient.com", 443, true),
         ];
         let warp = legs(&paths, &udp)
@@ -1215,7 +1213,7 @@ mod tests {
         assert_eq!(warp.verdict, Verdict::Ok, "{}", warp.reason);
         assert!(warp.reason.contains("2606:4700:103::2"), "{}", warp.reason);
         let paths = vec![
-            path("masque", MASQUE_ADDRESS, 443, false),
+            path("masque", masque_address(), 443, false),
             path("warp-api", "api.cloudflareclient.com", 443, true),
         ];
         let warp = legs(&paths, &udp)

@@ -23,7 +23,7 @@ use tokio_rustls::TlsConnector;
 
 use super::capsule::{self, CapsuleDecoder};
 use super::identity::Identity;
-use super::register::{CONNECT_URI, MASQUE_SNI};
+use super::register::{connect_uri, masque_sni};
 use crate::egress::Proxy;
 use crate::net::BoxedIo;
 
@@ -301,7 +301,7 @@ pub struct Dial<'a> {
     pub proxy: Option<&'a Proxy>,
     /// A WebSocket-to-TCP relay in place of the egress (issue 76).
     pub relay: Option<&'a crate::ws_relay::Relay>,
-    /// The SNI in place of [`MASQUE_SNI`].
+    /// The SNI in place of [`masque_sni`].
     pub sni: Option<&'a str>,
     /// HTTP/3 on UDP in place of HTTP/2 on TCP (issue 157).
     pub h3: bool,
@@ -343,7 +343,7 @@ pub async fn probe_door(
     let tcp = pod_tls::fragment::wrap(Box::new(tcp), super::live::split());
     let tcp_time = start.elapsed();
     let config = tls_config(identity, pinned_spki)?;
-    let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())
+    let server_name = ServerName::try_from(dial.sni.unwrap_or(masque_sni()).to_string())
         .context("invalid MASQUE SNI")?
         .to_owned();
     let rest = timeout
@@ -427,7 +427,7 @@ impl MasqueSession {
         let tcp = pod_tls::fragment::wrap(Box::new(tcp), super::live::split());
 
         let config = tls_config(identity, pinned_spki)?;
-        let server_name = ServerName::try_from(dial.sni.unwrap_or(MASQUE_SNI).to_string())
+        let server_name = ServerName::try_from(dial.sni.unwrap_or(masque_sni()).to_string())
             .context("invalid MASQUE SNI")?
             .to_owned();
         let tls = TlsConnector::from(config)
@@ -460,7 +460,7 @@ impl MasqueSession {
 
         let request = Request::builder()
             .method(Method::CONNECT)
-            .uri(CONNECT_URI)
+            .uri(connect_uri())
             .header("cf-connect-proto", "cf-connect-ip")
             .header("capsule-protocol", "?1")
             .header("pq-enabled", "false")
@@ -593,8 +593,8 @@ impl MasqueSession {
             bail!("MASQUE over HTTP/3 needs UDP to the front door; a proxy or a relay carries TCP only");
         }
         let tls = tls_config_alpn(identity, pinned_spki, super::h3::ALPN)?;
-        let sni = dial.sni.unwrap_or(MASQUE_SNI);
-        let authority = CONNECT_URI.trim_start_matches("https://");
+        let sni = dial.sni.unwrap_or(masque_sni());
+        let authority = connect_uri().trim_start_matches("https://");
         let (tx, rx) = super::h3::connect(endpoint, tls, sni, authority).await?;
         Ok(Self::from_h3(tx, rx))
     }
@@ -982,7 +982,7 @@ mod tests {
         let mut client = client.ready().await.unwrap();
         let request = Request::builder()
             .method(Method::CONNECT)
-            .uri(CONNECT_URI)
+            .uri(connect_uri())
             .body(())
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
         let mut client = client.ready().await.unwrap();
         let request = Request::builder()
             .method(Method::CONNECT)
-            .uri(CONNECT_URI)
+            .uri(connect_uri())
             .body(())
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
@@ -1132,7 +1132,7 @@ mod tests {
         let mut client = client.ready().await.unwrap();
         let request = Request::builder()
             .method(Method::CONNECT)
-            .uri(CONNECT_URI)
+            .uri(connect_uri())
             .body(())
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();
@@ -1169,7 +1169,7 @@ mod tests {
         let mut client = client.ready().await.unwrap();
         let request = Request::builder()
             .method(Method::CONNECT)
-            .uri(CONNECT_URI)
+            .uri(connect_uri())
             .body(())
             .unwrap();
         let (response, send) = client.send_request(request, false).unwrap();

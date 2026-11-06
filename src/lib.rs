@@ -113,6 +113,7 @@ pub mod report;
 pub mod resolve;
 pub mod rlimit;
 pub mod service;
+pub mod services;
 pub mod share;
 pub mod state;
 pub mod status;

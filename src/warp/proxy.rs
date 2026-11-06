@@ -21,9 +21,8 @@ use tracing::{debug, info, warn};
 
 use super::ip::{TcpConn, WarpStack};
 
-/// The resolver that names are sent to through the tunnel.
-pub const TUNNEL_RESOLVER: SocketAddr =
-    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)), 53);
+use crate::services::check_name;
+pub use crate::services::tunnel_resolver;
 /// The longest time for a DNS answer through the tunnel.
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest time for a TCP connect through the tunnel.
@@ -186,7 +185,7 @@ pub fn health_log(live: Arc<super::Live<WarpStack>>) {
 }
 
 /// A DNS forwarder (issue 117): each query that comes to `socket` goes
-/// through the WARP session of `live` to [`TUNNEL_RESOLVER`], and the
+/// through the WARP session of `live` to [`tunnel_resolver`], and the
 /// answer goes back. For a program that sends its own DNS on UDP (a host
 /// with a fake or broken resolver).
 pub fn serve_dns(live: Arc<super::Live<WarpStack>>, socket: tokio::net::UdpSocket) {
@@ -321,13 +320,13 @@ fn env_resolvers() -> Option<Vec<Resolver>> {
 }
 
 /// The resolvers of the tunnel: the ones that were set (`--resolver`),
-/// else the ones of [`RESOLVERS_VARIABLE`], else [`TUNNEL_RESOLVER`].
+/// else the ones of [`RESOLVERS_VARIABLE`], else [`tunnel_resolver`].
 pub fn resolvers() -> Vec<Resolver> {
     RESOLVERS
         .get()
         .cloned()
         .or_else(env_resolvers)
-        .unwrap_or_else(|| vec![Resolver::Udp(TUNNEL_RESOLVER)])
+        .unwrap_or_else(|| vec![Resolver::Udp(tunnel_resolver())])
 }
 
 /// True when resolvers were set (not the default).
@@ -1116,9 +1115,6 @@ const DNS_RESEND: Duration = Duration::from_millis(1200);
 /// session (issue 120), for a measurement.
 pub const NO_CHECK_VARIABLE: &str = "PODNET_WARP_NO_CHECK";
 
-/// The name of the DNS query of the check of the data path.
-const CHECK_NAME: &str = "cloudflare.com";
-
 /// Check that a packet crosses a new session (issue 120): a DNS query to
 /// the resolver of the tunnel gets an answer. Before, a session was "up"
 /// after the HTTP/2 answer 200, and a front door that carried no data gave
@@ -1127,14 +1123,15 @@ pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> 
     if resolvers_set() {
         // Issue 145: the resolvers that were set.
         let start = std::time::Instant::now();
-        let query = podnet_netns::dns::build_query(0x5a5a, CHECK_NAME, podnet_netns::dns::TYPE_A)?;
+        let query =
+            podnet_netns::dns::build_query(0x5a5a, check_name(), podnet_netns::dns::TYPE_A)?;
         exchange_any(stack, &resolvers(), &query)
             .await
             .context("the MASQUE session is open, and no resolver answered through it")?;
         return Ok(start.elapsed());
     }
     let server = if ipv4 {
-        TUNNEL_RESOLVER
+        tunnel_resolver()
     } else {
         "[2606:4700:4700::1111]:53".parse().expect("an address")
     };
@@ -1143,7 +1140,7 @@ pub async fn check_data_path(stack: &WarpStack, ipv4: bool) -> Result<Duration> 
 
 async fn check_data_path_at(stack: &WarpStack, server: SocketAddr) -> Result<Duration> {
     let start = std::time::Instant::now();
-    query_at(stack, server, CHECK_NAME, podnet_netns::dns::TYPE_A)
+    query_at(stack, server, check_name(), podnet_netns::dns::TYPE_A)
         .await
         .map_err(|e| {
             e.context(format!(
@@ -1155,7 +1152,7 @@ async fn check_data_path_at(stack: &WarpStack, server: SocketAddr) -> Result<Dur
 
 async fn query(stack: &WarpStack, name: &str, kind: u16) -> Result<Vec<IpAddr>> {
     if !resolvers_set() {
-        return query_at(stack, TUNNEL_RESOLVER, name, kind).await;
+        return query_at(stack, tunnel_resolver(), name, kind).await;
     }
     // Issue 145: the resolvers that were set, one after the other.
     let id = (std::process::id() as u16) ^ (name.len() as u16).rotate_left(7) ^ kind;

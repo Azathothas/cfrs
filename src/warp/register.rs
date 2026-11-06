@@ -21,24 +21,20 @@ use serde::{Deserialize, Serialize};
 use crate::egress::Proxy;
 use crate::fetch::{Request, Response};
 
-/// API host. Reachable on TCP 443, which is the point of this module.
-pub const API_BASE: &str = "https://api.cloudflareclient.com";
-
-/// A second name of the same API (podssh): podnet tries it after a dial, TLS
-/// or 5xx failure of the first. It resolved on 2026-11-02 to other
-/// Cloudflare addresses. A proxy allowlist can have one name and not the
-/// other.
-pub const API_SECOND: &str = "https://api.devices.cloudflare.com";
+pub use crate::services::warp::{
+    api_base, api_second, api_version, client_version, connect_uri, masque_port, masque_sni,
+    user_agent,
+};
 
 /// The environment variable with the one API base to use
 /// (`https://HOST[:PORT]`).
 pub const API_VARIABLE: &str = "PODNET_WARP_API";
 
 /// The API bases to try, in order: [`API_VARIABLE`] alone when it is set,
-/// else [`API_BASE`] and [`API_SECOND`].
+/// else [`api_base`] and [`api_second`].
 pub fn api_bases(value: Option<&str>) -> Result<Vec<String>> {
     let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(vec![API_BASE.to_string(), API_SECOND.to_string()]);
+        return Ok(vec![api_base(), api_second()]);
     };
     let value = value.trim_end_matches('/');
     let rest = value
@@ -57,7 +53,7 @@ pub fn api_bases(value: Option<&str>) -> Result<Vec<String>> {
     Ok(vec![value.to_string()])
 }
 
-/// Send `request` (made for [`API_BASE`]) to each API base in turn, until
+/// Send `request` (made for [`api_base`]) to each API base in turn, until
 /// one answers with a status under 500. The error names each base.
 async fn send_api(request: Request) -> Result<Response> {
     let bases = api_bases(std::env::var(API_VARIABLE).ok().as_deref())
@@ -69,7 +65,7 @@ async fn send_api(request: Request) -> Result<Response> {
 async fn send_api_to(request: Request, bases: &[String]) -> Result<Response> {
     let path = request
         .url
-        .strip_prefix(API_BASE)
+        .strip_prefix(api_base().as_str())
         .unwrap_or(&request.url)
         .to_string();
     let mut failures = Vec::new();
@@ -93,26 +89,6 @@ async fn send_api_to(request: Request, bases: &[String]) -> Result<Response> {
     }
     unreachable!("the last base returns")
 }
-
-/// API version segment. It must agree with the build number in
-/// [`CLIENT_VERSION`]; the service rejects a mismatched pair.
-pub const API_VERSION: &str = "v0a5641";
-
-/// `CF-Client-Version` header value.
-pub const CLIENT_VERSION: &str = "a-6.38.9-5641";
-
-/// `User-Agent` the Android client sends, and the one the service expects.
-pub const USER_AGENT: &str = "WARP for Android";
-
-/// SNI the MASQUE front door presents.
-pub const MASQUE_SNI: &str = "consumer-masque.cloudflareclient.com";
-
-/// Default MASQUE port. 443 everywhere; the API may advertise others.
-pub const MASQUE_PORT: u16 = 443;
-
-/// The `:authority` of the CONNECT-IP request. Only the host matters; Cloudflare
-/// uses it as a routing hint, not a real endpoint.
-pub const CONNECT_URI: &str = "https://cloudflareaccess.com";
 
 /// The device as the API reports it.
 ///
@@ -398,9 +374,9 @@ fn request(
     bearer: Option<&str>,
     proxy: Option<&Proxy>,
 ) -> Request {
-    let mut request = Request::new(method, format!("{API_BASE}/{API_VERSION}{path}"))
-        .header("User-Agent", USER_AGENT)
-        .header("CF-Client-Version", CLIENT_VERSION)
+    let mut request = Request::new(method, format!("{}/{}{path}", api_base(), api_version()))
+        .header("User-Agent", user_agent())
+        .header("CF-Client-Version", client_version())
         .header("Content-Type", "application/json; charset=UTF-8")
         .timeout(std::time::Duration::from_secs(30))
         .via(crate::egress::via(proxy));
@@ -659,12 +635,12 @@ impl Device {
         let peer = self.config.peers.first()?;
         let v4 = peer.endpoint.v4.split(':').next().unwrap_or("").trim();
         if let Ok(ip) = v4.parse::<std::net::Ipv4Addr>() {
-            return Some(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+            return Some(std::net::SocketAddr::new(ip.into(), masque_port()));
         }
         let v6 = peer.endpoint.v6.trim().trim_start_matches('[');
         let v6 = v6.split(']').next().unwrap_or(v6);
         if let Ok(ip) = v6.parse::<std::net::Ipv6Addr>() {
-            return Some(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+            return Some(std::net::SocketAddr::new(ip.into(), masque_port()));
         }
         None
     }
@@ -686,12 +662,12 @@ impl Device {
         let mut out = Vec::new();
         let v4 = peer.endpoint.v4.split(':').next().unwrap_or("").trim();
         if let Ok(ip) = v4.parse::<std::net::Ipv4Addr>() {
-            out.push(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+            out.push(std::net::SocketAddr::new(ip.into(), masque_port()));
         }
         let v6 = peer.endpoint.v6.trim().trim_start_matches('[');
         let v6 = v6.split(']').next().unwrap_or(v6);
         if let Ok(ip) = v6.parse::<std::net::Ipv6Addr>() {
-            out.push(std::net::SocketAddr::new(ip.into(), MASQUE_PORT));
+            out.push(std::net::SocketAddr::new(ip.into(), masque_port()));
         }
         out
     }
@@ -746,11 +722,11 @@ mod tests {
 
     #[test]
     fn the_api_bases() {
-        assert_eq!(api_bases(None).unwrap(), [API_BASE, API_SECOND]);
-        assert_eq!(api_bases(Some(" ")).unwrap(), [API_BASE, API_SECOND]);
+        assert_eq!(api_bases(None).unwrap(), [api_base(), api_second()]);
+        assert_eq!(api_bases(Some(" ")).unwrap(), [api_base(), api_second()]);
         assert_eq!(
             api_bases(Some("https://api.devices.cloudflare.com/")).unwrap(),
-            [API_SECOND]
+            [api_second()]
         );
         assert_eq!(
             api_bases(Some("http://127.0.0.1:8080")).unwrap(),
@@ -796,7 +772,7 @@ mod tests {
         let busy = answering(503).await;
         let refused = answering(403).await;
         let request = || {
-            Request::new("GET", format!("{API_BASE}/{API_VERSION}/reg/x"))
+            Request::new("GET", format!("{}/{}/reg/x", api_base(), api_version()))
                 .timeout(std::time::Duration::from_secs(5))
                 .via(None)
         };

@@ -1,4 +1,6 @@
-//! Name resolution for each direct dial of podnet ([`crate::egress`]).
+//! Name resolution for each direct dial of podnet ([`crate::egress`]): the
+//! resolver of `pod-dns` (PodUtils/podcrates) with podnet's settings
+//! ([`settings`]).
 //!
 //! The chain, in order:
 //!
@@ -7,585 +9,182 @@
 //!    of `HOST=IP`). TLS still checks the name of the certificate.
 //! 3. The system resolver (`/etc/resolv.conf`), with a time limit of
 //!    [`STEP_TIMEOUT`].
-//! 4. DNS over HTTPS by IP address, at two operators: Cloudflare (1.1.1.1,
-//!    1.0.0.1, 2606:4700:4700::1111, ::1001), then Google (8.8.8.8, 8.8.4.4,
-//!    2001:4860:4860::8888, ::8844). On a host with no IPv4 default route,
-//!    the IPv6 servers go first. TLS checks the IP address in
-//!    the certificate. An answer that the name does not exist (NXDOMAIN) skips
-//!    the other server of that operator; the next operator is asked (issue
-//!    119: a new name is NXDOMAIN at one operator for minutes, and has an
-//!    address at the other).
+//! 4. DNS over HTTPS by IP address, at the operators of the services of the
+//!    kind `doh` of `pod-services` that serve the JSON form: Cloudflare, then
+//!    Google, IPv4 and IPv6. On a host with no IPv4 default route, the IPv6
+//!    servers go first. TLS checks the IP address in the certificate. An
+//!    answer that the name does not exist (NXDOMAIN) skips the other servers
+//!    of that operator; the next operator is asked (issue 119). Through a
+//!    proxy that resolves names, the servers by name come after them.
 //!
 //! A dial through a proxy gives the name to the proxy and resolves nothing
 //! here. The host of the proxy itself, and each name that a DoH query
-//! resolves, use steps 1 to 3 only: a DoH query can go through the proxy
-//! (issue 259).
+//! resolves, use steps 1 to 3 only ([`plain`]): a DoH query can go through
+//! the proxy (issue 259).
 
-use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
-use serde::Deserialize;
+use anyhow::{Context as _, Result};
+use pod_dns::{Names, Nxdomain};
+use tokio::time::Instant;
+
+pub use pod_dns::json::{Answer as DohAnswer, Record as DohRecord};
+pub use pod_dns::route::has_default_route;
 
 /// The variable of the pins.
 pub const PINS_VARIABLE: &str = "PODNET_RESOLVE";
 /// The time limit of one step of the chain, and of one DoH server.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A DoH server, by IP address.
-#[derive(Clone, Copy, Debug)]
-pub struct DohServer {
-    pub operator: &'static str,
-    /// The URL, with the IP address as its host.
-    pub url: &'static str,
-}
+static PINS: OnceLock<Vec<(String, IpAddr)>> = OnceLock::new();
 
-/// The DoH servers, in the order of the chain.
-pub const DOH_SERVERS: &[DohServer] = &[
-    DohServer {
-        operator: "Cloudflare",
-        url: "https://1.1.1.1/dns-query",
-    },
-    DohServer {
-        operator: "Cloudflare",
-        url: "https://1.0.0.1/dns-query",
-    },
-    DohServer {
-        operator: "Cloudflare",
-        url: "https://[2606:4700:4700::1111]/dns-query",
-    },
-    DohServer {
-        operator: "Cloudflare",
-        url: "https://[2606:4700:4700::1001]/dns-query",
-    },
-    DohServer {
-        operator: "Google",
-        url: "https://8.8.8.8/resolve",
-    },
-    DohServer {
-        operator: "Google",
-        url: "https://8.8.4.4/resolve",
-    },
-    DohServer {
-        operator: "Google",
-        url: "https://[2001:4860:4860::8888]/resolve",
-    },
-    DohServer {
-        operator: "Google",
-        url: "https://[2001:4860:4860::8844]/resolve",
-    },
-];
-
-/// True when this host has a default route of the family (`/proc/net/route`
-/// for IPv4, `/proc/net/ipv6_route` for IPv6). With no file, true for IPv4
-/// and false for IPv6.
-pub fn has_default_route(ipv6: bool) -> bool {
-    if ipv6 {
-        return std::fs::read_to_string("/proc/net/ipv6_route")
-            .map(|t| {
-                t.lines().any(|l| {
-                    l.starts_with("00000000000000000000000000000000 00 ") && !l.ends_with(" lo")
-                })
-            })
-            .unwrap_or(false);
-    }
-    match std::fs::read_to_string("/proc/net/route") {
-        Ok(t) => t.lines().skip(1).any(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            f.len() > 7 && f[1] == "00000000" && f[7] == "00000000"
-        }),
-        Err(_) => true,
-    }
-}
-
-/// True when the host of the URL of `server` is an IPv6 address.
-fn is_ipv6(server: &DohServer) -> bool {
-    server.url.starts_with("https://[")
-}
-
-/// The servers of the family of this host first (issue of the IPv6-only
-/// kit, 0003: on a host with no IPv4 route, each IPv4 server failed before
-/// a server that works). The order in each family stays.
-fn by_family(servers: &[DohServer], ipv4_route: bool) -> Vec<DohServer> {
-    let (v6, v4): (Vec<DohServer>, Vec<DohServer>) = servers.iter().partition(|s| is_ipv6(s));
-    if ipv4_route {
-        v4.into_iter().chain(v6).collect()
-    } else {
-        v6.into_iter().chain(v4).collect()
-    }
-}
-
-/// The DoH servers by name. podnet asks them only through a proxy, which
-/// resolves the name: some proxies refuse a CONNECT to an IP address. With
-/// no proxy, the name would need the chain that it is part of.
-pub const DOH_SERVERS_BY_NAME: &[DohServer] = &[
-    DohServer {
-        operator: "Cloudflare",
-        url: "https://cloudflare-dns.com/dns-query",
-    },
-    DohServer {
-        operator: "Google",
-        url: "https://dns.google/resolve",
-    },
-];
-
-/// The DoH servers to ask, in order: by IP address, then by name when a
-/// proxy carries the request.
-pub fn doh_servers() -> Vec<DohServer> {
-    let mut servers = by_family(DOH_SERVERS, has_default_route(false));
-    for server in DOH_SERVERS_BY_NAME {
-        let host = server
-            .url
-            .trim_start_matches("https://")
-            .split('/')
-            .next()
-            .unwrap_or_default();
-        if crate::egress::proxy_for(host, 443).is_some() {
-            servers.push(*server);
-        }
-    }
-    servers
-}
-
-static PINS: OnceLock<HashMap<String, Vec<IpAddr>>> = OnceLock::new();
-
-/// Set the pins of `--resolve`. Call it before the first dial; a later call
-/// has no effect. The pins of `PODNET_RESOLVE` are added to them.
+/// Set the pins of `--resolve`. Call it before the first dialer (the one of
+/// `--proxy` or `--no-proxy`, else of the first dial): the resolver of each
+/// dialer reads them, and a later call has no effect. The pins of
+/// `PODNET_RESOLVE` are added to them.
 pub fn set_pins(list: &str) -> Result<()> {
     let mut pins = parse_pins(list)?;
     if let Ok(env) = std::env::var(PINS_VARIABLE) {
         let parsed = parse_pins(&env)
             .context(PINS_VARIABLE)
             .map_err(|e| crate::exit::fault(crate::exit::Fault::Config, e))?;
-        for (host, ips) in parsed {
-            pins.entry(host).or_default().extend(ips);
-        }
+        pins.extend(parsed);
     }
     let _ = PINS.set(pins);
     Ok(())
 }
 
-fn pins() -> &'static HashMap<String, Vec<IpAddr>> {
+fn pins() -> Vec<(String, IpAddr)> {
     PINS.get_or_init(|| match std::env::var(PINS_VARIABLE) {
         Ok(list) => parse_pins(&list).unwrap_or_else(|err| {
             tracing::warn!("{PINS_VARIABLE}: {err:#}; no pins are used");
-            HashMap::new()
+            Vec::new()
         }),
-        Err(_) => HashMap::new(),
+        Err(_) => Vec::new(),
     })
+    .clone()
 }
 
 /// Parse `HOST=IP[,HOST=IP]...`. One host may have several entries.
-pub fn parse_pins(list: &str) -> Result<HashMap<String, Vec<IpAddr>>> {
-    let mut pins: HashMap<String, Vec<IpAddr>> = HashMap::new();
-    for entry in list.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-        let (host, ip) = entry
-            .split_once('=')
-            .with_context(|| format!("{entry:?} is not HOST=IP"))?;
-        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-        if host.is_empty() {
-            bail!("{entry:?} has no host");
-        }
-        let ip: IpAddr = ip
-            .trim()
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse()
-            .with_context(|| format!("{entry:?}: the address is not an IP address"))?;
-        pins.entry(host).or_default().push(ip);
-    }
-    Ok(pins)
+pub fn parse_pins(list: &str) -> Result<Vec<(String, IpAddr)>> {
+    pod_dns::parse_pins(list).map_err(anyhow::Error::msg)
 }
 
-/// Resolve `host` with the chain.
-///
-/// The future is boxed: a DoH lookup dials, and a dial resolves, so the type
-/// of the future must end here.
-pub fn resolve(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>> {
-    Box::pin(resolve_chain(host))
+/// podnet's settings of the resolver: the pins, the DoH servers of
+/// `pod-services` with the JSON form, the family of this host first, by
+/// address and then by name, each step [`STEP_TIMEOUT`], A and AAAA both,
+/// NXDOMAIN asks the next operator, no cache of addresses, the roots of
+/// [`crate::trust`] and podnet's user agent.
+pub fn settings() -> pod_dns::Settings {
+    static SETTINGS: OnceLock<pod_dns::Settings> = OnceLock::new();
+    SETTINGS.get_or_init(read_settings).clone()
 }
 
-tokio::task_local! {
-    /// Set while a DoH query or a proxy host is resolved. In this scope the
-    /// chain does not ask DoH: a DoH query dials, maybe through a proxy,
-    /// and the dial of a proxy resolves its host. Without the stop, a host
-    /// that no step resolves makes an endless recursion (issue 259).
-    static NO_DOH: ();
-}
-
-/// Resolve `host` with the pins and the system resolver only, not DoH.
-/// For the host of a proxy: a DoH query can need the same proxy.
-pub fn resolve_no_doh(host: &str) -> futures::future::BoxFuture<'_, Result<Vec<IpAddr>>> {
-    Box::pin(NO_DOH.scope((), resolve_chain(host)))
-}
-
-/// True when the chain can ask DoH in this task.
-fn doh_allowed() -> bool {
-    NO_DOH.try_with(|_| ()).is_err()
-}
-
-async fn resolve_chain(host: &str) -> Result<Vec<IpAddr>> {
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        crate::decisions::count("dns", "ip");
-        return Ok(vec![ip]);
-    }
-    let name = host.trim_end_matches('.').to_ascii_lowercase();
-    if let Some(ips) = pins().get(&name) {
-        tracing::debug!(%host, step = "pin", ?ips, "resolved");
-        crate::decisions::count("dns", "pin");
-        return Ok(ips.clone());
-    }
-    let mut failures = Vec::new();
-    match tokio::time::timeout(STEP_TIMEOUT, tokio::net::lookup_host((host, 0))).await {
-        Ok(Ok(addrs)) => {
-            let ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
-            if !ips.is_empty() {
-                tracing::debug!(%host, step = "system", ?ips, "resolved");
-                crate::decisions::count("dns", "system");
-                return Ok(dedup(ips));
-            }
-            failures.push("system resolver: no address".to_string());
-        }
-        Ok(Err(err)) => failures.push(format!("system resolver: {err}")),
-        Err(_) => failures.push(format!(
-            "system resolver: no answer in {} s",
-            STEP_TIMEOUT.as_secs()
-        )),
-    }
-    if !doh_allowed() {
-        crate::decisions::count("dns", "fail");
-        failures.push("DNS over HTTPS: not asked for this name".to_string());
-        bail!("resolving {host}: {}", failures.join("; "));
-    }
-    match doh_addresses(&name).await {
-        Ok((ips, server)) => {
-            tracing::debug!(%host, step = "doh", server, ?ips, "resolved");
-            crate::decisions::count("dns", "doh");
-            Ok(ips)
-        }
-        Err(err) => {
-            crate::decisions::count("dns", "fail");
-            failures.push(format!("DNS over HTTPS: {err:#}"));
-            bail!("resolving {host}: {}", failures.join("; "))
-        }
+/// [`settings`], read at the first dial: after the pins of `--resolve`.
+fn read_settings() -> pod_dns::Settings {
+    let services = pod_services::of_kind("doh").filter(|s| s.text("json-path").is_some());
+    let servers = pod_dns::doh::of_services(services, &["v4", "v6"]);
+    let context = crate::trust::context();
+    let trust = match context.client_config_with(&[], &[]) {
+        Ok(config) => pod_tls::Trust::caller(Arc::new(config)).unwrap_or(pod_tls::Trust::Default),
+        Err(_) => pod_tls::Trust::Default,
+    };
+    pod_dns::Settings {
+        resolvers: pod_dns::route::by_family(&servers, has_default_route(false)),
+        names: Names::Last,
+        pins: pins(),
+        each: STEP_TIMEOUT,
+        connect: STEP_TIMEOUT,
+        system: Some(STEP_TIMEOUT),
+        both: true,
+        nxdomain: Nxdomain::NextOperator,
+        memory: false,
+        trust,
+        user_agent: format!("podnet/{}", env!("CARGO_PKG_VERSION")),
     }
 }
 
-/// Which step of the chain resolves `host` now (issue 94): `pin`,
+/// The chain with no DoH: for the host of a proxy and for each dial of a DoH
+/// query.
+pub fn plain() -> Arc<pod_dns::Resolver> {
+    Arc::new(pod_dns::Resolver::new(settings()).with_observer(crate::egress::counters()))
+}
+
+/// The chain whose DoH queries go through `dial`, whose own resolver is
+/// [`plain`].
+pub fn with_doh(dial: Arc<dyn pod_core::Dial>) -> pod_dns::Resolver {
+    pod_dns::Resolver::new(settings())
+        .with_doh(crate::trust::context().clone(), dial)
+        .with_observer(crate::egress::counters())
+}
+
+/// The time limit of the whole chain: each step, and each question of each
+/// DoH server.
+fn chain_limit(resolver: &pod_dns::Resolver) -> Duration {
+    STEP_TIMEOUT * (1 + 2 * resolver.settings().resolvers.len() as u32)
+}
+
+/// Resolve `host` with the chain of the process.
+pub async fn resolve(host: &str) -> Result<Vec<IpAddr>> {
+    let resolver = crate::egress::resolver();
+    let deadline = Instant::now() + chain_limit(&resolver);
+    resolver
+        .ips(host, deadline)
+        .await
+        .map_err(|e| anyhow::anyhow!("resolving {host}: {e}"))
+}
+
+/// Which step of the chain resolves `host` now (issue 94): `literal`, `pin`,
 /// `system`, `doh`, or `none`. A name that only DoH resolves is new: the
 /// resolver of a visitor can still answer NXDOMAIN (a cached negative
 /// answer) for some time.
 pub async fn answering_step(host: &str) -> &'static str {
-    let name = host.trim_end_matches('.').to_ascii_lowercase();
-    if pins().contains_key(&name) {
-        return "pin";
-    }
-    if let Ok(Ok(mut addrs)) =
-        tokio::time::timeout(STEP_TIMEOUT, tokio::net::lookup_host((host, 0))).await
-    {
-        if addrs.next().is_some() {
-            return "system";
-        }
-    }
-    match doh_addresses(&name).await {
-        Ok(_) => "doh",
-        Err(_) => "none",
-    }
-}
-
-fn dedup(mut ips: Vec<IpAddr>) -> Vec<IpAddr> {
-    let mut seen = Vec::with_capacity(ips.len());
-    ips.retain(|ip| {
-        let new = !seen.contains(ip);
-        seen.push(*ip);
-        new
-    });
-    ips
-}
-
-/// The A and AAAA addresses of `name` by DoH. Gives the addresses and the
-/// server that answered.
-async fn doh_addresses(name: &str) -> Result<(Vec<IpAddr>, &'static str)> {
-    doh_addresses_with(&doh_servers(), name, |server, rtype| async move {
-        doh_query_at(&server, name, rtype).await
-    })
-    .await
-}
-
-/// The loop of [`doh_addresses`], with the query as an argument (for the
-/// tests). An NXDOMAIN answer skips the other servers of its operator.
-async fn doh_addresses_with<F, Fut>(
-    servers: &[DohServer],
-    name: &str,
-    query: F,
-) -> Result<(Vec<IpAddr>, &'static str)>
-where
-    F: Fn(DohServer, &'static str) -> Fut,
-    Fut: std::future::Future<Output = Result<DohAnswer>>,
-{
-    let mut last = None;
-    let mut nx_operators: Vec<&'static str> = Vec::new();
-    for server in servers {
-        if nx_operators.contains(&server.operator) {
-            continue;
-        }
-        let a = query(*server, "A").await;
-        let aaaa = query(*server, "AAAA").await;
-        match (a, aaaa) {
-            (Err(err), Err(_)) => {
-                last = Some(err);
-                continue;
-            }
-            (a, aaaa) => {
-                let mut ips = Vec::new();
-                let mut nxdomain = false;
-                for answer in [a, aaaa].into_iter().flatten() {
-                    nxdomain |= answer.status == 3;
-                    ips.extend(
-                        answer
-                            .answer
-                            .iter()
-                            .filter(|r| r.rtype == 1 || r.rtype == 28)
-                            .filter_map(|r| r.data.trim().parse::<IpAddr>().ok()),
-                    );
-                }
-                if !ips.is_empty() {
-                    return Ok((dedup(ips), server.url));
-                }
-                if nxdomain {
-                    nx_operators.push(server.operator);
-                    continue;
-                }
-                last = Some(anyhow::anyhow!("{} has no address for {name}", server.url));
-            }
-        }
-    }
-    if !nx_operators.is_empty() {
-        let verb = if nx_operators.len() > 1 {
-            "say"
-        } else {
-            "says"
-        };
-        bail!(
-            "{} {verb} that {name} does not exist",
-            nx_operators.join(" and ")
-        );
-    }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("no DoH server")))
-}
-
-/// A JSON answer of DoH.
-#[derive(Debug, Deserialize)]
-pub struct DohAnswer {
-    #[serde(rename = "Status", default)]
-    pub status: u16,
-    #[serde(rename = "Answer", default)]
-    pub answer: Vec<DohRecord>,
-}
-
-/// One record of a JSON answer.
-#[derive(Debug, Deserialize)]
-pub struct DohRecord {
-    #[serde(rename = "type")]
-    pub rtype: u16,
-    #[serde(default)]
-    pub data: String,
+    let resolver = crate::egress::resolver();
+    let deadline = Instant::now() + chain_limit(&resolver);
+    let found = resolver.find(host, 0, deadline, None).await;
+    found.map_or("none", |f| f.source.name())
 }
 
 /// Ask the DoH servers for `rtype` records of `name`, one server after the
 /// other, until one answers. An NXDOMAIN answer is an answer.
 pub async fn doh_query(name: &str, rtype: &str) -> Result<DohAnswer> {
-    let mut failures = Vec::new();
-    for server in &doh_servers() {
-        match doh_query_at(server, name, rtype).await {
-            Ok(answer) => return Ok(answer),
-            Err(err) => failures.push(format!("{}: {err:#}", server.url)),
-        }
-    }
-    bail!("DoH {rtype} {name}: {}", failures.join("; "))
-}
-
-async fn doh_query_at(server: &DohServer, name: &str, rtype: &str) -> Result<DohAnswer> {
-    let url = format!("{}?name={name}&type={rtype}", server.url);
-    let request = crate::fetch::Request::new("GET", url)
-        .header("Accept", "application/dns-json")
-        .timeout(STEP_TIMEOUT);
-    // The DoH server is an IP address, or a name that the proxy resolves.
-    // The dial of a proxy can resolve the proxy host: not by DoH again.
-    let response = NO_DOH.scope((), crate::fetch::send(request)).await?;
-    if !response.is_success() {
-        bail!("HTTP {}", response.status);
-    }
-    crate::fetch::json(&response)
+    let resolver = crate::egress::resolver();
+    let deadline = Instant::now() + chain_limit(&resolver);
+    let way = resolver.way().context("the chain asks no DoH")?;
+    way.query(name, rtype, deadline)
+        .await
+        .map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn a_name_in_the_no_doh_scope_does_not_ask_doh() {
-        assert!(doh_allowed());
-        let err = resolve_no_doh("podnet-test.invalid").await.unwrap_err();
-        assert!(
-            format!("{err:#}").contains("DNS over HTTPS: not asked"),
-            "{err:#}"
-        );
-        assert!(doh_allowed());
-        // An IP address needs no step.
-        assert_eq!(resolve_no_doh("[::1]").await.unwrap().len(), 1);
-    }
-
+    /// podnet's settings: the servers of two operators by address, the
+    /// names last, A and AAAA both, NXDOMAIN asks the next operator, no
+    /// cache, and a bound of 5 s for each step.
     #[test]
-    fn pins() {
-        let pins = parse_pins(
-            "api.trycloudflare.com=104.16.1.1, Api.TryCloudflare.com.=[2606::1],x=1.2.3.4",
-        )
-        .unwrap();
-        assert_eq!(pins["api.trycloudflare.com"].len(), 2);
-        assert_eq!(pins["x"], vec!["1.2.3.4".parse::<IpAddr>().unwrap()]);
-        for bad in ["noequals", "=1.2.3.4", "h=notanip"] {
-            assert!(parse_pins(bad).is_err(), "{bad}");
-        }
-    }
-
-    /// The servers by name come after the servers by IP address, and only
-    /// through a proxy.
-    #[test]
-    fn the_servers_by_name_need_a_proxy() {
-        let servers = doh_servers();
-        assert!(servers.len() >= DOH_SERVERS.len());
-        let ordered = by_family(DOH_SERVERS, has_default_route(false));
-        for (i, s) in ordered.iter().enumerate() {
-            assert_eq!(servers[i].url, s.url);
-        }
-        let by_name = servers.len() - DOH_SERVERS.len();
-        let proxied = crate::egress::proxy_for("cloudflare-dns.com", 443).is_some();
-        assert_eq!(by_name > 0, proxied);
-    }
-
-    #[test]
-    fn the_servers_are_ip_addresses_of_two_operators() {
-        let mut operators: Vec<&str> = DOH_SERVERS.iter().map(|s| s.operator).collect();
+    fn the_settings_are_podnet_s() {
+        let settings = settings();
+        let mut operators: Vec<&str> = settings
+            .resolvers
+            .iter()
+            .map(|r| r.operator.as_str())
+            .collect();
         operators.dedup();
-        assert!(operators.len() >= 2);
-        for server in DOH_SERVERS {
-            let host = server
-                .url
-                .trim_start_matches("https://")
-                .split('/')
-                .next()
-                .unwrap()
-                .trim_start_matches('[')
-                .trim_end_matches(']');
-            assert!(host.parse::<IpAddr>().is_ok(), "{}", server.url);
-        }
-        // Each operator has IPv4 and IPv6 servers (an IPv6-only host).
-        for operator in ["Cloudflare", "Google"] {
-            let of = |v6: bool| {
-                DOH_SERVERS
-                    .iter()
-                    .filter(|s| s.operator == operator && is_ipv6(s) == v6)
-                    .count()
-            };
-            assert!(of(true) >= 1 && of(false) >= 1, "{operator}");
-        }
-    }
-
-    // A host with no IPv4 route asks the IPv6 servers first; the order of
-    // the operators stays in each family.
-    #[test]
-    fn the_family_of_the_host_goes_first() {
-        let v6_first = by_family(DOH_SERVERS, false);
-        assert!(is_ipv6(&v6_first[0]), "{}", v6_first[0].url);
-        assert_eq!(v6_first[0].operator, "Cloudflare");
-        assert!(v6_first.iter().take(4).all(is_ipv6));
-        let v4_first = by_family(DOH_SERVERS, true);
-        assert_eq!(v4_first[0].url, "https://1.1.1.1/dns-query");
-        assert!(v4_first.iter().take(4).all(|s| !is_ipv6(s)));
-        assert_eq!(v4_first.len(), DOH_SERVERS.len());
-    }
-
-    fn answer(status: u16, data: &[&str]) -> DohAnswer {
-        DohAnswer {
-            status,
-            answer: data
-                .iter()
-                .map(|d| DohRecord {
-                    rtype: if d.contains(':') { 28 } else { 1 },
-                    data: d.to_string(),
-                })
-                .collect(),
-        }
-    }
-
-    /// The servers of the test: Cloudflare (two), then Google (two).
-    fn servers() -> Vec<DohServer> {
-        DOH_SERVERS.to_vec()
-    }
-
-    // Issue 119: a new name is NXDOMAIN at Cloudflare and has an address at
-    // Google. Before, the first NXDOMAIN stopped the chain.
-    #[tokio::test]
-    async fn nxdomain_at_one_operator_asks_the_next_operator() {
-        let asked = std::sync::Mutex::new(Vec::new());
-        let (ips, server) = doh_addresses_with(&servers(), "new.example", |s, rtype| {
-            asked.lock().unwrap().push(s.url);
-            async move {
-                Ok(match (s.operator, rtype) {
-                    ("Cloudflare", _) => answer(3, &[]),
-                    (_, "A") => answer(0, &["192.0.2.9"]),
-                    _ => answer(0, &[]),
-                })
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(ips, vec!["192.0.2.9".parse::<IpAddr>().unwrap()]);
-        assert_eq!(server, "https://8.8.8.8/resolve");
-        // The second server of Cloudflare is not asked.
-        let asked = asked.into_inner().unwrap();
-        assert!(!asked.contains(&"https://1.0.0.1/dns-query"), "{asked:?}");
-    }
-
-    #[tokio::test]
-    async fn nxdomain_at_each_operator_is_an_error_that_names_them() {
-        let err = doh_addresses_with(&servers(), "no.example", |_, _| async {
-            Ok(answer(3, &[]))
-        })
-        .await
-        .unwrap_err();
+        assert!(operators.len() >= 2, "{operators:?}");
+        assert!(settings.resolvers.iter().all(|r| r.json.is_some()));
+        assert_eq!(settings.names, Names::Last);
         assert_eq!(
-            format!("{err}"),
-            "Cloudflare and Google say that no.example does not exist"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_server_that_fails_is_skipped() {
-        let (ips, _) = doh_addresses_with(&servers(), "x.example", |s, _| async move {
-            if s.url.contains("1.1.1.1") {
-                bail!("timed out")
-            }
-            Ok(answer(0, &["2001:db8::1"]))
-        })
-        .await
-        .unwrap();
-        assert_eq!(ips, vec!["2001:db8::1".parse::<IpAddr>().unwrap()]);
-    }
-
-    #[tokio::test]
-    async fn an_ip_address_is_used_as_it_is() {
-        assert_eq!(
-            resolve("192.0.2.7").await.unwrap(),
-            vec!["192.0.2.7".parse::<IpAddr>().unwrap()]
+            (settings.both, settings.nxdomain, settings.memory),
+            (true, Nxdomain::NextOperator, false)
         );
         assert_eq!(
-            resolve("[::1]").await.unwrap(),
-            vec!["::1".parse::<IpAddr>().unwrap()]
+            (settings.each, settings.connect, settings.system),
+            (STEP_TIMEOUT, STEP_TIMEOUT, Some(STEP_TIMEOUT))
         );
+        assert!(settings.user_agent.starts_with("podnet/"));
     }
 }

@@ -477,6 +477,22 @@ pub fn send(command: Option<&str>, exit: i32, error: Option<&anyhow::Error>) {
     }
 }
 
+/// The log filter of `level` (`warn`, `info`, `debug`, `trace`): podnet and
+/// the crates of PodUtils/podcrates that write its diagnostics (the resolver,
+/// the dial, TLS), so that `-v` shows their lines too.
+pub fn log_filter(level: &str) -> String {
+    [
+        "podnet",
+        "pod_core",
+        "pod_dns",
+        "pod_proxy",
+        "pod_tls",
+        "pod_services",
+    ]
+    .map(|target| format!("{target}={level}"))
+    .join(",")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

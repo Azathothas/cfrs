@@ -4,7 +4,7 @@
 //! * The pool: the relay publishes its hosts in `/relays.json`. podnet reads
 //!   it after a mint (rarely: a token lasts hours), and keeps it in
 //!   `relay-pool-HOST.json` in the state directory. Until a pool is cached,
-//!   the alternates of the default relay come from [`SEED`].
+//!   the alternates of the default relay come from [`seed`].
 //! * The token: a minted token is kept in `relay-token-HOST.json`, so the
 //!   next process (or a restart of `--detach`) does not mint again.
 //!
@@ -21,21 +21,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 
-/// The host of the default relay.
-pub const DEFAULT_HOST: &str = "tcp.ssh.relay.ajam.dev";
+/// The host of the default relay: the endpoint `default` of `ajam-relay`
+/// (`pod-services`).
+pub fn default_host() -> &'static str {
+    crate::services::endpoint("ajam-relay", "default").host()
+}
 
-/// Hosts of the pool of the default relay, in different regions (the seed
-/// of podssh). A cached pool replaces them. Each one reached TCP 7844 of
-/// the edge (`/trace?target=198.41.192.167:7844`, 2026-11-04: the 37 hosts
-/// of the pool, road `vpc`).
-pub const SEED: &[&str] = &[
-    "tcp-us-east-1.ssh.relay.ajam.dev",
-    "tcp-eu-west-3.ssh.relay.ajam.dev",
-    "tcp-ap-southeast-1.ssh.relay.ajam.dev",
-    "tcp-azure-westeurope.ssh.relay.ajam.dev",
-    "tcp-us-central1.ssh.relay.ajam.dev",
-    "tcp-ap-south-1.ssh.relay.ajam.dev",
-];
+/// Hosts of the pool of the default relay, in different regions: the
+/// endpoints of the role `seed` of `ajam-relay` (`pod-services`). A cached
+/// pool replaces them.
+pub fn seed() -> Vec<&'static str> {
+    let seed = crate::services::endpoints_of("ajam-relay", "seed");
+    seed.iter().map(|e| e.host()).collect()
+}
 
 /// The most alternates that one connect tries after the primary host.
 pub const MAX_ALTERNATES: usize = 3;
@@ -106,12 +104,12 @@ pub fn parse_pool(body: &[u8], primary: &str) -> Result<Vec<String>> {
 }
 
 /// The alternates of `primary`, best first: the hosts of `cached`, else
-/// (for the default relay only) [`SEED`]. At most [`MAX_ALTERNATES`].
+/// (for the default relay only) [`seed`]. At most [`MAX_ALTERNATES`].
 pub fn alternates_of(primary: &str, cached: Option<Vec<String>>) -> Vec<String> {
     let hosts: Vec<String> = match cached {
         Some(hosts) if !hosts.is_empty() => hosts,
-        _ if primary.eq_ignore_ascii_case(DEFAULT_HOST) => {
-            SEED.iter().map(|s| s.to_string()).collect()
+        _ if primary.eq_ignore_ascii_case(default_host()) => {
+            seed().into_iter().map(str::to_string).collect()
         }
         _ => Vec::new(),
     };
@@ -280,7 +278,7 @@ mod tests {
 
     #[test]
     fn hosts_of_one_deployment() {
-        let p = DEFAULT_HOST;
+        let p = default_host();
         assert!(same_deployment(p, "tcp-us-east-1.ssh.relay.ajam.dev"));
         assert!(same_deployment(p, "TCP-EU-WEST-3.ssh.relay.ajam.dev"));
         assert!(!same_deployment(p, p), "not the primary itself");
@@ -306,23 +304,23 @@ mod tests {
             {"host":"tcp-azure-westus2.ssh.relay.ajam.dev"}
         ]}"#;
         assert_eq!(
-            parse_pool(body, DEFAULT_HOST).unwrap(),
+            parse_pool(body, default_host()).unwrap(),
             [
                 "tcp-azure-westus2.ssh.relay.ajam.dev",
                 "tcp-ca-central-1.ssh.relay.ajam.dev"
             ]
         );
-        assert!(parse_pool(br#"{"pool":[{"host":"evil.example"}]}"#, DEFAULT_HOST).is_err());
-        assert!(parse_pool(b"<html>", DEFAULT_HOST).is_err());
+        assert!(parse_pool(br#"{"pool":[{"host":"evil.example"}]}"#, default_host()).is_err());
+        assert!(parse_pool(b"<html>", default_host()).is_err());
     }
 
     #[test]
     fn the_alternates_come_from_the_cache_else_the_seed() {
-        let seed = alternates_of(DEFAULT_HOST, None);
-        assert_eq!(seed.len(), MAX_ALTERNATES);
-        assert_eq!(seed[0], SEED[0]);
+        let alternates = alternates_of(default_host(), None);
+        assert_eq!(alternates.len(), MAX_ALTERNATES);
+        assert_eq!(alternates[0], seed()[0]);
         let cached = vec!["tcp-x.ssh.relay.ajam.dev".to_string()];
-        assert_eq!(alternates_of(DEFAULT_HOST, Some(cached.clone())), cached);
+        assert_eq!(alternates_of(default_host(), Some(cached.clone())), cached);
         // Another relay has no seed; its cache is used.
         assert!(alternates_of("relay.example.org", None).is_empty());
         let other = vec!["b.example.org".to_string(), "evil.example".to_string()];
@@ -337,31 +335,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let now = SystemTime::now();
         let hosts = vec!["tcp-x.ssh.relay.ajam.dev".to_string()];
-        store_pool_in(dir.path(), DEFAULT_HOST, &hosts, now).unwrap();
+        store_pool_in(dir.path(), default_host(), &hosts, now).unwrap();
         assert_eq!(
-            load_pool_in(dir.path(), DEFAULT_HOST, now),
+            load_pool_in(dir.path(), default_host(), now),
             Some((hosts.clone(), false))
         );
         let later = now + STALE_AFTER + Duration::from_secs(1);
         assert_eq!(
-            load_pool_in(dir.path(), DEFAULT_HOST, later),
+            load_pool_in(dir.path(), default_host(), later),
             Some((hosts, true))
         );
 
         let expires = UNIX_EPOCH + Duration::from_millis(millis(now) + 3_600_000);
-        store_token_in(dir.path(), DEFAULT_HOST, "ephm1.t", expires).unwrap();
-        let path = dir.path().join(token_file(DEFAULT_HOST));
+        store_token_in(dir.path(), default_host(), "ephm1.t", expires).unwrap();
+        let path = dir.path().join(token_file(default_host()));
         let mode = std::fs::metadata(&path).unwrap().mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
-            load_token_in(dir.path(), DEFAULT_HOST),
+            load_token_in(dir.path(), default_host()),
             Some(("ephm1.t".to_string(), expires))
         );
 
         // A file that others can read is not used.
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(load_token_in(dir.path(), DEFAULT_HOST), None);
+        assert_eq!(load_token_in(dir.path(), default_host()), None);
         // A symbolic link is not used.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let link = dir.path().join(token_file("tcp-y.ssh.relay.ajam.dev"));
@@ -369,7 +367,7 @@ mod tests {
         assert_eq!(load_token_in(dir.path(), "tcp-y.ssh.relay.ajam.dev"), None);
         // A large file is not used.
         std::fs::write(&path, vec![b' '; MAX_FILE as usize + 1]).unwrap();
-        assert_eq!(load_token_in(dir.path(), DEFAULT_HOST), None);
+        assert_eq!(load_token_in(dir.path(), default_host()), None);
     }
 
     #[test]

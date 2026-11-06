@@ -247,7 +247,8 @@ At the first stable release (no `-beta.N`), also:
 | `src/detach.rs`, `src/instances.rs` | `--detach`, the supervisor, `ps`, `stop`, `logs`, `wait` |
 | `src/agent.rs` | `doctor --agent`, `agent up` |
 | `src/egress.rs`, `src/fetch.rs` | glue over `pod-proxy`: the dial of each connection (the proxy of `--proxy`, the variables or a tool's file, `NO_PROXY`, Digest, the race of addresses) and the HTTP client, with podnet's settings, words, hops and counters |
-| `src/resolve.rs`, `src/ws.rs` | the resolver chain (system, DoH, pins), the WebSocket client. They move to `pod-dns` and `pod-ws` of `PodUtils/podcrates` (T-137) |
+| `src/resolve.rs`, `src/services.rs` | glue over `pod-dns` and `pod-services`: the resolver chain (an IP address, the pins, the system, DoH) with podnet's settings, and the services of other parties (the relay, the edge, the quick tunnels, WARP, 1.1.1.1, Pinggy) as data |
+| `src/ws.rs` | the WebSocket client. It moves to `pod-ws` of `PodUtils/podcrates` (T-137) |
 | `src/trust.rs` | glue over `pod-tls`: one TLS context of the process on ring, with the edge roots of Cloudflare as extra roots |
 | `crates/podnet-todo/` | `cargo todo`: a wrapper over `pod-todo`; the facts of podnet are in `TODO/todo.toml` |
 | `src/vnet/` | `podnet net`: the userspace networks, the LD_PRELOAD shim |

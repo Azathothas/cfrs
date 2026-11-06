@@ -50,7 +50,7 @@ pub struct SshRelay {
 impl Default for SshRelay {
     fn default() -> Self {
         Self {
-            address: "free.pinggy.io:443".to_string(),
+            address: crate::relay::default_relay(),
             proxy: None,
             username: "podnet".to_string(),
             private_key: None,

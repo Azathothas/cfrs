@@ -21,12 +21,12 @@
 //! The words and the hops of a failure are podnet's: a proxy's refusal is a
 //! [`Refusal`], and a failure through a proxy is at the hop `proxy`.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Result;
-use pod_core::{BoxFuture, Class, Connected, Dial, Failure, Found, Resolve, Source, Stage, Target};
+use pod_core::{BoxFuture, Class, Connected, Dial, Failure, Stage, Target};
 use pod_proxy::{Dialer, Environment, Origin, Rules, Settings};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -77,10 +77,11 @@ pub enum ProxyChoice {
     Via(Proxy),
 }
 
-/// The choice of the process and its dialer.
+/// The choice of the process, its dialer and its resolver.
 struct Way {
     choice: ProxyChoice,
     dialer: Arc<Dialer>,
+    resolver: Arc<pod_dns::Resolver>,
 }
 
 static WAY: OnceLock<Way> = OnceLock::new();
@@ -92,9 +93,11 @@ fn way() -> &'static Way {
         let var = |name: &str| std::env::var_os(name);
         let env =
             Environment::read_with(&var, rules()).or_detected(&var, &pod_proxy::detect::read_file);
+        let (dialer, resolver) = dialer_and_resolver(pod_proxy::ProxyChoice::FromEnvironment(env));
         Way {
             choice: ProxyChoice::FromEnvironment,
-            dialer: Arc::new(dialer(pod_proxy::ProxyChoice::FromEnvironment(env))),
+            dialer: Arc::new(dialer),
+            resolver,
         }
     })
 }
@@ -112,20 +115,22 @@ pub fn set_proxy(spec: &str) -> Result<Proxy> {
         Some(Err(why)) => anyhow::bail!("{why}"),
         None => anyhow::bail!("the value names no proxy"),
     };
-    let dialer = Arc::new(dialer(pod_proxy::ProxyChoice::FromEnvironment(env)));
+    let (dialer, resolver) = dialer_and_resolver(pod_proxy::ProxyChoice::FromEnvironment(env));
     let _ = WAY.set(Way {
         choice: ProxyChoice::Via(proxy.clone()),
-        dialer,
+        dialer: Arc::new(dialer),
+        resolver,
     });
     Ok(proxy)
 }
 
 /// Connect directly (`--no-proxy`). Call it before the first connection.
 pub fn set_direct() {
-    let dialer = Arc::new(dialer(pod_proxy::ProxyChoice::Direct));
+    let (dialer, resolver) = dialer_and_resolver(pod_proxy::ProxyChoice::Direct);
     let _ = WAY.set(Way {
         choice: ProxyChoice::Direct,
-        dialer,
+        dialer: Arc::new(dialer),
+        resolver,
     });
 }
 
@@ -134,15 +139,33 @@ pub fn choice() -> ProxyChoice {
     way().choice.clone()
 }
 
+/// The resolver of the process: the chain of [`crate::resolve`], whose DoH
+/// queries take the way of the process.
+pub fn resolver() -> Arc<pod_dns::Resolver> {
+    way().resolver.clone()
+}
+
 /// A dialer with podnet's settings: its program, no user agent and no
 /// `TCP_NOTSENT_LOWAT`, its resolver (with no DoH for a proxy's own host:
 /// a DoH query can need the same proxy), and its counters.
 fn dialer(proxy: pod_proxy::ProxyChoice) -> Dialer {
+    dialer_and_resolver(proxy).0
+}
+
+/// [`dialer`] and its resolver: the chain of [`crate::resolve`], whose DoH
+/// queries go through the same proxy with the chain of no DoH.
+fn dialer_and_resolver(proxy: pod_proxy::ProxyChoice) -> (Dialer, Arc<pod_dns::Resolver>) {
     let mut settings = Settings::new("podnet", proxy);
     settings.lowat = None;
-    Dialer::new(settings, Arc::new(Resolver { doh: true }))
-        .with_proxy_resolver(Arc::new(Resolver { doh: false }))
-        .with_observer(Arc::new(Counters))
+    let plain = crate::resolve::plain();
+    let doh_dial = Dialer::new(settings.clone(), plain.clone())
+        .with_proxy_resolver(plain.clone())
+        .with_observer(counters());
+    let resolver = Arc::new(crate::resolve::with_doh(Arc::new(doh_dial)));
+    let dialer = Dialer::new(settings, resolver.clone())
+        .with_proxy_resolver(plain)
+        .with_observer(counters());
+    (dialer, resolver)
 }
 
 /// The proxy for `host:port`, after `NO_PROXY`, or `None` for a direct
@@ -352,81 +375,13 @@ impl Dial for Egress {
     }
 }
 
-/// podnet's resolver as the dial asks it: the chain of [`crate::resolve`]
-/// (an IP address, the pins, the system resolver, DoH), one source; with no
-/// DoH for the host of a proxy.
-struct Resolver {
-    doh: bool,
-}
-
-/// The one source of podnet's chain.
-const CHAIN: Source = Source {
-    rank: 0,
-    name: "chain",
-};
-
-impl Resolve for Resolver {
-    fn label(&self) -> String {
-        if self.doh {
-            "the chain of podnet".into()
-        } else {
-            "the chain of podnet with no DoH".into()
-        }
-    }
-
-    fn resolve_from<'a>(
-        &'a self,
-        host: &'a str,
-        port: u16,
-        deadline: Instant,
-        after: Option<Source>,
-    ) -> BoxFuture<'a, Result<Found, Failure>> {
-        Box::pin(async move {
-            if after.is_some() {
-                return Err(Failure::new(
-                    Stage::Dns,
-                    Class::Unavailable,
-                    "no source after the chain of podnet",
-                ));
-            }
-            let lookup = if self.doh {
-                crate::resolve::resolve(host)
-            } else {
-                crate::resolve::resolve_no_doh(host)
-            };
-            let left = deadline.saturating_duration_since(Instant::now());
-            let ips: Vec<IpAddr> = match tokio::time::timeout_at(deadline, lookup).await {
-                Ok(Ok(ips)) => ips,
-                Ok(Err(e)) => {
-                    // The chain names the host itself; the dial names it too.
-                    let text = format!("{e:#}");
-                    let bare = host.trim_start_matches('[').trim_end_matches(']');
-                    let text = text
-                        .strip_prefix(&format!("resolving {bare}: "))
-                        .unwrap_or(&text)
-                        .to_string();
-                    return Err(Failure::new(Stage::Dns, Class::Unavailable, text));
-                }
-                Err(_) => {
-                    let text = format!("no answer in {:.1} s", left.as_secs_f64());
-                    return Err(Failure::new(Stage::Dns, Class::Timeout, text));
-                }
-            };
-            let addrs = ips
-                .into_iter()
-                .map(|ip| SocketAddr::new(ip, port))
-                .collect();
-            Ok(Found {
-                addrs,
-                source: CHAIN,
-                more: false,
-            })
-        })
-    }
-}
-
 /// The counters of the decisions of [`crate::decisions`].
 struct Counters;
+
+/// [`Counters`], for a dialer or a resolver.
+pub(crate) fn counters() -> Arc<dyn pod_core::Observer> {
+    Arc::new(Counters)
+}
 
 impl pod_core::Observer for Counters {
     fn decision(&self, decision: &'static str, outcome: &str) {

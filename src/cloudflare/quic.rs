@@ -13,7 +13,7 @@
 //!   and then dies silently after the handshake timeout, which is the most
 //!   common way to get this transport wrong and the hardest to diagnose.
 //! * **The edge certificate chains to Cloudflare-internal roots**, which are in
-//!   no public trust store, so [`super::CF_EDGE_ROOTS_PEM`] is added to the
+//!   no public trust store, so [`super::edge_roots_pem`] is added to the
 //!   platform roots rather than replacing them.
 //!
 //! # Streams
@@ -61,7 +61,7 @@ pub fn transport_config(initial_mtu: u16) -> TransportConfig {
 /// asserted on directly: quinn's own config has no getters, so a test that
 /// reads back a quinn config would prove nothing.
 pub fn tls_config() -> Result<Arc<rustls::ClientConfig>, EdgeError> {
-    super::edge_tls_config(super::QUIC_ALPN).map_err(EdgeError::Connect)
+    super::edge_tls_config(super::quic_alpn()).map_err(EdgeError::Connect)
 }
 
 /// Build a quinn client config for the edge.
@@ -104,7 +104,7 @@ pub fn build_endpoint() -> anyhow::Result<Endpoint> {
 pub async fn dial(endpoint: &Endpoint, addr: &EdgeAddr) -> anyhow::Result<quinn::Connection> {
     let socket = addr.socket();
     let connecting = endpoint
-        .connect(socket, super::QUIC_SNI)
+        .connect(socket, super::quic_sni())
         .map_err(|e| anyhow::anyhow!("could not start connecting to {socket}: {e}"))?;
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting).await {
         Ok(Ok(conn)) => Ok(conn),
@@ -228,9 +228,12 @@ mod tests {
 
     #[test]
     fn alpn_and_sni_are_distinct() {
-        assert_eq!(super::super::QUIC_ALPN, b"argotunnel");
-        assert_eq!(super::super::QUIC_SNI, "quic.cftunnel.com");
-        assert_ne!(super::super::QUIC_SNI.as_bytes(), super::super::QUIC_ALPN);
+        assert_eq!(super::super::quic_alpn(), b"argotunnel");
+        assert_eq!(super::super::quic_sni(), "quic.cftunnel.com");
+        assert_ne!(
+            super::super::quic_sni().as_bytes(),
+            super::super::quic_alpn()
+        );
     }
 
     #[test]

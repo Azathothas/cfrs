@@ -24,7 +24,6 @@ pub const TARGETS: &[(&str, Target)] = &[
     ("no_proxy", no_proxy),
     ("connect_response_head", connect_response_head),
     ("srv_record", srv_record),
-    ("doh_json", doh_json),
     ("acl_rule", acl_rule),
     ("ingress_rule", ingress_rule),
     ("config_yaml", config_yaml),
@@ -143,16 +142,6 @@ pub fn connect_response_head(data: &[u8]) {
 pub fn srv_record(data: &[u8]) {
     if let Some(text) = text(data) {
         let _ = crate::edge_discovery::parse_srv(text);
-    }
-}
-
-/// A DoH JSON answer.
-pub fn doh_json(data: &[u8]) {
-    if let Ok(answer) = serde_json::from_slice::<crate::resolve::DohAnswer>(data) {
-        for record in answer.answer.iter().take(64) {
-            let _ = record.data.parse::<std::net::IpAddr>();
-            let _ = crate::edge_discovery::parse_srv(&record.data);
-        }
     }
 }
 
@@ -286,10 +275,6 @@ pub fn seeds(target: &str) -> Vec<Vec<u8>> {
             "HTTP/1.0 407 Proxy Authentication Required\r\n",
         ]),
         "srv_record" => s(&["1 1 7844 region1.v2.argotunnel.com."]),
-        "doh_json" => s(&[
-            r#"{"Status":0,"Answer":[{"name":"x.","type":1,"TTL":60,"data":"1.2.3.4"}]}"#,
-            r#"{"Status":0,"Answer":[{"type":33,"data":"1 1 7844 region2.v2.argotunnel.com."}]}"#,
-        ]),
         "acl_rule" => s(&["allow 10.66.0.0/24:80-90", "deny *", "deny [fd00::1]:22"]),
         "ingress_rule" => s(&[
             "http://127.0.0.1:8080",

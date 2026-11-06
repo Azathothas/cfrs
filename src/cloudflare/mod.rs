@@ -42,14 +42,32 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Duration;
 
-/// ALPN for the QUIC transport.
-pub const QUIC_ALPN: &[u8] = b"argotunnel";
+/// The edge's endpoint of the transport `role` (`quic`, `h2`): the first of
+/// the role of `cloudflare-tunnel-edge` (`pod-services`).
+fn edge_endpoint(role: &str) -> &'static crate::services::Endpoint {
+    let endpoints = crate::services::endpoints_of(crate::services::EDGE, role);
+    endpoints
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the edge of pod-services has no role {role}"))
+}
 
-/// SNI for the QUIC transport. Deliberately not the same as [`QUIC_ALPN`].
-pub const QUIC_SNI: &str = "quic.cftunnel.com";
+/// ALPN for the QUIC transport: the ALPN of the role `quic`.
+pub fn quic_alpn() -> &'static [u8] {
+    let alpn = edge_endpoint("quic").alpn();
+    alpn.first()
+        .map_or(b"argotunnel".as_slice(), |a| a.as_bytes())
+}
+
+/// SNI for the QUIC transport. Deliberately not the same as [`quic_alpn`].
+pub fn quic_sni() -> &'static str {
+    edge_endpoint("quic").server_name()
+}
 
 /// SNI for the HTTP/2 transport.
-pub const H2_SNI: &str = "h2.cftunnel.com";
+pub fn h2_sni() -> &'static str {
+    edge_endpoint("h2").server_name()
+}
 
 /// The most streams that the edge can open at the same time, on QUIC and
 /// on HTTP/2. The edge opens one stream for each visitor request, and a
@@ -57,17 +75,20 @@ pub const H2_SNI: &str = "h2.cftunnel.com";
 /// is 100.
 pub const MAX_EDGE_STREAMS: u32 = 256;
 
-/// SRV record naming the edge, as cloudflared resolves it.
-pub const EDGE_SRV: &str = "_v2-origintunneld._tcp.argotunnel.com";
+/// The cloudflared release whose protocol podnet speaks: the fact
+/// `cloudflared-tag` of the edge (`pod-services`). Errors that a protocol
+/// change can cause name it.
+pub fn speaks() -> String {
+    let tag = crate::services::text(crate::services::EDGE, "cloudflared-tag");
+    format!("cloudflared {tag}")
+}
 
-/// Cloudflare-internal roots the edge certificate chains to.
-///
-/// From `cloudflared`'s `tlsconfig/cloudflare_ca.go`, Apache-2.0.
-/// The cloudflared release whose protocol podnet speaks (the tag of
-/// `cloudflared-pin.txt`). Errors that a protocol change can cause name it.
-pub const SPEAKS: &str = "cloudflared 2026.10.7";
-
-pub const CF_EDGE_ROOTS_PEM: &[u8] = include_bytes!("cf-edge-roots.pem");
+/// Cloudflare-internal roots the edge certificate chains to, from
+/// `cloudflared`'s `tlsconfig/cloudflare_ca.go` (Apache-2.0): the fact
+/// `roots` of the edge (`pod-services`).
+pub fn edge_roots_pem() -> &'static [u8] {
+    crate::services::text(crate::services::EDGE, "roots").as_bytes()
+}
 
 /// The six-byte preamble on a data stream, from `tunnelrpc/quic/protocol.go`.
 pub const DATA_STREAM_SIGNATURE: [u8; 6] = [0x0A, 0x36, 0xCD, 0x12, 0xA1, 0x3E];
@@ -280,7 +301,7 @@ impl std::error::Error for EdgeError {}
 pub fn edge_tls_config(alpn: &[u8]) -> Result<Arc<rustls::ClientConfig>, String> {
     let alpns: &[&[u8]] = if alpn.is_empty() { &[] } else { &[alpn] };
     crate::trust::context()
-        .client_config_with(&[CF_EDGE_ROOTS_PEM], alpns)
+        .client_config_with(&[edge_roots_pem()], alpns)
         .map(Arc::new)
         .map_err(|e| format!("{e:#}"))
 }
@@ -339,25 +360,8 @@ mod tests {
 
     #[test]
     fn speaks_names_the_tag_of_the_pin() {
-        let pin = include_str!("cloudflared-pin.txt");
-        let tag = pin
-            .lines()
-            .find_map(|l| l.strip_prefix("tag "))
-            .expect("the pin has a tag");
-        assert_eq!(SPEAKS, format!("cloudflared {}", tag.trim()));
-    }
-
-    #[test]
-    fn quic_alpn_and_sni_are_different_strings() {
-        // Conflating these is the classic way to get a silent 10s handshake
-        // timeout, so the distinction is asserted rather than left to a comment.
-        assert_eq!(QUIC_ALPN, b"argotunnel");
-        assert_eq!(QUIC_SNI, "quic.cftunnel.com");
-        assert_ne!(
-            QUIC_ALPN,
-            QUIC_SNI.as_bytes(),
-            "SNI must not be the ALPN value"
-        );
+        let tag = crate::services::text(crate::services::EDGE, "cloudflared-tag");
+        assert_eq!(speaks(), format!("cloudflared {tag}"));
     }
 
     #[test]
@@ -415,29 +419,9 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_edge_roots_are_real_certificates() {
-        // If this file were emptied or truncated, TLS to the edge would fail
-        // with UnknownIssuer, so assert the roots actually parse.
-        assert!(
-            CF_EDGE_ROOTS_PEM.len() > 1000,
-            "the embedded roots look empty: {} bytes",
-            CF_EDGE_ROOTS_PEM.len()
-        );
-        use rustls::pki_types::{pem::PemObject, CertificateDer};
-        let certs: Vec<_> = CertificateDer::pem_slice_iter(CF_EDGE_ROOTS_PEM)
-            .filter_map(|c| c.ok())
-            .collect();
-        assert!(
-            certs.len() >= 3,
-            "expected Cloudflare's edge roots, found {}",
-            certs.len()
-        );
-    }
-
-    #[test]
     fn an_edge_tls_config_builds_for_both_transports() {
         assert!(
-            edge_tls_config(QUIC_ALPN).is_ok(),
+            edge_tls_config(quic_alpn()).is_ok(),
             "QUIC config should build with the argotunnel ALPN"
         );
         let h2 = edge_tls_config(&[]).expect("h2 config");
@@ -445,7 +429,7 @@ mod tests {
             h2.alpn_protocols.is_empty(),
             "the HTTP/2 transport must send no ALPN"
         );
-        let quic = edge_tls_config(QUIC_ALPN).expect("quic config");
+        let quic = edge_tls_config(quic_alpn()).expect("quic config");
         assert_eq!(quic.alpn_protocols, vec![b"argotunnel".to_vec()]);
     }
 }

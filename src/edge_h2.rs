@@ -40,7 +40,7 @@ use crate::cloudflare::http2::{
     build_origin_response, canonical_header_name, edge_tls, is_control_header, is_hop_by_hop,
     CONTROL_STREAM_HEADER, CONTROL_STREAM_VALUE, PROXY_SRC_HEADER,
 };
-use crate::cloudflare::{EdgeAddr, H2_SNI};
+use crate::cloudflare::{h2_sni, EdgeAddr};
 use crate::ingress::Ingress;
 use crate::service::ServiceRuntime;
 
@@ -752,7 +752,7 @@ async fn connect_one(
         None => (io, None),
     };
     let config = edge_tls().map_err(|e| anyhow::anyhow!(e))?;
-    let name = rustls_pki_types::ServerName::try_from(H2_SNI.to_string())
+    let name = rustls_pki_types::ServerName::try_from(h2_sni().to_string())
         .context("the HTTP/2 SNI is not a valid name")?;
     let tls = tokio::time::timeout(
         DIAL_TIMEOUT,

@@ -35,8 +35,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 
 use crate::net::BoxedIo;
 
-/// The relay of `--transport relay` when no other is given.
-pub const DEFAULT_RELAY: &str = "https://tcp.ssh.relay.ajam.dev";
+pub use crate::services::default_relay;
 /// The environment variable with the relay URL.
 pub const RELAY_VARIABLE: &str = "PODNET_RELAY";
 /// The environment variable with a token for the relay.
@@ -126,8 +125,9 @@ impl Host {
         } else {
             bail!("the relay URL {url:?} does not start with https://");
         };
+        let example = default_relay();
         if rest.contains('/') || rest.contains('?') || rest.contains('@') || rest.is_empty() {
-            bail!("the relay URL {url:?} must be only a scheme and a host, for example {DEFAULT_RELAY}");
+            bail!("the relay URL {url:?} must be only a scheme and a host, for example {example}");
         }
         let default = if tls { 443 } else { 80 };
         let port_of = |text: &str| {
@@ -249,7 +249,7 @@ impl Relay {
             }
         }
         if hosts.is_empty() {
-            bail!("the relay URL is empty; for example {DEFAULT_RELAY}");
+            bail!("the relay URL is empty; for example {}", default_relay());
         }
         let listed = hosts.len() > 1;
         if !listed && hosts[0].tls && hosts[0].port == 443 {
@@ -299,7 +299,7 @@ impl Relay {
         self.hosts.iter().map(Host::url).collect()
     }
 
-    /// The relay of `url`, else of [`RELAY_VARIABLE`], else [`DEFAULT_RELAY`],
+    /// The relay of `url`, else of [`RELAY_VARIABLE`], else [`default_relay`],
     /// with the token of [`TOKEN_VARIABLE`].
     pub fn from_env(url: Option<&str>) -> Result<Self> {
         let from_env = std::env::var(RELAY_VARIABLE)
@@ -307,7 +307,7 @@ impl Relay {
             .filter(|v| !v.trim().is_empty());
         let url = url.map(str::to_string).or(from_env);
         Self::new(
-            url.as_deref().unwrap_or(DEFAULT_RELAY),
+            url.as_deref().unwrap_or(default_relay()),
             std::env::var(TOKEN_VARIABLE).ok(),
         )
     }
@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn the_token_is_not_in_debug_or_url() {
-        let relay = Relay::new(DEFAULT_RELAY, Some("ephm1.secret".into())).unwrap();
+        let relay = Relay::new(default_relay(), Some("ephm1.secret".into())).unwrap();
         assert!(!format!("{relay:?}").contains("secret"));
         assert!(!relay.url().contains("secret"));
     }

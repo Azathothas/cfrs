@@ -10,15 +10,41 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context as _, Result};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+/// The trace of 1.1.1.1: the endpoint `trace` of `cloudflare-dns`
+/// (`pod-services`).
+fn trace_endpoint() -> &'static crate::services::Endpoint {
+    crate::services::endpoint(crate::services::ONE, "trace")
+}
+
+/// The address of the trace of the family `v6`.
+fn trace_address_of(v6: bool) -> std::net::IpAddr {
+    let found = trace_endpoint()
+        .ip_addrs()
+        .into_iter()
+        .find(|ip| ip.is_ipv6() == v6);
+    found.expect("the trace of pod-services has an address of each family")
+}
+
 /// The address of the trace.
-pub const TRACE_ADDRESS: std::net::IpAddr =
-    std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
+pub fn trace_address() -> std::net::IpAddr {
+    trace_address_of(false)
+}
 /// The IPv6 address of the trace and of the whoami query (issue 184).
-pub const TRACE_ADDRESS_V6: std::net::IpAddr = std::net::IpAddr::V6(std::net::Ipv6Addr::new(
-    0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111,
-));
+pub fn trace_address_v6() -> std::net::IpAddr {
+    trace_address_of(true)
+}
 /// The name of the trace (the certificate and the Host header).
-pub const TRACE_NAME: &str = "one.one.one.one";
+pub fn trace_name() -> &'static str {
+    trace_endpoint().host()
+}
+/// The path of the trace.
+fn trace_path() -> &'static str {
+    trace_endpoint().path().unwrap_or("/cdn-cgi/trace")
+}
+/// The name of the whoami query: the fact `whoami-name`.
+fn whoami_name() -> &'static str {
+    crate::services::text(crate::services::ONE, "whoami-name")
+}
 /// The time limit of the trace.
 pub const TRACE_TIMEOUT: Duration = Duration::from_secs(15);
 /// The most bytes of the answer.
@@ -85,7 +111,7 @@ pub fn parse(body: &str, rtt: Duration) -> Option<Exit> {
 
 /// The exit of the session of `stack`.
 pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
-    trace_at(stack, TRACE_ADDRESS).await
+    trace_at(stack, trace_address()).await
 }
 
 /// The IPv6 egress address of the session of `stack` (issue 184): the
@@ -93,7 +119,7 @@ pub async fn trace(stack: &super::WarpStack) -> Result<Exit> {
 /// the IPv6 resolver of Cloudflare.
 pub async fn egress_v6(stack: &super::WarpStack) -> Result<String> {
     let mut errors = Vec::new();
-    match trace_at(stack, TRACE_ADDRESS_V6).await {
+    match trace_at(stack, trace_address_v6()).await {
         Ok(exit) => match exit.ip {
             Some(ip) if ip.contains(':') => return Ok(ip),
             other => errors.push(format!(
@@ -105,7 +131,7 @@ pub async fn egress_v6(stack: &super::WarpStack) -> Result<String> {
     }
     match whoami_v6(stack).await {
         Ok(ip) => Ok(ip),
-        Err(err) => bail!("{}; whoami.cloudflare: {err:#}", errors.join("; ")),
+        Err(err) => bail!("{}; {}: {err:#}", errors.join("; "), whoami_name()),
     }
 }
 
@@ -114,7 +140,7 @@ pub fn whoami_query(id: u16) -> Vec<u8> {
     let mut q = Vec::with_capacity(40);
     q.extend_from_slice(&id.to_be_bytes());
     q.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
-    for label in ["whoami", "cloudflare"] {
+    for label in whoami_name().split('.') {
         q.push(label.len() as u8);
         q.extend_from_slice(label.as_bytes());
     }
@@ -166,7 +192,7 @@ pub fn first_txt(message: &[u8]) -> Option<String> {
 }
 
 async fn whoami_v6(stack: &super::WarpStack) -> Result<String> {
-    let server = std::net::SocketAddr::new(TRACE_ADDRESS_V6, 53);
+    let server = std::net::SocketAddr::new(trace_address_v6(), 53);
     let query = whoami_query(0x7e57);
     let answer = super::proxy::forward_dns_to(stack, server, &query).await?;
     let text = first_txt(&answer).context("the answer has no TXT record")?;
@@ -187,14 +213,16 @@ async fn trace_at(stack: &super::WarpStack, address: std::net::IpAddr) -> Result
         )
         .await?;
         let config = crate::trust::context().client_config_with(&[], &[b"http/1.1"])?;
-        let name = rustls::pki_types::ServerName::try_from(TRACE_NAME).expect("a name");
+        let name = rustls::pki_types::ServerName::try_from(trace_name()).expect("a name");
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(name, stream)
             .await
             .with_context(|| format!("TLS with {address} through WARP"))?;
         // HTTP/1.0: the body is not chunked, and ends with the connection.
         let request = format!(
-            "GET /cdn-cgi/trace HTTP/1.0\r\nHost: {TRACE_NAME}\r\nUser-Agent: podnet\r\n\r\n"
+            "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: podnet\r\n\r\n",
+            trace_path(),
+            trace_name()
         );
         tls.write_all(request.as_bytes()).await?;
         tls.flush().await?;

@@ -317,7 +317,8 @@ async fn udp_dns(timeout: Duration) -> Outcome {
         0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3,
         b'c', b'o', b'm', 0, 0, 1, 0, 1,
     ];
-    if let Err(err) = socket.send_to(&query, "1.1.1.1:53").await {
+    let resolver = crate::services::endpoint(crate::services::ONE, "udp-1").authority();
+    if let Err(err) = socket.send_to(&query, resolver.as_str()).await {
         return Outcome::Failed(format!("send: {err}"));
     }
     let mut buf = [0u8; 512];

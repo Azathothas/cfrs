@@ -115,8 +115,9 @@ pub fn validate_quick_hostname(raw: &str) -> Result<String> {
     if bad {
         anyhow::bail!("quick tunnel returned a malformed hostname: {raw:?}");
     }
-    let Some(sub) = host.strip_suffix(".trycloudflare.com") else {
-        anyhow::bail!("quick tunnel hostname is not under trycloudflare.com: {host}");
+    let zone = crate::services::text(crate::services::QUICK, "tunnel-zone");
+    let Some(sub) = host.strip_suffix(&format!(".{zone}")) else {
+        anyhow::bail!("quick tunnel hostname is not under {zone}: {host}");
     };
     if sub.is_empty()
         || sub.contains('.')

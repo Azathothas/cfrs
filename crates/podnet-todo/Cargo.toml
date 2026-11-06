@@ -9,4 +9,4 @@ license = "0BSD"
 publish = false
 
 [dependencies]
-pod-todo = { git = "https://github.com/PodUtils/podcrates", tag = "v0.3.0" }
+pod-todo = { git = "https://github.com/PodUtils/podcrates", tag = "v0.4.0" }

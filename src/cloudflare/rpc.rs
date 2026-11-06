@@ -44,7 +44,7 @@ impl std::fmt::Display for Refused {
             self.cause,
             if self.should_retry { "yes" } else { "no" },
             self.retry_after.as_secs(),
-            crate::cloudflare::SPEAKS
+            crate::cloudflare::speaks()
         )
     }
 }
@@ -419,11 +419,11 @@ impl<W: AsyncWrite + Unpin> Session<W> {
             }
             Answer::Exception(reason) => bail!(
                 "registerConnection failed: {reason} (podnet speaks {})",
-                crate::cloudflare::SPEAKS
+                crate::cloudflare::speaks()
             ),
             Answer::Other(kind) => bail!(
                 "registerConnection answered with kind {kind} (podnet speaks {})",
-                crate::cloudflare::SPEAKS
+                crate::cloudflare::speaks()
             ),
         }
     }

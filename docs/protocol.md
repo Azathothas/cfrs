@@ -56,8 +56,10 @@ The edge addresses come from the SRV record
 * The SNI and the ALPN of QUIC are different strings. If the ALPN value is
   sent as the SNI, the handshake completes key derivation and then stops.
 * The edge certificate chains to Cloudflare roots that are not in public
-  trust stores. The roots are in `src/cloudflare/cf-edge-roots.pem` (from
-  `tlsconfig/cloudflare_ca.go`). Without them, TLS fails with `UnknownIssuer`.
+  trust stores. The roots are the fact `roots` of the edge of `pod-services`
+  (PodUtils/podcrates), the certificates of `src/cloudflare/cf-edge-roots.pem`
+  (from `tlsconfig/cloudflare_ca.go`). Without them, TLS fails with
+  `UnknownIssuer`.
 * Port 443 of the edge does not serve the tunnel service: TLS there is
   TLS 1.2, and its chain does not end at the edge roots (section 6). So
   podnet uses 7844 only, and carries the edge on TCP 443 inside WARP

@@ -32,7 +32,7 @@ fn edge_row(found: anyhow::Result<usize>) -> (Status, String) {
             Status::Pass,
             format!(
                 "{n} edge address(es) by DNS ({})",
-                crate::edge_discovery::EDGE_SRV
+                crate::edge_discovery::edge_srv()
             ),
         ),
         Ok(_) => (
@@ -211,7 +211,7 @@ pub async fn check(config: &Config) -> Report {
 
     let legs = match crate::tunnel::leg_plan(config.protocol, config.transport) {
         Ok(plan) => {
-            let proxy = crate::egress::proxy_for(crate::tunnel::EDGE_REGION_NAME, 7844);
+            let proxy = crate::egress::proxy_for(crate::tunnel::edge_region_name(), 7844);
             let (plan, mut note) =
                 crate::tunnel::plan_with_proxy(plan, config.protocol, proxy.as_ref());
             // The check sends no UDP probe: only PODNET_UDP=off applies here.

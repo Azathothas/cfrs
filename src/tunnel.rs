@@ -199,7 +199,7 @@ impl Tunnel {
         // before has not registered in 2 s, or at once when it fails; the
         // first leg that registers stays.
         let plan = leg_plan(protocol, transport)?;
-        let proxy = crate::egress::proxy_for(EDGE_REGION_NAME, 7844);
+        let proxy = crate::egress::proxy_for(edge_region_name(), 7844);
         let (plan, note) = plan_with_proxy(plan, protocol, proxy.as_ref());
         if let Some(note) = note {
             if matches!(protocol, Protocol::Auto) {
@@ -598,8 +598,7 @@ pub fn leg_plan(protocol: Protocol, transport: Transport) -> Result<Vec<LegKind>
     })
 }
 
-/// A name of the edge, for the choice of the proxy (`NO_PROXY` may name it).
-pub(crate) const EDGE_REGION_NAME: &str = "region1.v2.argotunnel.com";
+pub(crate) use crate::services::edge_region_name;
 
 /// With a proxy, `--protocol auto` does not try QUIC on UDP 7844: no proxy
 /// carries UDP, so the packets go around the proxy or are lost. QUIC inside
@@ -1321,7 +1320,8 @@ const VERIFY_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Clone, Copy, Debug)]
 pub struct Verified {
     /// The step of the resolver chain that resolves the public name now:
-    /// `pin`, `system`, `doh` or `none` ([`crate::resolve::answering_step`]).
+    /// `literal`, `pin`, `system`, `doh` or `none`
+    /// ([`crate::resolve::answering_step`]).
     pub dns: &'static str,
 }
 
@@ -1525,7 +1525,7 @@ mod tests {
     #[tokio::test]
     async fn the_dns_step_of_a_url() {
         crate::test_host::need_localhost!();
-        assert_eq!(public_dns("https://127.0.0.1:8443/s/x/").await, "system");
+        assert_eq!(public_dns("https://127.0.0.1:8443/s/x/").await, "literal");
         assert_eq!(public_dns("https://localhost/").await, "system");
         assert_eq!(public_dns("https:///x").await, "none");
     }

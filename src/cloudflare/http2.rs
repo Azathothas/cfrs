@@ -34,7 +34,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
-use super::{EdgeAddr, H2_SNI};
+use super::{h2_sni, EdgeAddr};
 
 /// The header that marks a stream as the control stream rather than a visitor.
 pub const CONTROL_STREAM_HEADER: &str = "Cf-Cloudflared-Proxy-Connection-Upgrade";
@@ -258,7 +258,7 @@ pub async fn connect(addr: &EdgeAddr, timeout: Duration) -> Result<TlsH2Stream, 
 
     let config = edge_tls().map_err(super::EdgeError::Connect)?;
     let connector = tokio_rustls::TlsConnector::from(config);
-    let name = rustls_pki_types::ServerName::try_from(H2_SNI.to_string())
+    let name = rustls_pki_types::ServerName::try_from(h2_sni().to_string())
         .map_err(|e| super::EdgeError::Connect(format!("bad SNI: {e}")))?;
 
     let tls = tokio::time::timeout(timeout, connector.connect(name, tcp))
@@ -1103,9 +1103,9 @@ mod protocol_tests {
         // the SRV record resolved. Getting this wrong hands you Cloudflare's
         // generic HTTP frontend instead of the tunnel edge, and the symptom is
         // an HTTP/1.1 400 with no ALPN negotiated.
-        assert_eq!(super::H2_SNI, "h2.cftunnel.com");
-        assert_ne!(super::H2_SNI, "region1.v2.argotunnel.com");
-        assert_ne!(super::H2_SNI, super::super::QUIC_SNI);
+        assert_eq!(super::h2_sni(), "h2.cftunnel.com");
+        assert_ne!(super::h2_sni(), "region1.v2.argotunnel.com");
+        assert_ne!(super::h2_sni(), super::super::quic_sni());
     }
 
     #[test]
