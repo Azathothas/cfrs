@@ -2,4 +2,6 @@
 //! that more than one command uses. Only the binary declares this module:
 //! it has no public path.
 
+pub(crate) mod argv;
+pub(crate) mod help;
 pub(crate) mod signals;
