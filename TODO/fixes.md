@@ -871,7 +871,7 @@ gh run view RUN --log | grep -e median -e ipv6
 **Milestone:** M5
 **Priority:** P3
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -896,6 +896,14 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
 The fuzz target `config_yaml` still builds.
+
+## Done
+
+2026-11-06, commit 7e3d835 (`T-080: an error of an ingress rule names the line of the rule`).
+`yaml::item_lines` gives the line of each item of a top-level list; each error of an ingress rule
+names `ingress rule N (line L)`. A full map of positions in `src/yaml.rs` is not made: the errors
+of the top-level keys name the key, which is unique in the file. `a_config_error_names_its_line`
+passes; `cargo check --manifest-path fuzz/Cargo.toml --bins` passes.
 
 # T-081: The tailnet front door warns when `tailscaled` is not logged in
 
