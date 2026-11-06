@@ -76,9 +76,9 @@ pub(crate) fn handle_setsockopt(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
 ) -> Result<()> {
-    let Some(entry) = map.get_mut(&(a[0] as i32)) else {
+    let Some(entry) = map.get_mut(&key) else {
         return notif_continue(lfd, id);
     };
     let (level, name, optval, len) = (a[1] as i32, a[2] as i32, a[3], a[4] as usize);
@@ -98,14 +98,13 @@ pub(crate) fn handle_getsockopt(
     a: [u64; 6],
     mem: RawFd,
     writable: bool,
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
 ) -> Result<()> {
-    let fd = a[0] as i32;
     let level = a[1] as i32;
     let optname = a[2] as i32;
     let optval = a[3];
     let optlen_ptr = a[4];
-    let Some(entry) = map.get_mut(&fd) else {
+    let Some(entry) = map.get_mut(&key) else {
         return notif_continue(lfd, id);
     };
     if !writable || optval == 0 || optlen_ptr == 0 {
@@ -152,11 +151,10 @@ pub(crate) fn handle_sockname(
     a: [u64; 6],
     mem: RawFd,
     writable: bool,
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
     peer: bool,
 ) -> Result<()> {
-    let fd = a[0] as i32;
-    let Some(entry) = map.get(&fd) else {
+    let Some(entry) = map.get(&key) else {
         return notif_continue(lfd, id);
     };
     if !writable {

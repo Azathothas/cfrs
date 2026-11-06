@@ -40,6 +40,7 @@ pub mod upstream;
 mod cli;
 mod doctor;
 mod fakedns;
+mod fdtable;
 mod frontdoor;
 mod inbox;
 mod netns;
@@ -81,6 +82,7 @@ mod prelude {
     pub(crate) use crate::cli::*;
     pub(crate) use crate::doctor::*;
     pub(crate) use crate::fakedns::*;
+    pub(crate) use crate::fdtable::Key;
     pub(crate) use crate::frontdoor::*;
     pub(crate) use crate::netns::*;
     pub(crate) use crate::seccomp::*;

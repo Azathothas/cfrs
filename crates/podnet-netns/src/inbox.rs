@@ -423,6 +423,116 @@ pub(crate) fn read_target(
     Ok((target, a[2] as i32))
 }
 
+/// `recvfrom` and `recvmsg` (issue 305): on an unconnected datagram socket of
+/// the program, the supervisor reads the datagram and writes the data and its
+/// logical source address into the memory of the program. Another read
+/// stays direct: a socket that is not ours, a connected socket, or a host
+/// that refuses writes to the memory of the program (the source is then the
+/// `AF_UNIX` address of the socketpair).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_recv(
+    lfd: RawFd,
+    id: u64,
+    a: [u64; 6],
+    mem: RawFd,
+    writable: bool,
+    map: &HashMap<Key, Sock>,
+    key: Key,
+    recvmsg: bool,
+    pid: u32,
+) -> Result<()> {
+    let fd = a[0] as i32;
+    let inbox = match map.get(&key) {
+        Some(Sock::Datagram {
+            dest: None, inbox, ..
+        }) if writable => inbox.clone(),
+        _ => return notif_continue(lfd, id),
+    };
+    let flags = if recvmsg { a[2] } else { a[3] } as i32;
+    if flags & libc::MSG_ERRQUEUE != 0 {
+        return notif_continue(lfd, id);
+    }
+    if flags & libc::MSG_OOB != 0 {
+        return notif_respond(lfd, id, -1, libc::EOPNOTSUPP);
+    }
+    let (target, flags) = match read_target(mem, recvmsg, a) {
+        Ok(t) => t,
+        Err(errno) => return notif_respond(lfd, id, -1, errno),
+    };
+    let peek = flags & libc::MSG_PEEK != 0;
+    match inbox.take(peek) {
+        Ok(Some((data, source))) => {
+            let addr = inbox.address(source);
+            match complete(mem, pid, &target, flags, &data, &addr) {
+                Ok(value) => notif_respond(lfd, id, value, 0),
+                Err(errno) => notif_respond(lfd, id, -1, errno),
+            }
+        }
+        Ok(None) => {
+            let nonblocking = flags & libc::MSG_DONTWAIT != 0
+                || child_fd_flags(pid, fd).is_some_and(|f| f & libc::O_NONBLOCK != 0);
+            if nonblocking {
+                return notif_respond(lfd, id, -1, libc::EAGAIN);
+            }
+            // A blocking read waits in its own task: the other system calls
+            // of the program go on.
+            tokio::spawn(wait_recv(lfd, id, pid, inbox, target, flags));
+            Ok(())
+        }
+        Err(e) => notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO)),
+    }
+}
+
+/// Wait for a datagram for the blocking read `id`, then answer it. Stop when
+/// the read ends without an answer (a signal, or the exit of the program).
+async fn wait_recv(
+    lfd: RawFd,
+    id: u64,
+    pid: u32,
+    inbox: Arc<Inbox>,
+    target: RecvTarget,
+    flags: i32,
+) {
+    let peek = flags & libc::MSG_PEEK != 0;
+    let Ok(ready) = crate::readable_copy(inbox.raw_fd()) else {
+        let _ = notif_respond(lfd, id, -1, libc::EIO);
+        return;
+    };
+    loop {
+        let guard = tokio::select! {
+            guard = ready.readable() => guard.ok(),
+            _ = tokio::time::sleep(Duration::from_millis(200)) => None,
+        };
+        if !notif_id_valid(lfd, id) {
+            return;
+        }
+        match inbox.take(peek) {
+            Ok(Some((data, source))) => {
+                let addr = inbox.address(source);
+                let (mem, _) = open_mem_of(pid);
+                let answer = complete(mem, pid, &target, flags, &data, &addr);
+                if mem >= 0 {
+                    unsafe { libc::close(mem) };
+                }
+                let _ = match answer {
+                    Ok(value) => notif_respond(lfd, id, value, 0),
+                    Err(errno) => notif_respond(lfd, id, -1, errno),
+                };
+                return;
+            }
+            Ok(None) => {
+                if let Some(mut guard) = guard {
+                    guard.clear_ready();
+                }
+            }
+            Err(e) => {
+                let _ = notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO));
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

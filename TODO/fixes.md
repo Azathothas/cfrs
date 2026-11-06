@@ -107,10 +107,46 @@ made by `dup`, `dup2` or `fcntl(F_DUPFD)` has no entry, so it sends to the wrong
 3. Compare this with a key of the socket inode (from `/proc/PID/fd/N`). Write the choice and the
    reason in the Decision section.
 
+## Decision
+
+The key is the socket inode of the program end (design b), not the pair (thread group id,
+descriptor) (design a). The reasons:
+
+- A `fork`, each `dup`, `dup2`, `dup3`, `fcntl(F_DUPFD)`, `fcntl(F_DUPFD_CLOEXEC)` and a
+  descriptor sent with `SCM_RIGHTS` give the same socket, thus the same key. The filter stops no
+  new system call (`intercepted_syscalls` does not change).
+- Design a must copy the entries at each fork. The supervisor gets no notification at the
+  return of `fork` or `clone`, so it does not know the pid of the child. An entry holds a
+  socketpair and relay tasks, so a copy must be a shared reference with a count. A copy by
+  `SCM_RIGHTS` stays without an entry.
+- A thread shares the descriptor table of its process: `/proc/TID/fd/N` gives the same link as
+  `/proc/TGID/fd/N`. No thread group id is necessary for the lookup.
+
+The costs and the limits:
+
+- Each stopped call on a descriptor does one `readlink` of `/proc/PID/fd/N`
+  (`crates/podnet-netns/src/fdtable.rs`). The supervisor reads `/proc/PID/mem` for each call
+  already, and that access needs more permission than the `readlink`.
+- A `close` of a socket of the table reads the descriptor table of the caller first, then the
+  tables of the other processes of the pod (the descendants of the first process, and each
+  process that made a stopped call). It removes the entry only when no other descriptor refers
+  to the socket.
+- A descriptor that closes with no `close` call (the exit of a process, `execve` with
+  close-on-exec, `close_range`) keeps its entry until a sweep. The sweep reads the descriptor
+  tables of the pod and removes each entry of a socket that no process holds. It runs when the
+  table doubles (from 64 entries), and before the table refuses a socket at `MAX_TRACKED_FDS`.
+  Thus the table does not grow for the life of the pod. Until the sweep, the UDP association of
+  such a socket stays open.
+- `listen` puts a new socket at the number of the program (`SECCOMP_ADDFD` with
+  `SECCOMP_ADDFD_FLAG_SETFD`). The entry moves to the key of the new socket. A copy of the
+  descriptor made before the `listen` keeps the old socket and has no entry.
+- An orphan process that made no stopped call is not in the list of the pod. A sweep or a
+  `close` does not see its descriptors.
+
 ## Prove
 
 ```sh
-cargo test --test pod_seccomp -- seccomp_close_in_a_child_keeps_the_parent_entry seccomp_dup_keeps_the_udp_destination
+cargo test --test pod_seccomp_fds -- seccomp_close_in_a_child_keeps_the_parent_entry seccomp_dup_keeps_the_udp_destination seccomp_closed_sockets_free_their_entries
 ```
 
 ## Start condition

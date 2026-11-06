@@ -78,6 +78,12 @@ see it. Use a unix socket for it (`-L unix:///path`).
 * `socket(AF_INET | AF_INET6)` gets one end of a socketpair, installed with
   `SECCOMP_IOCTL_NOTIF_ADDFD`. Thus `read`, `write`, `poll` and `epoll` work on
   a real descriptor.
+* The supervisor keeps one entry for each socket of the program. The key is
+  the inode of the socket (`/proc/<pid>/fd/<n>` gives `socket:[INODE]`), so a
+  copy made by `fork`, `dup`, `dup2`, `dup3` or `fcntl(F_DUPFD)` finds the
+  entry. A `close` removes the entry only when no other descriptor of the pod
+  refers to the socket. A sweep removes the entries of sockets that closed
+  with no `close` call (the exit of a process, `close_range`).
 * `connect` is answered after the supervisor dials the upstream. The
   supervisor reads the address from `/proc/<pid>/mem` of the calling task. It
   opens that file again for each notification, and it checks the notification

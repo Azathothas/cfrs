@@ -698,7 +698,7 @@ pub(crate) async fn supervise_seccomp(
         });
     }
 
-    let mut map: HashMap<i32, Sock> = HashMap::new();
+    let mut map = crate::fdtable::Table::new(pid);
     let mut dns = FakeDns::new();
     dns.v6 = true;
     for (name, ip) in &maps {
@@ -739,6 +739,11 @@ pub(crate) async fn supervise_seccomp(
         let id = req.id;
         let nr = req.data.nr;
         let a = req.data.args;
+        // T-064: the entry of a socket follows the socket, not the number.
+        let key = match nr == libc::SYS_socket as i32 {
+            true => 0,
+            false => map.key_of(req.pid, a[0] as i32),
+        };
 
         // Open the memory of the task that made this call, for each call. A
         // descriptor opened before the child's execve keeps the old address
@@ -759,7 +764,7 @@ pub(crate) async fn supervise_seccomp(
                 id,
                 a,
                 mem,
-                &mut map,
+                (&mut map, key),
                 &mut dns,
                 &proxies,
                 &rules,
@@ -768,52 +773,60 @@ pub(crate) async fn supervise_seccomp(
             )
             .await
         } else if nr == libc::SYS_sendto as i32 {
-            handle_sendto(lfd, id, a, mem, &mut map, &mut dns, &proxies).await
+            handle_sendto(lfd, id, a, mem, (&mut map, key), &mut dns, &proxies).await
         } else if nr == libc::SYS_sendmsg as i32 {
-            handle_sendmsg(lfd, id, a, mem, &mut map, &mut dns, &proxies).await
+            handle_sendmsg(lfd, id, a, mem, (&mut map, key), &mut dns, &proxies).await
         } else if nr == libc::SYS_sendmmsg as i32 {
-            handle_sendmmsg(lfd, id, a, mem, mem_writable, &mut map, &mut dns, &proxies).await
+            handle_sendmmsg(
+                lfd,
+                id,
+                a,
+                (mem, mem_writable),
+                (&mut map, key),
+                &mut dns,
+                &proxies,
+            )
+            .await
         } else if nr == libc::SYS_setsockopt as i32 {
-            crate::sockopt::handle_setsockopt(lfd, id, a, mem, &mut map)
+            crate::sockopt::handle_setsockopt(lfd, id, a, mem, (&mut map, key))
         } else if nr == libc::SYS_getsockopt as i32 {
-            crate::sockopt::handle_getsockopt(lfd, id, a, mem, mem_writable, &mut map)
+            crate::sockopt::handle_getsockopt(lfd, id, a, mem, mem_writable, (&mut map, key))
         } else if nr == libc::SYS_close as i32 {
-            // Drop the supervisor's end when the child closes an injected fd,
-            // or the table and its socketpairs grow for the process lifetime.
-            map.remove(&(a[0] as i32));
-            notif_continue(lfd, id)
+            // Drop the entry when the last copy of the socket closes.
+            crate::fdtable::handle_close(lfd, id, a[0] as i32, key, req.pid, &mut map)
         } else if nr == libc::SYS_io_uring_setup as i32 {
             // io_uring submits network operations without the intercepted
             // syscalls, which would bypass this filter entirely. Refuse it.
             notif_respond(lfd, id, -1, libc::EPERM)
         } else if nr == libc::SYS_bind as i32 {
-            handle_bind(lfd, id, a, mem, &mut map)
+            handle_bind(lfd, id, a, mem, (&mut map, key))
         } else if nr == libc::SYS_listen as i32 {
-            handle_listen(lfd, id, a, &mut map, &inbound_dir, req.pid).await
+            handle_listen(lfd, id, a, (&mut map, key), &inbound_dir, req.pid).await
         } else if nr == SYS_ACCEPT as i32 || nr == libc::SYS_accept4 as i32 {
             handle_accept(
                 lfd,
                 id,
                 a,
-                &mut map,
+                (&mut map, key),
                 nr == libc::SYS_accept4 as i32,
                 req.pid,
             )
             .await
         } else if nr == libc::SYS_recvfrom as i32 || nr == libc::SYS_recvmsg as i32 {
-            handle_recv(
+            crate::inbox::handle_recv(
                 lfd,
                 id,
                 a,
                 mem,
                 mem_writable,
                 &map,
+                key,
                 nr == libc::SYS_recvmsg as i32,
                 req.pid,
             )
         } else if nr == libc::SYS_getsockname as i32 || nr == libc::SYS_getpeername as i32 {
             let peer = nr == libc::SYS_getpeername as i32;
-            crate::sockopt::handle_sockname(lfd, id, a, mem, mem_writable, &mut map, peer)
+            crate::sockopt::handle_sockname(lfd, id, a, mem, mem_writable, (&mut map, key), peer)
         } else {
             notif_continue(lfd, id)
         };
@@ -938,9 +951,9 @@ pub(crate) fn handle_socket(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
-    map: &mut HashMap<i32, Sock>,
+    map: &mut crate::fdtable::Table,
 ) -> Result<()> {
-    if map.len() >= MAX_TRACKED_FDS {
+    if !map.has_room() {
         return notif_respond(lfd, id, -1, libc::EMFILE);
     }
     let domain = a[0] as i32;
@@ -967,10 +980,11 @@ pub(crate) fn handle_socket(
         if nonblocking {
             set_nonblocking(theirs.as_raw_fd())?;
         }
-        let child_fd = notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
+        let key = crate::fdtable::inode_of(theirs.as_raw_fd())?;
+        notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
         drop(theirs);
         map.insert(
-            child_fd,
+            key,
             Sock::Stream {
                 pair: tokio::net::UnixStream::from_std(ours)?,
                 bound: None,
@@ -987,10 +1001,11 @@ pub(crate) fn handle_socket(
         }
         // A copy of the end of the program, for intercepted reads.
         let copy = theirs.try_clone()?;
-        let child_fd = notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
+        let key = crate::fdtable::inode_of(theirs.as_raw_fd())?;
+        notif_addfd_send(lfd, id, theirs.as_raw_fd(), newfd_flags)?;
         drop(theirs);
         map.insert(
-            child_fd,
+            key,
             Sock::Datagram {
                 pair: Arc::new(tokio::net::UnixDatagram::from_std(ours)?),
                 dest: None,
@@ -1008,7 +1023,7 @@ pub(crate) async fn handle_connect(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
     dns: &mut FakeDns,
     proxies: &[Proxy],
     rules: &[Rule],
@@ -1016,8 +1031,8 @@ pub(crate) async fn handle_connect(
     inbound_dir: &std::path::Path,
 ) -> Result<()> {
     let fd = a[0] as i32;
-    let is_datagram = matches!(map.get(&fd), Some(Sock::Datagram { .. }));
-    match map.get(&fd) {
+    let is_datagram = matches!(map.get(&key), Some(Sock::Datagram { .. }));
+    match map.get(&key) {
         None => return notif_continue(lfd, id),
         Some(Sock::Connected(_)) => return notif_respond(lfd, id, -1, libc::EISCONN),
         Some(_) => {}
@@ -1027,7 +1042,7 @@ pub(crate) async fn handle_connect(
         return notif_respond(lfd, id, -1, libc::EAFNOSUPPORT);
     };
     if is_datagram {
-        if let Some(Sock::Datagram { dest, .. }) = map.get_mut(&fd) {
+        if let Some(Sock::Datagram { dest, .. }) = map.get_mut(&key) {
             *dest = Some((ip, port));
         }
         return notif_respond(lfd, id, 0, 0);
@@ -1059,11 +1074,11 @@ pub(crate) async fn handle_connect(
                 bound,
                 options,
                 ..
-            }) = map.remove(&fd)
+            }) = map.remove(&key)
             {
                 // T-063: the entry stays, for the options and the addresses.
                 let entry = crate::sockopt::Connected::new(fd, (ip, port), bound, options);
-                map.insert(fd, Sock::Connected(entry));
+                map.insert(key, Sock::Connected(entry));
                 spawn_relay(async move {
                     let _ = tokio::io::copy_bidirectional(&mut pair, &mut upstream).await;
                 });
@@ -1074,7 +1089,7 @@ pub(crate) async fn handle_connect(
                 eprintln!("podnet-netns: upstream for {target} failed: {e:#}");
             }
             // Keep the error for SO_ERROR, as the kernel does (issue 302).
-            if let Some(Sock::Stream { error, .. }) = map.get_mut(&fd) {
+            if let Some(Sock::Stream { error, .. }) = map.get_mut(&key) {
                 *error = libc::ECONNREFUSED;
             }
             notif_respond(lfd, id, -1, libc::ECONNREFUSED)?;
@@ -1125,11 +1140,10 @@ pub(crate) async fn handle_sendto(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    (map, fd): (&mut HashMap<Key, Sock>, Key),
     dns: &mut FakeDns,
     proxies: &[Proxy],
 ) -> Result<()> {
-    let fd = a[0] as i32;
     let buf = a[1];
     let len = a[2] as usize;
     let name = a[4];
@@ -1197,9 +1211,8 @@ pub(crate) async fn handle_sendmmsg(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
-    mem: RawFd,
-    mem_writable: bool,
-    map: &mut HashMap<i32, Sock>,
+    (mem, mem_writable): (RawFd, bool),
+    (map, fd): (&mut HashMap<Key, Sock>, Key),
     dns: &mut FakeDns,
     proxies: &[Proxy],
 ) -> Result<()> {
@@ -1207,7 +1220,6 @@ pub(crate) async fn handle_sendmmsg(
     // The layouts of the child are those of this target: same ABI.
     const MMSGHDR_SIZE: u64 = std::mem::size_of::<libc::mmsghdr>() as u64;
     const MSG_LEN_OFFSET: u64 = std::mem::offset_of!(libc::mmsghdr, msg_len) as u64;
-    let fd = a[0] as i32;
     let msgvec = a[1];
     let vlen = (a[2] as usize).min(64);
     if !map.contains_key(&fd) {
@@ -1249,11 +1261,11 @@ pub(crate) async fn handle_sendmsg(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    (map, fd): (&mut HashMap<Key, Sock>, Key),
     dns: &mut FakeDns,
     proxies: &[Proxy],
 ) -> Result<()> {
-    match send_msghdr(a[0] as i32, a[1], mem, map, dns, proxies).await? {
+    match send_msghdr(fd, a[1], mem, map, dns, proxies).await? {
         None => notif_continue(lfd, id),
         Some(Ok(bytes)) => notif_respond(lfd, id, bytes as i64, 0),
         Some(Err(errno)) => notif_respond(lfd, id, -1, errno),
@@ -1266,10 +1278,10 @@ const UIO_MAXIOV: usize = 1024;
 /// Send one `struct msghdr` for the child. Return the byte count, or the
 /// errno to give the child. `Ok(None)` means: not a socket of ours.
 pub(crate) async fn send_msghdr(
-    fd: i32,
+    fd: Key,
     msg_ptr: u64,
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    map: &mut HashMap<Key, Sock>,
     dns: &mut FakeDns,
     proxies: &[Proxy],
 ) -> Result<Option<std::result::Result<usize, i32>>> {
@@ -1366,8 +1378,8 @@ pub(crate) async fn send_msghdr(
 }
 
 pub(crate) async fn ensure_udp_relay(
-    map: &mut HashMap<i32, Sock>,
-    fd: i32,
+    map: &mut HashMap<Key, Sock>,
+    fd: Key,
     proxy: &Proxy,
     pair: Arc<tokio::net::UnixDatagram>,
     inbox: Arc<crate::inbox::Inbox>,
@@ -1452,8 +1464,8 @@ pub(crate) async fn ensure_udp_relay(
 /// proxy got the fake IP, which no host has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn relay_datagram(
-    map: &mut HashMap<i32, Sock>,
-    fd: i32,
+    map: &mut HashMap<Key, Sock>,
+    fd: Key,
     proxy: &Proxy,
     (pair, inbox): (Arc<tokio::net::UnixDatagram>, Arc<crate::inbox::Inbox>),
     payload: &[u8],
@@ -1503,9 +1515,8 @@ pub(crate) fn handle_bind(
     id: u64,
     a: [u64; 6],
     mem: RawFd,
-    map: &mut HashMap<i32, Sock>,
+    (map, fd): (&mut HashMap<Key, Sock>, Key),
 ) -> Result<()> {
-    let fd = a[0] as i32;
     match map.get_mut(&fd) {
         Some(Sock::Stream { bound, .. }) => {
             if a[1] != 0 && a[2] >= 4 {
@@ -1533,7 +1544,7 @@ pub(crate) async fn handle_listen(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
     inbound_dir: &std::path::Path,
     pid: u32,
 ) -> Result<()> {
@@ -1541,7 +1552,7 @@ pub(crate) async fn handle_listen(
     let Some(Sock::Stream {
         bound: Some((_, port)),
         ..
-    }) = map.get(&fd)
+    }) = map.get(&key)
     else {
         return notif_continue(lfd, id);
     };
@@ -1565,8 +1576,13 @@ pub(crate) async fn handle_listen(
     } else {
         0
     };
+    // The new end is a new socket: the entry moves to its key.
+    let new_key = crate::fdtable::inode_of(child_end.as_raw_fd())?;
     notif_addfd_setfd(lfd, id, child_end.as_raw_fd(), fd, newfd_flags)?;
     drop(child_end);
+    if let Some(entry) = map.remove(&key) {
+        map.insert(new_key, entry);
+    }
     set_nonblocking(signal.as_raw_fd())?;
     let mut signal = tokio::net::UnixStream::from_std(signal)?;
 
@@ -1586,7 +1602,7 @@ pub(crate) async fn handle_listen(
             }
         }
     });
-    if let Some(Sock::Stream { inbound, .. }) = map.get_mut(&fd) {
+    if let Some(Sock::Stream { inbound, .. }) = map.get_mut(&new_key) {
         *inbound = Some(Inbound {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             drain: Arc::new(drain),
@@ -1646,7 +1662,7 @@ pub(crate) async fn handle_accept(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
-    map: &mut HashMap<i32, Sock>,
+    (map, key): (&mut HashMap<Key, Sock>, Key),
     accept4: bool,
     pid: u32,
 ) -> Result<()> {
@@ -1661,7 +1677,7 @@ pub(crate) async fn handle_accept(
     let (rx, drain) = {
         let Some(Sock::Stream {
             inbound: Some(inc), ..
-        }) = map.get(&fd)
+        }) = map.get(&key)
         else {
             return notif_continue(lfd, id);
         };
@@ -1691,113 +1707,4 @@ pub(crate) async fn handle_accept(
         }
     });
     Ok(())
-}
-
-/// `recvfrom` and `recvmsg` (issue 305): on an unconnected datagram socket of
-/// the program, the supervisor reads the datagram and writes the data and its
-/// logical source address into the memory of the program. Another read
-/// stays direct: a socket that is not ours, a connected socket, or a host
-/// that refuses writes to the memory of the program (the source is then the
-/// `AF_UNIX` address of the socketpair).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_recv(
-    lfd: RawFd,
-    id: u64,
-    a: [u64; 6],
-    mem: RawFd,
-    writable: bool,
-    map: &HashMap<i32, Sock>,
-    recvmsg: bool,
-    pid: u32,
-) -> Result<()> {
-    let fd = a[0] as i32;
-    let inbox = match map.get(&fd) {
-        Some(Sock::Datagram {
-            dest: None, inbox, ..
-        }) if writable => inbox.clone(),
-        _ => return notif_continue(lfd, id),
-    };
-    let flags = if recvmsg { a[2] } else { a[3] } as i32;
-    if flags & libc::MSG_ERRQUEUE != 0 {
-        return notif_continue(lfd, id);
-    }
-    if flags & libc::MSG_OOB != 0 {
-        return notif_respond(lfd, id, -1, libc::EOPNOTSUPP);
-    }
-    let (target, flags) = match crate::inbox::read_target(mem, recvmsg, a) {
-        Ok(t) => t,
-        Err(errno) => return notif_respond(lfd, id, -1, errno),
-    };
-    let peek = flags & libc::MSG_PEEK != 0;
-    match inbox.take(peek) {
-        Ok(Some((data, source))) => {
-            let addr = inbox.address(source);
-            match crate::inbox::complete(mem, pid, &target, flags, &data, &addr) {
-                Ok(value) => notif_respond(lfd, id, value, 0),
-                Err(errno) => notif_respond(lfd, id, -1, errno),
-            }
-        }
-        Ok(None) => {
-            let nonblocking = flags & libc::MSG_DONTWAIT != 0
-                || child_fd_flags(pid, fd).is_some_and(|f| f & libc::O_NONBLOCK != 0);
-            if nonblocking {
-                return notif_respond(lfd, id, -1, libc::EAGAIN);
-            }
-            // A blocking read waits in its own task: the other system calls
-            // of the program go on.
-            tokio::spawn(wait_recv(lfd, id, pid, inbox, target, flags));
-            Ok(())
-        }
-        Err(e) => notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO)),
-    }
-}
-
-/// Wait for a datagram for the blocking read `id`, then answer it. Stop when
-/// the read ends without an answer (a signal, or the exit of the program).
-async fn wait_recv(
-    lfd: RawFd,
-    id: u64,
-    pid: u32,
-    inbox: Arc<crate::inbox::Inbox>,
-    target: crate::inbox::RecvTarget,
-    flags: i32,
-) {
-    let peek = flags & libc::MSG_PEEK != 0;
-    let Ok(ready) = crate::readable_copy(inbox.raw_fd()) else {
-        let _ = notif_respond(lfd, id, -1, libc::EIO);
-        return;
-    };
-    loop {
-        let guard = tokio::select! {
-            guard = ready.readable() => guard.ok(),
-            _ = tokio::time::sleep(Duration::from_millis(200)) => None,
-        };
-        if !notif_id_valid(lfd, id) {
-            return;
-        }
-        match inbox.take(peek) {
-            Ok(Some((data, source))) => {
-                let addr = inbox.address(source);
-                let (mem, _) = open_mem_of(pid);
-                let answer = crate::inbox::complete(mem, pid, &target, flags, &data, &addr);
-                if mem >= 0 {
-                    unsafe { libc::close(mem) };
-                }
-                let _ = match answer {
-                    Ok(value) => notif_respond(lfd, id, value, 0),
-                    Err(errno) => notif_respond(lfd, id, -1, errno),
-                };
-                return;
-            }
-            Ok(None) => {
-                if let Some(mut guard) = guard {
-                    guard.clear_ready();
-                }
-            }
-            Err(e) => {
-                let _ = notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO));
-                return;
-            }
-        }
-    }
 }
