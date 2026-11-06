@@ -61,7 +61,8 @@ socket) when there is one, else to TCP on the host.
 
 Needs: unprivileged user namespaces and `/dev/net/tun`. This backend carries
 TCP and DNS. It does not carry other UDP, and no backend of the pod carries
-ICMP (`ping`).
+ICMP (`ping`) to the internet. The `seccomp` backend answers an echo to the
+gateway of the pod (see below).
 
 A listener of the program (for example `podnet connect -L tcp://127.0.0.1:8080`)
 is in the network namespace of the pod: a process outside the pod does not
@@ -72,7 +73,7 @@ see it. Use a unix socket for it (`-L unix:///path`).
 * A helper thread sets `no_new_privs`, installs a `SECCOMP_RET_USER_NOTIF`
   filter, and forks the child. Thus the supervisor threads have no filter.
 * The filter stops: `socket`, `connect`, `bind`, `listen`, `accept`, `accept4`,
-  `sendto`, `sendmsg`, `sendmmsg`, `recvfrom`, `recvmsg`, `setsockopt`,
+  `sendto`, `sendmsg`, `sendmmsg`, `recvfrom`, `recvmsg`, `recvmmsg`, `setsockopt`,
   `getsockopt`, `getsockname`, `getpeername`, `close`, `io_uring_setup`,
   `io_uring_enter`, `io_uring_register`. A system call of a foreign ABI (i386 or x32 on x86_64)
   gets `ENOSYS`.
@@ -109,8 +110,9 @@ see it. Use a unix socket for it (`-L unix:///path`).
   datagram of 65507 bytes (the header and the payload) gets `EMSGSIZE`, as
   the kernel gives for a datagram that is too large. A `msghdr` with more
   than 1024 iovecs also gets `EMSGSIZE`. A buffer that cannot be read gets
-  `EFAULT`.
-* `recvfrom` and `recvmsg` on an unconnected UDP socket give the source
+  `EFAULT`. A datagram to a name over 255 bytes (the limit of a SOCKS5
+  name) gets `EINVAL`, and the pod writes one log line.
+* `recvfrom`, `recvmsg` and `recvmmsg` on an unconnected UDP socket give the source
   address of the datagram, not the `AF_UNIX` address of the socketpair. The
   source is the address that the program sent to: the fake IP of a name
   also when the proxy answers from the address of the host, and the address
@@ -119,12 +121,23 @@ see it. Use a unix socket for it (`-L unix:///path`).
   memory of the program. `MSG_PEEK`, `MSG_TRUNC` and `MSG_DONTWAIT` work. A
   blocking read waits without stopping the other system calls of the
   program. These reads stay direct: a read of a connected socket, a read of
-  a socket that is not of the pod, `read`, `recvmmsg`, and each read when
+  a socket that is not of the pod, `read`, and each read when
   the host refuses writes to the memory of the program. A `recvfrom` with
   no source buffer (`recv`, the usual read of a TCP program) does not go
   through the supervisor: the kernel runs it. Each other `recvfrom` and each
   `recvmsg` goes through the supervisor, also a read of a TCP socket, which
   the supervisor passes on at once.
+* `recvmmsg` is a series of `recvmsg` reads: each `mmsghdr` gets the real
+  source and its `msg_len`. The call waits for the first message only, as
+  with `MSG_WAITFORONE`, then takes each message that waits. The timeout
+  is not used (the kernel also checks it only after a message).
+* `socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)` (a ping socket) and the
+  `AF_INET6` socket with `IPPROTO_ICMPV6` get their own kind. The proxy
+  carries no ICMP. The supervisor answers an echo request to the gateway of
+  the pod, `10.66.255.254`, with an echo reply from that address. An echo
+  to another destination gets `EACCES`, and each echo of an IPv6 socket
+  gets `EACCES` (the pod has no IPv6 gateway). A message that is not an
+  echo request gets `EINVAL`, as the kernel gives.
 * With a proxy on a unix socket, UDP goes on the control connection first
   (SOCKS5 command `0x83`, "UDP in the stream"). The supervisor then needs no
   kernel UDP socket, and a host that refuses `AF_INET` sockets keeps UDP. A

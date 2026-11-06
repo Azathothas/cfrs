@@ -58,11 +58,12 @@ pub(crate) struct SeccompNotifAddfd {
 }
 
 /// The syscalls the filter stops. Everything else is allowed untouched.
-pub(crate) fn intercepted_syscalls() -> [libc::c_long; 19] {
+pub(crate) fn intercepted_syscalls() -> [libc::c_long; 20] {
     [
         libc::SYS_socket,
         libc::SYS_recvfrom,
         libc::SYS_recvmsg,
+        libc::SYS_recvmmsg,
         libc::SYS_connect,
         libc::SYS_sendto,
         libc::SYS_sendmsg,
@@ -578,6 +579,8 @@ pub(crate) enum Sock {
         /// The receive side: the sources of the datagrams (issue 305).
         inbox: Arc<crate::inbox::Inbox>,
     },
+    /// An ICMP datagram socket (T-066): the pod answers an echo to its gateway.
+    Icmp(crate::icmp::Icmp),
 }
 
 pub(crate) fn run_seccomp(args: Args) -> Result<i32> {
@@ -756,7 +759,10 @@ pub(crate) async fn supervise_seccomp(
             continue;
         }
 
-        let outcome = if nr == libc::SYS_socket as i32 {
+        let icmp = crate::icmp::handle(lfd, id, nr, a, (mem, mem_writable), (&mut map, key));
+        let outcome = if let Some(outcome) = icmp.await {
+            outcome
+        } else if nr == libc::SYS_socket as i32 {
             crate::socket::handle_socket(lfd, id, a, &mut map, verbose)
         } else if nr == libc::SYS_connect as i32 {
             handle_connect(
@@ -812,18 +818,8 @@ pub(crate) async fn supervise_seccomp(
                 req.pid,
             )
             .await
-        } else if nr == libc::SYS_recvfrom as i32 || nr == libc::SYS_recvmsg as i32 {
-            crate::inbox::handle_recv(
-                lfd,
-                id,
-                a,
-                mem,
-                mem_writable,
-                &map,
-                key,
-                nr == libc::SYS_recvmsg as i32,
-                req.pid,
-            )
+        } else if crate::inbox::is_recv(nr) {
+            crate::inbox::handle_recv(lfd, id, a, (mem, mem_writable), &map, key, nr, req.pid)
         } else if nr == libc::SYS_getsockname as i32 || nr == libc::SYS_getpeername as i32 {
             let peer = nr == libc::SYS_getpeername as i32;
             crate::sockopt::handle_sockname(lfd, id, a, mem, mem_writable, (&mut map, key), peer)
@@ -1044,27 +1040,6 @@ async fn connect_loopback(
     Ok(Box::new(stream))
 }
 
-/// The largest datagram that the supervisor reads from the program: the
-/// largest payload of a UDP datagram. A longer length gets `EMSGSIZE`, as
-/// the kernel gives, with no read and no allocation (issue 303).
-pub(crate) const MAX_DATAGRAM: usize = 65535;
-
-/// The largest SOCKS5 UDP datagram (header and payload) that the relay
-/// sends: the largest UDP payload over IPv4. It also fits in a frame of the
-/// UDP in the stream (a `u16` length).
-pub(crate) const MAX_RELAYED: usize = 65507;
-
-/// Whether a payload of `len` bytes to `ip` (or to the name `name`) fits in
-/// one SOCKS5 UDP datagram of the relay.
-pub(crate) fn fits_relay(len: usize, ip: IpAddr, name: Option<&str>) -> bool {
-    let header = match (name, ip) {
-        (Some(name), _) => 4 + 1 + name.len().min(255) + 2,
-        (None, IpAddr::V4(_)) => 10,
-        (None, IpAddr::V6(_)) => 22,
-    };
-    len.saturating_add(header) <= MAX_RELAYED
-}
-
 pub(crate) async fn handle_sendto(
     lfd: RawFd,
     id: u64,
@@ -1111,8 +1086,8 @@ pub(crate) async fn handle_sendto(
         return notif_respond(lfd, id, len as i64, 0);
     }
     let name = dns.name_for_ip(ip).map(str::to_string);
-    if !fits_relay(len, ip, name.as_deref()) {
-        return notif_respond(lfd, id, -1, libc::EMSGSIZE);
+    if let Err(errno) = crate::dgram::fits_relay(len, ip, name.as_deref()) {
+        return notif_respond(lfd, id, -1, errno);
     }
     match relay_datagram(
         map,
@@ -1202,9 +1177,6 @@ pub(crate) async fn handle_sendmsg(
     }
 }
 
-/// The most iovecs in one `msghdr` (`UIO_MAXIOV` of the kernel).
-const UIO_MAXIOV: usize = 1024;
-
 /// Send one `struct msghdr` for the child. Return the byte count, or the
 /// errno to give the child. `Ok(None)` means: not a socket of ours.
 pub(crate) async fn send_msghdr(
@@ -1245,7 +1217,7 @@ pub(crate) async fn send_msghdr(
     // The lengths come from the program: check the count of the iovecs and
     // the sum of their lengths before a read (issue 303). Before, only the
     // first 8 iovecs were read, each up to 64 KiB.
-    if iov_len > UIO_MAXIOV {
+    if iov_len > crate::inbox::UIO_MAXIOV {
         return Ok(Some(Err(libc::EMSGSIZE)));
     }
     let size = std::mem::size_of::<libc::iovec>();
@@ -1287,8 +1259,8 @@ pub(crate) async fn send_msghdr(
         return Ok(Some(Ok(payload.len())));
     }
     let name = dns.name_for_ip(ip).map(str::to_string);
-    if !fits_relay(payload.len(), ip, name.as_deref()) {
-        return Ok(Some(Err(libc::EMSGSIZE)));
+    if let Err(errno) = crate::dgram::fits_relay(payload.len(), ip, name.as_deref()) {
+        return Ok(Some(Err(errno)));
     }
     match relay_datagram(
         map,
@@ -1459,7 +1431,7 @@ pub(crate) fn handle_bind(
             notif_respond(lfd, id, 0, 0)
         }
         // A datagram socket that binds a local port is a socketpair here.
-        Some(Sock::Datagram { .. }) => notif_respond(lfd, id, 0, 0),
+        Some(Sock::Datagram { .. } | Sock::Icmp(_)) => notif_respond(lfd, id, 0, 0),
         // A connected socket is bound already, as in the kernel.
         Some(Sock::Connected(_)) => notif_respond(lfd, id, -1, libc::EINVAL),
         None => notif_continue(lfd, id),

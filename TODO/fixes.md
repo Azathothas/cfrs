@@ -257,6 +257,16 @@ cargo test --test pod_seccomp -- seccomp_icmp_echo_to_the_gateway seccomp_recvmm
 The ICMP test follows the ICMP part of the vn kit's static guest: an echo to the gateway gets an
 answer; an echo to 192.0.2.1 gets `EACCES`.
 
+## Correction
+
+2026-11-06. The three tests are in a new file, `tests/pod_seccomp_dgram.rs`: `tests/pod_seccomp.rs`
+is in the size allowlist with no free lines. Run them with
+`cargo test --test pod_seccomp_dgram`. The seccomp pod has no address of its own; its gateway is
+`10.66.255.254`, the gateway of the netns backend (`TUN_GW`). An IPv6 ICMP socket gets its own
+kind too, but each echo gets `EACCES`: the pod has no IPv6 gateway. `recvmmsg` waits for the first
+message only (as with `MSG_WAITFORONE`); a blocking call of the kernel with no `MSG_WAITFORONE`
+waits for `vlen` messages.
+
 # T-067: seccomp: a slow `connect` dial does not stop the supervisor for the other calls
 
 **Source:** `docs/maintenance.md`, section "Open work" (the bullet of the pod seccomp backend).

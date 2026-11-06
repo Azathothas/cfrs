@@ -6,15 +6,15 @@ use crate::prelude::*;
 // The supervisor puts each datagram for the program into the socketpair of
 // the socket, so `poll`, `epoll` and `read` work on a real descriptor. The
 // kernel gives the `AF_UNIX` address of the socketpair as the source of such
-// a datagram. Thus the supervisor intercepts `recvfrom` and `recvmsg` on an
-// unconnected datagram socket of the program (issue 305): it reads the
-// datagram from its copy of the end of the program, and it writes the data
-// and the logical source address into the memory of the program. A read of a
-// connected socket stays direct.
+// a datagram. Thus the supervisor intercepts `recvfrom`, `recvmsg` and
+// `recvmmsg` (T-066) on an unconnected datagram socket of the program (issue
+// 305): it reads the datagram from its copy of the end of the program, and it
+// writes the data and the logical source address into the memory of the
+// program. A read of a connected socket stays direct.
 //
 // The source of each datagram is kept in a queue, with the length and a hash
-// of the datagram. A read that the supervisor does not see (`read`,
-// `recvmmsg`, a read of a connected socket) takes a datagram with no entry
+// of the datagram. A read that the supervisor does not see (`read`, `recv`,
+// a read of a connected socket) takes a datagram with no entry
 // removed; the next intercepted read finds its entry by the length and the
 // hash, and removes the older entries.
 
@@ -360,7 +360,7 @@ pub(crate) fn complete(
 }
 
 /// The most iovecs in one `msghdr` (`UIO_MAXIOV` of the kernel).
-const UIO_MAXIOV: usize = 1024;
+pub(crate) const UIO_MAXIOV: usize = 1024;
 
 /// Read the target of an intercepted `recvfrom` or `recvmsg` from the
 /// memory of the program. `Err` is the errno for the program.
@@ -423,22 +423,27 @@ pub(crate) fn read_target(
     Ok((target, a[2] as i32))
 }
 
-/// `recvfrom` and `recvmsg` (issue 305): on an unconnected datagram socket of
-/// the program, the supervisor reads the datagram and writes the data and its
-/// logical source address into the memory of the program. Another read
-/// stays direct: a socket that is not ours, a connected socket, or a host
-/// that refuses writes to the memory of the program (the source is then the
-/// `AF_UNIX` address of the socketpair).
+/// Whether the system call `nr` is a read that [`handle_recv`] answers.
+pub(crate) fn is_recv(nr: i32) -> bool {
+    [libc::SYS_recvfrom, libc::SYS_recvmsg, libc::SYS_recvmmsg].contains(&(nr as libc::c_long))
+}
+
+/// `recvfrom`, `recvmsg` and `recvmmsg` (issue 305, T-066): on an
+/// unconnected datagram socket of the program and on an ICMP socket, the
+/// supervisor reads the datagram and writes the data and its logical source
+/// address into the memory of the program. Another read stays direct: a
+/// socket that is not ours, a connected socket, or a host that refuses writes
+/// to the memory of the program (the source is then the `AF_UNIX` address of
+/// the socketpair).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_recv(
     lfd: RawFd,
     id: u64,
     a: [u64; 6],
-    mem: RawFd,
-    writable: bool,
+    (mem, writable): (RawFd, bool),
     map: &HashMap<Key, Sock>,
     key: Key,
-    recvmsg: bool,
+    nr: i32,
     pid: u32,
 ) -> Result<()> {
     let fd = a[0] as i32;
@@ -446,14 +451,19 @@ pub(crate) fn handle_recv(
         Some(Sock::Datagram {
             dest: None, inbox, ..
         }) if writable => inbox.clone(),
+        Some(Sock::Icmp(icmp)) if writable => icmp.inbox.clone(),
         _ => return notif_continue(lfd, id),
     };
+    let recvmsg = nr == libc::SYS_recvmsg as i32;
     let flags = if recvmsg { a[2] } else { a[3] } as i32;
     if flags & libc::MSG_ERRQUEUE != 0 {
         return notif_continue(lfd, id);
     }
     if flags & libc::MSG_OOB != 0 {
         return notif_respond(lfd, id, -1, libc::EOPNOTSUPP);
+    }
+    if nr == libc::SYS_recvmmsg as i32 {
+        return crate::recvmmsg::handle(lfd, id, a, mem, pid, inbox);
     }
     let (target, flags) = match read_target(mem, recvmsg, a) {
         Ok(t) => t,
@@ -476,7 +486,16 @@ pub(crate) fn handle_recv(
             }
             // A blocking read waits in its own task: the other system calls
             // of the program go on.
-            tokio::spawn(wait_recv(lfd, id, pid, inbox, target, flags));
+            let reader = inbox.clone();
+            let attempt = move |mem: RawFd| match reader.take(peek) {
+                Ok(Some((data, source))) => {
+                    let addr = reader.address(source);
+                    complete(mem, pid, &target, flags, &data, &addr).map(Some)
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
+            };
+            tokio::spawn(wait_answer(lfd, id, pid, inbox, attempt));
             Ok(())
         }
         Err(e) => notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO)),
@@ -485,15 +504,12 @@ pub(crate) fn handle_recv(
 
 /// Wait for a datagram for the blocking read `id`, then answer it. Stop when
 /// the read ends without an answer (a signal, or the exit of the program).
-async fn wait_recv(
-    lfd: RawFd,
-    id: u64,
-    pid: u32,
-    inbox: Arc<Inbox>,
-    target: RecvTarget,
-    flags: i32,
-) {
-    let peek = flags & libc::MSG_PEEK != 0;
+/// `attempt` gets the memory of the program; it gives the value of the
+/// call, `None` when no datagram waits, or the errno.
+pub(crate) async fn wait_answer<F>(lfd: RawFd, id: u64, pid: u32, inbox: Arc<Inbox>, mut attempt: F)
+where
+    F: FnMut(RawFd) -> std::result::Result<Option<i64>, i32>,
+{
     let Ok(ready) = crate::readable_copy(inbox.raw_fd()) else {
         let _ = notif_respond(lfd, id, -1, libc::EIO);
         return;
@@ -506,18 +522,14 @@ async fn wait_recv(
         if !notif_id_valid(lfd, id) {
             return;
         }
-        match inbox.take(peek) {
-            Ok(Some((data, source))) => {
-                let addr = inbox.address(source);
-                let (mem, _) = open_mem_of(pid);
-                let answer = complete(mem, pid, &target, flags, &data, &addr);
-                if mem >= 0 {
-                    unsafe { libc::close(mem) };
-                }
-                let _ = match answer {
-                    Ok(value) => notif_respond(lfd, id, value, 0),
-                    Err(errno) => notif_respond(lfd, id, -1, errno),
-                };
+        let (mem, _) = open_mem_of(pid);
+        let answer = attempt(mem);
+        if mem >= 0 {
+            unsafe { libc::close(mem) };
+        }
+        match answer {
+            Ok(Some(value)) => {
+                let _ = notif_respond(lfd, id, value, 0);
                 return;
             }
             Ok(None) => {
@@ -525,8 +537,8 @@ async fn wait_recv(
                     guard.clear_ready();
                 }
             }
-            Err(e) => {
-                let _ = notif_respond(lfd, id, -1, e.raw_os_error().unwrap_or(libc::EIO));
+            Err(errno) => {
+                let _ = notif_respond(lfd, id, -1, errno);
                 return;
             }
         }

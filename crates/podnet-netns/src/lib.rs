@@ -38,12 +38,15 @@ pub mod tailscale;
 pub mod upstream;
 
 mod cli;
+mod dgram;
 mod doctor;
 mod fakedns;
 mod fdtable;
 mod frontdoor;
+mod icmp;
 mod inbox;
 mod netns;
+mod recvmmsg;
 mod seccomp;
 mod socket;
 mod sockopt;
@@ -81,6 +84,7 @@ mod prelude {
     };
 
     pub(crate) use crate::cli::*;
+    pub(crate) use crate::dgram::*;
     pub(crate) use crate::doctor::*;
     pub(crate) use crate::fakedns::*;
     pub(crate) use crate::fdtable::Key;

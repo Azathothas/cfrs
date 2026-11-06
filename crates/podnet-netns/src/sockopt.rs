@@ -64,7 +64,7 @@ fn options_of(entry: &mut Sock) -> Option<&mut Options> {
     match entry {
         Sock::Stream { options, .. } => Some(options),
         Sock::Connected(c) => Some(&mut c.options),
-        Sock::Datagram { .. } => None,
+        Sock::Datagram { .. } | Sock::Icmp(_) => None,
     }
 }
 
@@ -127,14 +127,14 @@ pub(crate) fn handle_getsockopt(
     let value: Option<Vec<u8>> = if level == libc::SOL_SOCKET && optname == libc::SO_TYPE {
         let ty = match entry {
             Sock::Stream { .. } | Sock::Connected(_) => libc::SOCK_STREAM,
-            Sock::Datagram { .. } => libc::SOCK_DGRAM,
+            Sock::Datagram { .. } | Sock::Icmp(_) => libc::SOCK_DGRAM,
         };
         Some(ty.to_ne_bytes().to_vec())
     } else if level == libc::SOL_SOCKET && optname == libc::SO_ERROR {
         // Issue 302: the error of a failed connect, once; then 0.
         let error = match entry {
             Sock::Stream { error, .. } => std::mem::take(error),
-            Sock::Connected(_) | Sock::Datagram { .. } => 0,
+            Sock::Connected(_) | Sock::Datagram { .. } | Sock::Icmp(_) => 0,
         };
         Some(error.to_ne_bytes().to_vec())
     } else {
@@ -180,6 +180,10 @@ pub(crate) fn handle_sockname(
         (Sock::Connected(c), false) => c.local,
         (Sock::Connected(c), true) => c.peer,
         (Sock::Datagram { dest, .. }, _) => dest.unwrap_or(unspecified),
+        (Sock::Icmp(icmp), peer) => match icmp.name(peer) {
+            Some(name) => name,
+            None => return notif_respond(lfd, id, -1, libc::ENOTCONN),
+        },
     };
     let family = if ip.is_ipv4() {
         libc::AF_INET as u16

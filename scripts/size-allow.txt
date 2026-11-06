@@ -4,7 +4,7 @@
 # fewer, remove its line: python3 -I scripts/check-size.py --update.
 # Do not add a file, and do not raise a count: split the file.
 1200 crates/podnet-netns/src/netns.rs
-1640 crates/podnet-netns/src/seccomp.rs
+1612 crates/podnet-netns/src/seccomp.rs
 1040 crates/podnet-netns/src/upstream.rs
 944 src/cloudflare/capnp.rs
 1123 src/cloudflare/http2.rs
