@@ -11,7 +11,8 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
   (T-021). Nobody may create a new `Azathothas/cfrs`: that ends the
   redirects.
 * podnet takes `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` of
-  `PodUtils/podcrates` by the git tag `v0.3.0` (T-137, partial). The
+  `PodUtils/podcrates` by the git tag `v0.4.0`, with `pod-dns` and
+  `pod-services` since bf0c7ca (T-137, partial; COORD issue #320). The
   toolchain is Rust 1.99.1. `release.yml` builds each target but x86-64 and
   ARM64 with cargo-zigbuild, and gets zig through `fetch-zig.sh` of
   podcrates (T-133).
@@ -40,15 +41,7 @@ first, then `CLAUDE.md`, `TODO/PROGRESS.md`, `docs/maintenance.md` and
    podcrates with a file `adoption/podnet/CRATE.patch` at its tag is a take:
    do it first (`docs/maintenance.md`, Shared crates), then write a COORD
    issue in `PodUtils/podnet` with the commit of the take. The next take:
-   podcrates v0.4.0 brings `pod-dns` (`src/resolve.rs`) and `pod-services`
-   (the services of other parties:
-   `docs/reports/services-inventory-2026-11-05.md`) in one patch,
-   `adoption/podnet/pod-dns.patch`, made at podnet 57cfc0b. On
-   2026-11-06 the tag did not exist yet (PodUtils/podcrates#5 waits for
-   the owner). Apply it with `git apply --3way` at the head, run each line
-   of `pod-dns.run` (`cargo update -w` in `fuzz/` too), then
-   `cargo todo remap Cargo.lock` and `sh scripts/agent/check.sh`. Then `pod-ws`
-   (`src/ws.rs`).
+   `pod-ws` (`src/ws.rs`).
 2. Then podnet's own work, in the work order of `TODO/PROGRESS.md`
    (the ruling "Order" of 2026-11-06). Frozen code (the script lists it)
    takes fixes only; write each fix in a COORD issue for podcrates.

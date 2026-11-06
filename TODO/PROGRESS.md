@@ -7,8 +7,8 @@
 - The repository is `PodUtils/podnet`; GitHub redirects `Azathothas/cfrs` (T-021).
 - The ruling "Order" of 2026-11-06 (`docs/decisions.md`): the work on podnet's own code goes on,
   beside the take of the shared crates (T-137). There is no release now.
-- podnet takes `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` (`PodUtils/podcrates` v0.3.0).
-  Next: `pod-dns` (`src/resolve.rs` is frozen), `pod-ws`, `pod-services`. A session reads the state
+- podnet takes `pod-todo`, `pod-core`, `pod-tls`, `pod-proxy`, `pod-dns` and `pod-services`
+  (`PodUtils/podcrates` v0.4.0). Next: `pod-ws` (`src/ws.rs`). A session reads the state
   of podcrates with `sh scripts/agent/podcrates.sh` (`docs/maintenance.md`, Shared crates).
 - Keep this section short. Write the current state only; git keeps the history.
 

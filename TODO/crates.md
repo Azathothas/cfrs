@@ -564,8 +564,12 @@ Done so far:
   rules of the variables, `--proxy`, the resolver chain, the counters, the words of a failure).
   `socks5://` resolves the name in podnet, `socks5h://` sends it. Each `pod-*` dependency names
   `tag = "v0.3.0"` with `version = "0.3.0"`.
-- Next: `pod-dns` (`src/resolve.rs`; the DoH resolvers become a setting, their list goes to
-  `pod-services`), then `pod-ws` (`src/ws.rs`).
+- `pod-dns` and `pod-services` v0.4.0 (bf0c7ca; the patch `adoption/podnet/pod-dns.patch` of
+  podcrates): `src/resolve.rs` is the glue of `pod-dns`; each value of a service of another party
+  is a read of `pod-services` through `src/services.rs`; `report::log_filter` gives `-v` the debug
+  lines of the pod crates. Each `pod-*` dependency names `tag = "v0.4.0"`. The COORD issue is
+  PodUtils/podnet#320.
+- Next: `pod-ws` (`src/ws.rs`).
 - The owner, 2026-11-05 (`docs/decisions.md`, Services crate): the lists of services of other
   parties, their measurements and the watch workflows move to `pod-services`. podnet takes it
   like each other crate.
