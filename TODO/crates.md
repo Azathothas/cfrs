@@ -221,7 +221,7 @@ gh workflow run live.yml
 
 T-047 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -270,7 +270,7 @@ gh workflow run live.yml
 
 T-048 and T-049 are done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -380,7 +380,7 @@ gh workflow run live.yml
 
 T-049, T-050 and T-051 are done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -502,7 +502,7 @@ the podssh session of 2026-11-05 for `PodUtils/podcrates`.
 
 ## Problem
 
-The ruling "Order" of 2026-11-05 holds each plan of the record until the shared crates exist.
+The ruling "Order" of 2026-11-05 held each plan of the record until the shared crates existed; the ruling "Order" of 2026-11-06 lets podnet's own work go on beside the takes.
 podnet copies no code of podssh: the shared crates hold it. The WARP adapter and the Cloudflare
 adapter of podnet move to the shared repository (T-050, T-052).
 

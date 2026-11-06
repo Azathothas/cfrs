@@ -5,31 +5,33 @@
 ## State
 
 - The repository is `PodUtils/podnet`; GitHub redirects `Azathothas/cfrs` (T-021).
-- The ruling "Order" of 2026-11-05 (`docs/decisions.md`): only the move and the take of the
-  shared crates go on now (T-137). There is no release now. Each other entry waits until podnet
-  takes the shared crates.
-- podnet takes each crate of `PodUtils/podcrates` by a git tag, on the day of its release (T-137).
-  Done: `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` (v0.3.0). Next: `pod-dns`, `pod-ws`,
-  `pod-services`.
+- The ruling "Order" of 2026-11-06 (`docs/decisions.md`): the work on podnet's own code goes on,
+  beside the take of the shared crates (T-137). There is no release now.
+- podnet takes `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` (`PodUtils/podcrates` v0.3.0).
+  Next: `pod-dns` (`src/resolve.rs` is frozen), `pod-ws`, `pod-services`. A session reads the state
+  of podcrates with `sh scripts/agent/podcrates.sh` (`docs/maintenance.md`, Shared crates).
 - Keep this section short. Write the current state only; git keeps the history.
 
 ## Work order
 
-1. **Now:** T-137: take each crate of `PodUtils/podcrates` from its release, with the patch of
-   the podcrates session. T-025 waits for the first release (T-023).
-2. **Hold:** each other entry waits until podnet takes the shared crates (T-137). Then write the
-   new order here (T-137, step 4). The order below is the order before the hold; T-137 changes
-   it.
+1. **At each release of podcrates:** T-137, the take of each crate whose hand-off
+   `adoption/podnet/CRATE.patch` is at the tag (`docs/maintenance.md`, Shared crates). It goes
+   before other work.
+2. **podnet's own work:** the order below. Skip an entry whose Correction says that its work is
+   the take of a crate of podcrates: it waits for the release of that crate. An entry that changes
+   frozen code (`sh scripts/agent/podcrates.sh`) waits for the take, except a fix. Add no new
+   hardcoded host or service of another party (`docs/decisions.md`, Services crate).
+3. **Waits for the owner:** the releases T-022, T-023, T-024 and T-025 (no release now).
 
-### The order before the hold
+### The order of podnet's own work
 
 Finish each entry, close it in place, change this page in the same commit, then take the next
 one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes first when it does
 not wait for a larger one.
 
 1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
-2. **M1, the rename:** T-022, T-023 and T-024, then T-025. They wait for the ruling "Order": no
-   release now.
+2. **M1, the rename:** T-022, T-023 and T-024, then T-025, when the owner allows releases
+   again.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
    then T-072, T-075, T-077, T-081, T-071, T-073, T-066, T-067, T-074; then T-065, T-076, T-078,
    T-079, T-080. A fix in a pod backend lands before T-040 starts, or after it ends.
@@ -49,7 +51,8 @@ not wait for a larger one.
     T-123, T-124, T-126, T-127, T-128 and T-129 take `pod-ts`, `pod-egress`, `pod-derp` and
     `pod-acme` (wave 4). T-131 closes with the take of `pod-session`, `pod-e2e` and `pod-identity`.
 
-Cut the next prerelease (`v0.4.0-beta.N`) unattended when a batch is green (`CLAUDE.md`).
+When the owner allows releases again: cut the next prerelease (`v0.4.0-beta.N`) unattended when
+a batch is green (`CLAUDE.md`).
 
 ## Parked entries
 

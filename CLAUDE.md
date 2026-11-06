@@ -48,7 +48,9 @@ These rules apply to each session. Obey them before any other default.
   adapter of podnet; WARP, the relay, pods and virtual networks are others.
   Services: file server, file transfer, git hosting, router.
 - Workspace: `podnet` (root: CLI and library), `crates/podnet-netns` (the
-  pod backends, library only), `crates/podnet-todo` (the record tool). The
+  pod backends, library only), `crates/podnet-todo` (the record tool, a
+  wrapper of `pod-todo`). podnet takes `pod-todo`, `pod-core`, `pod-tls`
+  and `pod-proxy` of `PodUtils/podcrates` by a git tag. The
   target is five crates here (`podnet`, `podnet-core`, `podnet-netns`,
   `podnet-vnet`, `podnet-serve`); the WARP and Cloudflare adapters and the
   shared layers move to the shared repository `PodUtils/podcrates`
@@ -103,9 +105,14 @@ These rules apply to each session. Obey them before any other default.
   Order). When the owner allows releases again: cut the next prerelease
   (`v0.4.0-beta.N`) unattended when a batch of fixes is green: dry run,
   then `publish=vX`, then check `release-proofs.yml`.
-- Order: only the move of the repository goes on now. Each other entry of
-  the record waits until the shared crates exist in `PodUtils/podcrates`
-  (T-137).
+- Order (2026-11-06): the work on podnet's own code goes on, in the work
+  order of `TODO/PROGRESS.md`. The take of each shared crate of
+  `PodUtils/podcrates` goes on beside it (T-137). Code that a crate of
+  podcrates holds or will hold is not developed in podnet: it takes fixes
+  only until podnet takes the crate.
+- Shared crates: a session has no messages from the podcrates session. It
+  reads the state of podcrates with `sh scripts/agent/podcrates.sh` at the
+  start of the session, and follows `docs/maintenance.md`, "Shared crates".
 - `docs/decisions.md` has each ruling with its date, and the questions
   for the owner. When a question is not urgent, make the call, record it
   there, and continue.

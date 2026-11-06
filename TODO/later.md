@@ -219,7 +219,7 @@ python3 -I scripts/check-vendored.py
 
 T-114 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -442,7 +442,7 @@ cargo deny check
 
 T-086 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -571,7 +571,7 @@ cargo deny check
 
 T-137 takes `pod-session`, `pod-e2e` and `pod-identity` (the owner chose the source: a git tag).
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -721,7 +721,7 @@ gh workflow run upstream.yml
 
 T-086 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 

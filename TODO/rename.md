@@ -434,7 +434,7 @@ sh scripts/agent/check.sh
 
 T-016, T-017, T-019 and T-020 are done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The owner allows releases again (`docs/decisions.md`, Order of 2026-11-06: no release now).
 
 ## Correction
 
@@ -493,7 +493,7 @@ curl -fsSL https://raw.githubusercontent.com/PodUtils/podnet/main/scripts/instal
 
 T-021 and T-022 are done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The owner allows releases again (`docs/decisions.md`, Order of 2026-11-06: no release now).
 
 # T-024: The update checks pass against a podnet release again
 
@@ -541,7 +541,7 @@ The live step "update to v0.4.0-beta.1" passes.
 
 T-023 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The owner allows releases again (`docs/decisions.md`, Order of 2026-11-06: no release now).
 
 # T-025: The image `ghcr.io/podutils/podnet` is public
 

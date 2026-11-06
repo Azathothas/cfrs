@@ -24,8 +24,11 @@ state of the open work.
      python3 -c 'import json,sys; [print(r["id"], r["head_sha"][:7], r["name"], r["status"], r["conclusion"]) for r in json.load(sys.stdin)["workflow_runs"]]'
    ```
 
-5. Start the issue watcher (see "The issue loop").
-6. Read `TODO/PROGRESS.md`, "Open work" below, and the open issues on GitHub.
+5. Read the state of `PodUtils/podcrates`: `sh scripts/agent/podcrates.sh`
+   (a new release to take; the frozen files; the COORD issues; see
+   "Shared crates").
+6. Start the issue watcher (see "The issue loop").
+7. Read `TODO/PROGRESS.md`, "Open work" below, and the open issues on GitHub.
 
 ## Tools
 
@@ -40,6 +43,8 @@ state of the open work.
 * **Pushes**: `git push origin main`. The identity comes from
   `.claude/session-start.sh`.
 * **Helper scripts of the agent** (in `scripts/agent/`):
+  * `podcrates.sh`: the state of `PodUtils/podcrates` for podnet (see
+    "Shared crates").
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push,
     `cargo todo check` and `scripts/check-size.py`.
   * `watch-issues.sh [STATE_DIR]`: one line for each new issue
@@ -67,19 +72,64 @@ state of the open work.
   * Run the two watchers under the Monitor tool (a monitor stops after
     30 min: start it again when it ends).
 
-## Talk between sessions
+## Shared crates
 
-* The podcrates session: `send_message` of the Claude Code Remote tools.
-* The fallback: one mailbox for each writer. A session writes only to
-  issues of its own repository, titled `COORD-NNN: SUBJECT`, and reads
-  the issues of the others through `forge.web.pkgforge.dev`. podnet
-  writes to `PodUtils/podnet`; an issue of podcrates for podnet is
-  `PodUtils/podcrates#N`, "COORD-NNN: ... (to podnet)". When no message
-  comes for a long time, read the open issues of podcrates:
-  `curl -qfsS "https://forge.web.pkgforge.dev/github/repos/PodUtils/podcrates/issues?state=open&n=$RANDOM"`.
-* A COORD issue is not a defect: it gets no record entry. Its number goes
-  into `TODO/github.txt`, and its row in `TODO/issues.md` has the entries
-  `none`.
+podnet takes crates of `PodUtils/podcrates` by a git tag (T-137;
+`docs/decisions.md`, Delivery of the shared crates, Who edits a shared
+crate, Order of 2026-11-06). A session has no messages from the podcrates
+session. It reads the state of podcrates itself:
+
+```sh
+sh scripts/agent/podcrates.sh
+```
+
+The script prints the releases of podcrates, the hand-offs for podnet
+(`adoption/podnet/CRATE.patch`), and the files of podnet that each crate
+imported (the blocks `repo PodUtils/podnet` of `crates/*/SOURCES` in
+podcrates), and the open COORD issues.
+
+**Frozen code.** A file that a block of `SOURCES` names, with no line
+`taken`, is frozen: it takes fixes only. For `pod-services` and `pod-core`
+only some lines moved (the values of services of other parties; the date
+of HTTP): the rest of the file is podnet's own code, but add no new
+hardcoded host or service of another party (`docs/decisions.md`, Services
+crate). A fix in frozen code goes into a COORD issue (below), so that
+podcrates ports it.
+
+**The take of a crate**, on the day of its release (the release has the
+file `adoption/podnet/CRATE.patch` at its tag):
+
+```sh
+tag=vX.Y.Z crate=pod-NAME
+curl -qfsSL -o /tmp/p.patch "https://raw.githubusercontent.com/PodUtils/podcrates/$tag/adoption/podnet/$crate.patch"
+curl -qfsSL "https://raw.githubusercontent.com/PodUtils/podcrates/$tag/adoption/podnet/$crate.run"
+git apply --3way /tmp/p.patch
+cargo todo remap Cargo.lock
+cargo update -w --manifest-path fuzz/Cargo.toml
+sh scripts/agent/check.sh
+cargo deny --locked check
+```
+
+Then commit (name T-137 and the crate in the message), push, watch the
+runs (`watch-runs.sh`), and write the take in T-137 (`TODO/crates.md`,
+Correction, "Done so far"). Each `pod-*` dependency of `podnet` and
+`podnet-netns` has `version` beside `git` and `tag` (cargo-deny counts a
+git dependency with no version as a wildcard). When the patch raises
+`rust-version`, run a release dry run (`release.yml` with no input): each
+toolchain of a release must build it. When the patch does not apply,
+apply it at the commit of `adoption/podnet/commit` in a worktree, then
+merge; a conflict in podnet's own code is podnet's to solve.
+
+**Talk with podcrates.** One mailbox for each writer: a session writes
+only to issues of its own repository, titled `COORD-NNN: SUBJECT`, and
+reads the others' through `forge.web.pkgforge.dev`. podnet writes to
+`PodUtils/podnet` ("COORD-NNN: ... (to podcrates)"): the commit of each
+take, each fix of frozen code, a fault of a patch. podcrates writes to
+`PodUtils/podcrates` ("COORD-NNN: ... (to podnet)"). A COORD issue is not
+a defect: it gets no record entry. Its number goes into
+`TODO/github.txt`, and its row in `TODO/issues.md` has the entries
+`none`. When a session can send messages to the podcrates session
+(`send_message`), it can use them as well.
 
 ## The issue loop
 
@@ -193,7 +243,7 @@ At the first stable release (no `-beta.N`), also:
 | `src/manual/` | `podnet man`; `facts.rs` lists each environment variable |
 | `crates/podnet-netns/` | `podnet pod`: the netns, seccomp and raw backends |
 
-Shared crates: `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` come from
+Shared crates (see "Shared crates" above): `pod-todo`, `pod-core`, `pod-tls` and `pod-proxy` come from
 `PodUtils/podcrates` by the git tag `v0.3.0` (T-137). `deny.toml` allows
 that git source. Once podnet takes a crate, a change of its code goes to
 `PodUtils/podcrates` (under its `AGENTS.md`) or into an issue there, not

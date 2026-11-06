@@ -52,7 +52,7 @@ gh workflow run ts-headscale.yml -f plant=unknown-key   # must fail
 
 ## Start condition
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The shared crate that this entry reads has a release in `PodUtils/podcrates` (T-137; `sh scripts/agent/podcrates.sh`).
 
 ## Correction
 

@@ -197,7 +197,7 @@ gh workflow run release.yml --ref main   # the dry run builds the eight targets
 
 T-049 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
@@ -899,7 +899,7 @@ A wrong code fails at both ends. A loopback test runs against a stand-in of the 
 
 T-049 is done.
 
-The shared crates exist in `PodUtils/podcrates` (T-137; the ruling "Order" of 2026-11-05 in `docs/decisions.md`).
+The crate of this entry has a release in `PodUtils/podcrates`, with its hand-off `adoption/podnet/CRATE.patch` (T-137; `docs/maintenance.md`, Shared crates).
 
 ## Correction
 
