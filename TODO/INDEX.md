@@ -34,15 +34,15 @@ M8 Overlays, M9 Later.
 
 ## Entries
 
-**139 entries: 118 open, 1 partial, 7 blocked, 13 done.**
+**139 entries: 117 open, 1 partial, 7 blocked, 14 done.**
 
 | Priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 0 | 0 |
-| P1 | 9 | 1 | 0 | 6 | 16 |
+| P1 | 8 | 1 | 0 | 7 | 16 |
 | P2 | 82 | 0 | 5 | 6 | 93 |
 | P3 | 27 | 0 | 2 | 1 | 30 |
-| **All** | 118 | 1 | 7 | 13 | 139 |
+| **All** | 117 | 1 | 7 | 14 | 139 |
 
 | ID | Priority | Effort | Milestone | Category | Status | Item |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -53,7 +53,7 @@ M8 Overlays, M9 Later.
 | [T-005](deferred.md) | P2 | S | M9 | release | blocked | crates.io: publish the library and the CLI (GitHub #161) |
 | [T-006](deferred.md) | P2 | S | M9 | release | blocked | crates.io: the workspace version and the `podnet-netns` requirement are prereleases (GitHub #222) |
 | [T-007](deferred.md) | P2 | S | M9 | release | blocked | crates.io: the name `cfrs` belongs to another project; choose a package name (GitHub #224) |
-| [T-008](record.md) | P1 | S | M0 | chore | open | A parity snapshot: the command tree, the public items and the test list, with a diff of two runs |
+| [T-008](record.md) | P1 | S | M0 | chore | done | A parity snapshot: the command tree, the public items and the test list, with a diff of two runs |
 | [T-009](record.md) | P1 | S | M0 | chore | done | A size check: at most 800 lines in each source file, with an allowlist that can only shrink |
 | [T-010](record.md) | P1 | M | M0 | chore | open | A layer check: no module refers to a module of a higher layer, with an allowlist of 18 references that can only shrink |
 | [T-011](record.md) | P2 | M | M0 | chore | open | Loopback tests for the commands that have no behaviour test, before the splits |

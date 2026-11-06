@@ -11,7 +11,7 @@ entry of M2 (T-015) is here, because it is a check of the record.
 **Milestone:** M0
 **Priority:** P1
 **Effort:** S
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -45,6 +45,14 @@ sh scripts/agent/parity-snapshot.sh /tmp/after /tmp/before   # exit 0: no item i
 ```
 
 Plant: remove the flag `--run-for` of `tunnel`. The second run must exit 1 and name the flag.
+
+## Done
+
+2026-11-06, commit fb89bef (`T-008: parity-snapshot.sh records the commands, the public items and
+the tests`). `scripts/agent/parity-snapshot.sh` at 3df7fc8: 1,256 command and flag lines, 1,214
+public items, 968 tests. A second run against the first: exit 0. Plant: the long name of
+`--run-for` of `tunnel` changed; the compare exits 1 and names `podnet tunnel --run-for` (and the
+`demo`, `serve` and `share` flags of the same field). The use is in `docs/maintenance.md`, Tools.
 
 # T-009: A size check: at most 800 lines in each source file, with an allowlist that can only shrink
 

@@ -1,6 +1,6 @@
 # Progress
 
-`TODO/INDEX.md` holds 139 entries: 118 open, 1 partial, 7 blocked, 13 done.
+`TODO/INDEX.md` holds 139 entries: 117 open, 1 partial, 7 blocked, 14 done.
 
 ## State
 
@@ -29,7 +29,7 @@ Finish each entry, close it in place, change this page in the same commit, then 
 one. In a milestone: P1, then P2, then P3. At one priority, an S entry goes first when it does
 not wait for a larger one.
 
-1. **M0, the record and the guards:** T-008, T-010, then T-011 and T-012.
+1. **M0, the record and the guards:** T-010, then T-011 and T-012.
 2. **M1, the rename:** T-022, T-023 and T-024, then T-025, when the owner allows releases
    again.
 3. **M5, the fixes, at any time from M0, beside M1 to M4:** T-070, T-063, T-068, T-064, T-069;
