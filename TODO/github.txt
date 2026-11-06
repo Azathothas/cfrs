@@ -24,7 +24,7 @@
 319 issue closed
 320 issue open
 321 issue open
-322 issue open
+322 issue closed
 323 issue closed
 324 issue closed
 325 issue closed
@@ -38,4 +38,4 @@
 333 issue open
 334 issue closed
 335 issue closed
-336 issue open
+336 issue closed

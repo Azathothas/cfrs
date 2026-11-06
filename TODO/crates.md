@@ -572,7 +572,8 @@ Done so far:
 - v0.5.0 (dfd8bd8): each `pod-*` dependency names `tag = "v0.5.0"`; no API change for podnet.
   The COORD issue is PodUtils/podnet#321.
 - v0.6.0 (872a276): `rules()` sets `http_proxy_vars`; `live.yml` checks the DoH server again. The
-  COORD issue is PodUtils/podnet#333.
+  COORD issue is PodUtils/podnet#333. CI run 42263403147 at 872a276 and live run 42265938003 at 4094fee:
+  success.
 - Next: `pod-ws` (`src/ws.rs`).
 - The owner, 2026-11-05 (`docs/decisions.md`, Services crate): the lists of services of other
   parties, their measurements and the watch workflows move to `pod-services`. podnet takes it

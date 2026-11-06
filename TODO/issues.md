@@ -21,7 +21,7 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #319 | [gh action] requested: a run of ci.yml | closed (a request of a run; run 42183709673) | none |
 | #320 | COORD-002: podnet took pod-dns and pod-services of v0.4.0 | open (a COORD issue between sessions) | T-137 |
 | #321 | COORD-003: podnet moved each podcrates tag to v0.5.0 | open (a COORD issue between sessions) | T-137 |
-| #322 | COORD-004: pod-dns: name the DoH server in the debug line | open (a COORD issue between sessions) | T-137 |
+| #322 | COORD-004: pod-dns: name the DoH server in the debug line | closed (pod-dns v0.6.0; live run 42265938003 at 4094fee) | T-137 |
 | #323 | [gh action] requested: a run of ci.yml | closed (run 42222918056 at 61c70aa: success) | none |
 | #324 | [gh action] requested: a run of live.yml | closed (run 42222905277 at 61c70aa: failure, T-141) | none |
 | #325 | live: two runs in a row failed | closed (live run 42226303514 at 3db91c7) | T-141 |
@@ -35,6 +35,6 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #333 | COORD-005: podnet moved each podcrates tag to v0.6.0 | open (a COORD issue between sessions) | T-137 |
 | #334 | [gh action] requested: a run of ci.yml and live.yml | closed (ci 42263403147 at 872a276: success; live did not start) | none |
 | #335 | [gh action] requested: a run of live.yml | closed (live 42264247691 at 872a276: failure, the form of the grep; 4094fee) | none |
-| #336 | [gh action] requested: a run of live.yml | open (a request of a run) | none |
+| #336 | [gh action] requested: a run of live.yml | closed (live 42265938003 at 4094fee: success) | none |
 
 #312 to #315 and #318 are pull requests.
