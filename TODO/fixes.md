@@ -306,7 +306,7 @@ status`) is T-140: `Live::data_path` gives the value.
 **Milestone:** M5
 **Priority:** P1
 **Effort:** L
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -341,6 +341,18 @@ The first test asserts that a SYN-ACK to the probe port is not written to the TU
 ## Start condition
 
 T-068 is done.
+
+## Done
+
+2026-11-06, commit 7382ff4 (`T-069: warp tun: a SYN probe of the session, and
+--session-max-age`). `src/warp/tun/probe.rs`: the SYN from the tunnel address and port 61999 to
+the target of `--probe` (an IPv4 target; an IPv6 target gives no probe), the filter of its answer,
+and the RST for a SYN-ACK. `tun::run` sends the SYN each 30 s, takes the answer out before the TUN,
+and ends after 3 probes with no answer; it also ends at `--session-max-age`. A TUN of `from_fd`
+(the raw pod) has no address and no probe. `warp_tun_probe_takes_its_answer_out` and
+`warp_tun_probe_ends_a_dead_session` test the probe; `warp_tun_takes_session_max_age` is in
+`tests/commands.rs` (`tests/cli.rs` cannot grow). Control: before, `warp tun --session-max-age 60`
+exits 64. No live run: this host has no TUN device for a test.
 
 # T-070: `warp exec`, `warp shell` and `warp nc` find a running `warp up` with another state directory
 
