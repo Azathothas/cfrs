@@ -10,7 +10,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +38,71 @@ pub trait Closable: Send + Sync + 'static {
     fn renew_due(&self) -> bool {
         false
     }
+    /// The TCP probe of the data path (T-068): whether a TCP connect to
+    /// `target` through the session succeeds within `limit`.
+    fn probe_tcp(&self, _target: std::net::SocketAddr, _limit: Duration) -> ProbeFuture<'_> {
+        Box::pin(async { true })
+    }
+}
+
+/// The result of [`Closable::probe_tcp`].
+pub type ProbeFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+
+/// The TCP probe of the data path (T-068). A MASQUE session can carry ICMP
+/// and UDP but no TCP; the pongs and the UDP replies keep it alive. Each
+/// `every`, a task connects to `target` through the session. After
+/// `misses` failures in a row, the data path is `tcp-dead`, and a new
+/// session takes the new flows (the path of the relay budget).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Probe {
+    pub target: std::net::SocketAddr,
+    pub every: Duration,
+    pub limit: Duration,
+    pub misses: u32,
+}
+
+/// The default probe: TCP to 1.1.1.1:443 each 30 s, 5 s each, 3 misses.
+pub const DEFAULT_PROBE: Probe = Probe {
+    target: std::net::SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+        443,
+    ),
+    every: Duration::from_secs(30),
+    limit: Duration::from_secs(5),
+    misses: 3,
+};
+
+static PROBE: std::sync::Mutex<Option<Probe>> = std::sync::Mutex::new(Some(DEFAULT_PROBE));
+
+/// `--probe IP:PORT` or `--probe off` (T-068).
+pub fn parse_probe(spec: &str) -> Result<Option<Probe>> {
+    if spec == "off" {
+        return Ok(None);
+    }
+    match spec.parse() {
+        Ok(target) => Ok(Some(Probe {
+            target,
+            ..DEFAULT_PROBE
+        })),
+        Err(_) => bail!("--probe={spec:?}: give IP:PORT or off"),
+    }
+}
+
+/// Set the probe of the sessions of this process (None: no probe).
+pub fn set_probe(probe: Option<Probe>) {
+    *PROBE.lock().unwrap_or_else(|e| e.into_inner()) = probe;
+}
+
+/// The option `--probe` for `probe` (warp up gives it to its child).
+pub fn probe_arg(probe: Option<Probe>) -> String {
+    format!(
+        "--probe={}",
+        probe.map_or("off".into(), |p| p.target.to_string())
+    )
+}
+
+fn probe() -> Option<Probe> {
+    *PROBE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Closable for super::WarpStack {
@@ -52,6 +117,14 @@ impl Closable for super::WarpStack {
     }
     fn renew_due(&self) -> bool {
         super::WarpStack::renew_due(self)
+    }
+    fn probe_tcp(&self, target: std::net::SocketAddr, limit: Duration) -> ProbeFuture<'_> {
+        Box::pin(async move {
+            matches!(
+                tokio::time::timeout(limit, self.tcp_connect(target)).await,
+                Ok(Ok(_))
+            )
+        })
     }
 }
 
@@ -120,7 +193,9 @@ pub struct Live<T: Closable> {
     current: Mutex<Arc<T>>,
     generation: watch::Sender<u64>,
     reconnects: AtomicU32,
-    watcher: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The TCP probe found no data path (T-068): renew the session.
+    tcp_dead: AtomicBool,
+    watcher: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl<T: Closable> Live<T> {
@@ -133,6 +208,7 @@ impl<T: Closable> Live<T> {
             Duration::from_secs(30),
             max_age(),
         )
+        .probed(probe())
     }
 
     /// [`Live::start`] with the first and the largest delay of the backoff.
@@ -153,7 +229,8 @@ impl<T: Closable> Live<T> {
             current: Mutex::new(Arc::new(first)),
             generation,
             reconnects: AtomicU32::new(0),
-            watcher: std::sync::Mutex::new(None),
+            tcp_dead: AtomicBool::new(false),
+            watcher: std::sync::Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&live);
         let task = tokio::spawn(async move {
@@ -170,32 +247,43 @@ impl<T: Closable> Live<T> {
                 // the open flows go on in the old one, which closes after
                 // RENEW_DRAIN. No gap: the old one stays current until the
                 // new one is open.
+                // T-068: the same path when the TCP probe found no data path.
                 let due = {
                     let current = live.current.lock().await;
-                    (!current.is_closed() && current.renew_due()).then(|| current.clone())
+                    let reason = if current.renew_due() {
+                        "relay-budget"
+                    } else {
+                        "tcp-probe"
+                    };
+                    (!current.is_closed()
+                        && (current.renew_due() || live.tcp_dead.load(Ordering::SeqCst)))
+                    .then(|| (current.clone(), reason))
                 };
-                if let Some(old) = due {
+                if let Some((old, reason)) = due {
                     match connect().await {
                         Ok(next) => {
                             *live.current.lock().await = Arc::new(next);
+                            live.tcp_dead.store(false, Ordering::SeqCst);
                             opened = tokio::time::Instant::now();
                             let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
                             live.generation.send_modify(|g| *g += 1);
                             info!(
                                 reconnects = n,
+                                reason,
                                 drain_s = RENEW_DRAIN.as_secs(),
-                                "a new WARP session takes the new flows before the relay limit; the old one carries its open flows"
+                                "a new WARP session takes the new flows; the old one carries its open flows"
                             );
                             tokio::spawn(async move {
                                 tokio::time::sleep(RENEW_DRAIN).await;
-                                old.close("the relay budget: the drain ended");
+                                old.close(&format!("{reason}: the drain ended"));
                             });
                             delay = Duration::ZERO;
                         }
                         Err(err) => {
                             warn!(
                                 error = %format!("{err:#}"),
-                                "the WARP session nears the relay limit; a new one failed, podnet tries again"
+                                reason,
+                                "the WARP session must be renewed; a new one failed, podnet tries again"
                             );
                             tokio::time::sleep(base.max(Duration::from_secs(1))).await;
                         }
@@ -232,6 +320,7 @@ impl<T: Closable> Live<T> {
                     Ok(next) => {
                         *live.current.lock().await = Arc::new(next);
                         opened = tokio::time::Instant::now();
+                        live.tcp_dead.store(false, Ordering::SeqCst);
                         let n = live.reconnects.fetch_add(1, Ordering::SeqCst) + 1;
                         live.generation.send_modify(|g| *g += 1);
                         info!(reconnects = n, "a new WARP session is open");
@@ -252,8 +341,66 @@ impl<T: Closable> Live<T> {
                 }
             }
         });
-        *live.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
+        live.watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(task);
         live
+    }
+
+    /// Start the TCP probe of the data path (T-068) on each session.
+    pub fn probed(self: Arc<Self>, probe: Option<Probe>) -> Arc<Self> {
+        let Some(probe) = probe else { return self };
+        let weak = Arc::downgrade(&self);
+        let task = tokio::spawn(async move {
+            let mut missed = 0u32;
+            let mut generation = 0u64;
+            loop {
+                tokio::time::sleep(probe.every).await;
+                let Some(live) = weak.upgrade() else { return };
+                let current = live.current.lock().await.clone();
+                let now = *live.generation.borrow();
+                if now != generation {
+                    generation = now;
+                    missed = 0;
+                }
+                if current.is_closed() || live.tcp_dead.load(Ordering::SeqCst) {
+                    continue;
+                }
+                drop(live);
+                let ok = current.probe_tcp(probe.target, probe.limit).await;
+                let Some(live) = weak.upgrade() else { return };
+                if ok || *live.generation.borrow() != generation {
+                    missed = 0;
+                    continue;
+                }
+                missed += 1;
+                warn!(target = %probe.target, missed, "the TCP probe of the WARP session failed");
+                if missed >= probe.misses {
+                    warn!(
+                        reason = "tcp-probe",
+                        "the WARP session carries no TCP; a new session takes the new flows"
+                    );
+                    live.tcp_dead.store(true, Ordering::SeqCst);
+                    missed = 0;
+                }
+            }
+        });
+        self.watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(task);
+        self
+    }
+
+    /// The state of the data path: `ok`, or `tcp-dead` until a new session
+    /// opens (T-068).
+    pub fn data_path(&self) -> &'static str {
+        if self.tcp_dead.load(Ordering::SeqCst) {
+            "tcp-dead"
+        } else {
+            "ok"
+        }
     }
 
     /// The current session. While it is closed, wait for the new one (at
@@ -291,11 +438,11 @@ impl<T: Closable> Live<T> {
 
 impl<T: Closable> Drop for Live<T> {
     fn drop(&mut self) {
-        if let Some(task) = self
+        for task in self
             .watcher
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
+            .drain(..)
         {
             task.abort();
         }
@@ -319,7 +466,6 @@ impl super::WarpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
 
     struct Fake {
         id: u32,
@@ -526,5 +672,90 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("no new session"), "{err:#}");
+    }
+
+    /// A session that carries no TCP: its probe fails.
+    struct Silenced {
+        id: u32,
+        closed: AtomicBool,
+        tcp: bool,
+        probes: Arc<AtomicU32>,
+    }
+
+    impl Closable for Silenced {
+        fn is_closed(&self) -> bool {
+            self.closed.load(Ordering::SeqCst)
+        }
+        fn close(&self, _why: &str) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        fn probe_tcp(&self, _target: std::net::SocketAddr, _limit: Duration) -> ProbeFuture<'_> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            let tcp = self.tcp;
+            Box::pin(async move { tcp })
+        }
+    }
+
+    /// T-068: a session that carries ICMP and UDP but no TCP stays open.
+    /// After three failed probes, a new session takes the new flows, and
+    /// the old one drains.
+    #[tokio::test(start_paused = true)]
+    async fn warp_probe_renews_a_session_with_no_tcp() {
+        let probes = Arc::new(AtomicU32::new(0));
+        let opens = Arc::new(AtomicU32::new(1));
+        let connect: Connect<Silenced> = {
+            let (opens, probes) = (opens.clone(), probes.clone());
+            Box::new(move || {
+                let (opens, probes) = (opens.clone(), probes.clone());
+                Box::pin(async move {
+                    let id = opens.fetch_add(1, Ordering::SeqCst) + 1;
+                    Ok(Silenced {
+                        id,
+                        closed: AtomicBool::new(false),
+                        tcp: true,
+                        probes,
+                    })
+                })
+            })
+        };
+        let first = Silenced {
+            id: 1,
+            closed: AtomicBool::new(false),
+            tcp: false,
+            probes: probes.clone(),
+        };
+        let live = Live::start_with(
+            first,
+            connect,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        )
+        .probed(Some(DEFAULT_PROBE));
+        let old = live.get().await.unwrap();
+        // Two misses: the session stays.
+        tokio::time::sleep(DEFAULT_PROBE.every * 2 + Duration::from_secs(1)).await;
+        assert_eq!(live.get_within(Duration::ZERO).await.unwrap().id, 1);
+        assert_eq!(live.data_path(), "ok");
+        // The third miss: a new session takes the new flows.
+        tokio::time::sleep(DEFAULT_PROBE.every + Duration::from_secs(1)).await;
+        assert_eq!(live.get_within(Duration::ZERO).await.unwrap().id, 2);
+        assert_eq!(live.reconnects(), 1);
+        assert_eq!(live.data_path(), "ok");
+        assert!(!old.is_closed(), "the open flows go on in the old session");
+        tokio::time::sleep(RENEW_DRAIN + Duration::from_secs(1)).await;
+        assert!(old.is_closed(), "the old session closes after the drain");
+        // The new session passes its probes: no other renewal.
+        tokio::time::sleep(DEFAULT_PROBE.every * 4).await;
+        assert_eq!(live.reconnects(), 1);
+        assert!(probes.load(Ordering::SeqCst) >= 6);
+    }
+
+    #[test]
+    fn the_probe_option() {
+        assert_eq!(parse_probe("off").unwrap(), None);
+        let p = parse_probe("9.9.9.9:53").unwrap().unwrap();
+        assert_eq!(p.target, "9.9.9.9:53".parse().unwrap());
+        assert_eq!(p.misses, 3);
+        assert!(parse_probe("one.one.one.one:443").is_err());
     }
 }

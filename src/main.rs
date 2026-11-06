@@ -2267,6 +2267,9 @@ fn warp_global_args(args: &WarpArgs) -> Vec<String> {
         argv.push("--session-max-age".into());
         argv.push(secs.to_string());
     }
+    if let Some(probe) = args.probe {
+        argv.push(podnet::warp::live::probe_arg(probe));
+    }
     for (flag, value) in [
         ("--device-name", &args.device_name),
         ("--device-model", &args.device_model),
@@ -3830,22 +3833,6 @@ fn plain_value(value: &serde_json::Value) -> String {
     }
 }
 
-fn warp_plus_label(account: &serde_json::Value) -> &'static str {
-    let kind = account
-        .get("account_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let premium = account
-        .get("premium_data")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    if premium > 0 || !(kind.is_empty() || kind == "free") {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 /// After a fetch of the public URL: one JSON line with --json. `dns` is
 /// the step of the resolver chain that resolves the name (issue 94).
 fn verified(show: Show, url: &str, dns: &str) {
@@ -4082,6 +4069,10 @@ struct WarpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     session_max_age: Option<u64>,
+    /// The TCP probe of the data path: IP:PORT or off (default 1.1.1.1:443). After 3
+    /// failed connects (one each 30 s), a new session takes the new flows. Not for warp tun.
+    #[arg(long, value_name = "IP:PORT|off", global = true, value_parser = podnet::warp::live::parse_probe)]
+    probe: Option<Option<podnet::warp::live::Probe>>,
     /// Do not try the WebSocket relay (--relay, PODNET_RELAY) when the direct
     /// MASQUE path fails. Without it, podnet tries the relay: the TLS to the
     /// front door stays end to end in the WebSocket.
@@ -4687,6 +4678,9 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
         }
         podnet::warp::live::set_max_age(Some(Duration::from_secs(secs)));
     }
+    if let Some(probe) = args.probe {
+        podnet::warp::live::set_probe(probe);
+    }
     // Issue 145: the resolvers of the tunnel.
     let resolvers = podnet::warp::proxy::parse_resolvers(&args.resolver).fault(Fault::Usage)?;
     podnet::warp::proxy::set_resolvers(resolvers);
@@ -4990,7 +4984,7 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             // Issue 116: the instance of warp up, with the account.
             let instance = podnet::warp::up::instance_state();
             if json {
-                let active = warp_plus_label(&account) == "yes";
+                let active = podnet::warp::identity::warp_plus_label(&account) == "yes";
                 if let Some(doc) = account.as_object_mut() {
                     doc.insert("instance".into(), instance);
                     // Issue 178: warp_plus of the API is not the state of
@@ -5004,7 +4998,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             println!("warp up     {}", podnet::warp::up::instance_line(&instance));
             let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("type        {}", field("account_type"));
-            println!("warp+       {}", warp_plus_label(&account));
+            println!(
+                "warp+       {}",
+                podnet::warp::identity::warp_plus_label(&account)
+            );
             println!("premium     {}", field("premium_data"));
             println!("quota       {}", field("quota"));
         }
@@ -5036,7 +5033,10 @@ async fn warp(mut args: WarpArgs) -> Result<()> {
             let field = |name: &str| account.get(name).map(plain_value).unwrap_or_default();
             println!("license     set");
             println!("type        {}", field("account_type"));
-            println!("warp+       {}", warp_plus_label(&account));
+            println!(
+                "warp+       {}",
+                podnet::warp::identity::warp_plus_label(&account)
+            );
         }
         WarpCommand::Rotate => {
             client.rotate_key().await?;
@@ -7073,9 +7073,9 @@ mod tests {
         assert_eq!(plain_value(&serde_json::json!(5)), "5");
         assert_eq!(plain_value(&serde_json::Value::Null), "-");
         let free = serde_json::json!({"account_type": "free", "warp_plus": true});
-        assert_eq!(warp_plus_label(&free), "no");
+        assert_eq!(podnet::warp::identity::warp_plus_label(&free), "no");
         let plus = serde_json::json!({"account_type": "limited", "premium_data": 10});
-        assert_eq!(warp_plus_label(&plus), "yes");
+        assert_eq!(podnet::warp::identity::warp_plus_label(&plus), "yes");
     }
 
     #[test]

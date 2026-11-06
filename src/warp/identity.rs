@@ -152,6 +152,24 @@ pub fn spki_from_cert(cert_der: &[u8]) -> Result<Vec<u8>> {
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
+/// `yes` when the account of `warp status` has WARP+ (a paid account
+/// type, or premium data), else `no`.
+pub fn warp_plus_label(account: &serde_json::Value) -> &'static str {
+    let kind = account
+        .get("account_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let premium = account
+        .get("premium_data")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if premium > 0 || !(kind.is_empty() || kind == "free") {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 /// The class of a failed `warp license` (issue 173): the API refused the
 /// key (HTTP 4xx, other than 401, 403 and 429) is a usage error; else the
 /// service is not available.
