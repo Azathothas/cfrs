@@ -217,7 +217,7 @@ work" (the bullet of the pod seccomp backend).
 **Milestone:** M5
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
@@ -266,6 +266,19 @@ is in the size allowlist with no free lines. Run them with
 kind too, but each echo gets `EACCES`: the pod has no IPv6 gateway. `recvmmsg` waits for the first
 message only (as with `MSG_WAITFORONE`); a blocking call of the kernel with no `MSG_WAITFORONE`
 waits for `vlen` messages.
+
+## Done
+
+2026-11-06, commit f50da2e (`T-066: seccomp: ICMP datagram sockets, recvmmsg, and UDP names over
+255 bytes`). An ICMP datagram socket is the entry `Sock::Icmp` (`crates/podnet-netns/src/icmp.rs`):
+an echo to `10.66.255.254` gets an echo reply from that address, another destination gets
+`EACCES`. The filter stops `recvmmsg`; the supervisor writes the real source and `msg_len` of each
+message (`crates/podnet-netns/src/recvmmsg.rs`). A UDP name over 255 bytes gets `EINVAL` and one
+log line (`crates/podnet-netns/src/dgram.rs`). `cargo test --test pod_seccomp_dgram`: 3 passed
+(`seccomp_icmp_echo_to_the_gateway`, `seccomp_recvmmsg_gets_the_real_source`,
+`seccomp_long_udp_name_is_refused`). Control on the code before the fix: 0 passed, 3 failed (no
+echo answer; source family 0 and `msg_namelen` 0; the long name was sent).
+`sh scripts/agent/check.sh`: exit 0.
 
 # T-067: seccomp: a slow `connect` dial does not stop the supervisor for the other calls
 
