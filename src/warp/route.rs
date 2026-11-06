@@ -559,8 +559,7 @@ pub fn nameservers() -> Vec<std::net::IpAddr> {
 /// The plain DNS of 1.1.1.1 and 1.0.0.1: the endpoints of the role `udp` of
 /// `cloudflare-dns` (`pod-services`).
 pub fn nameservers_of_service() -> Vec<std::net::IpAddr> {
-    let endpoints = crate::services::endpoints_of(crate::services::ONE, "udp");
-    endpoints.iter().flat_map(|e| e.ip_addrs()).collect()
+    crate::services::ips_of(crate::services::ONE, "udp")
 }
 
 /// The text of a resolv.conf with `servers`.

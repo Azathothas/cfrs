@@ -25,6 +25,16 @@ pub fn endpoints_of(id: &str, role: &str) -> Vec<&'static Endpoint> {
     all.filter(|e| e.role() == Some(role)).collect()
 }
 
+/// The addresses of the endpoints of the role `role` of the service `id`.
+/// An endpoint can give its address as its host, with no list of
+/// addresses: `socket_addrs` takes the host then; `ip_addrs` does not.
+pub fn ips_of(id: &str, role: &str) -> Vec<std::net::IpAddr> {
+    let addrs = endpoints_of(id, role)
+        .into_iter()
+        .flat_map(|e| e.socket_addrs());
+    addrs.map(|a| a.ip()).collect()
+}
+
 /// The text fact `name` of the service `id`.
 pub fn text(id: &str, name: &str) -> &'static str {
     get(id)
@@ -164,5 +174,20 @@ pub mod warp {
     /// Cloudflare reads it as a hint of routing. The fact `connect-uri`.
     pub fn connect_uri() -> &'static str {
         text(WARP, "connect-uri")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The fallback nameservers of `warp tun` and the nameserver of the raw
+    /// pod (live run 42222905277: an empty list made warp run --backend
+    /// netns-raw panic after the take of pod-services).
+    // An endpoint of the role udp gives its address as its host, with no
+    // list of addresses: socket_addrs takes the host, ip_addrs does not.
+    #[test]
+    fn the_nameservers_of_the_service_are_1_1_1_1_and_1_0_0_1() {
+        let want: Vec<std::net::IpAddr> =
+            vec!["1.1.1.1".parse().unwrap(), "1.0.0.1".parse().unwrap()];
+        assert_eq!(crate::warp::route::nameservers_of_service(), want);
     }
 }
