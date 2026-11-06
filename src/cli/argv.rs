@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-use crate::Cli;
+use crate::cli::Cli;
 
 /// `--log-format json` (issue 181): the last error line is JSON too.
 pub(crate) static LOG_JSON: std::sync::atomic::AtomicBool =

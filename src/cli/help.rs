@@ -5,7 +5,7 @@
 use clap::CommandFactory as _;
 
 use crate::cli::argv::{CLOUDFLARED_FLAGS, LOG_JSON};
-use crate::Cli;
+use crate::cli::Cli;
 
 /// The commands of the top help, by purpose (E1). Each subcommand is in
 /// one group; a test checks it.

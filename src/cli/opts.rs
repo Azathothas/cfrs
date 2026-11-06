@@ -11,7 +11,8 @@ use podnet::exit::{Fault, ResultExt};
 use podnet::ingress::Service;
 use podnet::{Protocol, Transport};
 
-use crate::{Cli, Command, NetCommand, RelayCommand, WarpCommand};
+use crate::cli::{Cli, Command};
+use crate::{NetCommand, RelayCommand, WarpCommand};
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct TunnelOpts {
