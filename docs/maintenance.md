@@ -49,6 +49,16 @@ state of the open work.
     "Shared crates").
   * `check.sh [notest]`: the three checks of `CLAUDE.md` before each push,
     `cargo todo check` and `scripts/check-size.py`.
+  * `parity-snapshot.sh DIR [BEFORE [MAP]]`: the parity facts in three
+    sorted files of `DIR`: `commands.txt` (each command and flag of
+    `podnet man --json`), `items.txt` (the public items of `cargo doc`) and
+    `tests.txt` (`cargo test --workspace -- --list`). With `BEFORE`, it
+    prints each lost line and exits 1; a new line is not a fault. `MAP`
+    has one `OLD NEW` pair on each line; each `OLD` in a line of `BEFORE`
+    becomes `NEW` before the compare. Make a snapshot before each large
+    move (T-008) and compare after it. `PARITY_SKIP="items tests"` skips
+    parts; `PARITY_BIN` names a built binary. One run takes about 2
+    minutes.
   * `watch-issues.sh [STATE_DIR]`: one line for each new issue
     (`new-issues.py` reads the issue list). It keeps a copy of each issue
     in `STATE_DIR/issues/NUMBER.json`. GitHub deletes the issues of a
