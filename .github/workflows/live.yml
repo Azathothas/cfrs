@@ -270,16 +270,21 @@ jobs:
           sudo rm -f /etc/resolv.conf
           echo "nameserver 192.0.2.1" | sudo tee /etc/resolv.conf > /dev/null
           if timeout 15 getent hosts api.trycloudflare.com; then echo "the system resolver still answers"; exit 1; fi
-          RUST_LOG=podnet=debug sh scripts/live-run.sh dns timeout 180 target/release/podnet demo --exit-on-verify --protocol http2 ||
+          # The resolver is pod-dns (T-137): its debug line "resolved" names
+          # the source of the answer (source="doh").
+          RUST_LOG=podnet=debug,pod_dns=debug sh scripts/live-run.sh dns timeout 180 target/release/podnet demo --exit-on-verify --protocol http2 ||
             { tail -40 dns.err; exit 1; }
-          grep 'podnet::resolve' dns.err | head -10 || true
-          grep -q 'step="doh"' dns.err
+          grep 'pod_dns' dns.err | head -10 || true
+          grep -q 'source="doh"' dns.err
           sudo iptables -A OUTPUT -d 1.1.1.1 -j REJECT
           sudo iptables -A OUTPUT -d 1.0.0.1 -j REJECT
-          RUST_LOG=podnet=debug sh scripts/live-run.sh dns2 timeout 240 target/release/podnet demo --exit-on-verify --protocol http2 ||
+          # With the servers of 1.1.1.1 refused, the DoH answer comes from
+          # another operator. pod-dns v0.5.0 does not log the server; the
+          # check of the server comes back with COORD-004 (PodUtils/podnet).
+          RUST_LOG=podnet=debug,pod_dns=debug sh scripts/live-run.sh dns2 timeout 240 target/release/podnet demo --exit-on-verify --protocol http2 ||
             { tail -40 dns2.err; exit 1; }
-          grep 'podnet::resolve' dns2.err | head -10 || true
-          grep -q 'server="https://8\.8\.' dns2.err
+          grep 'pod_dns' dns2.err | head -10 || true
+          grep -q 'source="doh"' dns2.err
       - name: A wrong --resolve pin fails at the TLS name check
         timeout-minutes: 2
         run: |
