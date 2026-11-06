@@ -36,5 +36,6 @@ or in `docs/reports/`. `TODO/RULES.md` gives the rules.
 | #334 | [gh action] requested: a run of ci.yml and live.yml | closed (ci 42263403147 at 872a276: success; live did not start) | none |
 | #335 | [gh action] requested: a run of live.yml | closed (live 42264247691 at 872a276: failure, the form of the grep; 4094fee) | none |
 | #336 | [gh action] requested: a run of live.yml | closed (live 42265938003 at 4094fee: success) | none |
+| #337 | [gh action] requested: a run of ci.yml and live.yml | open (a request of a run) | none |
 
 #312 to #315 and #318 are pull requests.
