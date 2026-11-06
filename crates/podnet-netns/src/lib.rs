@@ -38,6 +38,7 @@ pub mod tailscale;
 pub mod upstream;
 
 mod cli;
+mod connect;
 mod dgram;
 mod doctor;
 mod fakedns;

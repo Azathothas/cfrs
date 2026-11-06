@@ -316,6 +316,16 @@ cargo test --test pod_seccomp -- seccomp_a_slow_dial_does_not_stop_other_calls
 An upstream stand-in answers after 2 s. A second thread of the program calls `getsockname`, and
 it returns in less than 100 ms.
 
+## Correction
+
+- 2026-11-06: `tests/pod_seccomp.rs` is at its size limit (`scripts/size-allow.txt`). The test is in
+  `tests/pod_seccomp_slow_dial.rs`. The command is
+  `cargo test --test pod_seccomp_slow_dial -- seccomp_a_slow_dial_does_not_stop_other_calls`.
+- 2026-11-06: the code has no non-blocking connect (`EINPROGRESS`). A `connect` of a socket with
+  `O_NONBLOCK` also waits for the dial, before and after this change. The socket of the program is
+  one end of an `AF_UNIX` socket pair, which is writable before the dial ends; thus `EINPROGRESS`
+  and a later `SO_ERROR` cannot tell the program the result of the dial.
+
 # T-068: WARP: a probe of the TCP data path renews a session that carries no TCP
 
 **Source:** the lab kit's report masque-session-tcp-blackhole.md, in

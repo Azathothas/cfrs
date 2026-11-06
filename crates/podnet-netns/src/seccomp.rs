@@ -703,6 +703,13 @@ pub(crate) async fn supervise_seccomp(
 
     let mut map = crate::fdtable::Table::new(pid);
     let mut dns = FakeDns::new();
+    let mut dials = crate::connect::Dials::new();
+    let route = crate::connect::Route {
+        proxies: &proxies,
+        rules: &rules,
+        inbound_dir: &inbound_dir,
+        verbose,
+    };
     dns.v6 = true;
     for (name, ip) in &maps {
         dns.pin(name, *ip);
@@ -711,8 +718,13 @@ pub(crate) async fn supervise_seccomp(
     while !shutdown.load(std::sync::atomic::Ordering::Relaxed) {
         // NOTIF_RECV blocks even on an O_NONBLOCK descriptor, so call it only
         // when poll(2) reports a pending notification.
+        // T-067: a dial that ended gets its answer here.
         let guard = tokio::select! {
             guard = async_fd.readable() => guard,
+            Some(done) = dials.next() => {
+                crate::connect::finish(lfd, done, &mut map, &mut dials, verbose);
+                continue;
+            }
             _ = tokio::time::sleep(Duration::from_millis(50)) => continue,
         };
         let mut guard = guard?;
@@ -765,19 +777,8 @@ pub(crate) async fn supervise_seccomp(
         } else if nr == libc::SYS_socket as i32 {
             crate::socket::handle_socket(lfd, id, a, &mut map, verbose)
         } else if nr == libc::SYS_connect as i32 {
-            handle_connect(
-                lfd,
-                id,
-                a,
-                mem,
-                (&mut map, key),
-                &mut dns,
-                &proxies,
-                &rules,
-                verbose,
-                &inbound_dir,
-            )
-            .await
+            let entry = (&mut *map, key);
+            crate::connect::handle_connect(lfd, id, a, mem, entry, &mut dns, &mut dials, &route)
         } else if nr == libc::SYS_sendto as i32 {
             handle_sendto(lfd, id, a, mem, (&mut map, key), &mut dns, &proxies).await
         } else if nr == libc::SYS_sendmsg as i32 {
@@ -942,103 +943,6 @@ pub(crate) async fn drain_relays(limit: Duration) {
 /// Above this many tracked descriptors the child is refused more, so a program
 /// that leaks sockets cannot grow the supervisor without bound.
 pub(crate) const MAX_TRACKED_FDS: usize = 4096;
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_connect(
-    lfd: RawFd,
-    id: u64,
-    a: [u64; 6],
-    mem: RawFd,
-    (map, key): (&mut HashMap<Key, Sock>, Key),
-    dns: &mut FakeDns,
-    proxies: &[Proxy],
-    rules: &[Rule],
-    verbose: bool,
-    inbound_dir: &std::path::Path,
-) -> Result<()> {
-    let fd = a[0] as i32;
-    let is_datagram = matches!(map.get(&key), Some(Sock::Datagram { .. }));
-    match map.get(&key) {
-        None => return notif_continue(lfd, id),
-        Some(Sock::Connected(_)) => return notif_respond(lfd, id, -1, libc::EISCONN),
-        Some(_) => {}
-    }
-    let addr = read_mem(mem, a[1], (a[2] as usize).min(128))?;
-    let Some((_family, ip, port)) = parse_sockaddr(&addr) else {
-        return notif_respond(lfd, id, -1, libc::EAFNOSUPPORT);
-    };
-    if is_datagram {
-        if let Some(Sock::Datagram { dest, .. }) = map.get_mut(&key) {
-            *dest = Some((ip, port));
-        }
-        return notif_respond(lfd, id, 0, 0);
-    }
-    let target = match (dns.name_for_ip(ip), ip) {
-        (Some(name), _) => format!("{name}:{port}"),
-        (None, IpAddr::V4(v4)) => format!("{v4}:{port}"),
-        (None, IpAddr::V6(v6)) => format!("[{v6}]:{port}"),
-    };
-    let connected = if ip.is_loopback() {
-        // Loopback does not go to the proxy (issue 80): a listener of the
-        // program itself (its inbound socket), else TCP on this host.
-        if verbose {
-            eprintln!("podnet-netns: connect {target} direct (loopback)");
-        }
-        within_timeout("loopback connect", connect_loopback(inbound_dir, ip, port)).await
-    } else {
-        let chain = select_chain(rules, proxies, &target);
-        if verbose {
-            eprintln!("podnet-netns: connect {target} via {}", chain[0].endpoint());
-        }
-        within_timeout("upstream connect", connect_upstream_async(chain, &target)).await
-    };
-    match connected {
-        Ok(mut upstream) => {
-            notif_respond(lfd, id, 0, 0)?;
-            if let Some(Sock::Stream {
-                mut pair,
-                bound,
-                options,
-                ..
-            }) = map.remove(&key)
-            {
-                // T-063: the entry stays, for the options and the addresses.
-                let entry = crate::sockopt::Connected::new(fd, (ip, port), bound, options);
-                map.insert(key, Sock::Connected(entry));
-                spawn_relay(async move {
-                    let _ = tokio::io::copy_bidirectional(&mut pair, &mut upstream).await;
-                });
-            }
-        }
-        Err(e) => {
-            if verbose {
-                eprintln!("podnet-netns: upstream for {target} failed: {e:#}");
-            }
-            // Keep the error for SO_ERROR, as the kernel does (issue 302).
-            if let Some(Sock::Stream { error, .. }) = map.get_mut(&key) {
-                *error = libc::ECONNREFUSED;
-            }
-            notif_respond(lfd, id, -1, libc::ECONNREFUSED)?;
-        }
-    }
-    Ok(())
-}
-
-/// A loopback connect of the program: its own inbound listener on `port`
-/// when there is one, else TCP to `ip:port` on this host.
-async fn connect_loopback(
-    inbound_dir: &std::path::Path,
-    ip: IpAddr,
-    port: u16,
-) -> Result<crate::upstream::Upstream> {
-    let own = inbound_dir.join(format!("{port}.sock"));
-    if let Ok(stream) = tokio::net::UnixStream::connect(&own).await {
-        return Ok(Box::new(stream));
-    }
-    let stream =
-        crate::upstream::connect_direct(&std::net::SocketAddr::new(ip, port).to_string()).await?;
-    Ok(Box::new(stream))
-}
 
 pub(crate) async fn handle_sendto(
     lfd: RawFd,

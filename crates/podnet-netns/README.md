@@ -86,7 +86,13 @@ see it. Use a unix socket for it (`-L unix:///path`).
   entry. A `close` removes the entry only when no other descriptor of the pod
   refers to the socket. A sweep removes the entries of sockets that closed
   with no `close` call (the exit of a process, `close_range`).
-* `connect` is answered after the supervisor dials the upstream. The
+* `connect` is answered after the supervisor dials the upstream. The dial
+  runs in its own task: the caller waits, and the other system calls of the
+  program get their answers during the dial. A second `connect` of the same
+  socket during the dial waits for the same dial. A `close` of the socket
+  during the dial gives `ECONNABORTED` to the waiting `connect`. When no
+  caller waits at the end of the dial (a signal, or the exit of the caller),
+  the supervisor drops the connection. The
   supervisor reads the address from `/proc/<pid>/mem` of the calling task. It
   opens that file again for each notification, and it checks the notification
   with `SECCOMP_IOCTL_NOTIF_ID_VALID` after the open. A connect that fails
